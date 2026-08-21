@@ -45,27 +45,39 @@ export function renderContext(
   systemPrompt: string,
 ): ChatMessage[] {
   const out: ChatMessage[] = [{ role: "system", content: systemPrompt }];
+  const view = projectView(sessionId);
+  const visibleToolIds = new Set(
+    view.filter((n) => !n.deleted && n.msg.role === "tool" && n.msg.tool_call_id).map((n) => n.msg.tool_call_id!),
+  );
 
-  for (const n of projectView(sessionId)) {
+  for (const n of view) {
     const m = n.msg;
-    if (n.deleted && !n.summary) continue;
 
-    // summaries surface as tiny standalone notes
+    // deleted node -> nothing but an optional tiny note
+    if (n.deleted) {
+      if (n.summary) out.push({ role: "user", content: `(ctx: [m${m.seq}] summarized away) ${n.summary}` });
+      continue;
+    }
+
     if (m.role === "user") {
-      const text = `${marker(m.seq)} ${n.content}`;
-      out.push({ role: "user", content: text });
+      out.push({ role: "user", content: `${marker(m.seq)} ${n.content}` });
     } else if (m.role === "assistant") {
-      const entry: ChatMessage = { role: "assistant", content: n.content ? `${marker(m.seq)} ${n.content}` : "" };
+      let calls: any[] | undefined;
       if (m.tool_calls) {
-        entry.tool_calls = JSON.parse(m.tool_calls);
-        if (!entry.content) entry.content = "";
+        // keep only calls whose tool result is still visible (API requires 1:1 pairing)
+        const all = JSON.parse(m.tool_calls) as { id: string; name: string; arguments: string }[];
+        const kept = all.filter((c) => visibleToolIds.has(c.id));
+        if (kept.length) {
+          calls = kept.map((c) => ({ id: c.id, type: "function" as const, function: { name: c.name, arguments: c.arguments } }));
+        }
       }
+      const text = n.content ? `${marker(m.seq)} ${n.content}` : "";
+      if (!text && !calls) continue;
+      const entry: ChatMessage = { role: "assistant", content: text };
+      if (calls) entry.tool_calls = calls;
       out.push(entry);
     } else if (m.role === "tool") {
       out.push({ role: "tool", tool_call_id: m.tool_call_id!, content: `${marker(m.seq)} ${n.content}` });
-    }
-    if (n.deleted && n.summary) {
-      out.push({ role: "user", content: `(ctx note: earlier [m${m.seq}] was summarized away) ${n.summary}` });
     }
   }
   return out;

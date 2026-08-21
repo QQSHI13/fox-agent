@@ -41,6 +41,7 @@ export async function* runTurn(
     const assistantText: string[] = [];
     const calls: ToolCall[] = [];
     let finish = "";
+    let lastUsage: { prompt_tokens: number; completion_tokens: number } | null = null;
 
     for await (const ev of streamChat(cfg, messages, toolDefs, signal)) {
       if (ev.type === "text") {
@@ -49,6 +50,7 @@ export async function* runTurn(
       } else if (ev.type === "tool_call") {
         calls.push(ev.call);
       } else if (ev.type === "usage") {
+        lastUsage = { prompt_tokens: ev.prompt_tokens, completion_tokens: ev.completion_tokens };
         yield ev;
       } else if (ev.type === "done") {
         finish = ev.reason;
@@ -63,6 +65,7 @@ export async function* runTurn(
       tool_calls: calls.length ? JSON.stringify(calls) : null,
       tokens: estTokens(text) + calls.reduce((a, c) => a + estTokens(c.arguments), 0),
     });
+    if (lastUsage) recordUsage(sessionId, asstNode.id, lastUsage.prompt_tokens, lastUsage.completion_tokens);
 
     if (!calls.length) {
       yield { type: "done", reason: finish || "stop" };
