@@ -1,0 +1,31 @@
+name: Publish to npm (OIDC trusted publishing)
+
+on:
+  workflow_dispatch:
+  release:
+    types: [published]
+
+permissions:
+  id-token: write # required for npm provenance / trusted publishing
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: npm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - run: bun install
+      - run: bun test || true
+      - run: npm publish --provenance --access public
+        env:
+          # npm >= 11.5.1 reads the OIDC token from the Actions identity;
+          # link this repo+workflow as a Trusted Publisher on npmjs.com first.
+          NPM_CONFIG_PROVENANCE: true

@@ -19,5 +19,33 @@
     "@opentui/solid": "^0.5.6",
     "clipboardy": "^5.3.2",
     "solid-js": "^1.9.15"
-  }
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/QQSHI13/foxc.git"
+  },
+  "bugs": {
+    "url": "https://github.com/QQSHI13/foxc/issues"
+  },
+  "homepage": "https://github.com/QQSHI13/foxc#readme",
+  "keywords": [
+    "ai",
+    "coding-agent",
+    "tui",
+    "acp",
+    "mcp",
+    "bun"
+  ],
+  "engines": {
+    "bun": ">=1.4.0"
+  },
+  "files": [
+    "dist/cli.js",
+    "src",
+    "scripts",
+    "bin/libopentui.so",
+    "README.md",
+    "LICENSE"
+  ]
 }

@@ -460,6 +460,9 @@ export async function startTui(state: HarnessState) {
         {/* full-screen transcript */}
         <scrollbox
           ref={(el: any) => (sb = el)}
+          stickyScroll={false}
+          scrollAcceleration={{ tick: () => 12, reset: () => {} } as any}
+          scrollbarOptions={{ showArrows: false } as any}
           style={{ flexGrow: 1, flexDirection: "column", paddingLeft: 1, paddingRight: 1 }}
         >
           {createComponent(For, {
@@ -470,11 +473,8 @@ export async function startTui(state: HarnessState) {
               it.kind === "md" ? (
                 <markdown content={it.text} syntaxStyle={undefined as any} style={{ marginBottom: 1 }} />
               ) : it.kind === "think" ? (
-                <Show when={showThink()} fallback={<text fg={C.chrome}>thinking ▸ (ctrl+t) {oneLine(it.text.slice(-90))}</text>}>
-                  <For each={wrap(`[thinking]
-${it.text}`, width() - 2)}>
-                    {(line: string) => <text fg={C.chrome}>{line}</text>}
-                  </For>
+                <Show when={showThink()} fallback={<text fg={C.chrome}>thinking ▸ (ctrl+t unfolds)</text>}>
+                  <markdown content={it.text} syntaxStyle={undefined as any} style={{ marginBottom: 1 }} />
                 </Show>
               ) : (
                 <For each={wrap(it.text, width())}>
@@ -499,11 +499,24 @@ ${it.text}`, width() - 2)}>
           </Show>
         </scrollbox>
 
+        {/* slash hints float OVER the transcript — never resize the view */}
+        <Show when={hintRowsSig().length > 0}>
+          <box
+            style={{
+              position: "absolute",
+              bottom: inputLineCount() + 2,
+              left: 1,
+              right: 1,
+              flexDirection: "column",
+              backgroundColor: "#16161e",
+            }}
+          >
+            <For each={hintRowsSig()}>{(r: Row) => <text fg={r.fg}>{r.text}</text>}</For>
+          </box>
+        </Show>
+
         {/* bottom dock */}
-        <box style={{ flexDirection: "column", height: dockHeight() + 2, paddingLeft: 1, paddingRight: 1 }}>
-          <For each={hintRowsSig()}>
-            {(r: Row) => <text fg={r.fg}>{r.text}</text>}
-          </For>
+        <box style={{ flexDirection: "column", height: dockHeight(), paddingLeft: 1, paddingRight: 1 }}>
           {/* chat box */}
           <box style={{ backgroundColor: "#1f2335", height: inputLineCount(), width: "100%", paddingLeft: 1, paddingRight: 1, flexDirection: "column" }}>
             <For each={inputLineRows()}>
@@ -540,7 +553,7 @@ ${it.text}`, width() - 2)}>
   };
 
   function dockHeight(): number {
-    return hintRowsSig().length + inputLineCount() + 1; // hints + chat box + status
+    return inputLineCount() + 1; // chat box + status line — flush to the real bottom
   }
 
   function inputLineCount(): number {
