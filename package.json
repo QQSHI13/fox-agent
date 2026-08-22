@@ -7,8 +7,8 @@
     "foxc": "./src/cli.ts"
   },
   "scripts": {
-    "dev": "bun run --conditions=browser src/cli.ts",
-    "build": "bun build --compile --conditions=browser src/cli.ts --outfile bin/foxc",
+    "dev": "bun --preload @opentui/solid/preload src/cli.ts",
+    "build": "bun run scripts/build.ts",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
@@ -17,6 +17,7 @@
   "dependencies": {
     "@opentui/core": "^0.5.6",
     "@opentui/solid": "^0.5.6",
+    "clipboardy": "^5.3.2",
     "solid-js": "^1.9.15"
   }
 }

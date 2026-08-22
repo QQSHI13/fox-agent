@@ -8,6 +8,7 @@ import { OUT_CAP } from "../tools/files.ts";
 export const VERSION = "0.1.0";
 
 export type TurnEvent =
+  | { type: "reasoning"; delta: string }
   | { type: "text"; delta: string }
   | { type: "tool_start"; seq: number; name: string; args: string }
   | { type: "tool_end"; seq: number; name: string; output: string }
@@ -44,7 +45,9 @@ export async function* runTurn(
     let lastUsage: { prompt_tokens: number; completion_tokens: number } | null = null;
 
     for await (const ev of streamChat(cfg, messages, toolDefs, signal)) {
-      if (ev.type === "text") {
+      if (ev.type === "reasoning") {
+        yield ev;
+      } else if (ev.type === "text") {
         assistantText.push(ev.delta);
         yield ev;
       } else if (ev.type === "tool_call") {
@@ -153,14 +156,14 @@ export function buildMessages(sessionId: string, cwd: string, model: string): Ch
     "</runtime>",
   ].join("\n");
 
-  const prompt = `${header}
-
-You are foxc, a light coding harness. You have full control of the machine — no permission prompts.
+  const prompt = `You are foxc, a light coding harness. You have full control of the machine — no permission prompts.
 
 Every message in your context carries a marker like [m12]. You can edit your own context window with ctx_edit:
 - delete ops hide stale/noisy nodes from future turns (pass summary to keep a one-line note)
 - replace ops rewrite a node's text
-Use it proactively when old tool outputs pile up — storage is safe, only your view changes.`;
+Use it proactively when old tool outputs pile up — storage is safe, only your view changes.
+
+${header}`;
 
   return renderContext(sessionId, prompt);
 }

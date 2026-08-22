@@ -4,6 +4,20 @@ import { providerFromEnv } from "./provider/openai.ts";
 import { runTurn } from "./loop/agent.ts";
 import { runSlashCommand } from "./commands.ts";
 import { startTui } from "./tui.tsx";
+import { setRenderLibPath } from "@opentui/core";
+
+// point opentui's FFI at the lib shipped beside the binary (or the local node_modules copy in dev)
+{
+  const { existsSync } = await import("node:fs");
+  const { join, dirname } = await import("node:path");
+  const candidates = [join(dirname(process.execPath), "libopentui.so"), join(process.cwd(), "node_modules/@opentui/core-linux-x64/libopentui.so")];
+  for (const c of candidates) {
+    if (existsSync(c)) {
+      setRenderLibPath(c);
+      break;
+    }
+  }
+}
 
 const VERSION = "0.1.0";
 

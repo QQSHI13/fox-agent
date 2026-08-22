@@ -1,43 +1,152 @@
-// foxc TUI — @opentui/solid, line-list architecture
-// NOTE: bun's JSX transform is react-style (no solid babel preset), so nothing
-// inside JSX may be dynamic. All dynamics go through one `rows` signal whose
-// item identity changes drive <For> reconciliation.
-import { render, useKeyboard } from "@opentui/solid";
-import { createSignal, createComponent, For } from "solid-js";
-import { getSession, sessionUsage } from "./store/db.ts";
-import { projectView, viewTokenEstimate } from "./loop/context.ts";
+// foxc TUI v4 — idiomatic solid-js on @opentui/solid (built via babel-preset-solid,
+// see scripts/build.ts). Fine-grained reactivity: keystrokes update one text node,
+// streaming updates one markdown node — no full redraws, no flicker.
+//
+// Layout: full-screen scrollbox (flexGrow 1) + reactive bottom dock (hints /
+// colored input / status bar). Input is multi-line; "\" escapes next char or
+// Enter. "!" runs local shell, "/" commands (Enter runs exact or unique prefix;
+// arg-commands autocomplete). Prompts typed while busy are queued. Esc
+// interrupts the agent. Ctrl+C copies input (exits empty), Ctrl+V pastes.
+import { render, useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid";
+import { createSignal, createComponent, For, Show, onCleanup } from "solid-js";
+import type { CliRenderer } from "@opentui/core";
 import { runTurn } from "./loop/agent.ts";
-import { runSlashCommand, SLASH_HELP, type HarnessState } from "./commands.ts";
+import { projectView, viewTokenEstimate } from "./loop/context.ts";
+import { getSession, sessionUsage } from "./store/db.ts";
+import { runSlashCommand, COMMANDS, type HarnessState } from "./commands.ts";
 
-interface Row {
+interface Ch {
+  c: string;
+  lit: boolean;
+}
+interface Item {
   k: number;
+  kind: "user" | "tool" | "info" | "error" | "md";
   text: string;
-  fg: string;
 }
 
 const C = {
   user: "#7aa2f7",
-  assistant: "#c0caf5",
   tool: "#e0af68",
-  info: "#565f89",
+  info: "#89ddff",
+  hint: "#565f89",
   error: "#f7768e",
-  summary: "#9ece6a",
   chrome: "#565f89",
+  hintSel: "#c0caf5",
   accent: "#bb9af7",
+  ok: "#9ece6a",
 };
+
+const ARG_COMMANDS = new Set(["/resume", "/model"]);
 
 let keySeq = 0;
 const nk = () => ++keySeq;
 
-export async function startTui(state: HarnessState) {
-  const [rows, setRows] = createSignal<Row[]>([]);
-  const [busy, setBusy] = createSignal(false);
-  let buf = "";
-  let streamingRow: Row | null = null;
+// clipboard with zero deps: OSC52 for copy (works over ssh/wsl), native spawners for paste
+function osc52Copy(s2: string) {
+  try {
+    const b64 = Buffer.from(s2, "utf8").toString("base64");
+    process.stdout.write(`\x1b]52;c;${b64}\x07`);
+  } catch {}
+}
 
-  function oneLine(s: string, n = 150): string {
-    const t = s.replace(/\n/g, " ");
-    return t.length > n ? t.slice(0, n) + "…" : t;
+async function clipWrite(s2: string): Promise<boolean> {
+  osc52Copy(s2);
+  const cmds: string[][] = [
+    ["powershell.exe", "-NoProfile", "-Command", `Set-Clipboard -Value '${s2.replaceAll("'", "''")}'`],
+    ["wl-copy"],
+    ["xclip", "-selection", "clipboard", "-in"],
+  ];
+  for (const argv of cmds) {
+    try {
+      const p = Bun.spawn(argv, { stdin: "pipe", stdout: "ignore", stderr: "ignore" });
+      if (argv[0] === "xclip") p.stdin.write(s2);
+      await p.exited;
+      if (p.exitCode === 0) return true;
+    } catch {}
+  }
+  return false;
+}
+
+async function clipRead(): Promise<string> {
+  const cmds: string[][] = [
+    ["powershell.exe", "-NoProfile", "-Command", "Get-Clipboard"],
+    ["wl-paste", "--no-newline"],
+    ["xclip", "-selection", "clipboard", "-o"],
+  ];
+  for (const argv of cmds) {
+    try {
+      const p = Bun.spawn(argv, { stdin: "ignore", stdout: "pipe", stderr: "ignore" });
+      const timer = setTimeout(() => { try { p.kill(); } catch {} }, 1500);
+      const out = await new Response(p.stdout).text();
+      clearTimeout(timer);
+      const code = await p.exited;
+      if (code === 0 && out) return out.replace(/\r/g, "");
+    } catch {}
+  }
+  return "";
+}
+
+
+
+export async function startTui(state: HarnessState) {
+  const [items, setItems] = createSignal<Item[]>([]);
+  const [streamText, setStreamText] = createSignal<string | null>(null);
+  const [reasonTail, setReasonTail] = createSignal("");
+  const [buf, setBuf] = createSignal<Ch[]>([]);
+  const [busy, setBusy] = createSignal(false);
+  const [queuedCount, setQueuedCount] = createSignal(0);
+  const [flash, setFlash] = createSignal("");
+  const [hintSel, setHintSel] = createSignal(0);
+
+  let renderer: CliRenderer | null = null;
+  let sb: any = null;
+  let dimAcc: any = null;
+  let stick = true; // autoscroll unless user scrolled up
+  let ac: AbortController | null = null;
+  const queued: string[] = [];
+
+  function gracefulExit(code = 0): never {
+    try {
+      ac?.abort();
+      renderer?.stop();
+      renderer?.destroy();
+    } catch {}
+    process.exit(code);
+  }
+
+  const display = (): string =>
+    buf()
+      .map((c) => c.c)
+      .join("");
+  const firstCharLit = (): boolean => buf().find((c) => c.c.trim().length > 0)?.lit ?? false;
+
+  function width(): number {
+    return Math.max(30, (dimAcc?.()?.width ?? 80) - 2);
+  }
+
+  function wrap(s: string, w: number): string[] {
+    const out: string[] = [];
+    for (const para of s.split("\n")) {
+      if (para.length <= w) {
+        out.push(para);
+        continue;
+      }
+      let line = "";
+      for (const word of para.split(" ")) {
+        let wd = word;
+        while ((line ? line.length + 1 : 0) + wd.length > w) {
+          if (line) out.push(line);
+          const take = wd.slice(0, Math.max(1, w - line.length));
+          out.push(take);
+          wd = wd.slice(take.length);
+          line = "";
+        }
+        line += (line ? " " : "") + wd;
+      }
+      out.push(line);
+    }
+    return out;
   }
 
   function statusText(): string {
@@ -45,143 +154,391 @@ export async function startTui(state: HarnessState) {
       const u = sessionUsage(state.sessionId);
       const nodes = projectView(state.sessionId);
       const vis = nodes.filter((n) => !n.deleted).length;
-      return `${vis}/${nodes.length} nodes · ~${viewTokenEstimate(nodes)} est tok · ${u.prompt + u.completion} tok used`;
+      const home = process.env.HOME ?? "";
+      const cwdShort = home && state.cwd.startsWith(home) ? "~" + state.cwd.slice(home.length) : state.cwd;
+      const q = queuedCount() ? ` · ${queuedCount()} queued` : "";
+      return `${cwdShort} · ${vis}/${nodes.length} nodes · ~${viewTokenEstimate(nodes)} est · p${u.prompt}+g${u.completion} tok · ${state.provider.model}${q}`;
     } catch {
-      return "";
+      return state.cwd;
     }
   }
 
-  function transcriptRows(): Row[] {
-    return projectView(state.sessionId)
-      .filter((n) => !n.deleted && (n.content || n.summary))
-      .slice(-300)
-      .map((n): Row => {
-        if (n.msg.role === "user") return { k: nk(), text: `[m${n.msg.seq}] you  ${oneLine(n.content)}`, fg: C.user };
-        if (n.msg.role === "tool")
-          return { k: nk(), text: `[m${n.msg.seq}] tool ${oneLine(n.content)}`, fg: C.tool };
-        return { k: nk(), text: `[m${n.msg.seq}] foxc ${oneLine(n.content || "(tool call)")}`, fg: C.assistant };
-      });
-  }
-
-  // rows layout: header / blank / transcript… / status / input
-  function redraw(extra: Row[] = []) {
-    const base: Row[] = [
-      { k: nk(), text: `foxc  ${state.sessionId} · ${state.provider.model}`, fg: C.accent },
-      { k: nk(), text: "", fg: C.chrome },
-      ...transcriptRows(),
-      ...extra,
-      { k: nk(), text: statusText(), fg: C.chrome },
-      { k: nk(), text: busy() ? "thinking…" : buf ? `${buf}_` : "(type /help for commands)", fg: busy() ? C.chrome : C.user },
-    ];
-    setRows(base);
-  }
-
-  function bottomRow(): Row {
-    return { k: nk(), text: busy() ? "thinking…" : buf ? `${buf}_` : "(type /help for commands)", fg: busy() ? C.chrome : C.user };
-  }
-
-  function pushLine(text: string, fg: string) {
-    // insert above status/input (3 fixed bottom rows); multi-line text becomes one row per line
-    setRows((prev) => {
-      const head = prev.slice(0, -3);
-      const newRows = text.split("\n").map((l) => ({ k: nk(), text: l.length ? l : " ", fg }));
-      return [...head, ...newRows, bottomRow()];
-    });
-  }
-
-  async function submit(text: string) {
-    const t = text.trim();
-    if (!t || busy()) return;
-
-    if (t.startsWith("/")) {
-      if (t === "/help" || t === "/?") {
-        pushLine(SLASH_HELP, C.info);
-        return;
-      }
-      const res = runSlashCommand(t, state);
-      if (res?.handled) {
-        if (res.output) pushLine(res.output, C.info);
-        if (res.newSessionId) {
-          state.sessionId = res.newSessionId;
-          redraw();
-        }
-        if (res.exit) process.exit(0);
-        return;
-      }
+  function loadItems(): Item[] {
+    const out: Item[] = [];
+    const nodes = projectView(state.sessionId).filter((n) => !n.deleted);
+    for (const n of nodes.slice(-300)) {
+      if (n.msg.role === "user") out.push({ k: nk(), kind: "user", text: `[m${n.msg.seq}] you  ${n.content}` });
+      else if (n.msg.role === "tool") out.push({ k: nk(), kind: "tool", text: `[m${n.msg.seq}] tool ${n.content}` });
+      else out.push({ k: nk(), kind: "md", text: n.content || "" });
     }
+    return out;
+  }
 
+  function refresh() {
+    setItems(loadItems());
+    stickScroll();
+  }
+
+  function stickScroll() {
+    if (stick) setTimeout(() => { try { if (sb) sb.scrollTop = sb.scrollHeight ?? 1e9; } catch {} }, 20);
+  }
+
+  function push(kind: Item["kind"], text: string) {
+    setItems((prev) => [...prev, { k: nk(), kind, text }]);
+    stickScroll();
+  }
+
+  // ---- dispatch ----
+
+  async function runShell(cmd: string) {
     setBusy(true);
-    redraw();
-    pushLine(`you  ${t}`, C.user);
-
+    push("tool", `$ ${cmd}`);
     try {
-      for await (const ev of runTurn(state.sessionId, state.provider, t)) {
-        if (ev.type === "text") {
-          if (!streamingRow) {
-            pushLine(`foxc ${""}`, C.assistant);
-            const head = rows().slice(0, -3);
-            streamingRow = head[head.length - 1] ?? null;
-          }
-          if (streamingRow) {
-            streamingRow.text += ev.delta.replace(/\n/g, " ");
-            const i = rows().findIndex((r) => r.k === streamingRow!.k);
-            if (i >= 0) setRows((prev) => [...prev.slice(0, i), { ...streamingRow! }, ...prev.slice(i + 1)]);
-          }
+      const proc = Bun.spawn(["/bin/bash", "-c", cmd], { cwd: state.cwd, stdout: "pipe", stderr: "pipe", env: process.env });
+      const timer = setTimeout(() => proc.kill(9), 120_000);
+      const [out, err] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
+      clearTimeout(timer);
+      const code = await proc.exited;
+      const merged = (out + (err ? (out ? "\n[stderr]\n" : "") + err : "")).trimEnd() || "(no output)";
+      push("info", `${merged}\nexit ${code}`);
+    } catch (e) {
+      push("error", `shell error: ${(e as Error).message}`);
+    }
+    setBusy(false);
+    drainQueue();
+  }
+
+  function runSlash(t: string) {
+    if (t === "/help" || t === "/?")
+      push(
+        "info",
+        COMMANDS.map((c) => `${c.name.padEnd(12)} ${c.desc}`).join("\n"),
+      );
+    else {
+      const res = runSlashCommand(t, state);
+      if (res?.output) push("info", res.output);
+      if (res?.newSessionId) {
+        state.sessionId = res.newSessionId;
+        refresh();
+      }
+      if (res?.exit) gracefulExit(0);
+    }
+  }
+
+  async function runAgent(raw: string) {
+    setBusy(true);
+    push("user", `you  ${raw}`);
+    ac = new AbortController();
+    let md = "";
+    try {
+      for await (const ev of runTurn(state.sessionId, state.provider, raw, ac.signal)) {
+        if (ev.type === "reasoning") {
+          setReasonTail(ev.delta.slice(-400));
+        } else if (ev.type === "text") {
+          md += ev.delta;
+          setStreamText(md);
+          stickScroll();
         } else if (ev.type === "tool_end") {
-          streamingRow = null;
-          pushLine(`[m${ev.seq}] tool ${ev.name} → ${ev.output.replace(/\n/g, " ").slice(0, 120)}`, C.tool);
-        } else if (ev.type === "done" && ev.reason.startsWith("error")) {
-          streamingRow = null;
-          pushLine(ev.reason, C.error);
+          if (md) {
+            push("md", md);
+            md = "";
+            setStreamText(null);
+          }
+          setReasonTail("");
+          push("tool", `[m${ev.seq}] ${ev.name} → ${ev.output.replace(/\n/g, " ").slice(0, 200)}`);
+        } else if (ev.type === "done") {
+          if (ev.reason.startsWith("error")) push("error", ev.reason);
         }
       }
     } catch (e) {
-      pushLine(`foxc error: ${(e as Error).message}`, C.error);
+      const msg = (e as Error).message ?? "";
+      push("error", ac?.signal.aborted ? "[interrupted]" : `foxc error: ${msg}`);
     } finally {
-      streamingRow = null;
+      if (md) push("md", md);
+      setStreamText(null);
+      setReasonTail("");
       setBusy(false);
-      redraw();
+      ac = null;
+      refresh();
+      drainQueue();
     }
   }
 
+  function drainQueue() {
+    if (!queued.length) return;
+    const next = queued.shift()!;
+    setQueuedCount(queued.length);
+    void dispatch(next);
+  }
+
+  async function dispatch(raw: string) {
+    const lit = firstCharLit(); // note: buf cleared before dispatch
+    const t = raw.trim();
+    if (!t) return;
+    if (!lit && t.startsWith("!")) return void runShell(t.slice(1).trim());
+    if (!lit && t.startsWith("/")) return runSlash(t);
+    await runAgent(raw);
+  }
+
+  function chs_set(text: string) {
+    setBuf(text.split("").map((x) => ({ c: x, lit: false })).concat([{ c: " ", lit: false }]));
+  }
+
+  function submit() {
+    const raw = display();
+    const lit = firstCharLit();
+    setBuf([]);
+    const t = raw.trim();
+    if (!t) return;
+
+    // slash enter semantics: run exact; unique prefix runs (no-arg) or autocompletes (arg)
+    if (!lit && t.startsWith("/") && !t.includes(" ")) {
+      const exact = COMMANDS.find((c) => c.name === t);
+      if (!exact) {
+        const matches = COMMANDS.filter((c) => c.name.startsWith(t));
+        const visible = matches.slice(0, 5);
+        const target = visible[Math.min(hintSel(), visible.length - 1)] ?? matches[0];
+        if (target) {
+          if (ARG_COMMANDS.has(target.name)) {
+            // finish the command and add a space for its args
+            chs_set(target.name);
+            setHintSel(0);
+            return;
+          }
+          void runSlash(target.name);
+          setHintSel(0);
+          return;
+        }
+      }
+    }
+
+    if (busy()) {
+      queued.push(lit ? t : t.replace(/^!/, "\\!").replace(/^\//, "\\/"));
+      setQueuedCount(queued.length);
+      return;
+    }
+    void dispatch(raw);
+  }
+
+  // ---- keyboard ----
+
   function App() {
+    renderer = useRenderer();
+    dimAcc = useTerminalDimensions();
+
     useKeyboard((key) => {
-      if (key.ctrl && key.name === "c") process.exit(0);
-      if (busy()) return;
+      if (key.ctrl && key.name === "c") {
+        if (busy()) {
+          ac?.abort(); // interrupt streaming first
+          return;
+        }
+        if (buf().length) {
+          void clipWrite(display());
+          setBuf([]);
+          setFlash("copied");
+          setTimeout(() => setFlash(""), 900);
+          redrawDock();
+          return;
+        }
+        gracefulExit(0);
+      }
+      if (key.ctrl && key.name === "d") gracefulExit(0);
+
+      if (key.name === "escape") {
+        if (busy()) {
+          ac?.abort();
+          return;
+        }
+        setBuf([]); // esc clears input when idle
+        redrawDock();
+        return;
+      }
+
+      if (key.name === "pageup") {
+        stick = false;
+        sb?.scrollBy?.(-10);
+        return;
+      }
+      if (key.name === "pagedown") {
+        sb?.scrollBy?.(10);
+        if ((sb?.scrollTop ?? 0) + 2 >= (sb?.scrollHeight ?? 0)) stick = true;
+        return;
+      }
+      if (key.name === "home") {
+        stick = false;
+        if (sb) sb.scrollTop = 0;
+        return;
+      }
+      if (key.name === "end") {
+        stick = true;
+        stickScroll();
+        return;
+      }
+
       if (key.name === "return" || key.name === "kpenter" || key.name === "linefeed") {
-        const v = buf.trim();
-        buf = "";
-        void submit(v);
+        const b = buf();
+        const last = b[b.length - 1];
+        if (last && last.c === "\\" && !last.lit) {
+          setBuf([...b.slice(0, -1), { c: "\n", lit: true }]);
+        } else {
+          submit();
+        }
+        return;
+      }
+      if (key.name === "up" || key.name === "down") {
+        const d = display();
+        if (!firstCharLit() && d.startsWith("/") && !d.includes(" ")) {
+          const n = COMMANDS.filter((c) => c.name.startsWith(d)).slice(0, 5).length;
+          if (n > 1) {
+            setHintSel((i) => Math.max(0, Math.min(n - 1, i + (key.name === "up" ? -1 : 1))));
+          }
+          return;
+        }
         return;
       }
       if (key.name === "backspace") {
-        buf = buf.slice(0, -1);
-        redraw();
+        setBuf((b) => b.slice(0, -1));
+        setHintSel(0);
         return;
       }
+      if (key.name === "tab" && !firstCharLit() && display().startsWith("/") && !display().includes(" ")) {
+        const all = COMMANDS.filter((c) => c.name.startsWith(display())).slice(0, 5);
+        if (all.length) {
+          const target = all[Math.min(hintSel(), all.length - 1)];
+          chs_set(target.name);
+          setHintSel(0);
+        }
+        return;
+      }
+      if (key.ctrl && key.name === "v") {
+        void clipRead().then((p) => {
+          if (!p) return;
+          setBuf((b) => [...b, ...p.split("").map((c) => ({ c, lit: false }))]);
+        });
+        return;
+      }
+
       const seq = (key as any).sequence;
       if (!key.ctrl && !key.meta && typeof seq === "string" && seq.length === 1 && seq >= " ") {
-        buf += seq;
-        // cheap visual echo: rewrite just the input row
-        setRows((prev) => [...prev.slice(0, -1), { k: nk(), text: `${buf}_`, fg: C.user }]);
+        setBuf((b) => {
+          const last = b[b.length - 1];
+          if (last && last.c === "\\" && !last.lit) return [...b.slice(0, -1), { c: seq, lit: true }];
+          return [...b, { c: seq, lit: false }];
+        });
+        setHintSel(0);
       }
     });
 
+    onCleanup(() => {});
+
+    const inputLines = () => {
+      const b = buf();
+      const s = b.map((c) => c.c).join("");
+      const lines = s.split("\n");
+      lines[lines.length - 1] += "_";
+      if (!lines.join("").trim()) lines[0] = "(type here — / commands · \\ escapes · ! shell · shift+pgup scroll)";
+      return lines;
+    };
+
     return (
-      <box style={{ flexDirection: "column", width: "100%", height: "100%", paddingLeft: 1, paddingRight: 1 }}>
-        <scrollbox style={{ flexGrow: 1, flexDirection: "column" }}>
+      <box style={{ flexDirection: "column", width: "100%", height: "100%" }}>
+        {/* full-screen transcript */}
+        <scrollbox
+          ref={(el: any) => (sb = el)}
+          style={{ flexGrow: 1, flexDirection: "column", paddingLeft: 1, paddingRight: 1 }}
+        >
           {createComponent(For, {
             get each() {
-              return rows();
+              return items();
             },
-            children: (r: Row) => <text fg={r.fg}>{r.text}</text>,
+            children: (it: Item) =>
+              it.kind === "md" ? (
+                <markdown content={it.text} syntaxStyle={undefined as any} style={{ marginBottom: 1 }} />
+              ) : (
+                <For each={wrap(it.text, width())}>
+                  {(line: string) => (
+                    <text fg={it.kind === "user" ? C.user : it.kind === "tool" ? C.tool : it.kind === "error" ? C.error : C.info}>{line}</text>
+                  )}
+                </For>
+              ),
           } as any)}
+          <Show when={reasonTail()}>
+            <text fg={C.chrome}>… {reasonTail().slice(-120)}</text>
+          </Show>
+          <Show when={streamText() !== null}>
+            <markdown content={streamText()!} syntaxStyle={undefined as any} style={{ marginBottom: 1 }} />
+          </Show>
+          <Show when={busy() && streamText() === null}>
+            <text fg={C.chrome}>thinking… (esc interrupts)</text>
+          </Show>
         </scrollbox>
+
+        {/* bottom dock */}
+        <box style={{ flexDirection: "column", height: dockHeight() + 2, paddingLeft: 1, paddingRight: 1 }}>
+          <For each={hintRowsSig()}>
+            {(r: Row) => <text fg={r.fg}>{r.text}</text>}
+          </For>
+          {/* chat box */}
+          <box style={{ backgroundColor: "#1f2335", height: inputLineCount(), width: "100%", paddingLeft: 1, paddingRight: 1, flexDirection: "column" }}>
+            <For each={inputLineRows()}>
+              {(r: Row) => <text fg={r.fg}>{r.text}</text>}
+            </For>
+          </box>
+          <text fg={C.chrome}>{flash() ? `${statusText()} · ${flash()}` : statusText()}</text>
+        </box>
       </box>
     );
   }
 
+  interface Row {
+    k: number;
+    text: string;
+    fg: string;
+  }
+
+  const hintRowsSig = () => {
+    const d = buf().map((c) => c.c).join("");
+    if (firstCharLit() || !d.startsWith("/") || d.includes(" ")) return [];
+    return COMMANDS.filter((c) => c.name.startsWith(d))
+      .slice(0, 5)
+      .map((c, i) => ({ k: nk(), text: `${c.name.padEnd(12)} ${c.desc}`, fg: i === hintSel() ? C.hintSel : C.hint }));
+  };
+
+  function dockHeight(): number {
+    return hintRowsSig().length + inputLineCount() + 1; // hints + chat box + status
+  }
+
+  function inputLineCount(): number {
+    const s2 = buf()
+      .map((c) => c.c)
+      .join("");
+    return Math.max(1, s2.split("\n").length);
+  }
+
+  const inputLineRows = (): Row[] => {
+    const b = buf();
+    const s2 = b.map((c) => c.c).join("");
+    const lines = s2.split("\n");
+    lines[lines.length - 1] += "_";
+    if (!lines.join("").trim()) lines[0] = "(type here — / commands · \\ escapes · ! shell · shift+pgup scroll)";
+    return lines.map((l) => ({ k: nk(), text: l, fg: C.user }));
+  };
+
+  function redrawDock() {
+    // touch signals so reactive getters re-run
+    setBuf((b) => [...b]);
+  }
+
   getSession(state.sessionId);
-  redraw();
-  await render(App);
+  refresh();
+
+  try {
+    await render(App, { exitOnCtrlC: false } as any);
+  } catch (e) {
+    try {
+      (renderer as CliRenderer | null)?.stop?.();
+      (renderer as CliRenderer | null)?.destroy?.();
+    } catch {}
+    throw e;
+  }
 }

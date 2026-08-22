@@ -24,6 +24,19 @@ export interface CommandResult {
   exit?: boolean;
 }
 
+export const COMMANDS = [
+  { name: "/help", desc: "show commands" },
+  { name: "/new", desc: "start a fresh session" },
+  { name: "/sessions", desc: "list sessions" },
+  { name: "/resume", desc: "resume session by id or index" },
+  { name: "/undo", desc: "revert last ctx_edit op" },
+  { name: "/ops", desc: "show context surgery ops" },
+  { name: "/view", desc: "preview visible nodes" },
+  { name: "/usage", desc: "token totals" },
+  { name: "/model", desc: "show or switch model" },
+  { name: "/exit", desc: "quit foxc" },
+];
+
 export const SLASH_HELP = `/help              this list
 /new               start a fresh session
 /sessions          list sessions

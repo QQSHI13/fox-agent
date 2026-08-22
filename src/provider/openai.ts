@@ -20,6 +20,7 @@ export interface ToolDef {
 }
 
 export type StreamEvent =
+  | { type: "reasoning"; delta: string }
   | { type: "text"; delta: string }
   | { type: "tool_call"; call: ToolCall }
   | { type: "usage"; prompt_tokens: number; completion_tokens: number }
@@ -100,6 +101,8 @@ export async function* streamChat(
       const choice = chunk.choices?.[0];
       if (!choice) continue;
       const delta: ChunkChoiceDelta = choice.delta ?? {};
+      const rc = (delta as any).reasoning_content;
+      if (typeof rc === "string" && rc) yield { type: "reasoning", delta: rc };
       if (delta.content) yield { type: "text", delta: delta.content };
       for (const tc of delta.tool_calls ?? []) {
         const p = pending.get(tc.index) ?? { id: "", name: "", arguments: "" };
