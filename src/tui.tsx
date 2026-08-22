@@ -343,26 +343,20 @@ export async function startTui(state: HarnessState) {
           ac?.abort(); // interrupt streaming first
           return;
         }
-        // 1) selected transcript content wins (requires useMouse)
+        // copy ONLY what you selected with the mouse
         let selText = "";
         try {
           const sel = (renderer as any)?.getSelection?.();
           selText = sel?.isActive ? String(sel.getSelectedText?.() ?? "") : "";
         } catch {}
         if (selText.trim()) {
-          void clipWrite(selText);
+          void clipWrite(selText.replace(/\n\n+/g, "\n"));
           setFlash("copied selection");
-          setTimeout(() => setFlash(""), 900);
-          return;
+        } else {
+          setFlash("nothing selected");
         }
-        // 2) otherwise the input line — WITHOUT clearing it
-        if (buf().length) {
-          void clipWrite(display());
-          setFlash("copied");
-          setTimeout(() => setFlash(""), 900);
-          return;
-        }
-        gracefulExit(0);
+        setTimeout(() => setFlash(""), 900);
+        return;
       }
       if (key.ctrl && key.name === "d") gracefulExit(0);
       if (key.ctrl && key.name === "t") {
@@ -508,9 +502,22 @@ export async function startTui(state: HarnessState) {
           </Show>
         </scrollbox>
 
-        {/* bottom dock (hints included in flow — stable & reliable) */}
+        {/* bottom dock */}
         <box style={{ flexDirection: "column", height: dockHeight(), paddingLeft: 1, paddingRight: 1 }}>
-          <For each={hintRows()}>{(r: Row) => <text fg={r.fg}>{r.text}</text>}</For>
+          {/* slash hints float directly above the dock — zero layout impact */}
+          <Show when={hintRows().length > 0}>
+            <box
+              style={{
+                position: "absolute",
+                bottom: "100%",
+                left: 1,
+                flexDirection: "column",
+                backgroundColor: "#16161e",
+              }}
+            >
+              <For each={hintRows()}>{(r: Row) => <text fg={r.fg}>{r.text}</text>}</For>
+            </box>
+          </Show>
           {/* chat box */}
           <box style={{ backgroundColor: "#1f2335", height: inputLineCount(), width: "100%", paddingLeft: 1, paddingRight: 1, flexDirection: "column" }}>
             <For each={inputLineRows()}>
@@ -543,7 +550,7 @@ export async function startTui(state: HarnessState) {
   };
 
   function dockHeight(): number {
-    return hintRows().length + inputLineCount() + 1; // hints + chat box + status line
+    return inputLineCount() + 1; // chat box + status line — constant
   }
 
   function inputLineCount(): number {
