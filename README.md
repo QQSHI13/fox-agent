@@ -1,6 +1,6 @@
 # foxc 🦊
 
-npm: `@qqshi13/foxc` · command: `foxc`
+npm: `fox-agent` · command: `fox`
 
 A light coding harness with **agent-controlled context** — the agent edits its own context window natively (`ctx_edit`), no host hacks.
 
@@ -13,7 +13,7 @@ A light coding harness with **agent-controlled context** — the agent edits its
 
 ```bash
 bun install && bun run build   # -> bin/foxc (+ libopentui.so sidecar)
-FOXC_BASE_URL=... FOXC_API_KEY=... FOXC_MODEL=... bin/foxc
+FOXC_BASE_URL=... FOXC_API_KEY=... FOXC_MODEL=... bin/fox
 ```
 
 ## Roadmap

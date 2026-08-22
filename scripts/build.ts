@@ -25,7 +25,7 @@ if (!bundled.success) {
   process.exit(1);
 }
 
-const compiled = Bun.spawnSync(["bun", "build", "--compile", "./dist/cli.js", "--outfile", "./bin/foxc"], {
+const compiled = Bun.spawnSync(["bun", "build", "--compile", "./dist/cli.js", "--outfile", "./bin/fox"], {
   stdout: "inherit",
   stderr: "inherit",
 });

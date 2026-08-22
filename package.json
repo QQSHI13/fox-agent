@@ -1,10 +1,10 @@
 {
-  "name": "@qqshi13/foxc",
+  "name": "fox-agent",
   "version": "0.1.0",
   "description": "foxc - a light coding harness with agent-controlled context",
   "type": "module",
   "bin": {
-    "foxc": "./src/cli.ts"
+    "fox": "./src/cli.ts"
   },
   "scripts": {
     "dev": "bun --preload @opentui/solid/preload src/cli.ts",
