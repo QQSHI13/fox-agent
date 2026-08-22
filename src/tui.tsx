@@ -104,7 +104,7 @@ export async function startTui(state: HarnessState) {
   let dimAcc: any = null;
   let stick = true; // autoscroll unless user scrolled up
   let ac: AbortController | null = null;
-  const queued: string[] = [];
+  const queued: { raw: string; lit: boolean }[] = [];
 
   function gracefulExit(code = 0): never {
     try {
@@ -281,11 +281,10 @@ export async function startTui(state: HarnessState) {
     if (!queued.length) return;
     const next = queued.shift()!;
     setQueuedCount(queued.length);
-    void dispatch(next);
+    void dispatch(next.raw, next.lit);
   }
 
-  async function dispatch(raw: string) {
-    const lit = firstCharLit(); // note: buf cleared before dispatch
+  async function dispatch(raw: string, lit = false) {
     const t = raw.trim();
     if (!t) return;
     if (!lit && t.startsWith("!")) return void runShell(t.slice(1).trim());
@@ -325,11 +324,11 @@ export async function startTui(state: HarnessState) {
     }
 
     if (busy()) {
-      queued.push(lit ? t : t.replace(/^!/, "\\!").replace(/^\//, "\\/"));
+      queued.push({ raw, lit });
       setQueuedCount(queued.length);
       return;
     }
-    void dispatch(raw);
+    void dispatch(raw, lit);
   }
 
   // ---- keyboard ----
@@ -344,20 +343,34 @@ export async function startTui(state: HarnessState) {
           ac?.abort(); // interrupt streaming first
           return;
         }
-        // copy ONLY what you selected with the mouse
+        // 1) selection -> copy + remove selection
         let selText = "";
+        let sel: any = null;
         try {
-          const sel = (renderer as any)?.getSelection?.();
+          sel = (renderer as any)?.getSelection?.();
           selText = sel?.isActive ? String(sel.getSelectedText?.() ?? "") : "";
         } catch {}
         if (selText.trim()) {
           void clipWrite(selText.replace(/\n\n+/g, "\n"));
+          try { (renderer as any)?.clearSelection?.(); } catch {}
           setFlash("copied selection");
-        } else {
-          setFlash("nothing selected");
+          setTimeout(() => setFlash(""), 900);
+          return;
         }
-        setTimeout(() => setFlash(""), 900);
-        return;
+        // 2) clear input
+        if (buf().length) {
+          setBuf([]);
+          setFlash("cleared");
+          setTimeout(() => setFlash(""), 900);
+          return;
+        }
+        // 3) interrupt streaming
+        if (busy()) {
+          ac?.abort();
+          return;
+        }
+        // 4) exit
+        gracefulExit(0);
       }
       if (key.ctrl && key.name === "d") gracefulExit(0);
       if (key.ctrl && key.name === "t") {
