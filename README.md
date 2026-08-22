@@ -1,5 +1,7 @@
 # foxc 🦊
 
+npm: `@qqshi13/foxc` · command: `foxc`
+
 A light coding harness with **agent-controlled context** — the agent edits its own context window natively (`ctx_edit`), no host hacks.
 
 - Full machine control, zero permission prompts (pi-style)
