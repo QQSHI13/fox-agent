@@ -462,7 +462,7 @@ export async function startTui(state: HarnessState) {
           ref={(el: any) => (sb = el)}
           stickyScroll={false}
           scrollAcceleration={{ tick: () => 12, reset: () => {} } as any}
-          scrollbarOptions={{ showArrows: false } as any}
+          scrollbarOptions={{ showArrows: false, trackOptions: { backgroundColor: "#1a1b26", foregroundColor: "#565f89" } } as any}
           style={{ flexGrow: 1, flexDirection: "column", paddingLeft: 1, paddingRight: 1 }}
         >
           {createComponent(For, {
