@@ -343,12 +343,23 @@ export async function startTui(state: HarnessState) {
           ac?.abort(); // interrupt streaming first
           return;
         }
+        // 1) selected transcript content wins (requires useMouse)
+        let selText = "";
+        try {
+          const sel = (renderer as any)?.getSelection?.();
+          selText = sel?.isActive ? String(sel.getSelectedText?.() ?? "") : "";
+        } catch {}
+        if (selText.trim()) {
+          void clipWrite(selText);
+          setFlash("copied selection");
+          setTimeout(() => setFlash(""), 900);
+          return;
+        }
+        // 2) otherwise the input line — WITHOUT clearing it
         if (buf().length) {
           void clipWrite(display());
-          setBuf([]);
           setFlash("copied");
           setTimeout(() => setFlash(""), 900);
-          redrawDock();
           return;
         }
         gracefulExit(0);
@@ -444,8 +455,6 @@ export async function startTui(state: HarnessState) {
       }
     });
 
-    onCleanup(() => {});
-
     const inputLines = () => {
       const b = buf();
       const s = b.map((c) => c.c).join("");
@@ -499,24 +508,9 @@ export async function startTui(state: HarnessState) {
           </Show>
         </scrollbox>
 
-        {/* slash hints float OVER the transcript — never resize the view */}
-        <Show when={hintRowsSig().length > 0}>
-          <box
-            style={{
-              position: "absolute",
-              bottom: inputLineCount() + 2,
-              left: 1,
-              right: 1,
-              flexDirection: "column",
-              backgroundColor: "#16161e",
-            }}
-          >
-            <For each={hintRowsSig()}>{(r: Row) => <text fg={r.fg}>{r.text}</text>}</For>
-          </box>
-        </Show>
-
-        {/* bottom dock */}
+        {/* bottom dock (hints included in flow — stable & reliable) */}
         <box style={{ flexDirection: "column", height: dockHeight(), paddingLeft: 1, paddingRight: 1 }}>
+          <For each={hintRows()}>{(r: Row) => <text fg={r.fg}>{r.text}</text>}</For>
           {/* chat box */}
           <box style={{ backgroundColor: "#1f2335", height: inputLineCount(), width: "100%", paddingLeft: 1, paddingRight: 1, flexDirection: "column" }}>
             <For each={inputLineRows()}>
@@ -536,24 +530,20 @@ export async function startTui(state: HarnessState) {
   }
 
   const HINT_WINDOW = 5;
-  const hintMatches = (): typeof COMMANDS => {
+  const hintRows = (): Row[] => {
     const d = buf().map((c) => c.c).join("");
     if (firstCharLit() || !d.startsWith("/") || d.includes(" ")) return [];
-    return COMMANDS.filter((c) => c.name.startsWith(d));
-  };
-  // sliding window over the FULL match list; window follows hintSel
-  const hintRowsSig = (): Row[] => {
-    const matches = hintMatches();
+    const matches = COMMANDS.filter((c) => c.name.startsWith(d));
     if (!matches.length) return [];
     const sel = Math.max(0, Math.min(matches.length - 1, hintSel()));
     const start = Math.max(0, Math.min(sel - HINT_WINDOW + 1, matches.length - HINT_WINDOW));
     return matches
       .slice(start, start + HINT_WINDOW)
-      .map((c, i) => ({ k: nk(), text: `${(start + i + 1).toString().padStart(2)}/${matches.length} ${c.name.padEnd(11)} ${c.desc}`, fg: start + i === sel ? C.hintSel : C.hint }));
+      .map((c, i) => ({ k: nk(), text: `${c.name.padEnd(12)} ${c.desc}`, fg: start + i === sel ? C.hintSel : C.hint }));
   };
 
   function dockHeight(): number {
-    return inputLineCount() + 1; // chat box + status line — flush to the real bottom
+    return hintRows().length + inputLineCount() + 1; // hints + chat box + status line
   }
 
   function inputLineCount(): number {
@@ -581,7 +571,7 @@ export async function startTui(state: HarnessState) {
   refresh();
 
   try {
-    await render(App, { exitOnCtrlC: false } as any);
+    await render(App, { exitOnCtrlC: false, useMouse: true } as any);
   } catch (e) {
     try {
       (renderer as CliRenderer | null)?.stop?.();
