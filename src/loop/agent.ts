@@ -62,6 +62,10 @@ export async function* runTurn(
       }
     }
 
+    if (reasonAccum.trim()) {
+      appendMessage(sessionId, { parent_id: userNode.id, role: "think", content: reasonAccum, tokens: estTokens(reasonAccum) });
+      reasonAccum = "";
+    }
     const text = assistantText.join("");
     const asstNode = appendMessage(sessionId, {
       parent_id: userNode.id,
@@ -73,9 +77,6 @@ export async function* runTurn(
     if (lastUsage) recordUsage(sessionId, asstNode.id, lastUsage.prompt_tokens, lastUsage.completion_tokens);
 
     if (!calls.length) {
-      if (reasonAccum.trim()) {
-        appendMessage(sessionId, { parent_id: userNode.id, role: "think", content: reasonAccum, tokens: estTokens(reasonAccum) });
-      }
       yield { type: "done", reason: finish || "stop" };
       return;
     }

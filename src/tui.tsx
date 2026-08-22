@@ -92,11 +92,9 @@ async function clipRead(): Promise<string> {
 export async function startTui(state: HarnessState) {
   const [items, setItems] = createSignal<Item[]>([]);
   const [streamText, setStreamText] = createSignal<string | null>(null);
-  const [reasonTail, setReasonTail] = createSignal("");
   const [showThink, setShowThink] = createSignal(false);
   const [buf, setBuf] = createSignal<Ch[]>([]);
   const [busy, setBusy] = createSignal(false);
-  const [streamThink, setStreamThink] = createSignal<string | null>(null); // full live reasoning
   const [queuedCount, setQueuedCount] = createSignal(0);
   const [flash, setFlash] = createSignal("");
   const [hintSel, setHintSel] = createSignal(0);
@@ -238,11 +236,18 @@ export async function startTui(state: HarnessState) {
     push("user", `you  ${raw}`);
     ac = new AbortController();
     let md = "";
+    let thinkItem: Item | null = null;
     try {
       for await (const ev of runTurn(state.sessionId, state.provider, raw, ac.signal)) {
         if (ev.type === "reasoning") {
-          setStreamThink((p) => ((p ?? "") + ev.delta).slice(-8000));
-          setReasonTail((p) => ((p ?? "") + ev.delta).slice(-400));
+          if (!thinkItem) {
+            thinkItem = { k: nk(), kind: "think", text: ev.delta };
+            setItems((prev) => [...prev, thinkItem!]);
+          } else {
+            const k = thinkItem.k;
+            setItems((prev) => prev.map((it) => (it.k === k ? { ...it, text: it.text + ev.delta } : it)));
+          }
+          stickScroll();
         } else if (ev.type === "text") {
           md += ev.delta;
           setStreamText(md);
@@ -253,7 +258,7 @@ export async function startTui(state: HarnessState) {
             md = "";
             setStreamText(null);
           }
-          setReasonTail("");
+          thinkItem = null;
           push("tool", `[m${ev.seq}] ${ev.name} → ${ev.output.replace(/\n/g, " ").slice(0, 200)}`);
         } else if (ev.type === "done") {
           if (ev.reason.startsWith("error")) push("error", ev.reason);
@@ -263,12 +268,8 @@ export async function startTui(state: HarnessState) {
       const msg = (e as Error).message ?? "";
       push("error", ac?.signal.aborted ? "[interrupted]" : `foxc error: ${msg}`);
     } finally {
-      const full = streamThink();
       if (md) push("md", md);
-      if (full && full.trim()) push("think", full);
-      setStreamThink(null);
       setStreamText(null);
-      setReasonTail("");
       setBusy(false);
       ac = null;
       refresh();
@@ -464,6 +465,7 @@ export async function startTui(state: HarnessState) {
         <scrollbox
           ref={(el: any) => (sb = el)}
           stickyScroll={false}
+          viewportCulling={false}
           scrollAcceleration={{ tick: () => 12, reset: () => {} } as any}
           scrollbarOptions={{ showArrows: false, trackOptions: { backgroundColor: "#1a1b26", foregroundColor: "#565f89" } } as any}
           style={{ flexGrow: 1, flexDirection: "column", paddingLeft: 1, paddingRight: 1 }}
@@ -476,8 +478,18 @@ export async function startTui(state: HarnessState) {
               it.kind === "md" ? (
                 <markdown content={it.text} syntaxStyle={undefined as any} style={{ marginBottom: 1 }} />
               ) : it.kind === "think" ? (
-                <Show when={showThink()} fallback={<text fg={C.chrome}>thinking ▸ (ctrl+t unfolds)</text>}>
-                  <markdown content={it.text} syntaxStyle={undefined as any} style={{ marginBottom: 1 }} />
+                <Show
+                  when={showThink()}
+                  fallback={
+                    <text fg={C.chrome} onMouseDown={() => setShowThink(true)} style={{ cursor: "pointer" } as any}>
+                      ▸ thinking — click or ctrl+t to unfold
+                    </text>
+                  }
+                >
+                  <box style={{ flexDirection: "column" }} onMouseDown={() => setShowThink(false)}>
+                    <text fg={C.chrome}>▾ thinking (click or ctrl+t to fold)</text>
+                    <markdown content={it.text} syntaxStyle={undefined as any} style={{ marginBottom: 1 }} />
+                  </box>
                 </Show>
               ) : (
                 <For each={wrap(it.text, width())}>
@@ -487,13 +499,6 @@ export async function startTui(state: HarnessState) {
                 </For>
               ),
           } as any)}
-          <Show when={streamThink()}>
-            <Show when={showThink()} fallback={<text fg={C.chrome}>… thinking (ctrl+t unfolds) {(streamThink() ?? "").slice(-100).replace(/\n/g, " ")}</text>}>
-              <For each={wrap(streamThink() ?? "", width() - 2)}>
-                {(line: string) => <text fg={C.chrome}>{line}</text>}
-              </For>
-            </Show>
-          </Show>
           <Show when={streamText() !== null}>
             <markdown content={streamText()!} syntaxStyle={undefined as any} style={{ marginBottom: 1 }} />
           </Show>
