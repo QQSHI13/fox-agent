@@ -43,9 +43,11 @@ export async function* runTurn(
     const calls: ToolCall[] = [];
     let finish = "";
     let lastUsage: { prompt_tokens: number; completion_tokens: number } | null = null;
+    let reasonAccum = "";
 
     for await (const ev of streamChat(cfg, messages, toolDefs, signal)) {
       if (ev.type === "reasoning") {
+        reasonAccum += ev.delta;
         yield ev;
       } else if (ev.type === "text") {
         assistantText.push(ev.delta);
@@ -71,6 +73,9 @@ export async function* runTurn(
     if (lastUsage) recordUsage(sessionId, asstNode.id, lastUsage.prompt_tokens, lastUsage.completion_tokens);
 
     if (!calls.length) {
+      if (reasonAccum.trim()) {
+        appendMessage(sessionId, { parent_id: userNode.id, role: "think", content: reasonAccum, tokens: estTokens(reasonAccum) });
+      }
       yield { type: "done", reason: finish || "stop" };
       return;
     }

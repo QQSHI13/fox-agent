@@ -59,6 +59,7 @@ export function renderContext(
       continue;
     }
 
+    if (m.role === "think") continue;
     if (m.role === "user") {
       out.push({ role: "user", content: `${marker(m.seq)} ${n.content}` });
     } else if (m.role === "assistant") {

@@ -21,7 +21,7 @@ interface Ch {
 }
 interface Item {
   k: number;
-  kind: "user" | "tool" | "info" | "error" | "md";
+  kind: "user" | "tool" | "info" | "error" | "md" | "think";
   text: string;
 }
 
@@ -93,8 +93,10 @@ export async function startTui(state: HarnessState) {
   const [items, setItems] = createSignal<Item[]>([]);
   const [streamText, setStreamText] = createSignal<string | null>(null);
   const [reasonTail, setReasonTail] = createSignal("");
+  const [showThink, setShowThink] = createSignal(false);
   const [buf, setBuf] = createSignal<Ch[]>([]);
   const [busy, setBusy] = createSignal(false);
+  const [streamThink, setStreamThink] = createSignal<string | null>(null); // full live reasoning
   const [queuedCount, setQueuedCount] = createSignal(0);
   const [flash, setFlash] = createSignal("");
   const [hintSel, setHintSel] = createSignal(0);
@@ -149,6 +151,11 @@ export async function startTui(state: HarnessState) {
     return out;
   }
 
+  function oneLine(s2: string, n = 150): string {
+    const t = s2.replace(/\n/g, " ");
+    return t.length > n ? t.slice(0, n) + "…" : t;
+  }
+
   function statusText(): string {
     try {
       const u = sessionUsage(state.sessionId);
@@ -169,6 +176,7 @@ export async function startTui(state: HarnessState) {
     for (const n of nodes.slice(-300)) {
       if (n.msg.role === "user") out.push({ k: nk(), kind: "user", text: `[m${n.msg.seq}] you  ${n.content}` });
       else if (n.msg.role === "tool") out.push({ k: nk(), kind: "tool", text: `[m${n.msg.seq}] tool ${n.content}` });
+      else if (n.msg.role === "think") out.push({ k: nk(), kind: "think", text: n.content });
       else out.push({ k: nk(), kind: "md", text: n.content || "" });
     }
     return out;
@@ -233,7 +241,8 @@ export async function startTui(state: HarnessState) {
     try {
       for await (const ev of runTurn(state.sessionId, state.provider, raw, ac.signal)) {
         if (ev.type === "reasoning") {
-          setReasonTail(ev.delta.slice(-400));
+          setStreamThink((p) => ((p ?? "") + ev.delta).slice(-8000));
+          setReasonTail((p) => ((p ?? "") + ev.delta).slice(-400));
         } else if (ev.type === "text") {
           md += ev.delta;
           setStreamText(md);
@@ -254,7 +263,10 @@ export async function startTui(state: HarnessState) {
       const msg = (e as Error).message ?? "";
       push("error", ac?.signal.aborted ? "[interrupted]" : `foxc error: ${msg}`);
     } finally {
+      const full = streamThink();
       if (md) push("md", md);
+      if (full && full.trim()) push("think", full);
+      setStreamThink(null);
       setStreamText(null);
       setReasonTail("");
       setBusy(false);
@@ -296,8 +308,7 @@ export async function startTui(state: HarnessState) {
       const exact = COMMANDS.find((c) => c.name === t);
       if (!exact) {
         const matches = COMMANDS.filter((c) => c.name.startsWith(t));
-        const visible = matches.slice(0, 5);
-        const target = visible[Math.min(hintSel(), visible.length - 1)] ?? matches[0];
+        const target = matches[Math.min(hintSel(), matches.length - 1)] ?? matches[0];
         if (target) {
           if (ARG_COMMANDS.has(target.name)) {
             // finish the command and add a space for its args
@@ -343,6 +354,10 @@ export async function startTui(state: HarnessState) {
         gracefulExit(0);
       }
       if (key.ctrl && key.name === "d") gracefulExit(0);
+      if (key.ctrl && key.name === "t") {
+        setShowThink((v) => !v);
+        return;
+      }
 
       if (key.name === "escape") {
         if (busy()) {
@@ -388,7 +403,7 @@ export async function startTui(state: HarnessState) {
       if (key.name === "up" || key.name === "down") {
         const d = display();
         if (!firstCharLit() && d.startsWith("/") && !d.includes(" ")) {
-          const n = COMMANDS.filter((c) => c.name.startsWith(d)).slice(0, 5).length;
+          const n = COMMANDS.filter((c) => c.name.startsWith(d)).length;
           if (n > 1) {
             setHintSel((i) => Math.max(0, Math.min(n - 1, i + (key.name === "up" ? -1 : 1))));
           }
@@ -402,7 +417,7 @@ export async function startTui(state: HarnessState) {
         return;
       }
       if (key.name === "tab" && !firstCharLit() && display().startsWith("/") && !display().includes(" ")) {
-        const all = COMMANDS.filter((c) => c.name.startsWith(display())).slice(0, 5);
+        const all = COMMANDS.filter((c) => c.name.startsWith(display()));
         if (all.length) {
           const target = all[Math.min(hintSel(), all.length - 1)];
           chs_set(target.name);
@@ -454,6 +469,13 @@ export async function startTui(state: HarnessState) {
             children: (it: Item) =>
               it.kind === "md" ? (
                 <markdown content={it.text} syntaxStyle={undefined as any} style={{ marginBottom: 1 }} />
+              ) : it.kind === "think" ? (
+                <Show when={showThink()} fallback={<text fg={C.chrome}>thinking ▸ (ctrl+t) {oneLine(it.text.slice(-90))}</text>}>
+                  <For each={wrap(`[thinking]
+${it.text}`, width() - 2)}>
+                    {(line: string) => <text fg={C.chrome}>{line}</text>}
+                  </For>
+                </Show>
               ) : (
                 <For each={wrap(it.text, width())}>
                   {(line: string) => (
@@ -462,8 +484,12 @@ export async function startTui(state: HarnessState) {
                 </For>
               ),
           } as any)}
-          <Show when={reasonTail()}>
-            <text fg={C.chrome}>… {reasonTail().slice(-120)}</text>
+          <Show when={streamThink()}>
+            <Show when={showThink()} fallback={<text fg={C.chrome}>… thinking (ctrl+t unfolds) {(streamThink() ?? "").slice(-100).replace(/\n/g, " ")}</text>}>
+              <For each={wrap(streamThink() ?? "", width() - 2)}>
+                {(line: string) => <text fg={C.chrome}>{line}</text>}
+              </For>
+            </Show>
           </Show>
           <Show when={streamText() !== null}>
             <markdown content={streamText()!} syntaxStyle={undefined as any} style={{ marginBottom: 1 }} />
@@ -496,12 +522,21 @@ export async function startTui(state: HarnessState) {
     fg: string;
   }
 
-  const hintRowsSig = () => {
+  const HINT_WINDOW = 5;
+  const hintMatches = (): typeof COMMANDS => {
     const d = buf().map((c) => c.c).join("");
     if (firstCharLit() || !d.startsWith("/") || d.includes(" ")) return [];
-    return COMMANDS.filter((c) => c.name.startsWith(d))
-      .slice(0, 5)
-      .map((c, i) => ({ k: nk(), text: `${c.name.padEnd(12)} ${c.desc}`, fg: i === hintSel() ? C.hintSel : C.hint }));
+    return COMMANDS.filter((c) => c.name.startsWith(d));
+  };
+  // sliding window over the FULL match list; window follows hintSel
+  const hintRowsSig = (): Row[] => {
+    const matches = hintMatches();
+    if (!matches.length) return [];
+    const sel = Math.max(0, Math.min(matches.length - 1, hintSel()));
+    const start = Math.max(0, Math.min(sel - HINT_WINDOW + 1, matches.length - HINT_WINDOW));
+    return matches
+      .slice(start, start + HINT_WINDOW)
+      .map((c, i) => ({ k: nk(), text: `${(start + i + 1).toString().padStart(2)}/${matches.length} ${c.name.padEnd(11)} ${c.desc}`, fg: start + i === sel ? C.hintSel : C.hint }));
   };
 
   function dockHeight(): number {

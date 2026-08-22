@@ -3,7 +3,7 @@ import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-export type Role = "system" | "user" | "assistant" | "tool";
+export type Role = "system" | "user" | "assistant" | "tool" | "think";
 
 export interface SessionRow {
   id: string;
