@@ -7,11 +7,16 @@
     "foxc": "./src/cli.ts"
   },
   "scripts": {
-    "typecheck": "tsc --noEmit",
-    "test": "bun test",
-    "dev": "bun run src/cli.ts"
+    "dev": "bun run --conditions=browser src/cli.ts",
+    "build": "bun build --compile --conditions=browser src/cli.ts --outfile bin/foxc",
+    "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
     "bun-types": "^1.4.0"
+  },
+  "dependencies": {
+    "@opentui/core": "^0.5.6",
+    "@opentui/solid": "^0.5.6",
+    "solid-js": "^1.9.15"
   }
 }
