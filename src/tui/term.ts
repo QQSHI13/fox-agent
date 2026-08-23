@@ -57,12 +57,26 @@ function ttySize(): { width: number; height: number } | null {
   return null;
 }
 
+/**
+ * Reconcile independent size reports: if sources disagree (zoom, WSL relay
+ * quirks), trust the SMALLER — laying out too wide causes terminal-side
+ * wrapping that shreds the absolute-positioned grid; too narrow is benign.
+ */
+function safeSize(): { width: number; height: number } | null {
+  const primary = ttySize();
+  const altCols = (process.stdout as any).columns ?? 0;
+  const altRows = (process.stdout as any).rows ?? 0;
+  if (!primary) return altCols ? { width: altCols, height: altRows } : null;
+  if (altCols > 0 && altCols < primary.width) return { width: altCols, height: Math.min(primary.height, altRows || primary.height) };
+  return primary;
+}
+
 export function openTerm(): Term {
   const out = Bun.stdout.writer({ highWaterMark: 1 << 16 });
   const stdin = process.stdin;
   const wasRaw = stdin.isRaw ?? false;
 
-  let cached = ttySize() ?? { width: 80, height: 24 };
+  let cached = safeSize() ?? { width: 80, height: 24 };
 
   return {
     write(s: string) {
@@ -74,7 +88,7 @@ export function openTerm(): Term {
       } catch {}
     },
     size() {
-      const fresh = ttySize();
+      const fresh = safeSize();
       if (fresh) cached = fresh;
       return cached;
     },
@@ -91,7 +105,7 @@ export function openTerm(): Term {
     },
     onResize(cb) {
       const handler = () => {
-        const s = ttySize();
+        const s = safeSize();
         if (s) {
           cached = s;
           cb(s.width, s.height);
@@ -106,11 +120,13 @@ export function openTerm(): Term {
       stdin.on("data", (chunk: Uint8Array) => cb(chunk));
     },
     begin() {
-      // alt screen, hide cursor, bracketed paste, mouse press + SGR encoding
-      out.write("\x1b[?1049h\x1b[2J\x1b[H\x1b[?25l\x1b[?2004h\x1b[?1000h\x1b[?1006h");
+      // alt screen, hide cursor, bracketed paste, mouse press + SGR encoding,
+      // and NO autowrap: the renderer owns an exact grid — a row that
+      // overflows must clip, not wrap (wrapping shreds absolute positioning)
+      out.write("\x1b[?1049h\x1b[2J\x1b[H\x1b[?25l\x1b[?2004h\x1b[?1000h\x1b[?1006h\x1b[?7l");
     },
     end() {
-      out.write("\x1b[?1006l\x1b[?1000l\x1b[?2004l\x1b[?25h\x1b[?1049l");
+      out.write("\x1b[?7h\x1b[?1006l\x1b[?1000l\x1b[?2004l\x1b[?25h\x1b[?1049l");
       try {
         stdin.setRawMode(wasRaw);
       } catch {}

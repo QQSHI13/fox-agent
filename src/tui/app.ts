@@ -10,6 +10,7 @@ import { charWidth } from "./screen.ts";
 import { runTurn, VERSION } from "../loop/agent.ts";
 import { projectView } from "../context/view.ts";
 import { viewTokenEstimate } from "../context/render.ts";
+import { lookupModel } from "../providers/models.ts";
 import { getSession, sessionUsage } from "../store/db.ts";
 import { runSlashCommand, COMMANDS, type HarnessState } from "../commands.ts";
 
@@ -97,6 +98,10 @@ export async function startTui(state: HarnessState) {
   let ac: AbortController | null = null;
   const queued: { raw: string; lit: boolean }[] = [];
   const expandedRefs = new Set<number>(); // think nodes expanded across refreshes
+  // provider-reported usage for the CURRENT turn's last step (real numbers,
+  // not estimates) + chars streamed since, for a live completion figure
+  let lastPromptTokens = 0;
+  let streamCharsSinceUsage = 0;
 
   const revs = new Map<number, number>();
   const touch = (k: number) => revs.set(k, (revs.get(k) ?? 0) + 1);
@@ -205,12 +210,19 @@ export async function startTui(state: HarnessState) {
     try {
       for await (const ev of runTurn(state.sessionId, state.provider, raw, ac.signal)) {
         if (ev.type === "reasoning") {
+          streamCharsSinceUsage += ev.delta.length;
           appendToLastThink(ev.delta);
-        } else if (ev.type === "text") {          md += ev.delta;
+        } else if (ev.type === "text") {
+          streamCharsSinceUsage += ev.delta.length;
+          md += ev.delta;
           if (streamText !== md) {
             streamText = md;
             markDirty();
           }
+        } else if (ev.type === "usage") {
+          lastPromptTokens = ev.prompt_tokens; // provider-reported context size
+          streamCharsSinceUsage = 0;
+          statsRev++;
         } else if (ev.type === "tool_end") {
           if (md) {
             push("md", md);
@@ -736,13 +748,20 @@ export async function startTui(state: HarnessState) {
 
   function statusText(): string {
     try {
+      // provider metadata first: cumulative REAL tokens from the API, plus a
+      // chars/4 live figure for the in-flight step (reconciled per usage event)
       const u = sessionUsage(state.sessionId);
       const nodes = projectView(state.sessionId);
       const vis = nodes.filter((n) => !n.deleted).length;
+      const liveCompletionTok = Math.ceil(streamCharsSinceUsage / 4);
+      const outTok = u.completion + liveCompletionTok;
+      const ctxTok = Math.max(u.prompt, lastPromptTokens, viewTokenEstimate(nodes));
+      const info = lookupModel(state.provider.model);
+      const ctxPct = Math.min(100, Math.round((ctxTok / info.contextWindow) * 100));
       const home = process.env.HOME ?? "";
       const cwdShort = home && state.cwd.startsWith(home) ? "~" + state.cwd.slice(home.length) : state.cwd;
       const q = queued.length ? ` · ⏸ ${queued.length}` : "";
-      return `${cwdShort} · ${vis}/${nodes.length} nodes · ~${viewTokenEstimate(nodes)} tok · ${state.provider.model}${q}`;
+      return `${cwdShort} · ${vis}/${nodes.length} nodes · ↑${u.prompt} ↓${outTok} tok · ctx ~${ctxPct}%${q}`;
     } catch {
       return state.cwd;
     }
