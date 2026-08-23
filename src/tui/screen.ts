@@ -135,10 +135,18 @@ export class Screen {
       let runSgr = "";
       let line = "";
       let painted = 0;
+      let physX = 0; // terminal cursor column within this row (cells can be sparse!)
       const base = y * this.w;
       for (let x = 0; x < this.w; x++) {
         const ch = this.chars[base + x];
         if (ch === undefined || ch === "") continue;
+        // gap since last write -> the cursor is NOT where we need it; without
+        // an explicit move, styled stragglers (scrollbar thumb) land right
+        // after the previous glyph instead of their real column
+        if (x !== physX) {
+          line += `\x1b[${y + 1};${x + 1}H`;
+          physX = x;
+        }
         const s = this.styles[this.sty[base + x]] ?? {};
         const sgr = sgrOf(s);
         if (sgr !== runSgr) {
@@ -146,7 +154,9 @@ export class Screen {
           runSgr = sgr;
         }
         line += ch;
-        painted += Math.max(1, charWidth(ch.codePointAt(0)!));
+        const cw = Math.max(1, charWidth(ch.codePointAt(0)!));
+        physX += cw;
+        painted += cw;
       }
       out += line;
       if (runSgr) out += "\x1b[0m";

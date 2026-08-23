@@ -1,0 +1,54 @@
+import { describe, expect, test } from "bun:test";
+
+// Fake term capturing writes so we can assert on escape output.
+class FakeTerm {
+  buf = "";
+  write(s: string) {
+    this.buf += s;
+  }
+  flush() {}
+}
+
+describe("Screen.flush sparse-cell correctness", () => {
+  test("styled cell after a gap is positioned explicitly, not at pen position", async () => {
+    const { Screen } = await import("../src/tui/screen.ts");
+    const term = new FakeTerm();
+    const scr = new Screen(term as any);
+    scr.resize(20, 3);
+
+    const base = scr.sgr({ fg: "#ffffff" });
+    const thumb = scr.sgr({ bg: "#6e7681" });
+
+    // row 0: text at cols 1..5, gap cols 6..17, thumb space at col 18
+    scr.text(1, 0, "hello", base);
+    scr.fillRow(0, 18, 19, thumb);
+    scr.flush();
+
+    // the thumb cell must be preceded by an explicit CUP to col 19 (1-based)
+    expect(term.buf).toContain("\x1b[1;19H");
+    // and it must appear AFTER the text run, not immediately after "hello"
+    const afterText = term.buf.split("hello")[1] ?? "";
+    expect(afterText).toContain("\x1b[1;19H");
+
+    // row with ONLY a styled gap cell (empty transcript row + thumb)
+    term.buf = "";
+    scr.clear();
+    scr.fillRow(1, 18, 19, thumb);
+    scr.flush();
+    // first real write on that line must be preceded by positioning to col 19
+    const row1 = term.buf.split("\x1b[2;1H")[1] ?? "";
+    expect(row1.indexOf("\x1b[2;19H")).toBeGreaterThanOrEqual(0);
+  });
+
+  test("contiguous rows emit no extra repositioning", async () => {
+    const { Screen } = await import("../src/tui/screen.ts");
+    const term = new FakeTerm();
+    const scr = new Screen(term as any);
+    scr.resize(10, 2);
+    const base = scr.sgr({ fg: "#ffffff" });
+    scr.text(0, 0, "abcdefghi", base); // 9 of 10 cols -> K emitted, no gaps
+    scr.flush();
+    // exactly one CUP for the row (the initial one) — no mid-row resyncs
+    expect(term.buf.match(/\x1b\[1;\d+H/g)).toHaveLength(1);
+  });
+});
