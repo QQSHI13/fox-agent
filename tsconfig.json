@@ -7,9 +7,7 @@
     "strict": true,
     "skipLibCheck": true,
     "noEmit": true,
-    "allowImportingTsExtensions": true,
-    "jsx": "react-jsx",
-    "jsxImportSource": "@opentui/solid"
+    "allowImportingTsExtensions": true
   },
   "include": ["src"]
 }

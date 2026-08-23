@@ -2,6 +2,7 @@ import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { estimateTokens } from "../providers/models.ts";
 
 export type Role = "system" | "user" | "assistant" | "tool" | "think";
 
@@ -30,72 +31,101 @@ export interface MessageRow {
 export interface OpRow {
   seq: number;
   session_id: string;
-  kind: "delete" | "replace";
+  kind: "delete" | "replace" | "restore";
   payload: string; // JSON
   created_at: number;
 }
 
+// ---- view ops (context surgery) ----
+
+export interface DeleteOp {
+  kind: "delete";
+  ids: number[]; // message seqs
+  summary?: string;
+}
+export interface ReplaceOp {
+  kind: "replace";
+  id: number; // message seq
+  content: string;
+}
+/** Host-only op appended by /undo — restores nodes hidden by a delete. */
+export interface RestoreOp {
+  kind: "restore";
+  ids: number[];
+}
+export type ViewOp = DeleteOp | ReplaceOp | RestoreOp;
+
 let _db: Database | null = null;
+
+const SCHEMA = `
+  CREATE TABLE IF NOT EXISTS sessions (
+    id TEXT PRIMARY KEY,
+    cwd TEXT NOT NULL,
+    model TEXT NOT NULL,
+    title TEXT,
+    created_at INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS messages (
+    id TEXT PRIMARY KEY,
+    seq INTEGER NOT NULL,
+    session_id TEXT NOT NULL REFERENCES sessions(id),
+    parent_id TEXT,
+    role TEXT NOT NULL,
+    content TEXT NOT NULL DEFAULT '',
+    tool_calls TEXT,
+    tool_call_id TEXT,
+    tokens INTEGER NOT NULL DEFAULT 0,
+    error TEXT,
+    created_at INTEGER NOT NULL
+  );
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_seq ON messages(session_id, seq);
+  CREATE INDEX IF NOT EXISTS idx_messages_parent ON messages(session_id, parent_id);
+  CREATE TABLE IF NOT EXISTS refs (
+    session_id TEXT NOT NULL REFERENCES sessions(id),
+    name TEXT NOT NULL,
+    message_id TEXT,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (session_id, name)
+  );
+  CREATE TABLE IF NOT EXISTS ops (
+    seq INTEGER NOT NULL,
+    session_id TEXT NOT NULL REFERENCES sessions(id),
+    kind TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  );
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_ops_seq ON ops(session_id, seq);
+  CREATE TABLE IF NOT EXISTS usage (
+    session_id TEXT NOT NULL,
+    message_id TEXT,
+    prompt_tokens INTEGER NOT NULL,
+    completion_tokens INTEGER NOT NULL,
+    created_at INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS kv (
+    session_id TEXT NOT NULL REFERENCES sessions(id),
+    key TEXT NOT NULL,
+    value TEXT NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (session_id, key)
+  );
+`;
 
 export function db(): Database {
   if (_db) return _db;
-  const dir = process.env.FOXC_HOME ?? join(homedir(), ".local", "share", "foxc");
-  mkdirSync(dir, { recursive: true });
+  const dir = process.env.FOX_HOME ?? join(homedir(), ".local", "share", "fox");
+  mkdirSync(join(dir, "pty"), { recursive: true });
   const d = new Database(join(dir, "sessions.db"));
   d.exec("PRAGMA journal_mode = WAL;");
   d.exec("PRAGMA foreign_keys = ON;");
-  d.exec(`
-    CREATE TABLE IF NOT EXISTS sessions (
-      id TEXT PRIMARY KEY,
-      cwd TEXT NOT NULL,
-      model TEXT NOT NULL,
-      title TEXT,
-      created_at INTEGER NOT NULL
-    );
-    CREATE TABLE IF NOT EXISTS messages (
-      id TEXT PRIMARY KEY,
-      seq INTEGER NOT NULL,
-      session_id TEXT NOT NULL REFERENCES sessions(id),
-      parent_id TEXT,
-      role TEXT NOT NULL,
-      content TEXT NOT NULL DEFAULT '',
-      tool_calls TEXT,
-      tool_call_id TEXT,
-      tokens INTEGER NOT NULL DEFAULT 0,
-      error TEXT,
-      created_at INTEGER NOT NULL
-    );
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_seq ON messages(session_id, seq);
-    CREATE INDEX IF NOT EXISTS idx_messages_parent ON messages(session_id, parent_id);
-    CREATE TABLE IF NOT EXISTS refs (
-      session_id TEXT NOT NULL REFERENCES sessions(id),
-      name TEXT NOT NULL,
-      message_id TEXT,
-      updated_at INTEGER NOT NULL,
-      PRIMARY KEY (session_id, name)
-    );
-    CREATE TABLE IF NOT EXISTS ops (
-      seq INTEGER NOT NULL,
-      session_id TEXT NOT NULL REFERENCES sessions(id),
-      kind TEXT NOT NULL,
-      payload TEXT NOT NULL,
-      created_at INTEGER NOT NULL
-    );
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_ops_seq ON ops(session_id, seq);
-    CREATE TABLE IF NOT EXISTS usage (
-      session_id TEXT NOT NULL,
-      message_id TEXT,
-      prompt_tokens INTEGER NOT NULL,
-      completion_tokens INTEGER NOT NULL,
-      created_at INTEGER NOT NULL
-    );
-  `);
+  d.exec(SCHEMA);
+  d.exec(`PRAGMA user_version = 2;`);
   _db = d;
   return d;
 }
 
 export function estTokens(s: string): number {
-  return Math.ceil((s?.length ?? 0) / 4);
+  return estimateTokens(s);
 }
 
 function rid(): string {
@@ -128,6 +158,37 @@ export function setRefTitle(sessionId: string, title: string) {
   db().prepare("UPDATE sessions SET title = ? WHERE id = ?").run(title.slice(0, 80), sessionId);
 }
 
+/**
+ * Copy a session's messages (optionally up to `uptoSeq` inclusive) into a new
+ * session. Ops referencing copied messages carry over; ones past the cut are
+ * harmless no-ops during projection.
+ */
+export function forkSession(sourceId: string, uptoSeq?: number): SessionRow | null {
+  const src = getSession(sourceId);
+  if (!src) return null;
+  const fork = createSession(src.cwd, src.model);
+  const cap = uptoSeq ?? Number.MAX_SAFE_INTEGER;
+  db()
+    .prepare(
+      `INSERT INTO messages (id, seq, session_id, parent_id, role, content, tool_calls, tool_call_id, tokens, error, created_at)
+       SELECT id || '_f', seq, ?, parent_id, role, content, tool_calls, tool_call_id, tokens, error, created_at
+       FROM messages WHERE session_id = ? AND seq <= ? ORDER BY seq`,
+    )
+    .run(fork.id, sourceId, cap);
+  const first = db()
+    .prepare("SELECT id FROM messages WHERE session_id = ? ORDER BY seq LIMIT 1")
+    .get(fork.id) as { id: string } | undefined;
+  if (first) advanceMain(fork.id, first.id);
+  db()
+    .prepare(
+      `INSERT OR IGNORE INTO ops (seq, session_id, kind, payload, created_at)
+       SELECT seq, ?, kind, payload, created_at FROM ops WHERE session_id = ?`,
+    )
+    .run(fork.id, sourceId);
+  setRefTitle(fork.id, `fork of ${src.title ?? src.id}`);
+  return fork;
+}
+
 export function appendMessage(
   sessionId: string,
   msg: Partial<Pick<MessageRow, "id" | "parent_id" | "tool_calls" | "tool_call_id" | "error">> & {
@@ -154,6 +215,11 @@ export function appendMessage(
   d.prepare(
     "INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
   ).run(m.id, m.seq, m.session_id, m.parent_id, m.role, m.content, m.tool_calls, m.tool_call_id, m.tokens, m.error, m.created_at);
+
+  if (m.role === "user") {
+    const s = getSession(sessionId)!;
+    if (!s?.title) setRefTitle(sessionId, m.content.replace(/\s+/g, " ").slice(0, 60));
+  }
   advanceMain(sessionId, m.id);
   return m;
 }
@@ -175,43 +241,60 @@ export function getRef(sessionId: string, name = "main"): string | null {
   return r?.message_id ?? null;
 }
 
-// ---- view ops (context surgery) ----
-
-export interface DeleteOp {
-  kind: "delete";
-  ids: number[]; // seq numbers
-  summary?: string;
-}
-export interface ReplaceOp {
-  kind: "replace";
-  id: number; // seq
-  content: string;
-}
-export type ViewOp = DeleteOp | ReplaceOp;
-
 export function appendOps(sessionId: string, ops: ViewOp[]): void {
   const d = db();
   const row = d.query("SELECT COALESCE(MAX(seq),0)+1 AS n FROM ops WHERE session_id = ?").get(sessionId) as { n: number };
   let seq = row.n;
   const ins = d.prepare("INSERT INTO ops VALUES (?, ?, ?, ?, ?)");
-  for (const op of ops) {
-    ins.run(seq++, sessionId, op.kind, JSON.stringify(op), Date.now());
+  for (const op of ops) ins.run(seq++, sessionId, op.kind, JSON.stringify(op), Date.now());
+}
+
+export function allOps(sessionId: string): OpRow[] {
+  return db().prepare("SELECT * FROM ops WHERE session_id = ? ORDER BY seq").all(sessionId) as OpRow[];
+}
+
+/**
+ * Undo without rewriting history: appends the inverse of the newest op
+ * (delete -> restore, replace -> replace with original content). The log
+ * stays INSERT-only; projection replays the compensation.
+ */
+export function undoLastOp(sessionId: string): string | null {
+  const last = db().query("SELECT * FROM ops WHERE session_id = ? ORDER BY seq DESC LIMIT 1").get(sessionId) as OpRow | undefined;
+  if (!last) return null;
+  const op = JSON.parse(last.payload) as ViewOp;
+  if (op.kind === "delete") {
+    appendOps(sessionId, [{ kind: "restore", ids: [...op.ids] }]);
+    return `restored ${op.ids.length} node(s)`;
+  }
+  if (op.kind === "restore") {
+    appendOps(sessionId, [{ kind: "delete", ids: [...op.ids] }]);
+    return `re-hid ${op.ids.length} node(s)`;
+  }
+  const orig = getMessage(sessionId, op.id);
+  if (!orig) return null;
+  appendOps(sessionId, [{ kind: "replace", id: op.id, content: orig.content }]);
+  return `restored original content of m${op.id}`;
+}
+
+// ---- session-scoped key/value (todos, task lineage, ...) ----
+
+export function kvSet(sessionId: string, key: string, value: unknown): void {
+  db()
+    .prepare("INSERT INTO kv VALUES (?, ?, ?, ?) ON CONFLICT(session_id, key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at")
+    .run(sessionId, key, JSON.stringify(value), Date.now());
+}
+
+export function kvGet<T>(sessionId: string, key: string): T | null {
+  const r = db().prepare("SELECT value FROM kv WHERE session_id = ? AND key = ?").get(sessionId, key) as { value: string } | undefined;
+  if (!r) return null;
+  try {
+    return JSON.parse(r.value) as T;
+  } catch {
+    return null;
   }
 }
 
-export function allOps(sessionId: string): ViewOp[] {
-  return (db().prepare("SELECT * FROM ops WHERE session_id = ? ORDER BY seq").all(sessionId) as OpRow[]).map(
-    (r) => JSON.parse(r.payload) as ViewOp,
-  );
-}
-
-export function undoLastOp(sessionId: string): boolean {
-  const d = db();
-  const last = d.query("SELECT MAX(seq) AS s FROM ops WHERE session_id = ?").get(sessionId) as { s: number | null };
-  if (!last.s) return false;
-  d.prepare("DELETE FROM ops WHERE session_id = ? AND seq = ?").run(sessionId, last.s);
-  return true;
-}
+// ---- usage ----
 
 export function recordUsage(sessionId: string, messageId: string | null, promptTokens: number, completionTokens: number) {
   db().prepare("INSERT INTO usage VALUES (?, ?, ?, ?, ?)").run(sessionId, messageId, promptTokens, completionTokens, Date.now());

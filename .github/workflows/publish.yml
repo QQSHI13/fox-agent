@@ -23,7 +23,8 @@ jobs:
           node-version: 24
           registry-url: https://registry.npmjs.org
       - run: bun install
-      - run: bun test || true
+      - run: bun run typecheck
+      - run: bun test
       - run: npm publish --provenance --access public
         env:
           # npm >= 11.5.1 reads the OIDC token from the Actions identity;
