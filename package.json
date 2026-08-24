@@ -1,34 +1,38 @@
 {
   "name": "fox-agent",
-  "version": "0.1.0",
-  "description": "foxc - a light coding harness with agent-controlled context",
+  "version": "0.2.0",
+  "description": "fox - a light coding harness with agent-controlled context",
   "type": "module",
   "bin": {
     "fox": "./src/cli.ts"
   },
+  "exports": {
+    ".": "./src/sdk.ts"
+  },
   "scripts": {
-    "dev": "bun --preload @opentui/solid/preload src/cli.ts",
-    "build": "bun run scripts/build.ts",
+    "dev": "bun src/cli.ts",
+    "build": "bun run build.ts",
+    "test": "bun test",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
     "bun-types": "^1.4.0"
   },
   "dependencies": {
-    "@opentui/core": "^0.5.6",
-    "@opentui/solid": "^0.5.6",
-    "clipboardy": "^5.3.2",
-    "solid-js": "^1.9.15"
+    "@ai-sdk/anthropic": "^4.0.41",
+    "@ai-sdk/openai-compatible": "^3.0.35",
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "ai": "^7.0.77"
   },
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/QQSHI13/foxc.git"
+    "url": "git+https://github.com/QQSHI13/fox-agent.git"
   },
   "bugs": {
-    "url": "https://github.com/QQSHI13/foxc/issues"
+    "url": "https://github.com/QQSHI13/fox-agent/issues"
   },
-  "homepage": "https://github.com/QQSHI13/foxc#readme",
+  "homepage": "https://github.com/QQSHI13/fox-agent#readme",
   "keywords": [
     "ai",
     "coding-agent",
@@ -41,10 +45,8 @@
     "bun": ">=1.4.0"
   },
   "files": [
-    "dist/cli.js",
     "src",
-    "scripts",
-    "bin/libopentui.so",
+    "build.ts",
     "README.md",
     "LICENSE"
   ]

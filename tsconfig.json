@@ -8,8 +8,7 @@
     "skipLibCheck": true,
     "noEmit": true,
     "allowImportingTsExtensions": true,
-    "jsx": "react-jsx",
-    "jsxImportSource": "@opentui/solid"
+    "resolveJsonModule": true
   },
-  "include": ["src"]
+  "include": ["src", "test", "build.ts"]
 }
