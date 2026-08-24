@@ -1,7 +1,7 @@
 import { appendMessage, getSession, recordUsage } from "../store/db.ts";
 import type { ProviderConfig, ChatMessage, ToolDef, ToolCall, ChatFn } from "../providers/types.ts";
 import { resolveChat } from "../providers/index.ts";
-import { classifyProviderError, FoxError } from "../core/errors.ts";
+import { classifyProviderError, FoxError, isTimeout } from "../core/errors.ts";
 import type { AgentEvent } from "../core/events.ts";
 import type { Tool, ToolContext, PtyState } from "../tools/types.ts";
 import { OUT_CAP } from "../tools/files.ts";
@@ -72,8 +72,12 @@ async function* drainStep(
       return acc;
     } catch (e) {
       const err = e as Error;
-      // keep whatever streamed before the interrupt; caller persists it
-      if (err.name === "AbortError" || signal?.aborted) return { ...acc, finish: "aborted" };
+      // ORDER MATTERS: an idle timeout is not a user interrupt. It must fall
+      // through to the retry path below, so test it before the abort checks.
+      if (!isTimeout(e)) {
+        // keep whatever streamed before the interrupt; caller persists it
+        if (err.name === "AbortError" || signal?.aborted) return { ...acc, finish: "aborted" };
+      }
       const pe = classifyProviderError(e);
       const emitted = acc.text.length > 0 || acc.calls.length > 0;
       if (!pe.retriable || n >= retryLimit || emitted) {
@@ -133,6 +137,7 @@ function fallbackConfig(cfg: ProviderConfig, opts: TurnOptions): Config {
     maxSteps: opts.maxSteps ?? 40,
     retryLimit: opts.retryLimit ?? 3,
     compactAt: opts.compactAt ?? 0.85,
+    requestTimeoutMs: cfg.requestTimeoutMs ?? 120_000,
     mcpServers: {},
     projectInstructions: "",
   };
@@ -217,9 +222,17 @@ export async function* runTurnCore(
     try {
       outcome = yield* drainStep(chat, cfg, messages, toolDefs, signal, opts.retryLimit ?? 3);
     } catch (e) {
-      const msg = classifyProviderError(e).message;
-      appendMessage(sessionId, { parent_id: null, role: "system", content: `fox: provider error: ${msg}`, tokens: 24, error: msg });
-      yield { type: "done", reason: `error ${msg}` };
+      const pe = classifyProviderError(e);
+      // the transcript gets the short line; the full text/stack goes to
+      // messages.error so a bug is still recoverable from the session
+      appendMessage(sessionId, {
+        parent_id: null,
+        role: "system",
+        content: `fox: provider error: ${pe.message}`,
+        tokens: 24,
+        error: pe.detail ?? pe.message,
+      });
+      yield { type: "done", reason: `error ${pe.message}` };
       return;
     }
 

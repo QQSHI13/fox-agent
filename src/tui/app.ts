@@ -203,9 +203,12 @@ export async function startTui(state: HarnessState) {
       push("info", `${merged}\nexit ${code}`);
     } catch (e) {
       push("error", `✗ shell error: ${(e as Error).message}`);
+    } finally {
+      // must be in a finally: a throw before this left busy=true forever, so
+      // the spinner span and every later submit queued instead of running
+      setBusy(false);
+      drainQueue();
     }
-    setBusy(false);
-    drainQueue();
   }
 
   function runSlash(t: string) {
@@ -1023,6 +1026,16 @@ export async function startTui(state: HarnessState) {
       term.begin();
       term.onResize(doResize);
       doResize(term.size().width, term.size().height);
+
+      // Last-resort net: a floating promise that rejects must never leave the
+      // spinner running forever with no way to submit. console.error would
+      // corrupt the grid, so surface it as a transcript item instead.
+      process.on("unhandledRejection", (reason) => {
+        const msg = reason instanceof Error ? reason.message : String(reason);
+        push("error", `✗ internal error: ${msg.replace(/\s+/g, " ").slice(0, 200)}`);
+        setBusy(false);
+        drainQueue();
+      });
 
       getSession(state.sessionId);
       refresh();

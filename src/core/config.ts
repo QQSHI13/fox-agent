@@ -18,6 +18,8 @@ export interface Config {
   retryLimit: number;
   /** fraction of the model context window that triggers auto-compaction */
   compactAt: number;
+  /** abort a provider request after this long with no streamed progress (0 = never) */
+  requestTimeoutMs: number;
   mcpServers: Record<string, McpServerConfig>;
   /** contents of AGENTS.md / CLAUDE.md found walking up from cwd ("" if none) */
   projectInstructions: string;
@@ -31,6 +33,7 @@ const DEFAULTS: Omit<Config, "projectInstructions"> = {
   maxSteps: 40,
   retryLimit: 3,
   compactAt: 0.85,
+  requestTimeoutMs: 120_000,
   mcpServers: {},
 };
 
@@ -76,6 +79,9 @@ function applyEnv(cfg: Config, env: Record<string, string | undefined>) {
   if (Number.isFinite(at) && at > 0 && at <= 1) cfg.compactAt = at;
   const retries = Number(env.FOX_RETRY_LIMIT);
   if (Number.isFinite(retries) && retries >= 0) cfg.retryLimit = Math.floor(retries);
+  // 0 is meaningful here (disable the timeout), so the guard is >= 0
+  const reqTimeout = Number(env.FOX_REQUEST_TIMEOUT_MS);
+  if (Number.isFinite(reqTimeout) && reqTimeout >= 0) cfg.requestTimeoutMs = Math.floor(reqTimeout);
 }
 
 function applyJson(cfg: Config, json: Record<string, unknown> | null) {
@@ -87,6 +93,7 @@ function applyJson(cfg: Config, json: Record<string, unknown> | null) {
   if (typeof json.maxSteps === "number" && json.maxSteps > 0) cfg.maxSteps = Math.floor(json.maxSteps);
   if (typeof json.retryLimit === "number" && json.retryLimit >= 0) cfg.retryLimit = Math.floor(json.retryLimit);
   if (typeof json.compactAt === "number" && json.compactAt > 0 && json.compactAt <= 1) cfg.compactAt = json.compactAt;
+  if (typeof json.requestTimeoutMs === "number" && json.requestTimeoutMs >= 0) cfg.requestTimeoutMs = Math.floor(json.requestTimeoutMs);
   if (json.mcpServers && typeof json.mcpServers === "object") {
     for (const [name, v] of Object.entries(json.mcpServers as Record<string, unknown>)) {
       const s = v as { command?: string; args?: string[]; env?: Record<string, string> };

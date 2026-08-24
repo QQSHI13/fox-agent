@@ -88,7 +88,13 @@ async function main() {
     process.exit(1);
   }
 
-  const provider = { baseUrl: config.baseUrl, apiKey: config.apiKey, model: config.model, provider: config.provider };
+  const provider = {
+    baseUrl: config.baseUrl,
+    apiKey: config.apiKey,
+    model: config.model,
+    provider: config.provider,
+    requestTimeoutMs: config.requestTimeoutMs,
+  };
   const cont = !!parsed.flags.get("continue");
   const printMode = parsed.flags.has("print") || (!process.stdin.isTTY && !process.stdout.isTTY);
 

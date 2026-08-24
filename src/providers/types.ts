@@ -29,6 +29,12 @@ export interface ProviderConfig {
   apiKey: string;
   model: string;
   provider?: "openai-compatible" | "anthropic";
+  /**
+   * Abort the request after this many ms with no streamed progress. The clock
+   * measures idle time, not total duration, so a long legitimate response is
+   * never cut off. Omitted or 0 disables it.
+   */
+  requestTimeoutMs?: number;
 }
 
 /**

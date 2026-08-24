@@ -5,6 +5,7 @@ import { streamText, jsonSchema, type ToolSet } from "ai";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import type { ChatMessage, ProviderConfig, StreamEvent, ToolDef } from "./types.ts";
 import { classifyProviderError } from "../core/errors.ts";
+import { startWatchdog } from "./watchdog.ts";
 import { toModelMessages } from "./convert.ts";
 
 const CACHE_OFF = process.env.FOX_ANTHROPIC_CACHE === "0";
@@ -21,6 +22,7 @@ export async function* streamChat(
   const toolSet: ToolSet = {};
   for (const t of tools) toolSet[t.name] = { description: t.description, inputSchema: jsonSchema(t.parameters as never) };
 
+  const wd = startWatchdog(cfg.requestTimeoutMs, signal);
   try {
     const sysText = messages
       .filter((m) => m.role === "system")
@@ -47,11 +49,12 @@ export async function* streamChat(
       ...(sysText ? { system: sysText } : {}),
       messages: rest,
       ...(tools.length ? { tools: toolSet } : {}),
-      abortSignal: signal,
+      abortSignal: wd.signal,
     });
 
     let finish = "";
     for await (const part of result.fullStream) {
+      wd.progress(); // any part counts as progress: rearm the idle clock
       switch (part.type) {
         case "text-delta":
           if (part.text) yield { type: "text", delta: part.text };
@@ -82,13 +85,28 @@ export async function* streamChat(
           break;
       }
     }
+    // An aborted stream does NOT throw — `fullStream` simply ends. Without
+    // these checks a timeout would look like a clean "stop" and the turn would
+    // report success on a provider that never answered.
+    if (wd.timedOut) throw wd.error();
+    if (signal?.aborted) {
+      const err = new Error("aborted");
+      err.name = "AbortError";
+      throw err;
+    }
     yield { type: "done", reason: finish || "stop" };
   } catch (e) {
+    // ORDER MATTERS: the watchdog aborts via the same combined signal, so
+    // `signal.aborted` is true for an idle timeout too. Checking abort first
+    // would report every timeout as a user interrupt and skip the retry.
+    if (wd.timedOut) throw wd.error();
     if (signal?.aborted) {
       const err = new Error("aborted");
       err.name = "AbortError";
       throw err;
     }
     throw classifyProviderError(e);
+  } finally {
+    wd.done();
   }
 }

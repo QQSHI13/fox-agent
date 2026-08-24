@@ -33,7 +33,12 @@ fox -c                                           # resume latest session here
 Cascade (later wins): defaults ← `~/.config/fox/config.json` ← project `.fox.json` ← env (`FOX_*`) ← CLI flags.
 Project instructions are loaded from `AGENTS.md` / `CLAUDE.md` walking up from cwd.
 
-Env vars: `FOX_MODEL`, `FOX_BASE_URL`, `FOX_API_KEY`, `FOX_PROVIDER`, `FOX_MAX_STEPS`, `FOX_COMPACT_AT`, `FOX_RETRY_LIMIT`, `FOX_HOME` (state dir, default `~/.local/share/fox`). `OPENAI_BASE_URL` / `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` are honored as fallbacks.
+Env vars: `FOX_MODEL`, `FOX_BASE_URL`, `FOX_API_KEY`, `FOX_PROVIDER`, `FOX_MAX_STEPS`, `FOX_COMPACT_AT`, `FOX_RETRY_LIMIT`, `FOX_REQUEST_TIMEOUT_MS`, `FOX_HOME` (state dir, default `~/.local/share/fox`). `OPENAI_BASE_URL` / `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` are honored as fallbacks.
+
+`FOX_REQUEST_TIMEOUT_MS` (default `120000`, `0` disables) bounds **time without progress**, not total
+request duration: the clock is rearmed on every streamed chunk, so a model that reasons or writes for
+ten minutes is fine, while one that goes quiet past the window fails with a retriable
+`provider timed out after Ns with no response`. Lower it if you are pointing fox at a flaky gateway.
 
 `.fox.json` example:
 
@@ -42,6 +47,7 @@ Env vars: `FOX_MODEL`, `FOX_BASE_URL`, `FOX_API_KEY`, `FOX_PROVIDER`, `FOX_MAX_S
   "model": "kimi-k2",
   "maxSteps": 40,
   "compactAt": 0.85,
+  "requestTimeoutMs": 120000,
   "mcpServers": {
     "fs": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-fs", "/tmp"] }
   }
