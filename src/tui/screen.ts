@@ -48,6 +48,7 @@ export class Screen {
   private styles: Style[] = [];
   private styleIdx = new Map<string, number>();
   private cursorRow = -1;
+  private _lastDirty = false;
   private lastSgr = "";
 
   constructor(private term: Term) {}
@@ -140,10 +141,13 @@ export class Screen {
       for (let x = 0; x < this.w; x++) {
         const ch = this.chars[base + x];
         if (ch === undefined || ch === "") continue;
-        // gap since last write -> the cursor is NOT where we need it; without
-        // an explicit move, styled stragglers (scrollbar thumb) land right
-        // after the previous glyph instead of their real column
+        // gap since last write -> two problems: (1) the cursor is NOT where
+        // we need it, and (2) the skipped cells still hold STALE content from
+        // earlier frames — the trailing \x1b[K only fires after the LAST cell
+        // (e.g. the scrollbar thumb at W-2) and erases nothing. Clear the gap
+        // now, while the cursor sits at the end of the previous content run.
         if (x !== physX) {
+          if (painted < this.w) line += "\x1b[K";
           line += `\x1b[${y + 1};${x + 1}H`;
           physX = x;
         }
@@ -162,8 +166,35 @@ export class Screen {
       if (runSgr) out += "\x1b[0m";
       if (painted < this.w) out += "\x1b[K";
     }
-    if (dirty) this.term.write(out);
+    if (dirty) {
+      this.term.write(out);
+      if (process.env.FOX_TRACE) {
+        try {
+          require("node:fs").appendFileSync(process.env.FOX_TRACE, out + "\x00FLUSH\x00");
+        } catch {}
+      }
+    }
+    this._lastDirty = dirty;
     return dirty;
+  }
+
+  /** debug: dump the internal grid (chars + style ids) as one JSON line */
+  dumpGrid(): string {
+    const rows: string[] = [];
+    for (let y = 0; y < this.h; y++) {
+      let row = "";
+      const base = y * this.w;
+      for (let x = 0; x < this.w; x++) {
+        const ch = this.chars[base + x];
+        row += ch === undefined || ch === "" ? "\x01" : ch === " " ? "␣" : ch;
+      }
+      rows.push(row);
+    }
+    return rows.join("\n");
+  }
+
+  lastDirty() {
+    return this._lastDirty;
   }
 
   forceRepaintAll() {

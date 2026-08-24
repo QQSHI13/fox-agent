@@ -51,4 +51,32 @@ describe("Screen.flush sparse-cell correctness", () => {
     // exactly one CUP for the row (the initial one) — no mid-row resyncs
     expect(term.buf.match(/\x1b\[1;\d+H/g)).toHaveLength(1);
   });
+
+  test("gap before a trailing styled cell is erased, not left stale", async () => {
+    const { Screen } = await import("../src/tui/screen.ts");
+    const term = new FakeTerm();
+    const scr = new Screen(term as any);
+    scr.resize(20, 2);
+    const base = scr.sgr({ fg: "#ffffff" });
+    const thumb = scr.sgr({ bg: "#6e7681" });
+
+    // frame 1: long text fills cols 1..15, thumb at col 18
+    scr.text(1, 0, "abcdefghijklmnop", base);
+    scr.fillRow(0, 18, 19, thumb);
+    scr.flush();
+
+    // frame 2: content shrinks to a short heading; same thumb.
+    // The K must fire right after the heading (clearing the old long text in
+    // the gap), NOT after the thumb where it erases nothing.
+    scr.clear();
+    scr.text(1, 0, "hi", base);
+    scr.fillRow(0, 18, 19, thumb);
+    term.buf = "";
+    scr.flush();
+    const row = term.buf.split("\x1b[1;1H")[1] ?? "";
+    const kPos = row.indexOf("\x1b[K");
+    const cupThumb = row.indexOf("\x1b[1;19H");
+    expect(kPos).toBeGreaterThan(-1);
+    expect(cupThumb).toBeGreaterThan(kPos); // gap cleared BEFORE jumping to thumb
+  });
 });

@@ -979,6 +979,11 @@ export async function startTui(state: HarnessState) {
         term.hideCursor();
         paint();
         screen.flush();
+        if (process.env.FOX_TRACE && screen.lastDirty()) {
+          try {
+            require("node:fs").appendFileSync(process.env.FOX_TRACE + ".grid", `⟦frame⟧\n${screen.dumpGrid()}\n`);
+          } catch {}
+        }
         term.flush();
         // the terminal's own caret is our input caret
         if (nextCaret) term.setCursor(nextCaret.x, nextCaret.y);
