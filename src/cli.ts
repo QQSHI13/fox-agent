@@ -171,6 +171,13 @@ function emitHuman(ev: import("./core/events.ts").AgentEvent) {
     case "warn":
       console.error(`\nfox: ${ev.message}`);
       break;
+    case "done":
+      // headless mode must not exit 0 on a provider/turn failure
+      if (ev.reason.startsWith("error") || ev.reason === "aborted") {
+        console.error(`\nfox: turn ended: ${ev.reason}`);
+        process.exitCode = 1;
+      } else process.stdout.write("\n");
+      break;
   }
 }
 

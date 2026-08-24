@@ -5,8 +5,16 @@ import type { McpServerConfig } from "../core/config.ts";
 import type { ToolDef } from "../providers/types.ts";
 import type { Tool, ToolResult } from "./types.ts";
 import { fail, ok } from "./types.ts";
+import { childEnv } from "../core/childenv.ts";
+import { VERSION } from "../core/version.ts";
 
-let cache: { key: string; tools: Map<string, Tool>; warning?: string } | null = null;
+const OUT_CAP_MCP = 30_000;
+
+/** Live clients, so shutdownTools() can reap the stdio children. */
+interface LiveClient {
+  close: () => Promise<void>;
+}
+let cache: { key: string; tools: Map<string, Tool>; warnings: string[]; clients: LiveClient[] } | null = null;
 
 function textify(content: unknown): string {
   const parts = content as { type?: string; text?: string }[] | null;
@@ -17,29 +25,30 @@ function textify(content: unknown): string {
     .slice(0, OUT_CAP_MCP);
 }
 
-const OUT_CAP_MCP = 30_000;
-
 export async function mcpTools(
   servers: Record<string, McpServerConfig>,
-): Promise<{ tools: Map<string, Tool>; warning?: string }> {
+): Promise<{ tools: Map<string, Tool>; warnings: string[] }> {
   const key = JSON.stringify(servers);
-  if (cache?.key === key) return { tools: cache.tools, warning: cache.warning };
+  if (cache?.key === key) return { tools: cache.tools, warnings: cache.warnings };
+  // config changed — drop the old children before standing up new ones
+  if (cache) await closeMcp();
 
   const tools = new Map<string, Tool>();
-  let warning: string | undefined;
-  const entries = Object.entries(servers);
+  const warnings: string[] = [];
+  const clients: LiveClient[] = [];
 
-  for (const [name, cfg] of entries) {
+  for (const [name, cfg] of Object.entries(servers)) {
     try {
       const sdk = await import("@modelcontextprotocol/sdk/client/index.js");
       const stdio = await import("@modelcontextprotocol/sdk/client/stdio.js");
-      const client = new sdk.Client({ name: "fox-agent", version: "0.2.0" });
+      const client = new sdk.Client({ name: "fox-agent", version: VERSION });
       const transport = new stdio.StdioClientTransport({
         command: cfg.command,
         args: cfg.args ?? [],
-        env: { ...process.env, ...cfg.env } as Record<string, string>,
+        env: childEnv(cfg.env),
       });
       await client.connect(transport);
+      clients.push({ close: () => client.close() });
       const res = await client.listTools();
       for (const t of res.tools) {
         const def: ToolDef = {
@@ -60,11 +69,20 @@ export async function mcpTools(
         });
       }
     } catch (e) {
-      warning = `mcp server '${name}' unavailable: ${(e as Error).message.slice(0, 200)}`;
-      console.error(`fox: ${warning}`);
+      // every failing server is reported, not just the last one
+      const w = `mcp server '${name}' unavailable: ${(e as Error).message.slice(0, 200)}`;
+      warnings.push(w);
+      console.error(`fox: ${w}`);
     }
   }
 
-  cache = { key, tools, warning };
-  return { tools, warning };
+  cache = { key, tools, warnings, clients };
+  return { tools, warnings };
+}
+
+/** Disconnect every live MCP client, killing their stdio children. */
+export async function closeMcp(): Promise<void> {
+  const live = cache?.clients ?? [];
+  cache = null;
+  await Promise.all(live.map((c) => c.close().catch(() => {})));
 }

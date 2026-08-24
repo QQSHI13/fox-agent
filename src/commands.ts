@@ -4,14 +4,15 @@ import {
   forkSession,
   getMessage,
   getSession,
-  kvGet,
   latestSessionFor,
   listSessions,
   sessionUsage,
+  setSessionModel,
   undoLastOp,
 } from "./store/db.ts";
 import { projectView } from "./context/view.ts";
 import { viewTokenEstimate } from "./context/render.ts";
+import { checkBudget } from "./context/budget.ts";
 import type { ProviderConfig } from "./providers/types.ts";
 import { renderTodos, getTodos } from "./tools/todo.ts";
 import type { Config } from "./core/config.ts";
@@ -41,7 +42,7 @@ export const COMMANDS = [
   { name: "/view", desc: "preview visible nodes" },
   { name: "/todos", desc: "show agent todo list" },
   { name: "/usage", desc: "token totals + budget" },
-  { name: "/model", desc: "show or switch model" },
+  { name: "/model", desc: "show or switch model (persists to session)" },
   { name: "/exit", desc: "quit fox" },
 ];
 
@@ -55,7 +56,7 @@ export const SLASH_HELP = `/help              this list
 /view              show visible nodes ([mN] role preview)
 /todos             show the agent todo list
 /usage             token totals for this session
-/model [name]      show or switch model (runtime only)
+/model [name]      show or switch model (persists to the session row)
 /exit              quit`;
 
 export function runSlashCommand(input: string, state: HarnessState): CommandResult | null {
@@ -84,8 +85,8 @@ export function runSlashCommand(input: string, state: HarnessState): CommandResu
 
     case "resume": {
       let id = arg;
+      if (!arg) return { handled: true, output: "usage: /resume <id|list-index>" };
       const n = Number(arg);
-      if (!arg && !Number.isNaN(n)) return { handled: true, output: "usage: /resume <id|list-index>" };
       if (Number.isInteger(n) && n >= 1) {
         const rows = listSessions();
         if (!rows[n - 1]) return { handled: true, output: `no session at index ${n}` };
@@ -142,17 +143,21 @@ export function runSlashCommand(input: string, state: HarnessState): CommandResu
     case "usage": {
       const u = sessionUsage(state.sessionId);
       const nodes = projectView(state.sessionId);
+      const b = checkBudget(state.sessionId, state.provider.model, 0, state.config?.compactAt);
+      const pct = Math.round(b.ratio * 100);
       return {
         handled: true,
-        output: `prompt ${u.prompt} + completion ${u.completion} = ${u.prompt + u.completion} tok\nview: ${
+        output: `prompt ${u.prompt} + completion ${u.completion} = ${u.prompt + u.completion} tok billed\nview: ${
           nodes.filter((n) => !n.deleted).length
-        }/${nodes.length} nodes visible, ~${viewTokenEstimate(nodes)} est tok in window`,
+        }/${nodes.length} nodes visible, ~${b.estimated}/${b.limit} est tok (${pct}%)${b.over ? " — over compaction threshold" : ""}`,
       };
     }
 
     case "model": {
       if (!arg) return { handled: true, output: `model: ${state.provider.model}` };
       state.provider.model = arg;
+      // persist, or /resume would silently snap back to the old model
+      setSessionModel(state.sessionId, arg);
       return { handled: true, output: `model switched to ${arg}` };
     }
 

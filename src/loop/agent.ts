@@ -11,13 +11,14 @@ export async function* runTurn(
   cfg: ProviderConfig,
   userText: string,
   signal?: AbortSignal,
-  config?: Partial<Config>,
+  config?: Config,
 ): AsyncGenerator<AgentEvent> {
   yield* runTurnCore(sessionId, cfg, userText, signal, {
     maxSteps: config?.maxSteps,
     retryLimit: config?.retryLimit,
     compactAt: config?.compactAt,
     projectInstructions: config?.projectInstructions,
-    config: undefined, // full-config MCP merge happens via cli/sdk paths
+    // pass the whole config so MCP servers merge into the registry
+    config,
   });
 }

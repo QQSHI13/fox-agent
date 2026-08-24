@@ -102,6 +102,7 @@ const SCHEMA = `
     completion_tokens INTEGER NOT NULL,
     created_at INTEGER NOT NULL
   );
+  CREATE INDEX IF NOT EXISTS idx_usage_session ON usage(session_id);
   CREATE TABLE IF NOT EXISTS kv (
     session_id TEXT NOT NULL REFERENCES sessions(id),
     key TEXT NOT NULL,
@@ -160,25 +161,40 @@ export function setRefTitle(sessionId: string, title: string) {
 
 /**
  * Copy a session's messages (optionally up to `uptoSeq` inclusive) into a new
- * session. Ops referencing copied messages carry over; ones past the cut are
- * harmless no-ops during projection.
+ * session. Message ids are re-minted as `<forkId>:<seq>` so a session can be
+ * forked any number of times, and `parent_id` is remapped through the same
+ * table so the copy never points back into the source (parents cut off by
+ * `uptoSeq` become null). Ops referencing copied messages carry over; ones
+ * past the cut are harmless no-ops during projection.
  */
 export function forkSession(sourceId: string, uptoSeq?: number): SessionRow | null {
   const src = getSession(sourceId);
   if (!src) return null;
-  const fork = createSession(src.cwd, src.model);
   const cap = uptoSeq ?? Number.MAX_SAFE_INTEGER;
-  db()
-    .prepare(
-      `INSERT INTO messages (id, seq, session_id, parent_id, role, content, tool_calls, tool_call_id, tokens, error, created_at)
-       SELECT id || '_f', seq, ?, parent_id, role, content, tool_calls, tool_call_id, tokens, error, created_at
-       FROM messages WHERE session_id = ? AND seq <= ? ORDER BY seq`,
-    )
-    .run(fork.id, sourceId, cap);
-  const first = db()
-    .prepare("SELECT id FROM messages WHERE session_id = ? ORDER BY seq LIMIT 1")
-    .get(fork.id) as { id: string } | undefined;
-  if (first) advanceMain(fork.id, first.id);
+  const rows = db()
+    .prepare("SELECT * FROM messages WHERE session_id = ? AND seq <= ? ORDER BY seq")
+    .all(sourceId, cap) as MessageRow[];
+
+  const fork = createSession(src.cwd, src.model);
+  const newId = (seq: number) => `${fork.id}:${seq}`;
+  // old message id -> new id, for parent remapping
+  const idMap = new Map<string, string>();
+  for (const r of rows) idMap.set(r.id, newId(r.seq));
+
+  const ins = db().prepare(
+    `INSERT INTO messages (id, seq, session_id, parent_id, role, content, tool_calls, tool_call_id, tokens, error, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  );
+  db().transaction(() => {
+    for (const r of rows) {
+      // a parent outside the copied range is dropped rather than dangling
+      const parent = r.parent_id ? idMap.get(r.parent_id) ?? null : null;
+      ins.run(newId(r.seq), r.seq, fork.id, parent, r.role, r.content, r.tool_calls, r.tool_call_id, r.tokens, r.error, r.created_at);
+    }
+  })();
+
+  const tip = rows[rows.length - 1];
+  if (tip) advanceMain(fork.id, newId(tip.seq));
   db()
     .prepare(
       `INSERT OR IGNORE INTO ops (seq, session_id, kind, payload, created_at)
@@ -187,6 +203,10 @@ export function forkSession(sourceId: string, uptoSeq?: number): SessionRow | nu
     .run(fork.id, sourceId);
   setRefTitle(fork.id, `fork of ${src.title ?? src.id}`);
   return fork;
+}
+
+export function setSessionModel(sessionId: string, model: string): void {
+  db().run("UPDATE sessions SET model = ? WHERE id = ?", [model, sessionId]);
 }
 
 export function appendMessage(
@@ -270,6 +290,18 @@ export function undoLastOp(sessionId: string): string | null {
     appendOps(sessionId, [{ kind: "delete", ids: [...op.ids] }]);
     return `re-hid ${op.ids.length} node(s)`;
   }
+  // undo of a replace steps back one view state: the newest *earlier* replace
+  // of the same node if there is one, else the stored original.
+  const prior = db()
+    .query("SELECT payload FROM ops WHERE session_id = ? AND kind = 'replace' AND seq < ? ORDER BY seq DESC")
+    .all(sessionId, last.seq) as { payload: string }[];
+  for (const r of prior) {
+    const p = JSON.parse(r.payload) as ReplaceOp;
+    if (p.id === op.id) {
+      appendOps(sessionId, [{ kind: "replace", id: op.id, content: p.content }]);
+      return `reverted m${op.id} to its previous edit`;
+    }
+  }
   const orig = getMessage(sessionId, op.id);
   if (!orig) return null;
   appendOps(sessionId, [{ kind: "replace", id: op.id, content: orig.content }]);
@@ -305,4 +337,16 @@ export function sessionUsage(sessionId: string): { prompt: number; completion: n
     .query("SELECT COALESCE(SUM(prompt_tokens),0) AS p, COALESCE(SUM(completion_tokens),0) AS c FROM usage WHERE session_id = ?")
     .get(sessionId) as { p: number; c: number };
   return { prompt: r.p, completion: r.c };
+}
+
+/**
+ * Most recent provider-reported prompt size — i.e. how big the context
+ * actually was last call. Unlike sessionUsage().prompt (a running total) this
+ * tracks the live window and drops after a compaction.
+ */
+export function lastPromptTokens(sessionId: string): number {
+  const r = db()
+    .query("SELECT prompt_tokens AS p FROM usage WHERE session_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1")
+    .get(sessionId) as { p: number } | undefined;
+  return r?.p ?? 0;
 }

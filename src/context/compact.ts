@@ -53,8 +53,16 @@ export async function compactIfNeeded(
 
   // pick oldest-span candidates up to the protected tail boundary
   const vis = visibleNodes(nodes);
-  const minTail = Math.min(vis.length, 6); // always keep a few fresh nodes
-  const maxBoundary = vis.length - minTail;
+  // the newest PROTECTED_TAIL_FRACTION of the window is never compacted; the
+  // 6-node floor keeps very short sessions coherent
+  let tail = Math.min(vis.length, 6);
+  let tailTok = 0;
+  const tailBudget = info.contextWindow * PROTECTED_TAIL_FRACTION;
+  for (let i = vis.length - 1; i >= 0 && tailTok < tailBudget; i--) {
+    tailTok += estimateTokens(vis[i].content) + 8;
+    tail = Math.max(tail, vis.length - i);
+  }
+  const maxBoundary = vis.length - tail;
   if (maxBoundary <= 1) return null;
 
   const protectFrom = before - Math.floor(info.contextWindow * TARGET_AFTER_FRACTION);

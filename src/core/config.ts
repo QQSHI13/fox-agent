@@ -1,5 +1,6 @@
 import { join } from "node:path";
 import { homedir } from "node:os";
+import { existsSync, readFileSync } from "node:fs";
 import { ConfigError } from "./errors.ts";
 
 export interface McpServerConfig {
@@ -35,8 +36,7 @@ const DEFAULTS: Omit<Config, "projectInstructions"> = {
 
 function readJsonIfExists(path: string): Record<string, unknown> | null {
   try {
-    const txt = require("node:fs").readFileSync(path, "utf8") as string;
-    return JSON.parse(txt) as Record<string, unknown>;
+    return JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
   } catch {
     return null;
   }
@@ -48,7 +48,7 @@ export function findUp(cwd: string, names: string[]): string | null {
   for (;;) {
     for (const n of names) {
       const p = join(dir, n);
-      if (require("node:fs").existsSync(p)) return p;
+      if (existsSync(p)) return p;
     }
     const parent = join(dir, "..");
     if (parent === dir) return null;
@@ -58,7 +58,7 @@ export function findUp(cwd: string, names: string[]): string | null {
 
 function readTextFile(path: string, cap = 8192): string {
   try {
-    return require("node:fs").readFileSync(path, "utf8").slice(0, cap).trim();
+    return readFileSync(path, "utf8").slice(0, cap).trim();
   } catch {
     return "";
   }
@@ -74,6 +74,8 @@ function applyEnv(cfg: Config, env: Record<string, string | undefined>) {
   if (Number.isFinite(steps) && steps > 0) cfg.maxSteps = Math.floor(steps);
   const at = Number(env.FOX_COMPACT_AT);
   if (Number.isFinite(at) && at > 0 && at <= 1) cfg.compactAt = at;
+  const retries = Number(env.FOX_RETRY_LIMIT);
+  if (Number.isFinite(retries) && retries >= 0) cfg.retryLimit = Math.floor(retries);
 }
 
 function applyJson(cfg: Config, json: Record<string, unknown> | null) {

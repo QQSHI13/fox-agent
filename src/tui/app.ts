@@ -2,6 +2,7 @@
 // row-diffed flushing, explicit frame scheduling: keystrokes, stream deltas
 // and the spinner tick all just mark dirty; the frame loop owns the tty.
 import { openTerm, type Term } from "./term.ts";
+import { appendFileSync } from "node:fs";
 import { Screen } from "./screen.ts";
 import { createDecoder, type Key } from "./keys.ts";
 import { renderMarkdown } from "./markdown.ts";
@@ -11,8 +12,10 @@ import { runTurn, VERSION } from "../loop/agent.ts";
 import { projectView } from "../context/view.ts";
 import { viewTokenEstimate } from "../context/render.ts";
 import { lookupModel } from "../providers/models.ts";
-import { getSession, sessionUsage } from "../store/db.ts";
+import { getSession, sessionUsage, lastPromptTokens as storedPromptTokens } from "../store/db.ts";
 import { runSlashCommand, COMMANDS, type HarnessState } from "../commands.ts";
+import { childEnv } from "../core/childenv.ts";
+import { killTree } from "../tools/exec.ts";
 
 type ItemKind = "user" | "toolhead" | "toolbody" | "info" | "error" | "md" | "think";
 interface Item {
@@ -96,6 +99,11 @@ export async function startTui(state: HarnessState) {
   let stick = true;
   let scrollTop = 0;
   let ac: AbortController | null = null;
+  // exit is cooperative: gracefulExit resolves run()'s promise so startTui
+  // returns normally and the caller can clean up tools
+  let exiting = false;
+  let exitCode = 0;
+  let finish: (() => void) | null = null;
   const queued: { raw: string; lit: boolean }[] = [];
   const expandedRefs = new Set<number>(); // think nodes expanded across refreshes
   // provider-reported usage for the CURRENT turn's last step (real numbers,
@@ -129,11 +137,8 @@ export async function startTui(state: HarnessState) {
   }
 
   function refresh() {
-    items = loadItems();
-    for (const it of items) {
-      if (it.kind === "think" && it.ref != null) it.expanded = expandedRefs.has(it.ref);
-      touch(it.k);
-    }
+    items = loadItems(); // loadItems already restores expandedRefs
+    for (const it of items) touch(it.k);
     statsRev++;
     markDirty();
   }
@@ -160,7 +165,8 @@ export async function startTui(state: HarnessState) {
           kind: "toolbody",
           text: `  ↳ ${oneLine}`,
           ref: m.seq,
-          expanded: false, // start collapsed; click / enter expands
+          // collapsed by default, but an explicit expand survives refresh()
+          expanded: expandedRefs.has(m.seq),
         });
       } else if (m.role === "think")
         out.push({ k: nk(), kind: "think", text: n.content, ref: m.seq, expanded: expandedRefs.has(m.seq) });
@@ -174,11 +180,25 @@ export async function startTui(state: HarnessState) {
     setBusy(true);
     push("toolhead", `$ ${cmd}`);
     try {
-      const proc = Bun.spawn(["/bin/bash", "-c", cmd], { cwd: state.cwd, stdout: "pipe", stderr: "pipe", env: process.env });
-      const timer = setTimeout(() => proc.kill(9), 120_000);
+      // setsid + group kill, same as the exec tool: proc.kill(9) leaves
+      // grandchildren (pipelines, background jobs) running
+      const useSetsid = !!Bun.which("setsid");
+      const proc = Bun.spawn([...(useSetsid ? ["setsid"] : []), "/bin/bash", "-c", cmd], {
+        cwd: state.cwd,
+        stdout: "pipe",
+        stderr: "pipe",
+        stdin: "ignore",
+        env: childEnv(),
+      });
+      const kill: { cancel: (() => void) | null } = { cancel: null };
+      const timer = setTimeout(() => {
+        if (useSetsid) kill.cancel = killTree(proc.pid);
+        else proc.kill(9);
+      }, 120_000);
       const [out, err] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
       clearTimeout(timer);
       const code = await proc.exited;
+      kill.cancel?.();
       const merged = (out + (err ? (out ? "\n[stderr]\n" : "") + err : "")).trimEnd() || "(no output)";
       push("info", `${merged}\nexit ${code}`);
     } catch (e) {
@@ -208,7 +228,7 @@ export async function startTui(state: HarnessState) {
     ac = new AbortController();
     let md = "";
     try {
-      for await (const ev of runTurn(state.sessionId, state.provider, raw, ac.signal)) {
+      for await (const ev of runTurn(state.sessionId, state.provider, raw, ac.signal, state.config)) {
         if (ev.type === "reasoning") {
           streamCharsSinceUsage += ev.delta.length;
           appendToLastThink(ev.delta);
@@ -231,7 +251,7 @@ export async function startTui(state: HarnessState) {
           }
           const oneLine = ev.output.replace(/\s+\n/g, "\n").replace(/\n/g, " ⏎ ").slice(0, KEPT_TOOL_CHARS);
           push("toolhead", `[m${ev.seq}] ⚙ ${ev.name}${ev.ok ? "" : " ✗"}`);
-          push("toolbody", `  ↳ ${oneLine}`, { ref: ev.seq, expanded: false });
+          push("toolbody", `  ↳ ${oneLine}`, { ref: ev.seq, expanded: expandedRefs.has(ev.seq) });
           statsRev++;
         } else if (ev.type === "done") {
           if (ev.reason.startsWith("error")) push("error", `✗ ${ev.reason}`);
@@ -307,14 +327,22 @@ export async function startTui(state: HarnessState) {
     void dispatch(raw, lit);
   }
 
-  function gracefulExit(code = 0): never {
+  /**
+   * Tear down the terminal and let startTui() return, so the caller's
+   * `finally { shutdownTools() }` actually runs. Calling process.exit() here
+   * would skip it and leak tmux/MCP children.
+   */
+  function gracefulExit(code = 0): void {
+    if (exiting) return;
+    exiting = true;
+    exitCode = code;
     try {
       ac?.abort();
     } catch {}
     try {
       term.end();
     } catch {}
-    process.exit(code);
+    finish?.();
   }
 
   function flash(msg: string) {
@@ -340,6 +368,19 @@ export async function startTui(state: HarnessState) {
     cur += chars.length;
     inputRev++;
     markDirty();
+  }
+  /** next cursor position one word away in `dir` (-1 left, +1 right) */
+  function wordBoundary(dir: -1 | 1): number {
+    const isWord = (i: number) => /\S/.test(buf[i]?.c ?? " ");
+    let i = cur;
+    if (dir < 0) {
+      while (i > 0 && !isWord(i - 1)) i--;
+      while (i > 0 && isWord(i - 1)) i--;
+    } else {
+      while (i < buf.length && !isWord(i)) i++;
+      while (i < buf.length && isWord(i)) i++;
+    }
+    return i;
   }
   function toggleExpand(it: Item) {
     if (it.kind !== "think" && it.kind !== "toolbody") return;
@@ -479,13 +520,11 @@ export async function startTui(state: HarnessState) {
       markDirty();
       return;
     }
-    if (name === "left" && !ctrl) {
-      cur = Math.max(0, cur - 1);
-      markDirty();
-      return;
-    }
-    if (name === "right" && !ctrl) {
-      cur = Math.min(buf.length, cur + 1);
+    if (name === "left" || name === "right") {
+      const dir = name === "left" ? -1 : 1;
+      // ctrl/alt+arrow = word-wise motion (the decoder reports CSI modifiers)
+      if (ctrl || k.meta) cur = wordBoundary(dir);
+      else cur = Math.max(0, Math.min(buf.length, cur + dir));
       markDirty();
       return;
     }
@@ -569,6 +608,7 @@ export async function startTui(state: HarnessState) {
     segs: Seg[];
   }
   const lineCache = new Map<number, { rev: number; w: number; rows: Row[]; gap: boolean }>();
+  const LINE_CACHE_MAX = 2_000;
 
   function itemStyle(kind: ItemKind): Partial<Seg> {
     switch (kind) {
@@ -611,6 +651,12 @@ export async function startTui(state: HarnessState) {
     }
     const entry = { rev: revs.get(it.k) ?? 0, w, rows, gap: it.kind === "md" || it.kind === "think" };
     lineCache.set(it.k, entry);
+    // keys are re-minted on every refresh(), so without eviction this grows
+    // unbounded across a long session
+    if (lineCache.size > LINE_CACHE_MAX) {
+      const live = new Set(items.map((i) => i.k));
+      for (const k of lineCache.keys()) if (!live.has(k)) lineCache.delete(k);
+    }
     return entry;
   }
 
@@ -696,6 +742,7 @@ export async function startTui(state: HarnessState) {
 
   let rowBuf: Row[] = [];
   let rowOwner: number[] = []; // rowBuf index -> item key (for click hit-testing)
+  let streamCache: { text: string; w: number; rows: Row[] } | null = null;
   function totalRows(): number {
     buildRows();
     return rowBuf.length;
@@ -713,9 +760,19 @@ export async function startTui(state: HarnessState) {
       }
     }
     if (streamText !== null) {
-      for (const mline of renderMarkdown(streamText)) rowBuf.push(...wrapSegs(mline, w).map((segs) => ({ segs })));
-      rowBuf.push({ segs: [] });
-      rowOwner.push(-1, -1);
+      // the stream re-renders on every frame (~30/s); parsing markdown and
+      // re-wrapping the whole partial message each time is the single hottest
+      // path in the draw loop, so memoize on (text, width)
+      if (streamCache?.text !== streamText || streamCache.w !== w) {
+        const rows: Row[] = [];
+        for (const mline of renderMarkdown(streamText)) rows.push(...wrapSegs(mline, w).map((segs) => ({ segs })));
+        rows.push({ segs: [] });
+        streamCache = { text: streamText, w, rows };
+      }
+      for (const r of streamCache.rows) {
+        rowBuf.push(r);
+        rowOwner.push(-1); // one owner per row, or hit-testing drifts below here
+      }
     }
     if (busy && streamText === null) {
       rowBuf.push({ segs: [{ t: "◦ working… (esc interrupts)", fg: C.chrome }] });
@@ -748,14 +805,18 @@ export async function startTui(state: HarnessState) {
 
   function statusText(): string {
     try {
-      // provider metadata first: cumulative REAL tokens from the API, plus a
-      // chars/4 live figure for the in-flight step (reconciled per usage event)
+      // u.prompt/u.completion are session TOTALS (what we've spent). The
+      // context figure must be the size of the CURRENT window instead — the
+      // last provider-reported prompt, or our own estimate if we have no
+      // report yet. Using the cumulative total here would climb to 100% and
+      // never fall after a compaction.
       const u = sessionUsage(state.sessionId);
       const nodes = projectView(state.sessionId);
       const vis = nodes.filter((n) => !n.deleted).length;
       const liveCompletionTok = Math.ceil(streamCharsSinceUsage / 4);
       const outTok = u.completion + liveCompletionTok;
-      const ctxTok = Math.max(u.prompt, lastPromptTokens, viewTokenEstimate(nodes));
+      const reported = lastPromptTokens || storedPromptTokens(state.sessionId);
+      const ctxTok = Math.max(reported, viewTokenEstimate(nodes));
       const info = lookupModel(state.provider.model);
       const ctxPct = Math.min(100, Math.round((ctxTok / info.contextWindow) * 100));
       const home = process.env.HOME ?? "";
@@ -772,7 +833,10 @@ export async function startTui(state: HarnessState) {
   let statsCacheRev = -1;
   let statsCacheStr = "";
   function cachedStats(): string {
-    if (statsCacheRev !== statsRev || Date.now() - lastStatsAt > 2_000) {
+    // re-poll on an explicit revision bump, or on a timer only while a turn is
+    // running (an idle session's log can't change under us)
+    const stale = busy && Date.now() - lastStatsAt > 2_000;
+    if (statsCacheRev !== statsRev || stale) {
       statsCacheStr = statusText();
       statsCacheRev = statsRev;
       lastStatsAt = Date.now();
@@ -819,7 +883,7 @@ export async function startTui(state: HarnessState) {
     S.hintSel = screen.sgr({ fg: C.hintSel, bg: C.barBg });
     S.inputBgRow = screen.sgr({ fg: C.fg, bg: C.inputBg });
     S.barBgRow = screen.sgr({ fg: C.fg, bg: C.barBg });
-    S.sbThumb = screen.sgr({ bg: "#6e7681" }); // neutral gray — distinct from chrome blue for debug
+    S.sbThumb = screen.sgr({ bg: "#6e7681" }); // neutral gray, distinct from chrome blue
   }
 
   /** shared dock geometry for paint + click mapping */
@@ -969,42 +1033,46 @@ export async function startTui(state: HarnessState) {
       term.onKey((data) => dec.feed(data));
 
       const frameTimer = setInterval(() => {
-      tickSpinner();
-      if (!dirty) return;
-      dirty = false;
-      try {
-        // cursor hidden for the whole repaint burst — if it stays visible it
-        // hops through every dirty row and Windows Terminal burns ghost
-        // blocks where the row-diff never repaints again
-        term.hideCursor();
-        paint();
-        screen.flush();
-        if (process.env.FOX_TRACE && screen.lastDirty()) {
-          try {
-            require("node:fs").appendFileSync(process.env.FOX_TRACE + ".grid", `⟦frame⟧\n${screen.dumpGrid()}\n`);
-          } catch {}
-        }
-        term.flush();
-        // the terminal's own caret is our input caret
-        if (nextCaret) term.setCursor(nextCaret.x, nextCaret.y);
-        else term.setCursor(3, H - 2);
-      } catch (e) {
-        clearInterval(frameTimer);
+        tickSpinner();
+        if (!dirty) return;
+        dirty = false;
         try {
-          term.end();
-        } catch {}
-        console.error("fox tui error:", e);
-        process.exit(1);
-      }
-    }, 33);
+          // cursor hidden for the whole repaint burst — if it stays visible it
+          // hops through every dirty row and Windows Terminal burns ghost
+          // blocks where the row-diff never repaints again
+          term.hideCursor();
+          paint();
+          screen.flush();
+          if (process.env.FOX_TRACE && screen.lastDirty()) {
+            try {
+              appendFileSync(process.env.FOX_TRACE + ".grid", `⟦frame⟧\n${screen.dumpGrid()}\n`);
+            } catch {}
+          }
+          term.flush();
+          // the terminal's own caret is our input caret
+          if (nextCaret) term.setCursor(nextCaret.x, nextCaret.y);
+          else term.setCursor(3, H - 2);
+        } catch (e) {
+          console.error("fox tui error:", e);
+          gracefulExit(1);
+        }
+      }, 33);
 
-    await new Promise<never>(() => {});
+      try {
+        await new Promise<void>((resolve) => {
+          finish = resolve;
+          if (exiting) resolve(); // exited during startup
+        });
+      } finally {
+        clearInterval(frameTimer);
+      }
+      if (exitCode) process.exitCode = exitCode;
     } catch (e) {
       console.error("[fox] fatal:", e);
       try {
         term.end();
       } catch {}
-      process.exit(1);
+      process.exitCode = 1;
     }
   }
 

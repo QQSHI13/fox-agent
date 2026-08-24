@@ -1,8 +1,19 @@
 import { lookupModel } from "../providers/models.ts";
 import type { ToolDef } from "../providers/types.ts";
 import { renderTodos, getTodos } from "../tools/todo.ts";
+import { VERSION } from "../core/version.ts";
 
-export const VERSION = "0.2.0";
+export { VERSION };
+
+/**
+ * Per-turn memo for the expensive parts of the runtime block. Probing git
+ * costs two subprocesses, and it can't change under us mid-turn in any way
+ * the model needs to see. Todos are deliberately NOT cached — the model
+ * updates them with todowrite and must see the result on its next step.
+ */
+export interface RuntimeCache {
+  git?: string;
+}
 
 function gitInfo(cwd: string): string {
   try {
@@ -29,10 +40,11 @@ export function buildSystemPrompt(
     model: string;
     tools: ToolDef[];
     projectInstructions?: string;
+    /** pass the same object across a turn's steps to keep the prefix cacheable */
+    cache?: RuntimeCache;
   },
 ): string {
   const info = lookupModel(opts.model);
-  const todos = renderTodos(getTodos(opts.sessionId));
   const sections: string[] = [];
 
   sections.push(`You are fox, a light coding harness with full machine control — no permission prompts. Work directly and verify your changes.`);
@@ -56,11 +68,17 @@ export function buildSystemPrompt(
   );
 
   // runtime header stays at the BOTTOM of the system prompt (locked decision)
+  const todos = renderTodos(getTodos(opts.sessionId));
+  let git = opts.cache?.git;
+  if (git === undefined) {
+    git = gitInfo(opts.cwd);
+    if (opts.cache) opts.cache.git = git;
+  }
   sections.push(
     [
       "<runtime>",
       `cwd: ${opts.cwd}`,
-      `git: ${gitInfo(opts.cwd)}`,
+      `git: ${git}`,
       `os: ${process.platform} shell=/bin/bash`,
       `date: ${new Date().toISOString().slice(0, 10)}`,
       `model: ${opts.model} ctx=${info.contextWindow} out=${info.maxOutput}`,

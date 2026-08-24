@@ -2,6 +2,7 @@ import { resolve } from "node:path";
 import type { ToolDef } from "../providers/types.ts";
 import type { ToolContext, ToolResult } from "./types.ts";
 import { fail, ok } from "./types.ts";
+import { childEnv } from "../core/childenv.ts";
 import { OUT_CAP } from "./files.ts";
 
 export const execDef: ToolDef = {
@@ -19,16 +20,21 @@ export const execDef: ToolDef = {
   },
 };
 
-/** TERM then KILL the whole process group (child is spawned as setsid leader). */
-function killTree(pid: number) {
+/**
+ * TERM then KILL the whole process group (child is spawned as setsid leader).
+ * Returns a canceller so the caller can drop the pending SIGKILL once the
+ * child has actually exited — otherwise the timer keeps the loop alive.
+ */
+export function killTree(pid: number): () => void {
   try {
     Bun.spawnSync(["kill", "-TERM", "--", `-${pid}`], { stdout: "ignore", stderr: "ignore" });
   } catch {}
-  setTimeout(() => {
+  const t = setTimeout(() => {
     try {
       Bun.spawnSync(["kill", "-KILL", "--", `-${pid}`], { stdout: "ignore", stderr: "ignore" });
     } catch {}
   }, 1_500);
+  return () => clearTimeout(t);
 }
 
 export async function execRun(
@@ -45,17 +51,18 @@ export async function execRun(
     stdout: "pipe",
     stderr: "pipe",
     stdin: "ignore",
-    env: process.env,
+    env: childEnv(),
   });
 
   let killedBy = "";
+  const kill: { cancel: (() => void) | null } = { cancel: null };
   const timer = setTimeout(() => {
     killedBy = `timeout ${timeout}ms`;
-    killTree(proc.pid);
+    kill.cancel = killTree(proc.pid);
   }, timeout);
   const onAbort = () => {
     if (!killedBy) killedBy = "interrupted";
-    killTree(proc.pid);
+    kill.cancel = killTree(proc.pid);
   };
   ctx.signal?.addEventListener("abort", onAbort, { once: true });
 
@@ -67,6 +74,7 @@ export async function execRun(
   clearTimeout(timer);
   ctx.signal?.removeEventListener("abort", onAbort);
   const code = await proc.exited;
+  kill.cancel?.(); // child is gone; don't leave a SIGKILL timer pending
 
   let s = "";
   if (stdout.trim()) s += stdout;
@@ -75,5 +83,7 @@ export async function execRun(
   const truncated = s.length > OUT_CAP ? s.slice(-OUT_CAP) + "\n… (head truncated)" : s;
   let head = `exit ${code}`;
   if (killedBy) head += ` (${killedBy})`;
-  return ok(`${head}\n${truncated || "(no output)"}`);
+  const body = `${head}\n${truncated || "(no output)"}`;
+  // a non-zero exit is a tool failure — the model (and the TUI's ✗) need to know
+  return code === 0 && !killedBy ? ok(body) : fail(body);
 }

@@ -126,7 +126,7 @@ describe("turn manager", () => {
       [{ type: "tool_call", call: { id: "t1", name: "strict", arguments: "{}" } }, { type: "done", reason: "tool_calls" }],
       textDone("ok"),
     ]);
-    await collect(t.runTurnCore(s.id, cfg(), "go", undefined, { chat: mock.fn as any, registryOverride: registry, quiet: true }));
+    await collect(t.runTurnCore(s.id, cfg(), "go", undefined, { chat: mock.fn as any, registryOverride: registry as any, quiet: true }));
     expect(ran).toBe(false);
   });
 

@@ -1,7 +1,7 @@
 // Provider resolution: explicit config wins, then claude-* model sniffing.
-// Anthropic SDK is loaded lazily so the openai-compatible path has zero
-// extra cost.
-import { streamChat as openAiCompatible } from "./openai-compatible.ts";
+// Both SDKs load lazily — importing this module (or anything that reaches it,
+// like the turn loop) must not pull the AI SDK in until a request is actually
+// made. Tests inject their own ChatFn and pay nothing.
 import type { ChatFn, ProviderConfig } from "./types.ts";
 
 export * from "./types.ts";
@@ -14,10 +14,6 @@ export function isAnthropic(cfg: ProviderConfig): boolean {
 
 /** Resolved default ChatFn honoring cfg.provider. */
 export const resolveChat: ChatFn = async function* (cfg, messages, tools, signal) {
-  if (isAnthropic(cfg)) {
-    const mod = await import("./anthropic.ts");
-    yield* mod.streamChat(cfg, messages, tools, signal);
-    return;
-  }
-  yield* openAiCompatible(cfg, messages, tools, signal);
+  const mod = isAnthropic(cfg) ? await import("./anthropic.ts") : await import("./openai-compatible.ts");
+  yield* mod.streamChat(cfg, messages, tools, signal);
 };

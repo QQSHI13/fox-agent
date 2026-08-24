@@ -27,12 +27,12 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/QQSHI13/foxc.git"
+    "url": "git+https://github.com/QQSHI13/fox-agent.git"
   },
   "bugs": {
-    "url": "https://github.com/QQSHI13/foxc/issues"
+    "url": "https://github.com/QQSHI13/fox-agent/issues"
   },
-  "homepage": "https://github.com/QQSHI13/foxc#readme",
+  "homepage": "https://github.com/QQSHI13/fox-agent#readme",
   "keywords": [
     "ai",
     "coding-agent",
@@ -45,7 +45,6 @@
     "bun": ">=1.4.0"
   },
   "files": [
-    "dist/cli.js",
     "src",
     "build.ts",
     "README.md",

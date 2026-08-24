@@ -25,6 +25,9 @@ jobs:
       - run: bun install
       - run: bun run typecheck
       - run: bun test
+      # fox ships src/ — no compiled output needed in the package.
+      # The bin entry (src/cli.ts) requires bun; npm consumers must have it.
+      # `bin/fox` (compiled binary) is .gitignored and not in files[].
       - run: npm publish --provenance --access public
         env:
           # npm >= 11.5.1 reads the OIDC token from the Actions identity;

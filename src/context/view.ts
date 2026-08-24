@@ -31,8 +31,9 @@ export function projectView(sessionId: string): ViewNode[] {
       const { ids } = op as RestoreOp;
       for (const id of ids) {
         const n = bySeq.get(id);
-        // restore only lifts agent-applied hides; orphans stay hidden
-        if (n && !n.orphan) {
+        // no orphan check needed: repairOrphans runs after the whole op log,
+        // so it re-hides anything a restore un-hid that shouldn't be visible
+        if (n) {
           n.deleted = false;
           n.summary = undefined;
         }
@@ -44,7 +45,6 @@ export function projectView(sessionId: string): ViewNode[] {
         const n = bySeq.get(id);
         if (!n || n.deleted) continue;
         n.deleted = true;
-        n.orphan = false;
         if (summary && first) {
           n.summary = summary;
           first = false;

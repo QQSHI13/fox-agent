@@ -30,8 +30,10 @@ fox -c                                           # resume latest session here
 
 ## Config
 
-Cascade (lowest wins first): defaults ← env (`FOX_*`) ← `~/.config/fox/config.json` ← project `.fox.json` ← CLI flags.
+Cascade (later wins): defaults ← `~/.config/fox/config.json` ← project `.fox.json` ← env (`FOX_*`) ← CLI flags.
 Project instructions are loaded from `AGENTS.md` / `CLAUDE.md` walking up from cwd.
+
+Env vars: `FOX_MODEL`, `FOX_BASE_URL`, `FOX_API_KEY`, `FOX_PROVIDER`, `FOX_MAX_STEPS`, `FOX_COMPACT_AT`, `FOX_RETRY_LIMIT`, `FOX_HOME` (state dir, default `~/.local/share/fox`). `OPENAI_BASE_URL` / `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` are honored as fallbacks.
 
 `.fox.json` example:
 
@@ -45,6 +47,18 @@ Project instructions are loaded from `AGENTS.md` / `CLAUDE.md` walking up from c
   }
 }
 ```
+
+## Security model
+
+fox is a **trusted-workspace** tool. Read this before pointing it at code you didn't write.
+
+- **No sandbox, no permission prompts.** `exec`, `pty`, `write`, `edit` and MCP tools run with your full user privileges in your cwd. Anything the model decides to run, runs.
+- **Prompt injection is the real risk.** Tool output — file contents, `fetch` responses, MCP server replies — enters the context as data the model acts on. A repo or web page can therefore attempt to steer the agent. Treat a fox session on untrusted input as equivalent to running that input's code.
+- **API keys are stripped from child processes.** `exec`, `pty` (tmux) and MCP servers get a filtered env (`src/core/childenv.ts`): `FOX_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `*_API_KEY` and `FOX_AUTH*` are removed. Everything else in your env is inherited, so other secrets there are still visible to tools.
+- **Session data is local and unencrypted**: SQLite under `FOX_HOME`, containing full transcripts and tool output.
+- **MCP servers are arbitrary executables** you configure by command line; fox spawns them and trusts their tool descriptions.
+
+Run it in a container or VM for anything you don't trust.
 
 ## Layout
 
@@ -62,7 +76,7 @@ test/         bun test suites (projection, turn manager, patch engine, ...)
 ```
 
 ## Roadmap
-- v1 tails: MCP live-test, pty hardening, thinking expand/toggle
+- v1 tails: MCP live-test, pty hardening
 - v1.5: Plugin API (tools + lifecycle hooks + custom providers)
 - v2: ACP server · LSP diagnostics
 - v3: A2A · OpenAI-compat server endpoint · web UI

@@ -49,7 +49,6 @@ export class Screen {
   private styleIdx = new Map<string, number>();
   private cursorRow = -1;
   private _lastDirty = false;
-  private lastSgr = "";
 
   constructor(private term: Term) {}
 

@@ -36,7 +36,11 @@ export async function taskRun(
   const child = createSession(ctx.cwd, ctx.providerCfg.model);
   kvSet(child.id, "parent", ctx.sessionId);
 
-  let finalText = "";
+  // Track the last non-empty text run rather than only text after the final
+  // tool_end: a subagent that ends on a tool call would otherwise report
+  // nothing at all.
+  let current = "";
+  let lastNonEmpty = "";
   try {
     for await (const ev of runTurnCore(child.id, ctx.providerCfg, args.prompt, ctx.signal, {
       maxSteps: Math.min(40, Math.max(1, args.max_steps ?? 15)),
@@ -44,14 +48,16 @@ export async function taskRun(
       chat: resolveChat,
       registryOverride: registry,
     })) {
-      if (ev.type === "text") finalText += ev.delta;
-      else if (ev.type === "tool_end") finalText = ""; // only the post-tool answer counts
-      else if (ev.type === "done") break;
+      if (ev.type === "text") current += ev.delta;
+      else if (ev.type === "tool_end") {
+        if (current.trim()) lastNonEmpty = current;
+        current = "";
+      } else if (ev.type === "done") break;
     }
   } catch (e) {
     return fail(`error: subagent failed: ${(e as Error).message}`);
   }
 
-  finalText = finalText.trim();
+  const finalText = (current.trim() ? current : lastNonEmpty).trim();
   return ok(finalText ? `${finalText}\n\n[subagent session ${child.id}]` : `[subagent ${child.id} finished without a final message]`);
 }

@@ -7,7 +7,7 @@ import type { Tool, ToolContext, PtyState } from "../tools/types.ts";
 import { OUT_CAP } from "../tools/files.ts";
 import { buildRegistry } from "../tools/index.ts";
 import type { Config } from "../core/config.ts";
-import { buildSystemPrompt } from "./prompt.ts";
+import { buildSystemPrompt, type RuntimeCache } from "./prompt.ts";
 import { renderContext } from "../context/render.ts";
 import { compactIfNeeded } from "../context/compact.ts";
 
@@ -49,7 +49,7 @@ async function* drainStep(
   toolDefs: ToolDef[],
   signal: AbortSignal | undefined,
   retryLimit: number,
-): AsyncGenerator<AgentEvent> {
+): AsyncGenerator<AgentEvent, StepOutcome> {
   const acc: StepOutcome = { text: "", calls: [], usage: null, finish: "", reasoning: "" };
 
   const attempt = async function* (): AsyncGenerator<AgentEvent> {
@@ -80,8 +80,10 @@ async function* drainStep(
         if (emitted) return { ...acc, finish: `error: ${pe.message}` }; // keep partials
         throw pe;
       }
-      yield { type: "retry", attempt: n + 1, delay_ms: 0, error: pe.message } as AgentEvent;
-      await sleep(Math.min(8_000, 500 * 2 ** n) + Math.floor(Math.random() * 250));
+      // compute the backoff first so the event reports the real wait
+      const delay = Math.min(8_000, 500 * 2 ** n) + Math.floor(Math.random() * 250);
+      yield { type: "retry", attempt: n + 1, delay_ms: delay, error: pe.message };
+      await sleep(delay);
     }
   }
 }
@@ -147,11 +149,15 @@ export async function* runTurnCore(
   if (!session) throw new FoxError(`no session ${sessionId}`);
 
   const chat = opts.chat ?? resolveChat;
-  const tools =
-    opts.registryOverride ??
-    (await buildRegistry(
-      opts.config ?? fallbackConfig(cfg, opts),
-    ));
+  const effCfg = opts.config ?? fallbackConfig(cfg, opts);
+  let mcpWarnings: string[] = [];
+  let tools: Map<string, Tool>;
+  if (opts.registryOverride) tools = opts.registryOverride;
+  else {
+    const built = await buildRegistry(effCfg);
+    tools = built.tools;
+    mcpWarnings = built.warnings;
+  }
   const toolDefs = [...tools.values()].map((t) => t.def);
 
   const userNode = appendMessage(sessionId, {
@@ -166,6 +172,15 @@ export async function* runTurnCore(
   const turnReads = new Set<string>();
   const maxSteps = opts.maxSteps ?? 40;
   const quiet = opts.quiet ?? false;
+  // git state is stable across a turn — probing it per step costs 2 spawns/step
+  const runtimeCache: RuntimeCache = {};
+
+  // surface MCP connection failures once, at the top of the turn
+  if (!quiet) for (const w of mcpWarnings) yield { type: "warn", message: w };
+
+  // the parent of each step's assistant node: the user turn for step 1, then
+  // the previous step's tool results, so the chain reflects actual lineage
+  let stepParentId: string = userNode.id;
 
   for (let step = 1; ; step++) {
     if (signal?.aborted) {
@@ -173,8 +188,10 @@ export async function* runTurnCore(
       return;
     }
 
+    // compaction is not chatter — subagents need it too or they hard-fail on
+    // a full window. Only the *event* is suppressed when quiet.
+    const cEv = await compactIfNeeded(sessionId, cfg, chat, { compactAt: opts.compactAt, signal }).catch(() => null);
     if (!quiet) {
-      const cEv = await compactIfNeeded(sessionId, cfg, chat, { compactAt: opts.compactAt, signal }).catch(() => null);
       if (cEv && cEv.type === "compacted" && cEv.removed.length) yield cEv;
       yield { type: "step", n: step };
     }
@@ -192,6 +209,7 @@ export async function* runTurnCore(
       model: cfg.model,
       tools: toolDefs,
       projectInstructions: opts.projectInstructions ?? "",
+      cache: runtimeCache,
     });
     const messages = renderContext(sessionId, sysPrompt);
 
@@ -206,7 +224,7 @@ export async function* runTurnCore(
     }
 
     if (outcome.finish === "aborted") {
-      if (outcome.text) appendMessage(sessionId, { parent_id: userNode.id, role: "assistant", content: outcome.text, tokens: estTok(outcome.text) });
+      if (outcome.text) appendMessage(sessionId, { parent_id: stepParentId, role: "assistant", content: outcome.text, tokens: estTok(outcome.text) });
       yield { type: "done", reason: "aborted" };
       return;
     }
@@ -214,11 +232,11 @@ export async function* runTurnCore(
     if (outcome.finish.startsWith("error")) outcome.calls = []; // never execute calls from a broken stream
 
     if (outcome.reasoning.trim()) {
-      appendMessage(sessionId, { parent_id: userNode.id, role: "think", content: outcome.reasoning, tokens: estTok(outcome.reasoning) });
+      appendMessage(sessionId, { parent_id: stepParentId, role: "think", content: outcome.reasoning, tokens: estTok(outcome.reasoning) });
     }
 
     const asstNode = appendMessage(sessionId, {
-      parent_id: userNode.id,
+      parent_id: stepParentId,
       role: "assistant",
       content: outcome.text,
       tool_calls: outcome.calls.length ? JSON.stringify(outcome.calls) : null,
@@ -233,10 +251,14 @@ export async function* runTurnCore(
     }
 
     // ---- execute all calls in parallel; failures isolated per call ----
+    // announce every call before awaiting any of them, so consumers can show
+    // work as in-flight rather than only after the whole batch settles
+    for (const call of outcome.calls) {
+      yield { type: "tool_start", id: call.id, name: call.name, args: call.arguments.slice(0, 200) };
+    }
+
     const results = await Promise.all(
       outcome.calls.map(async (call) => {
-        const started = Date.now();
-        void started;
         const res = await execToolCall(call, tools, {
           sessionId,
           cwd: session.cwd,
@@ -244,7 +266,7 @@ export async function* runTurnCore(
           readFiles: turnReads,
           signal,
           providerCfg: cfg,
-          registryFactory: (excl) => buildRegistry(opts.config ?? fallbackConfig(cfg, opts), excl),
+          registryFactory: async (excl) => (await buildRegistry(effCfg, excl)).tools,
           get pty() {
             return ptyState;
           },
@@ -265,9 +287,11 @@ export async function* runTurnCore(
     );
 
     for (const { call, node, res } of results) {
-      yield { type: "tool_start", seq: node.seq, name: call.name, args: call.arguments.slice(0, 200) };
-      yield { type: "tool_end", seq: node.seq, name: call.name, output: res.output, ok: res.ok };
+      yield { type: "tool_end", id: call.id, seq: node.seq, name: call.name, output: res.output, ok: res.ok };
     }
+
+    // next step's assistant hangs off the last tool result of this step
+    stepParentId = results[results.length - 1]?.node.id ?? asstNode.id;
 
     if (signal?.aborted) {
       yield { type: "done", reason: "aborted" };

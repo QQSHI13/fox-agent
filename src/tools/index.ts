@@ -1,16 +1,15 @@
 import type { ToolDef } from "../providers/types.ts";
-import type { Config, McpServerConfig } from "../core/config.ts";
-import { allMessages } from "../store/db.ts";
+import type { Config } from "../core/config.ts";
 import type { ToolContext, ToolResult } from "./types.ts";
 import type { Tool } from "./types.ts";
 import * as F from "./files.ts";
 import { execDef, execRun } from "./exec.ts";
-import { ptyDef, drivePty, cleanupPty } from "./pty.ts";
+import { ptyDef, drivePty, cleanupPty, ptySessionName } from "./pty.ts";
 import { ctxEditDef, ctxEditRun } from "./ctxedit.ts";
 import { todoDef, todoRun } from "./todo.ts";
 import { taskDef, taskRun } from "./task.ts";
 import { fetchDef, fetchRun } from "./fetch.ts";
-import { mcpTools } from "./mcp.ts";
+import { mcpTools, closeMcp } from "./mcp.ts";
 
 export type { Tool, ToolContext, ToolResult } from "./types.ts";
 
@@ -32,28 +31,27 @@ export function baseRegistry(): Map<string, Tool> {
 }
 
 /**
- * Full registry: built-ins + MCP servers from config. Cached per config
- * content; `exclude` lets the task tool build restricted registries.
+ * Full registry: built-ins + MCP servers from config. `exclude` names tools to
+ * drop (the task tool builds restricted registries this way). Returns any MCP
+ * connection warnings so the caller can surface them as `warn` events.
  */
-export async function buildRegistry(cfg: Config, exclude?: Set<string>): Promise<Map<string, Tool>> {
+export async function buildRegistry(
+  cfg: Config,
+  exclude?: Set<string>,
+): Promise<{ tools: Map<string, Tool>; warnings: string[] }> {
   const map = baseRegistry();
+  let warnings: string[] = [];
   if (Object.keys(cfg.mcpServers).length) {
-    const { tools } = await mcpTools(cfg.mcpServers);
-    for (const [name, tool] of tools) if (!exclude?.has(name)) map.set(name, tool);
+    const res = await mcpTools(cfg.mcpServers);
+    warnings = res.warnings;
+    for (const [name, tool] of res.tools) map.set(name, tool);
   }
-  if (exclude) {
-    for (const name of exclude) {
-      if (!name.startsWith("mcp__")) map.delete(name);
-    }
-  }
-  return map;
+  if (exclude) for (const name of exclude) map.delete(name);
+  return { tools: map, warnings };
 }
 
-/** Cleanup any live pty when a session ends. */
+/** Cleanup live pty + MCP children when a session ends. */
 export async function shutdownTools(sessionId: string): Promise<void> {
-  await cleanupPty(`fox-${sessionId.slice(0, 12)}`);
-}
-
-export function messageCount(sessionId: string): number {
-  return allMessages(sessionId).length;
+  await cleanupPty(ptySessionName(sessionId));
+  await closeMcp();
 }

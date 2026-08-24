@@ -1,7 +1,7 @@
 // stdin byte-stream decoder: CSI keys, ctrl combos, bracketed paste, SGR mouse
 export type Key =
   | { type: "char"; ch: string }
-  | { type: "named"; name: string; ctrl?: boolean; meta?: boolean }
+  | { type: "named"; name: string; ctrl?: boolean; meta?: boolean; shift?: boolean }
   | { type: "click"; x: number; y: number }
   | { type: "paste"; text: string };
 
@@ -20,6 +20,23 @@ const CSI = new Map<string, string>([
   ["5~", "pageup"],
   ["6~", "pagedown"],
 ]);
+
+/**
+ * xterm encodes modifiers as a second CSI parameter, 1 + a bitmask:
+ * shift=1, alt=2, ctrl=4. So ctrl+right is ESC [ 1 ; 5 C and alt+shift+up
+ * is ESC [ 1 ; 4 A. Without decoding this, ctrl+left arrives looking exactly
+ * like a bare left.
+ */
+function modsOf(param: string | undefined): { ctrl?: boolean; meta?: boolean; shift?: boolean } {
+  const n = Number(param);
+  if (!Number.isFinite(n) || n < 2) return {};
+  const bits = n - 1;
+  const out: { ctrl?: boolean; meta?: boolean; shift?: boolean } = {};
+  if (bits & 1) out.shift = true;
+  if (bits & 2) out.meta = true;
+  if (bits & 4) out.ctrl = true;
+  return out;
+}
 
 export function createDecoder(emit: (k: Key) => void) {
   let buf = "";
@@ -119,8 +136,14 @@ export function createDecoder(emit: (k: Key) => void) {
     }
     const seq = m[1] + m[2];
     buf = buf.slice(m[0].length);
-    const name = CSI.get(seq) ?? CSI.get(m[2]);
-    if (name) emit({ type: "named", name });
+    // params are "1;5" for modified arrows/home/end, "3;5" for modified ~-keys
+    const params = m[1].split(";");
+    const mods = modsOf(params[1]);
+    // for a modified key the lookup key is the final char (arrows) or
+    // "<n>~" (tilde keys); the raw seq only matches when unmodified
+    const tilde = m[2] === "~" ? `${params[0]}~` : undefined;
+    const name = CSI.get(seq) ?? (tilde ? CSI.get(tilde) : undefined) ?? CSI.get(m[2]);
+    if (name) emit({ type: "named", name, ...mods });
     return true;
   }
 
