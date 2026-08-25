@@ -6,11 +6,30 @@ import type { ToolDef } from "../providers/types.ts";
 import type { ToolContext, ToolResult } from "./types.ts";
 import { fail, ok } from "./types.ts";
 import { applyEdits, syntaxWarning, type EditOp } from "./patch.ts";
+import { diagnose } from "../lsp/client.ts";
 
 const execFileP = promisify(execFile);
 export const READ_CAP = 50_000; // chars
 export const OUT_CAP = 30_000;
 export const MAX_READ_BYTES = 10_000_000;
+
+/**
+ * What to append to an edit/write result about the state of the file afterwards.
+ *
+ * A language server is authoritative when one answers: it type-checks, so it
+ * catches the errors that matter, and its output supersedes the transpiler's
+ * parse check. `syntaxWarning` stays as the fallback for when no server is
+ * configured, not installed, or silent — without it, a `.py` edit on a machine
+ * with no pyright would lose the one check fox used to do.
+ */
+async function afterWrite(path: string, absPath: string, content: string, ctx: ToolContext): Promise<string> {
+  if (ctx.diagnostics !== false) {
+    const diags = await diagnose(absPath, content, { servers: ctx.lsp, cwd: ctx.cwd });
+    if (diags) return `\n${diags}`;
+  }
+  const warn = syntaxWarning(path, content);
+  return warn ? `\n${warn}` : "";
+}
 
 function cap(s: string, note = "… (truncated)"): string {
   return s.length > OUT_CAP ? s.slice(0, OUT_CAP) + note : s;
@@ -80,7 +99,7 @@ export async function readRun(args: { path: string; offset?: number; limit?: num
 
 export const writeDef: ToolDef = {
   name: "write",
-  description: "Write a file (creates parent dirs). Overwriting an existing file requires reading it first.",
+  description: "Write a file (creates parent dirs). Overwriting an existing file requires reading it first. The result reports any type errors the new contents cause.",
   parameters: {
     type: "object",
     properties: { path: { type: "string" }, content: { type: "string" } },
@@ -101,7 +120,9 @@ export async function writeRun(args: { path: string; content: string }, ctx: Too
   mkdirSync(dirname(p), { recursive: true });
   writeFileSync(p, args.content);
   ctx.readFiles.add(p);
-  return ok(`wrote ${args.path} (${Buffer.byteLength(args.content)} bytes)`);
+  // write used to report nothing about what it produced, so a newly created file
+  // with a type error looked identical to a clean one
+  return ok(`wrote ${args.path} (${Buffer.byteLength(args.content)} bytes)${await afterWrite(args.path, p, args.content, ctx)}`);
 }
 
 // ---------- edit ----------
@@ -109,7 +130,7 @@ export async function writeRun(args: { path: string; content: string }, ctx: Too
 export const editDef: ToolDef = {
   name: "edit",
   description:
-    'Edit a file. Pass edits:[{oldString,newString,replaceAll?}] (multiple changes applied in order) or the legacy single oldString/newString. Exact-match first; falls back to whitespace-tolerant match preserving relative indentation.',
+    'Edit a file. Pass edits:[{oldString,newString,replaceAll?}] (multiple changes applied in order) or the legacy single oldString/newString. Exact-match first; falls back to whitespace-tolerant match preserving relative indentation. The result reports any type errors your change caused, so do not run a type-checker separately just to see them.',
   parameters: {
     type: "object",
     properties: {
@@ -160,9 +181,8 @@ export async function editRun(
   try {
     const { content, applied, fuzzy } = applyEdits(raw, ops);
     writeFileSync(p, content);
-    const warn = syntaxWarning(p, content);
     return ok(
-      `edited ${args.path} (${applied} replacement${applied === 1 ? "" : "s"}${fuzzy ? `, ${fuzzy} via whitespace-tolerant match` : ""})${warn ? `\n${warn}` : ""}`,
+      `edited ${args.path} (${applied} replacement${applied === 1 ? "" : "s"}${fuzzy ? `, ${fuzzy} via whitespace-tolerant match` : ""})${await afterWrite(args.path, p, content, ctx)}`,
     );
   } catch (e) {
     return fail((e as Error).message.startsWith("edit:") ? (e as Error).message : `error: edit failed: ${(e as Error).message}`);

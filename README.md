@@ -37,7 +37,7 @@ TOML is the only config format — a malformed file fails loudly, naming the fil
 than being silently ignored. (Pre-1.0 `.fox.json` is rejected with a message telling you what to rename.)
 Project instructions are loaded from `AGENTS.md` / `CLAUDE.md` walking up from cwd.
 
-Env vars: `FOX_MODEL`, `FOX_BASE_URL`, `FOX_API_KEY`, `FOX_PROVIDER`, `FOX_MAX_STEPS`, `FOX_COMPACT_AT`, `FOX_RETRY_LIMIT`, `FOX_REQUEST_TIMEOUT_MS`, `FOX_HOME` (state dir, default `~/.local/share/fox`). `OPENAI_BASE_URL` / `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` are honored as fallbacks.
+Env vars: `FOX_MODEL`, `FOX_BASE_URL`, `FOX_API_KEY`, `FOX_PROVIDER`, `FOX_MAX_STEPS`, `FOX_COMPACT_AT`, `FOX_RETRY_LIMIT`, `FOX_REQUEST_TIMEOUT_MS`, `FOX_DIAGNOSTICS` (`0`/`false`/`no` turns off post-edit diagnostics), `FOX_HOME` (state dir, default `~/.local/share/fox`). `OPENAI_BASE_URL` / `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` are honored as fallbacks.
 
 `FOX_REQUEST_TIMEOUT_MS` (default `120000`, `0` disables) bounds **time without progress**, not total
 request duration: the clock is rearmed on every streamed chunk, so a model that reasons or writes for
@@ -51,6 +51,7 @@ model = "kimi-k2"
 maxSteps = 40
 compactAt = 0.85
 requestTimeoutMs = 120000
+diagnostics = true          # report type errors after each edit (default true)
 
 [mcpServers.fs]
 command = "npx"
@@ -61,7 +62,44 @@ args = ["-y", "@modelcontextprotocol/server-fs", "/tmp"]
 [agents.reviewer]
 command = "some-other-acp-agent"
 args = ["--acp"]
+
+# Extra language servers for diagnostics. TypeScript, Python and Rust are
+# built in; a table here adds a language or overrides a built-in by extension.
+[lsp.gopls]
+command = "gopls"
+extensions = [".go"]        # "go" works too
+rootMarkers = ["go.mod"]    # nearest ancestor holding one becomes the project root
 ```
+
+## Diagnostics after every edit
+
+`edit` and `write` report what the change broke, in the tool result, without the model asking:
+
+```
+edited src/loop/turn.ts (1 replacement)
+diagnostics (typescript, 1 error):
+  src/loop/turn.ts:214:9 error 2322  Type 'number' is not assignable to type 'string'.
+```
+
+Servers are found on `PATH` and started on demand, one per project root, then kept warm — measured on this
+repo, a cold `typescript-language-server` takes ~4s to first answer and ~1s per edit after that, against
+11.5s for `tsc --noEmit`. Built in: `typescript-language-server` (ts/tsx/js/jsx/mjs/cjs),
+`pyright-langserver` (py/pyi), `rust-analyzer` (rs). Add others with `[lsp.*]`.
+
+Only **errors and warnings** are reported, capped at 12 per edit. Hints are dropped on purpose: "declared but
+never read" fires legitimately whenever a helper is written in one edit and called in the next, and reporting
+it trains the model to chase noise. Multi-line messages (TS overload dumps, rustc explanations) are collapsed
+to their first line.
+
+Everything here degrades to silence rather than to a failed edit — no server installed, a server that won't
+start, one that hangs, a project too big to analyze in time: the edit still succeeded, and it is reported as
+such. When no language server applies, fox falls back to its own bracket-balance check. Turn the whole thing
+off with `diagnostics = false` or `FOX_DIAGNOSTICS=0`.
+
+Two traps worth knowing if diagnostics stay suspiciously quiet, both of which fail *silently* rather than
+erroring: `typescript-language-server` refuses to start unless `typescript` resolves from the project root
+(`npm i -D typescript`), and a file outside `tsconfig.json`'s `include` gets zero diagnostics with no
+complaint.
 
 ## ACP (Agent Client Protocol)
 
@@ -143,6 +181,7 @@ fox is a **trusted-workspace** tool. Read this before pointing it at code you di
 - **API keys are stripped from child processes.** `exec`, `pty` (tmux) and MCP servers get a filtered env (`src/core/childenv.ts`): `FOX_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `*_API_KEY` and `FOX_AUTH*` are removed. Everything else in your env is inherited, so other secrets there are still visible to tools. **ACP agents spawned by `task` are the exception** — they need a key to call a model at all, and the model cannot choose which command runs (see the ACP section).
 - **Session data is local and unencrypted**: one SQLite file per session under `FOX_HOME`, containing full transcripts and tool output. `pty/` additionally holds raw shell output logs. Delete a session with `/delete <id> yes` in the TUI or ACP `session/delete` (`deleteSession` in the SDK), which removes the file *and* its `index.db` row; removing only the file leaves it listed as an empty session.
 - **MCP servers are arbitrary executables** you configure by command line; fox spawns them and trusts their tool descriptions.
+- **Language servers are spawned automatically** when diagnostics are on (the default): a built-in server found on `PATH`, or any command you name in `[lsp.*]`, started in the project root and shown the contents of files fox edits. Servers get the same key-stripped env as `exec`. Unlike MCP, no server runs unless it is already installed — but a `PATH` you don't control means a program you don't control. `diagnostics = false` disables it.
 
 Run it in a container or VM for anything you don't trust.
 
@@ -156,16 +195,16 @@ src/
   loop/       turn manager (retries, parallel tools, step caps), system prompt
   providers/  openai-compatible + anthropic (cache_control), model registry
   acp/        ACP server (fox --acp), ACP client (drives other agents), event mapping
+  lsp/        language server pool, frame codec, diagnostic formatting
   tools/      builtins + MCP bridge + registry
   tui/        ANSI renderer + app
   sdk.ts      library entry (createAgent)
-test/         bun test suites (projection, turn manager, patch engine, acp, ...)
+test/         bun test suites (projection, turn manager, patch engine, acp, lsp, ...)
 ```
 
 ## Roadmap
 - v1 tails: MCP live-test
 - v1.5: Plugin API (tools + lifecycle hooks + custom providers)
-- v2: LSP diagnostics
 - v3: A2A · OpenAI-compat server endpoint · web UI
 
 MIT

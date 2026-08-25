@@ -187,6 +187,8 @@ function fallbackConfig(cfg: ProviderConfig, opts: TurnOptions): Config {
     requestTimeoutMs: cfg.requestTimeoutMs ?? 120_000,
     mcpServers: {},
     agents: {},
+    lsp: {},
+    diagnostics: true,
     projectInstructions: "",
   };
 }
@@ -326,6 +328,8 @@ export async function* runTurnCore(
           signal,
           providerCfg: cfg,
           agents: effCfg.agents,
+          lsp: effCfg.lsp,
+          diagnostics: effCfg.diagnostics,
           emit: quiet ? undefined : liveEvents.push,
           get pty() {
             return ptyState;

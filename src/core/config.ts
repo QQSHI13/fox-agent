@@ -23,6 +23,21 @@ export interface AcpAgentConfig {
   env?: Record<string, string>;
 }
 
+/**
+ * A language server fox may consult for diagnostics after an edit.
+ *
+ * `extensions` is what makes an entry usable — a server with no extensions can
+ * never be selected, so it is required here even though the built-in table in
+ * `src/lsp/servers.ts` supplies defaults for ts/py/rs.
+ */
+export interface LspConfig {
+  command: string;
+  args?: string[];
+  env?: Record<string, string>;
+  extensions: string[];
+  rootMarkers?: string[];
+}
+
 export interface Config {
   model: string;
   baseUrl: string;
@@ -37,6 +52,10 @@ export interface Config {
   mcpServers: Record<string, McpServerConfig>;
   /** external ACP agents available to the `task` tool, by name */
   agents: Record<string, AcpAgentConfig>;
+  /** language servers for post-edit diagnostics; overrides the built-in table by extension */
+  lsp: Record<string, LspConfig>;
+  /** consult language servers after edit/write at all (built-ins are PATH-detected) */
+  diagnostics: boolean;
   /** contents of AGENTS.md / CLAUDE.md found walking up from cwd ("" if none) */
   projectInstructions: string;
 }
@@ -52,6 +71,8 @@ const DEFAULTS: Omit<Config, "projectInstructions"> = {
   requestTimeoutMs: 120_000,
   mcpServers: {},
   agents: {},
+  lsp: {},
+  diagnostics: true,
 };
 
 /**
@@ -113,6 +134,9 @@ function applyEnv(cfg: Config, env: Record<string, string | undefined>) {
   // 0 is meaningful here (disable the timeout), so the guard is >= 0
   const reqTimeout = Number(env.FOX_REQUEST_TIMEOUT_MS);
   if (Number.isFinite(reqTimeout) && reqTimeout >= 0) cfg.requestTimeoutMs = Math.floor(reqTimeout);
+  // an escape hatch for a machine with a pathological language server: any of
+  // 0/false/no turns post-edit diagnostics off without touching a config file
+  if (env.FOX_DIAGNOSTICS !== undefined) cfg.diagnostics = !/^(0|false|no)$/i.test(env.FOX_DIAGNOSTICS.trim());
 }
 
 /**
@@ -130,6 +154,7 @@ function applyTable(cfg: Config, t: Record<string, unknown> | null) {
   if (typeof t.retryLimit === "number" && t.retryLimit >= 0) cfg.retryLimit = Math.floor(t.retryLimit);
   if (typeof t.compactAt === "number" && t.compactAt > 0 && t.compactAt <= 1) cfg.compactAt = t.compactAt;
   if (typeof t.requestTimeoutMs === "number" && t.requestTimeoutMs >= 0) cfg.requestTimeoutMs = Math.floor(t.requestTimeoutMs);
+  if (typeof t.diagnostics === "boolean") cfg.diagnostics = t.diagnostics;
   if (t.mcpServers && typeof t.mcpServers === "object") {
     for (const [name, v] of Object.entries(t.mcpServers as Record<string, unknown>)) {
       const s = v as { command?: string; args?: string[]; env?: Record<string, string> };
@@ -146,6 +171,25 @@ function applyTable(cfg: Config, t: Record<string, unknown> | null) {
       // would make `task` route somewhere the model has no way to know about.
       if (name === "default") continue;
       cfg.agents[name] = { command: s.command, args: s.args, env: s.env };
+    }
+  }
+  if (t.lsp && typeof t.lsp === "object") {
+    for (const [name, v] of Object.entries(t.lsp as Record<string, unknown>)) {
+      const s = v as { command?: string; args?: string[]; env?: Record<string, string>; extensions?: unknown; rootMarkers?: string[] };
+      if (typeof s?.command !== "string") continue;
+      // An entry with no extensions could never be selected for any file, so it
+      // is skipped rather than stored — silently keeping it would make a typo'd
+      // `extension = ".rs"` look configured while never firing.
+      const exts = Array.isArray(s.extensions) ? s.extensions.filter((e): e is string => typeof e === "string") : [];
+      if (!exts.length) continue;
+      // normalized so both ".rs" and "rs" work; the matcher compares against extname()
+      cfg.lsp[name] = {
+        command: s.command,
+        args: s.args,
+        env: s.env,
+        extensions: exts.map((e) => (e.startsWith(".") ? e : `.${e}`)),
+        rootMarkers: s.rootMarkers,
+      };
     }
   }
 }
@@ -175,11 +219,11 @@ export function loadConfig(
   }
 
   // merge order: defaults <- global <- project <- env <- explicit overrides
-  // `mcpServers` and `agents` are re-initialized, not spread: DEFAULTS holds one
-  // shared object for each, and applyTable writes into them, so reusing the
-  // reference would leak one config's servers/agents into every later load in
-  // the same process (the ACP server loads config per run, so this is reachable).
-  const merged: Config = { ...DEFAULTS, mcpServers: {}, agents: {}, projectInstructions: "" };
+  // `mcpServers`, `agents` and `lsp` are re-initialized, not spread: DEFAULTS
+  // holds one shared object for each, and applyTable writes into them, so reusing
+  // the reference would leak one config's entries into every later load in the
+  // same process (the ACP server loads config per run, so this is reachable).
+  const merged: Config = { ...DEFAULTS, mcpServers: {}, agents: {}, lsp: {}, projectInstructions: "" };
   // An explicit --config that does not exist is a mistake worth surfacing; the
   // default global path being absent is normal and stays silent.
   if (overrides.configPath && !existsSync(overrides.configPath)) {

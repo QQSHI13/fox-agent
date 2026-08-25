@@ -45,6 +45,10 @@ const cfg = (): Config => ({
   requestTimeoutMs: 0,
   mcpServers: {},
   agents: {},
+  lsp: {},
+  // no language server in an ACP prompt test: it would spawn a real tsserver on
+  // whatever the mock happens to edit and add seconds per assertion
+  diagnostics: false,
   projectInstructions: "",
 });
 

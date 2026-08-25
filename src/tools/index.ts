@@ -10,6 +10,7 @@ import { todoDef, todoRun } from "./todo.ts";
 import { taskDef, taskRun } from "./task.ts";
 import { fetchDef, fetchRun } from "./fetch.ts";
 import { mcpTools, closeMcp } from "./mcp.ts";
+import { shutdownLsp } from "../lsp/client.ts";
 
 export type { Tool, ToolContext, ToolResult } from "./types.ts";
 
@@ -54,8 +55,11 @@ export async function buildRegistry(
   return { tools: map, warnings };
 }
 
-/** Cleanup live pty + MCP children when a session ends. */
+/** Cleanup live pty + MCP children + language servers when a session ends. */
 export async function shutdownTools(sessionId: string): Promise<void> {
   await cleanupPty(ptySessionName(sessionId));
   await closeMcp();
+  // an idle tsserver holds a project's worth of memory; leaving one per fox run
+  // behind would accumulate across a day of sessions in the same shell
+  await shutdownLsp();
 }

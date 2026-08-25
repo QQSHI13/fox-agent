@@ -1,6 +1,6 @@
 import type { ProviderConfig, ToolDef } from "../providers/types.ts";
 import type { AgentEvent } from "../core/events.ts";
-import type { AcpAgentConfig } from "../core/config.ts";
+import type { AcpAgentConfig, LspConfig } from "../core/config.ts";
 
 export interface PtyState {
   session: string; // tmux session name
@@ -28,6 +28,14 @@ export interface ToolContext {
   providerCfg?: ProviderConfig;
   /** external ACP agents `task` may delegate to, from `fox.toml [agents.*]` */
   agents?: Record<string, AcpAgentConfig>;
+  /**
+   * Post-edit diagnostics. `lsp` overrides the built-in server table by
+   * extension; `diagnostics === false` disables the whole path. Both absent
+   * means built-ins only, which is the default — so a bare ToolContext (tests,
+   * the SDK) gets the same behavior as the TUI.
+   */
+  lsp?: Record<string, LspConfig>;
+  diagnostics?: boolean;
   /**
    * Emit an extra event into the running turn's stream. `task` uses this to
    * forward a delegated agent's progress live; a tool that has nothing to report

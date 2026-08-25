@@ -92,6 +92,60 @@ command = "not-fox"
     expect(loadConfig({ cwd: clean }, { FOX_API_KEY: "k" }).agents).toEqual({});
   });
 
+  test("[lsp.*] tables configure language servers; unusable entries are skipped", async () => {
+    writeFileSync(
+      join(projectDir, "fox.toml"),
+      `[lsp.gopls]
+command = "gopls"
+extensions = ["go", ".mod"]
+rootMarkers = ["go.mod"]
+
+[lsp.zls]
+command = "zls"
+extensions = []
+
+[lsp.nocommand]
+extensions = [".ex"]
+`,
+    );
+    const { loadConfig } = await import("../src/core/config.ts");
+    const cfg = loadConfig({ cwd: projectDir }, { FOX_API_KEY: "k" });
+    // extensions are normalized so a user writing "go" gets the same result as ".go";
+    // the matcher compares against extname(), which always has the dot
+    expect(cfg.lsp.gopls).toEqual({
+      command: "gopls",
+      args: undefined,
+      env: undefined,
+      extensions: [".go", ".mod"],
+      rootMarkers: ["go.mod"],
+    });
+    // An entry with no extensions can never be selected for any file. Storing it
+    // would make a typo'd `extension = ".zig"` look configured while never firing.
+    expect(cfg.lsp.zls).toBeUndefined();
+    expect(cfg.lsp.nocommand).toBeUndefined();
+  });
+
+  test("lsp entries do not leak between loads, and diagnostics can be turned off", async () => {
+    // same shared-DEFAULTS hazard as agents: `fox --acp` loads config per run
+    writeFileSync(join(projectDir, "fox.toml"), `diagnostics = false\n[lsp.gopls]\ncommand = "gopls"\nextensions = [".go"]\n`);
+    const clean = join(dir, "clean2");
+    mkdirSync(clean, { recursive: true });
+    const { loadConfig } = await import("../src/core/config.ts");
+    expect(loadConfig({ cwd: projectDir }, { FOX_API_KEY: "k" }).diagnostics).toBe(false);
+    const next = loadConfig({ cwd: clean }, { FOX_API_KEY: "k" });
+    expect(next.lsp).toEqual({});
+    expect(next.diagnostics).toBe(true); // on by default
+  });
+
+  test("FOX_DIAGNOSTICS turns diagnostics off without touching a config file", async () => {
+    const { loadConfig } = await import("../src/core/config.ts");
+    for (const v of ["0", "false", "no", "NO", " false "]) {
+      expect(loadConfig({ cwd: projectDir }, { FOX_API_KEY: "k", FOX_DIAGNOSTICS: v }).diagnostics).toBe(false);
+    }
+    // anything else means on — an unset-but-present var must not silently disable it
+    expect(loadConfig({ cwd: projectDir }, { FOX_API_KEY: "k", FOX_DIAGNOSTICS: "1" }).diagnostics).toBe(true);
+  });
+
   test("explicit override beats everything + AGENTS.md discovery", async () => {
     writeFileSync(join(projectDir, "AGENTS.md"), "# rules\nbe terse");
     const sub = join(projectDir, "deep", "deeper");
