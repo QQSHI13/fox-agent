@@ -75,6 +75,8 @@ export function openTerm(): Term {
   const out = Bun.stdout.writer({ highWaterMark: 1 << 16 });
   const stdin = process.stdin;
   const wasRaw = stdin.isRaw ?? false;
+  /** the live `data` listener, kept so `end()` can detach it (see end()) */
+  let onData: ((chunk: Uint8Array) => void) | null = null;
 
   let cached = safeSize() ?? { width: 80, height: 24 };
 
@@ -117,7 +119,8 @@ export function openTerm(): Term {
     onKey(cb) {
       stdin.setRawMode(true);
       stdin.resume();
-      stdin.on("data", (chunk: Uint8Array) => cb(chunk));
+      onData = (chunk: Uint8Array) => cb(chunk);
+      stdin.on("data", onData);
     },
     begin() {
       // alt screen, hide cursor, bracketed paste, mouse press + BUTTON-MOTION
@@ -134,6 +137,26 @@ export function openTerm(): Term {
       out.write("\x1b[?7h\x1b[?1006l\x1b[?1002l\x1b[?1000l\x1b[?2004l\x1b[?25h\x1b[?1049l");
       try {
         stdin.setRawMode(wasRaw);
+      } catch {}
+      /**
+       * Release stdin, or the process outlives the TUI.
+       *
+       * `onKey` resumes stdin and attaches a `data` listener, which makes it a
+       * *referenced* event-loop handle. Restoring raw mode does not undo that,
+       * so after the TUI tore down its screen the loop still had a live handle
+       * and the process sat in `epoll_wait` forever — the caller's `await
+       * startTui()` had returned, `shutdownTools` had finished, and fox still
+       * would not exit. Ctrl+C looked like it took two presses: the first
+       * closed the UI, the second was the tty's SIGINT killing the husk.
+       *
+       * Verified with an isolated probe: a resumed stdin with a listener never
+       * reaches process exit; pausing and unref'ing it exits with RC=0.
+       */
+      try {
+        if (onData) stdin.off("data", onData);
+        onData = null;
+        stdin.pause();
+        (stdin as unknown as { unref?: () => void }).unref?.();
       } catch {}
       out.flush();
     },
