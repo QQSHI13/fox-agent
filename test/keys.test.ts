@@ -17,14 +17,35 @@ describe("key decoder", () => {
     ]);
   });
 
-  test("SGR left click gives 0-based coords; release ignored", () => {
-    const ks = feedKeys("\x1b[<0;12;7M\x1b[<0;12;7m");
-    expect(ks).toEqual([{ type: "click", x: 11, y: 6 }]);
+  test("SGR left button reports press, drag and release separately", () => {
+    // The bug this pins: press and release were collapsed into one `click` on
+    // press, and the release was thrown away — so a consumer could not tell a
+    // tap from a drag, and the thinking box toggled on button-DOWN.
+    const ks = feedKeys("\x1b[<0;12;7M\x1b[<32;15;7M\x1b[<0;15;7m");
+    expect(ks).toEqual([
+      { type: "mouse", action: "down", x: 11, y: 6 },
+      { type: "mouse", action: "drag", x: 14, y: 6 },
+      { type: "mouse", action: "up", x: 14, y: 6 },
+    ]);
+  });
+
+  test("a release is reported wherever the button comes up, button code and all", () => {
+    // xterm sends the button code on release too; ?1002h drags carry code+32.
+    // A release must be an `up` regardless of which code it names.
+    expect(feedKeys("\x1b[<32;4;2m")).toEqual([{ type: "mouse", action: "up", x: 3, y: 1 }]);
+  });
+
+  test("wheel is not mistaken for a button press or drag", () => {
+    // 64/65 are wheel notches, and they arrive with `M` like a press does
+    expect(feedKeys("\x1b[<64;1;1M\x1b[<65;1;1M")).toEqual([
+      { type: "named", name: "wheelup" },
+      { type: "named", name: "wheeldown" },
+    ]);
   });
 
   test("plain keys still decode alongside mouse", () => {
     const ks = feedKeys("h\x1b[<64;1;1M\x1b[A");
-    expect(ks.map((k) => (k.type === "char" ? k.ch : k.type === "named" ? k.name : "click"))).toEqual([
+    expect(ks.map((k) => (k.type === "char" ? k.ch : k.type === "named" ? k.name : k.type))).toEqual([
       "h",
       "wheelup",
       "up",

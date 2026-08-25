@@ -122,6 +122,28 @@ export class Screen {
     }
   }
 
+  /**
+   * Give cells [x0,x1) a background colour while keeping their own foreground.
+   *
+   * Selection highlighting needs this: `fillRow` would blank the text and a
+   * single flat style index would flatten every colour in the range to one.
+   * Empty cells inside the range are filled with a space so the highlight reads
+   * as a continuous block rather than stopping at the last glyph — that is what
+   * makes a multi-line selection look like a selection.
+   */
+  restyle(y: number, x0: number, x1: number, bg: string) {
+    if (y < 0 || y >= this.h) return;
+    for (let x = Math.max(0, x0); x < Math.min(this.w, x1); x++) {
+      const i = y * this.w + x;
+      const ch = this.chars[i];
+      if (ch === undefined) this.chars[i] = " ";
+      // the continuation cell of a wide char carries "" and must stay that way,
+      // but it still needs the highlight or the block gets holes in it
+      const cur = this.styles[this.sty[i]] ?? {};
+      this.sty[i] = this.sgr({ ...cur, bg });
+    }
+  }
+
   flush(): boolean {
     let dirty = false;
     let out = "";

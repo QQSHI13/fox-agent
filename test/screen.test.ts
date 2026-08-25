@@ -80,3 +80,50 @@ describe("Screen.flush sparse-cell correctness", () => {
     expect(cupThumb).toBeGreaterThan(kPos); // gap cleared BEFORE jumping to thumb
   });
 });
+
+describe("Screen.restyle: selection highlight over painted cells", () => {
+  test("adds a background while keeping each cell's own foreground", async () => {
+    const { Screen } = await import("../src/tui/screen.ts");
+    const term = new FakeTerm();
+    const scr = new Screen(term as any);
+    scr.resize(20, 1);
+
+    // two differently-coloured runs — a flat style index over the range would
+    // flatten both to one colour, which is what fillRow would have done
+    scr.text(0, 0, "red", scr.sgr({ fg: "#ff0000" }));
+    scr.text(3, 0, "blue", scr.sgr({ fg: "#0000ff" }));
+    scr.restyle(0, 0, 7, "#364a82");
+    scr.flush();
+
+    expect(scr.dumpGrid()).toContain("redblue"); // text intact, not blanked
+    expect(term.buf).toContain("\x1b[38;2;255;0;0m"); // red survives
+    expect(term.buf).toContain("\x1b[38;2;0;0;255m"); // and so does blue
+    expect(term.buf).toContain("\x1b[48;2;54;74;130m"); // highlight applied
+    // both runs carry the highlight, so it is not just the first cell
+    expect(term.buf.match(/\x1b\[48;2;54;74;130m/g)).toHaveLength(2);
+  });
+
+  test("fills empty cells inside the range so the highlight has no holes", async () => {
+    const { Screen } = await import("../src/tui/screen.ts");
+    const term = new FakeTerm();
+    const scr = new Screen(term as any);
+    scr.resize(10, 1);
+    scr.text(0, 0, "ab", scr.sgr({ fg: "#ffffff" }));
+    scr.restyle(0, 0, 5, "#364a82");
+    scr.flush();
+    // cells 2..4 were never painted; a selection that stopped at "b" would
+    // look ragged, so they become highlighted spaces
+    expect(scr.dumpGrid()).toBe("ab␣␣␣" + "\x01".repeat(5));
+  });
+
+  test("restyling off-screen rows is a no-op, not a crash", async () => {
+    const { Screen } = await import("../src/tui/screen.ts");
+    const term = new FakeTerm();
+    const scr = new Screen(term as any);
+    scr.resize(10, 2);
+    scr.restyle(-1, 0, 5, "#364a82");
+    scr.restyle(99, 0, 5, "#364a82");
+    scr.restyle(0, -5, 500, "#364a82"); // clamped to the row's width
+    expect(scr.dumpGrid().split("\n")[0]).toBe("␣".repeat(10));
+  });
+});

@@ -2,7 +2,16 @@
 export type Key =
   | { type: "char"; ch: string }
   | { type: "named"; name: string; ctrl?: boolean; meta?: boolean; shift?: boolean }
-  | { type: "click"; x: number; y: number }
+  /**
+   * Left button, as three distinct events rather than one.
+   *
+   * The decoder used to collapse all of this into a single `click` on *press*
+   * and silently drop the release, which made a drag indistinguishable from a
+   * tap: the thinking box collapsed the instant the button went down, and there
+   * was no motion stream to select text with. `down`/`drag`/`up` is the minimum
+   * that lets a consumer tell "clicked here" from "dragged from here to there".
+   */
+  | { type: "mouse"; action: "down" | "drag" | "up"; x: number; y: number }
   | { type: "paste"; text: string };
 
 const CSI = new Map<string, string>([
@@ -205,11 +214,14 @@ export function createDecoder(emit: (k: Key) => void) {
       const x = Number(mm[2]) - 1;
       const y = Number(mm[3]) - 1;
       buf = buf.slice(mm[0].length);
-      if (mm[4] === "M") {
-        if (btn === 64) emit({ type: "named", name: "wheelup" });
-        else if (btn === 65) emit({ type: "named", name: "wheeldown" });
-        else if (btn === 0) emit({ type: "click", x, y });
-      }
+      // With ?1002h the terminal also reports motion while a button is held, as
+      // the button code + 32 (bit 5 = "this is a drag"). Wheel is 64/65 and is
+      // not a button at all, so it is matched first.
+      if (btn === 64) emit({ type: "named", name: "wheelup" });
+      else if (btn === 65) emit({ type: "named", name: "wheeldown" });
+      else if (mm[4] === "m") emit({ type: "mouse", action: "up", x, y });
+      else if (btn === 32) emit({ type: "mouse", action: "drag", x, y });
+      else if (btn === 0) emit({ type: "mouse", action: "down", x, y });
       return true;
     }
 

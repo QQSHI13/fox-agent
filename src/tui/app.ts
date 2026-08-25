@@ -5,6 +5,14 @@ import { openTerm, type Term } from "./term.ts";
 import { appendFileSync } from "node:fs";
 import { Screen } from "./screen.ts";
 import { createDecoder, type Key } from "./keys.ts";
+import {
+  extractSelection,
+  gestureFor,
+  rowCells,
+  selRangeForRow,
+  type Anchor,
+  type PressState,
+} from "./select.ts";
 import { renderMarkdown } from "./markdown.ts";
 import { wrapSegs, segWidth, type Seg } from "./wrap.ts";
 import { charWidth } from "./screen.ts";
@@ -44,6 +52,7 @@ const C = {
   ok: "#9ece6a",
   barBg: "#16161e",
   inputBg: "#1f2335",
+  selBg: "#364a82", // selection highlight; readable behind every fg above
 };
 const SPIN = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const ARG_COMMANDS = new Set(["/resume", "/model"]);
@@ -77,6 +86,52 @@ async function clipRead(): Promise<string> {
     } catch {}
   }
   return "";
+}
+
+/**
+ * Copy to the system clipboard, reporting whether anything actually took it.
+ *
+ * Mirrors `clipRead`'s probe-in-order approach, but the exit code is the only
+ * signal available: `clip.exe` and `wl-copy` both say nothing on success. A
+ * command that is missing throws from `Bun.spawn`; one that is present but
+ * broken (X11 tools with no DISPLAY) exits non-zero — both fall through to the
+ * next candidate, and OSC 52 is the last resort because it is the only one that
+ * works over SSH with no local helper installed at all. Many terminals ignore
+ * OSC 52 by default, which is why it is last rather than first: when a real
+ * helper exists we want its definite success over a write into the void.
+ */
+async function clipWrite(text: string, term: Term): Promise<boolean> {
+  const cmds = [
+    ["clip.exe"],
+    ["wl-copy"],
+    ["xclip", "-selection", "clipboard", "-i"],
+    ["pbcopy"],
+  ];
+  for (const argv of cmds) {
+    try {
+      const p = Bun.spawn(argv, { stdin: "pipe", stdout: "ignore", stderr: "ignore" });
+      const timer = setTimeout(() => {
+        try {
+          p.kill();
+        } catch {}
+      }, 1500);
+      p.stdin.write(text);
+      await p.stdin.end();
+      const code = await p.exited;
+      clearTimeout(timer);
+      if (code === 0) return true;
+    } catch {}
+  }
+  // OSC 52: hand the bytes to the terminal itself. Capped because the sequence
+  // travels in-band and a multi-megabyte selection would stall the render loop
+  // mid-frame; a truncated copy beats a frozen UI.
+  try {
+    const b64 = Buffer.from(text.slice(0, 100_000), "utf8").toString("base64");
+    term.write(`\x1b]52;c;${b64}\x07`);
+    term.flush();
+    return true;
+  } catch {}
+  return false;
 }
 
 export async function startTui(state: HarnessState) {
@@ -117,6 +172,28 @@ export async function startTui(state: HarnessState) {
   const markDirty = () => {
     dirty = true;
   };
+
+  // ---- mouse / selection state ----
+  /**
+   * A press is only a click once the button comes back up in the same place.
+   *
+   * `?1000h` alone reported presses and nothing else, so the thinking box
+   * toggled on button-down — it "collapsed on first touch, not loosen touch",
+   * and any attempt to drag across it flipped it instead of selecting. Holding
+   * the press here and acting on release fixes both halves: the toggle happens
+   * on release, and a release somewhere else is a drag, which never toggles.
+   */
+  let press: PressState | null = null;
+  let selA: Anchor | null = null;
+  let selB: Anchor | null = null;
+  const hasSel = () => selA !== null && selB !== null && !(selA.row === selB.row && selA.col === selB.col);
+  function clearSel() {
+    if (selA || selB) {
+      selA = null;
+      selB = null;
+      markDirty();
+    }
+  }
 
   // ---- item mutations ----
   function push(kind: ItemKind, text: string, opts?: { ref?: number; expanded?: boolean }) {
@@ -411,7 +488,7 @@ export async function startTui(state: HarnessState) {
   // ---- keyboard ----
   function onKey(k: Key) {
     if (k.type === "paste") return insertText(k.text, true);
-    if (k.type === "click") return onClick(k.x, k.y);
+    if (k.type === "mouse") return onMouse(k.action, k.x, k.y);
     if (k.type === "char") {
       const prev = buf[cur - 1];
       if (prev && prev.c === "\\" && !prev.lit) {
@@ -440,6 +517,14 @@ export async function startTui(state: HarnessState) {
       return;
     }
     if (name === "c" && ctrl) {
+      // A live selection makes ctrl+c mean copy, as it does everywhere else.
+      // It is consumed here rather than falling through, so the same keystroke
+      // cannot both copy and abort the turn.
+      if (hasSel()) {
+        void copySelection();
+        clearSel();
+        return;
+      }
       if (busy) {
         ac?.abort();
         return;
@@ -473,6 +558,11 @@ export async function startTui(state: HarnessState) {
       return;
     }
     if (name === "escape") {
+      // escape sheds one thing at a time: selection, then the turn, then input
+      if (hasSel()) {
+        clearSel();
+        return;
+      }
       if (busy) ac?.abort();
       else {
         buf = [];
@@ -566,6 +656,82 @@ export async function startTui(state: HarnessState) {
   }
 
   // ---- mouse ----
+  /** the transcript row under screen row y, or null if y is not the transcript */
+  function transcriptRow(y: number): number | null {
+    if (y < 0 || y >= viewportH()) return null;
+    const row = y + scrollTop;
+    buildRows();
+    return row >= 0 && row < rowBuf.length ? row : null;
+  }
+
+  /** the cell column a click at screen x lands on within a transcript row */
+  function transcriptCol(x: number): number {
+    // the painter starts transcript text at column 1 (see paint())
+    return Math.max(0, x - 1);
+  }
+
+  /**
+   * All three mouse events go through one arbiter.
+   *
+   * The press/drag/release rules live in `gestureFor` so they can be tested
+   * without a terminal; this function is only the effects. Note that `onClick`
+   * — and therefore `toggleExpand` — is reachable from exactly one place: a
+   * release that `gestureFor` classified as a click. There is no path from a
+   * button-down to a toggle any more, which is the reported bug.
+   */
+  function onMouse(action: "down" | "drag" | "up", x: number, y: number) {
+    const g = gestureFor(action, press, x, y);
+    if (action === "down") {
+      const row = transcriptRow(y);
+      press = { x, y, moved: false };
+      // Any press drops the previous selection; a new one is staged here but
+      // only becomes visible once movement makes this a drag.
+      clearSel();
+      if (row !== null) {
+        selA = { row, col: transcriptCol(x) };
+        selB = selA;
+      }
+      return;
+    }
+    if (action === "drag") {
+      if (g.kind !== "extend") return;
+      press!.moved = true;
+      if (!selA) return;
+      // Dragging past an edge scrolls, so a selection can outrun the screen.
+      if (y < 0 || y >= viewportH()) {
+        stick = false;
+        scrollTop += y < 0 ? -1 : 1;
+        clampScroll();
+      }
+      const row = transcriptRow(Math.max(0, Math.min(viewportH() - 1, y)));
+      if (row === null) return;
+      selB = { row, col: transcriptCol(x) };
+      markDirty();
+      return;
+    }
+    press = null;
+    // A drag selects and copies; it must never also toggle what it passed over.
+    if (g.kind === "copy") {
+      if (hasSel()) void copySelection();
+      return;
+    }
+    if (g.kind !== "click") return;
+    // A tap: the selection it staged is a single cell, so drop it and treat
+    // this as the click it turned out to be.
+    clearSel();
+    onClick(x, y);
+  }
+
+  async function copySelection() {
+    if (!selA || !selB) return;
+    buildRows();
+    const text = extractSelection(rowBuf.map((r) => r.segs), selA, selB);
+    if (!text) return;
+    const okd = await clipWrite(text, term);
+    const lines = text.split("\n").length;
+    flash(okd ? `copied ${text.length} chars${lines > 1 ? ` (${lines} lines)` : ""}` : "copy failed — no clipboard tool");
+  }
+
   function onClick(x: number, y: number) {
     const vh = viewportH();
     const { inputTop } = dockGeom();
@@ -936,6 +1102,13 @@ export async function startTui(state: HarnessState) {
       for (const seg of row.segs) {
         x = screen.text(x, y, seg.t, st(seg, S.base));
       }
+      // Selection is a re-style over the cells already painted, not a second
+      // text pass: the grid holds one char per cell, so re-stamping the range
+      // with a highlight background cannot disturb wide chars or wrapping.
+      if (selA && selB) {
+        const range = selRangeForRow(i, selA, selB, rowCells(row.segs));
+        if (range) screen.restyle(y, 1 + range.from, 2 + range.to, C.selBg);
+      }
     }
 
     // scrollbar (right edge of transcript area)
@@ -958,7 +1131,7 @@ export async function startTui(state: HarnessState) {
     const empty = !d.trim();
     if (empty) {
       screen.text(1, inputTop, "❯ ", S.dim);
-      screen.text(3, inputTop, "(type here — / commands · \\ escapes · ! shell · wheel/pgup scroll · click expands)", S.dim);
+      screen.text(3, inputTop, "(type here — / commands · \\ escapes · ! shell · wheel/pgup scroll · click expands · drag selects)", S.dim);
       pendingCaret = { x: 3, y: inputTop };
     } else {
       const totalVis = layout.rows.length;

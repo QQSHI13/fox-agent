@@ -30,6 +30,23 @@ fox -c                                           # resume latest session here
 fox --acp                                        # serve ACP on stdio (see below)
 ```
 
+## Mouse and selection
+
+fox puts the terminal into button-event tracking, so it owns the mouse while it
+runs — including drags, which your terminal's own selection normally handles.
+
+- **click** a thinking block or tool output to fold/unfold it. The toggle fires
+  when you *release* the button, so a misdrag never flips it.
+- **drag** across the transcript to select; release copies. Selection follows
+  what is on screen, so wide characters (CJK, emoji) come back whole and
+  trailing padding from wrapping is stripped.
+- **ctrl+c** copies a live selection instead of interrupting; press it again
+  with nothing selected to abort the turn. **esc** clears the selection first.
+- copy tries `clip.exe`, `wl-copy`, `xclip`, `pbcopy`, then OSC 52 — the last of
+  which works over SSH with no helper installed.
+- your terminal's native selection is still available with the usual override
+  key (**shift**-drag in most terminals, **fn** or **option** on macOS).
+
 ## Config
 
 Cascade (later wins): defaults ← `~/.config/fox/config.toml` ← project `fox.toml` ← env (`FOX_*`) ← CLI flags.

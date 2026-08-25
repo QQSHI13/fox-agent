@@ -120,13 +120,18 @@ export function openTerm(): Term {
       stdin.on("data", (chunk: Uint8Array) => cb(chunk));
     },
     begin() {
-      // alt screen, hide cursor, bracketed paste, mouse press + SGR encoding,
+      // alt screen, hide cursor, bracketed paste, mouse press + BUTTON-MOTION
+      // (?1002h: motion reported only while a button is held) + SGR encoding,
       // and NO autowrap: the renderer owns an exact grid — a row that
-      // overflows must clip, not wrap (wrapping shreds absolute positioning)
-      out.write("\x1b[?1049h\x1b[2J\x1b[H\x1b[?25l\x1b[?2004h\x1b[?1000h\x1b[?1006h\x1b[?7l");
+      // overflows must clip, not wrap (wrapping shreds absolute positioning).
+      //
+      // ?1002h rather than ?1003h (any-motion): fox needs drags, not a mouse
+      // position event for every pixel of idle movement, which would wake the
+      // frame loop constantly for nothing.
+      out.write("\x1b[?1049h\x1b[2J\x1b[H\x1b[?25l\x1b[?2004h\x1b[?1000h\x1b[?1002h\x1b[?1006h\x1b[?7l");
     },
     end() {
-      out.write("\x1b[?7h\x1b[?1006l\x1b[?1000l\x1b[?2004l\x1b[?25h\x1b[?1049l");
+      out.write("\x1b[?7h\x1b[?1006l\x1b[?1002l\x1b[?1000l\x1b[?2004l\x1b[?25h\x1b[?1049l");
       try {
         stdin.setRawMode(wasRaw);
       } catch {}
