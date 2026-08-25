@@ -194,3 +194,86 @@ describe("key decoder: terminal noise must never eat keystrokes", () => {
     ]);
   });
 });
+
+/**
+ * Backspace has to arrive as a backspace no matter which dialect the terminal
+ * speaks, and one keypress must delete one glyph.
+ *
+ * Every case below was measured against the previous decoder. Three were silent
+ * losses: `CSI 127 u` (kitty keyboard, which several modern terminals negotiate
+ * on their own) and `CSI 27;5;127~` (xterm modifyOtherKeys=2) produced NO key at
+ * all, and alt+backspace decoded as `escape` + `backspace`, so it wiped the
+ * whole line instead of one word. A fourth split emoji into surrogate halves,
+ * making one visible glyph cost two presses — the "long press" symptom.
+ */
+describe("backspace arrives in every keyboard dialect", () => {
+  const DIALECTS: [string, string, Key][] = [
+    ["\x7f", "DEL, the usual encoding", { type: "named", name: "backspace" }],
+    ["\x08", "BS (0x08), sent by some terminals", { type: "named", name: "backspace" }],
+    ["\x1b[127u", "kitty keyboard protocol, CSI-u", { type: "named", name: "backspace" }],
+    ["\x1b[27;5;127~", "xterm modifyOtherKeys=2, ctrl held", { type: "named", name: "backspace", ctrl: true }],
+    ["\x1b\x7f", "alt+backspace, the delete-word chord", { type: "named", name: "backspace", meta: true }],
+  ];
+
+  for (const [seq, desc, want] of DIALECTS) {
+    test(`${desc} decodes to backspace`, () => {
+      expect(feedKeys(seq)).toEqual([want]);
+    });
+  }
+
+  test("alt+backspace is one chord, not escape followed by backspace", () => {
+    // the regression: `escape` clears the entire input, so decoding the chord as
+    // two keys erased the whole line the user was editing
+    const ks = feedKeys("\x1b\x7f");
+    expect(ks).toHaveLength(1);
+    expect(ks.map((k) => (k.type === "named" ? k.name : k.type))).not.toContain("escape");
+  });
+
+  test("kitty-protocol ctrl and plain letters stay distinguishable", () => {
+    expect(feedKeys("\x1b[97u")).toEqual([{ type: "char", ch: "a" }]);
+    expect(feedKeys("\x1b[97;5u")).toEqual([{ type: "named", name: "a", ctrl: true }]);
+    expect(feedKeys("\x1b[13u")).toEqual([{ type: "named", name: "return" }]);
+  });
+
+  test("the delete key is still delete, not backspace", () => {
+    expect(feedKeys("\x1b[3~")).toEqual([{ type: "named", name: "delete" }]);
+  });
+});
+
+describe("one glyph is one key, whatever its byte length", () => {
+  test("an emoji is one char event, not two surrogate halves", () => {
+    // Emitting the halves separately put two entries in the input buffer for one
+    // glyph, so erasing it took two backspaces — the first leaving a broken
+    // half-character on screen.
+    expect(feedKeys("😀")).toEqual([{ type: "char", ch: "😀" }]);
+  });
+
+  test("a character split across two reads is not corrupted", () => {
+    // a pty hands over whatever bytes are ready; a stateless TextDecoder turned
+    // the halves into replacement chars (measured: "hi<?><?><?>there")
+    const out: Key[] = [];
+    const dec = createDecoder((k) => out.push(k));
+    const bytes = new TextEncoder().encode("hi日there");
+    dec.feed(bytes.slice(0, 3)); // mid-way through 日
+    dec.feed(bytes.slice(3));
+    const text = out.map((k) => (k.type === "char" ? k.ch : "")).join("");
+    expect(text).toBe("hi日there");
+    expect(text).not.toContain("�");
+  });
+
+  test("an emoji split across two reads survives", () => {
+    const out: Key[] = [];
+    const dec = createDecoder((k) => out.push(k));
+    const bytes = new TextEncoder().encode("😀");
+    dec.feed(bytes.slice(0, 2));
+    dec.feed(bytes.slice(2));
+    expect(out).toEqual([{ type: "char", ch: "😀" }]);
+  });
+
+  test("CJK still decodes as a single char", () => {
+    expect(feedKeys("日本")).toEqual([
+      { type: "char", ch: "日" },
+      { type: "char", ch: "本" },
+    ]);
+  });
+});

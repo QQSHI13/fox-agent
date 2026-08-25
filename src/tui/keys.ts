@@ -73,6 +73,17 @@ export function createDecoder(emit: (k: Key) => void) {
   let flushTimer: ReturnType<typeof setTimeout> | null = null;
 
   /**
+   * One decoder for the whole session, in streaming mode.
+   *
+   * A fresh `TextDecoder` per chunk cannot work: a multi-byte character split
+   * across two reads decodes as two replacement chars. That is not theoretical —
+   * a pty delivers whatever bytes are ready, so typing or pasting CJK/emoji at a
+   * chunk boundary produced `hi<?><?><?>there` (measured). `{stream:true}` holds
+   * the partial sequence until its remaining bytes arrive.
+   */
+  const utf8 = new TextDecoder("utf-8");
+
+  /**
    * Re-drive the decoder shortly after a burst ends.
    *
    * `moreComing()` makes an incomplete escape sequence wait for the rest of its
@@ -103,7 +114,7 @@ export function createDecoder(emit: (k: Key) => void) {
 
   function feed(chunk: Uint8Array) {
     lastArrival = Date.now();
-    buf += new TextDecoder().decode(chunk);
+    buf += utf8.decode(chunk, { stream: true });
     drain();
   }
 
@@ -202,8 +213,19 @@ export function createDecoder(emit: (k: Key) => void) {
 
     const b0 = buf[0];
     if (b0 !== "\x1b") {
-      emitChar(b0);
-      buf = buf.slice(1);
+      // Take a whole code point, not a UTF-16 code unit. An emoji is a surrogate
+      // pair, and emitting its halves separately put two entries in the input
+      // buffer for one glyph the user saw once — so erasing it took two
+      // backspaces, the first of which left a broken half-character on screen.
+      const cp = buf.codePointAt(0)!;
+      const ch = String.fromCodePoint(cp);
+      // A lone surrogate at the buffer head means the pair is still arriving;
+      // wait for its mate rather than emitting a half.
+      if (cp >= 0xd800 && cp <= 0xdbff && buf.length < 2) {
+        if (moreComing()) return false;
+      }
+      emitChar(ch);
+      buf = buf.slice(ch.length);
       return true;
     }
 
@@ -247,6 +269,15 @@ export function createDecoder(emit: (k: Key) => void) {
           return true;
         }
       }
+      // alt+backspace ("delete previous word" everywhere else) decoded as
+      // `escape` then `backspace`. Since escape clears the whole input, pressing
+      // it erased the entire line instead of one word — measured: "xxyz hello"
+      // became empty. Report it as the chord it is and let the app decide.
+      if (buf[1] === "\x7f" || buf[1] === "\x08") {
+        emit({ type: "named", name: "backspace", meta: true });
+        buf = buf.slice(2);
+        return true;
+      }
       emit({ type: "named", name: "escape" });
       buf = buf.slice(1);
       return true;
@@ -263,6 +294,44 @@ export function createDecoder(emit: (k: Key) => void) {
     // params are "1;5" for modified arrows/home/end, "3;5" for modified ~-keys
     const params = m[1].split(";");
     const mods = modsOf(params[1]);
+
+    /**
+     * `CSI <code> ; <mods> u` (kitty keyboard) and `CSI 27 ; <mods> ; <code> ~`
+     * (xterm modifyOtherKeys=2) report keys as raw code points.
+     *
+     * Terminals turn these on themselves — kitty, foot, WezTerm and Ghostty all
+     * negotiate a keyboard protocol, and once active, backspace stops arriving as
+     * `0x7f` and starts arriving as `CSI 127 u`. This decoder matched neither, so
+     * backspace produced NOTHING (measured `[]` for both). Mapping them through
+     * `emitChar` reuses the control-code naming already used for raw bytes.
+     */
+    if (m[2] === "u") {
+      const cp = Number(params[0]);
+      if (Number.isFinite(cp) && cp > 0) {
+        const mu = modsOf(params[1]);
+        if (cp === 127 || cp === 8) emit({ type: "named", name: "backspace", ...mu });
+        else if (cp === 13) emit({ type: "named", name: "return", ...mu });
+        else if (cp === 9) emit({ type: "named", name: "tab", ...mu });
+        else if (cp === 27) emit({ type: "named", name: "escape", ...mu });
+        else if (mu.ctrl || mu.meta) {
+          const letter = String.fromCodePoint(cp).toLowerCase();
+          emit({ type: "named", name: letter, ...mu });
+        } else emit({ type: "char", ch: String.fromCodePoint(cp) });
+      }
+      return true;
+    }
+    if (m[2] === "~" && params[0] === "27" && params.length >= 3) {
+      const cp = Number(params[2]);
+      const mu = modsOf(params[1]);
+      if (Number.isFinite(cp) && cp > 0) {
+        if (cp === 127 || cp === 8) emit({ type: "named", name: "backspace", ...mu });
+        else if (cp === 13) emit({ type: "named", name: "return", ...mu });
+        else if (cp === 9) emit({ type: "named", name: "tab", ...mu });
+        else if (mu.ctrl || mu.meta) emit({ type: "named", name: String.fromCodePoint(cp).toLowerCase(), ...mu });
+        else emit({ type: "char", ch: String.fromCodePoint(cp) });
+      }
+      return true;
+    }
     // for a modified key the lookup key is the final char (arrows) or
     // "<n>~" (tilde keys); the raw seq only matches when unmodified
     const tilde = m[2] === "~" ? `${params[0]}~` : undefined;

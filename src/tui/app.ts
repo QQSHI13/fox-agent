@@ -5,6 +5,7 @@ import { openTerm, type Term } from "./term.ts";
 import { appendFileSync } from "node:fs";
 import { Screen } from "./screen.ts";
 import { createDecoder, type Key } from "./keys.ts";
+import { graphemeBack, graphemeForward, type Ch } from "./edit.ts";
 import {
   extractSelection,
   gestureFor,
@@ -58,10 +59,7 @@ const SPIN = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "�
 const ARG_COMMANDS = new Set(["/resume", "/model"]);
 const HINT_WINDOW = 5;
 
-interface Ch {
-  c: string;
-  lit: boolean;
-}
+
 
 let keySeq = 0;
 const nk = () => ++keySeq;
@@ -381,7 +379,10 @@ export async function startTui(state: HarnessState) {
   const firstCharLit = () => buf.find((c) => c.c.trim().length > 0)?.lit ?? false;
 
   function chsSet(text: string) {
-    buf = text.split("").map((x) => ({ c: x, lit: false }));
+    // iterate code points, not UTF-16 units: `split("")` would tear an emoji
+    // into surrogate halves, and every later width/delete calculation inherits
+    // the damage
+    buf = [...text].map((x) => ({ c: x, lit: false }));
     cur = buf.length;
     inputRev++;
     markDirty();
@@ -609,8 +610,12 @@ export async function startTui(state: HarnessState) {
     }
     if (name === "backspace") {
       if (cur > 0) {
-        buf.splice(cur - 1, 1);
-        cur--;
+        // alt/ctrl+backspace deletes the previous word, as it does in every
+        // shell and editor; plain backspace deletes one grapheme, which may be
+        // several buffer entries (emoji, combining marks, flags).
+        const from = ctrl || k.meta ? wordBoundary(-1) : cur - graphemeBack(buf, cur);
+        buf.splice(from, cur - from);
+        cur = from;
         inputRev++;
       }
       hintSel = 0;
@@ -619,7 +624,10 @@ export async function startTui(state: HarnessState) {
     }
     if (name === "delete") {
       if (cur < buf.length) {
-        buf.splice(cur, 1);
+        // forward-delete is the same problem mirrored: remove the whole cluster
+        // starting here, not its first code point
+        const end = cur + graphemeForward(buf, cur);
+        buf.splice(cur, end - cur);
         inputRev++;
       }
       markDirty();
