@@ -38,22 +38,95 @@ function modsOf(param: string | undefined): { ctrl?: boolean; meta?: boolean; sh
   return out;
 }
 
+/**
+ * ECMA-48 byte classes for an escape sequence: `CSI P... I... F`.
+ *
+ * The decoder used to accept only `[0-9;?<>=]*` for parameters and `[A-Za-z~]`
+ * as the final byte, which is most of what a keyboard sends but not all of what
+ * a *terminal* sends. `ESC [ ?1000;1$y` (a DECRQM mode report) has a `$`
+ * intermediate and matched nothing — see `skipUnparsed`.
+ */
+const isParam = (c: string) => c >= "\x30" && c <= "\x3f"; // 0-9 : ; < = > ?
+const isIntermediate = (c: string) => c >= "\x20" && c <= "\x2f"; // space ! " # $ % & ' ( ) * + , - . /
+const isFinal = (c: string) => c >= "\x40" && c <= "\x7e"; // @ A-Z [ \ ] ^ _ ` a-z { | } ~
+
+/**
+ * How long an unterminated bracketed paste may stay quiet before we stop
+ * believing in it. Generous, because a multi-megabyte paste arrives in many
+ * chunks over a slow pty — but bounded, because the alternative is a decoder
+ * that never emits another key.
+ */
+const PASTE_GRACE_MS = 400;
+
 export function createDecoder(emit: (k: Key) => void) {
   let buf = "";
   let lastArrival = Date.now();
+  let flushTimer: ReturnType<typeof setTimeout> | null = null;
 
-  function feed(chunk: Uint8Array) {
-    lastArrival = Date.now();
-    buf += new TextDecoder().decode(chunk);
+  /**
+   * Re-drive the decoder shortly after a burst ends.
+   *
+   * `moreComing()` makes an incomplete escape sequence wait for the rest of its
+   * bytes, which is right — but nothing was ever scheduled to look again, so
+   * "wait" meant "wait until the user presses another key". A lone `Esc` emitted
+   * nothing until the *next* keystroke (measured), which is why esc-to-interrupt
+   * felt unreliable, and an unterminated report sat in front of real input.
+   */
+  function scheduleFlush(delay = 15) {
+    if (flushTimer) return;
+    flushTimer = setTimeout(() => {
+      flushTimer = null;
+      if (!buf.length) return;
+      drain();
+    }, delay);
+    flushTimer.unref?.();
+  }
+
+  function drain() {
     let guard = 0;
     while (buf.length && guard++ < 8192) {
       if (!consume()) break;
     }
+    // A buffer this deep is a decoder that has lost sync, not real typing.
     if (guard >= 8192) buf = "";
+    if (buf.length) scheduleFlush();
+  }
+
+  function feed(chunk: Uint8Array) {
+    lastArrival = Date.now();
+    buf += new TextDecoder().decode(chunk);
+    drain();
   }
 
   function moreComing(): boolean {
     return Date.now() - lastArrival < 12;
+  }
+
+  /**
+   * Give up on an escape sequence we cannot parse — dropping ONLY its own bytes.
+   *
+   * The bug this exists to prevent: `consume()` returning false leaves the
+   * unparsed prefix at the head of the buffer, and `feed` breaks its loop on
+   * false, so every keystroke arriving afterwards queues up behind it and is
+   * never emitted. One unrecognized terminal reply (measured: `ESC [ ?1000;1$y`,
+   * a DECRQM mode report, whose `$` intermediate the old CSI pattern did not
+   * cover) killed the keyboard for the whole session. Wiping the entire buffer
+   * instead is no better — it eats whatever the user already typed, which is the
+   * "backspace only works if I hold it down" symptom.
+   *
+   * So consume exactly the malformed sequence — ESC, `[`, and any bytes that are
+   * structurally part of a CSI (parameters, then intermediates, then one final
+   * byte) — and let real keystrokes behind it through. A dropped escape sequence
+   * is invisible; a dropped keystroke is not.
+   */
+  function skipUnparsed(): boolean {
+    if (moreComing()) return false; // the rest of it may still be arriving
+    let i = buf[1] === "[" || buf[1] === "]" || buf[1] === "P" ? 2 : 1;
+    while (i < buf.length && isParam(buf[i])) i++;
+    while (i < buf.length && isIntermediate(buf[i])) i++;
+    if (i < buf.length && isFinal(buf[i])) i++;
+    buf = buf.slice(Math.max(1, i));
+    return true;
   }
 
   function emitChar(c: string) {
@@ -70,11 +143,49 @@ export function createDecoder(emit: (k: Key) => void) {
     if (code >= 32) emit({ type: "char", ch: c });
   }
 
+  /**
+   * Consume a string-type escape (OSC / DCS / APC / SOS / PM) and emit nothing.
+   *
+   * These carry no key information, but terminals send them unsolicited — an OSC
+   * color reply, a DCS version string. Without this, `ESC ] 11;rgb:1/2/3 BEL`
+   * decoded as `escape` followed by the literal characters `]11;rgb:1/2/3` being
+   * typed into the input box (measured). They end at BEL or ST (`ESC \`).
+   */
+  function consumeString(): boolean {
+    const bel = buf.indexOf("\x07", 2);
+    const st = buf.indexOf("\x1b\\", 2);
+    if (st >= 0 && (bel < 0 || st < bel)) {
+      buf = buf.slice(st + 2);
+      return true;
+    }
+    if (bel >= 0) {
+      buf = buf.slice(bel + 1);
+      return true;
+    }
+    // terminator not here yet; wait unless the burst is over
+    if (moreComing()) return false;
+    return skipUnparsed();
+  }
+
   function consume(): boolean {
     const pStart = buf.indexOf("\x1b[200~");
     if (pStart === 0) {
       const pEnd = buf.indexOf("\x1b[201~", 5);
-      if (pEnd < 0) return false;
+      if (pEnd < 0) {
+        // A paste can legitimately span many chunks, so wait — but not forever.
+        // A start marker whose terminator never arrives (a truncated paste, a
+        // terminal that dropped it) would otherwise strand every later keystroke.
+        // Waiting on quiet rather than on a byte count: a large paste is slow to
+        // arrive but never goes quiet mid-transfer.
+        if (Date.now() - lastArrival < PASTE_GRACE_MS) {
+          scheduleFlush(PASTE_GRACE_MS);
+          return false;
+        }
+        // Drop only the start marker and re-read the rest as ordinary input, so
+        // the text that did arrive is kept instead of silently discarded.
+        buf = buf.slice(6);
+        return true;
+      }
       if (pEnd > 5) emit({ type: "paste", text: buf.slice(6, pEnd).replace(/\r\n?/g, "\n") });
       buf = buf.slice(pEnd + 6);
       return true;
@@ -110,6 +221,10 @@ export function createDecoder(emit: (k: Key) => void) {
       }
       return false;
     }
+    // string-type escapes carry no keys and must not reach emitChar
+    if (buf[1] === "]" || buf[1] === "P" || buf[1] === "_" || buf[1] === "X" || buf[1] === "^") {
+      return consumeString();
+    }
     if (buf[1] !== "[") {
       // ESC followed by a plain char: alt+key or bare escape
       if (buf[1] === "O") {
@@ -127,12 +242,9 @@ export function createDecoder(emit: (k: Key) => void) {
 
     const m = /^\x1b\[([0-9;?<>=]*)([A-Za-z~])/.exec(buf);
     if (!m) {
-      if (!moreComing()) {
-        emit({ type: "named", name: "escape" });
-        buf = "";
-        return true;
-      }
-      return false;
+      // Either still arriving, or a sequence this decoder has no meaning for (a
+      // terminal report). Drop just that sequence — never the keys behind it.
+      return skipUnparsed();
     }
     const seq = m[1] + m[2];
     buf = buf.slice(m[0].length);
