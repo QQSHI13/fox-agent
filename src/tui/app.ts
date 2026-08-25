@@ -256,6 +256,18 @@ export async function startTui(state: HarnessState) {
           push("toolhead", `[m${ev.seq}] ⚙ ${ev.name}${ev.ok ? "" : " ✗"}`);
           push("toolbody", `  ↳ ${oneLine}`, { ref: ev.seq, expanded: expandedRefs.has(ev.seq) });
           statsRev++;
+        } else if (ev.type === "child_tool") {
+          // A subagent's own tool calls. Only the completions are shown: a
+          // delegated run can be dozens of calls deep, and pairing every start
+          // with its end would bury the parent's own transcript.
+          if (ev.done) {
+            if (md) {
+              push("md", md);
+              md = "";
+              streamText = null;
+            }
+            push("toolbody", `  ↳ ${ev.session} · ${ev.name}${ev.ok ? "" : " ✗"}`);
+          }
         } else if (ev.type === "done") {
           if (ev.reason.startsWith("error")) push("error", `✗ ${ev.reason}`);
         }

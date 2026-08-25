@@ -18,6 +18,7 @@ usage: fox [options] [-p "prompt"]
   -p, --print      run one prompt headless, print the answer, exit
                    (reads stdin when no prompt given or stdin is piped)
   --json           with -p: emit NDJSON agent events instead of text
+  --acp            serve the Agent Client Protocol on stdio (for Zed, acpx, ...)
   -c, --continue   resume this directory's latest session
   --no-tui         plain streaming mode (pipes)
   --model <id>     override model
@@ -44,6 +45,7 @@ function parseArgv(argv: string[]): Parsed {
     if (a === "-c" || a === "--continue") flags.set("continue", true);
     else if (a === "--no-tui") flags.set("no-tui", true);
     else if (a === "--json") flags.set("json", true);
+    else if (a === "--acp") flags.set("acp", true);
     else if (a === "-h" || a === "--help") flags.set("help", true);
     else if (a === "--version" || a === "-v") flags.set("version", true);
     else if (VALUED.has(a)) flags.set(a === "-p" ? "print" : a.slice(2), argv[++i] ?? "");
@@ -83,11 +85,6 @@ async function main() {
     provider: (parsed.flags.get("provider") as Config["provider"]) || undefined,
     maxSteps: parsed.flags.has("max-steps") ? Number(parsed.flags.get("max-steps")) : undefined,
   });
-  if (!config.apiKey) {
-    console.error("fox: set FOX_API_KEY / OPENAI_API_KEY / ANTHROPIC_API_KEY (or FOX_BASE_URL pointing at your gateway)");
-    process.exit(1);
-  }
-
   const provider = {
     baseUrl: config.baseUrl,
     apiKey: config.apiKey,
@@ -95,6 +92,27 @@ async function main() {
     provider: config.provider,
     requestTimeoutMs: config.requestTimeoutMs,
   };
+
+  // ---- ACP server ----
+  // Ordered ahead of the missing-key exit on purpose. An editor spawns `fox --acp`
+  // as a subprocess and often shows the user nothing but "agent exited"; ACP has a
+  // vocabulary for this (`auth_required` on the first prompt), and the server
+  // reports it there instead of dying silently at startup. It also runs before any
+  // session is created, since the client asks for sessions via `session/new` —
+  // creating one here would orphan an empty session on every launch. From this
+  // point stdout is the protocol stream: nothing but ndJSON may be written to it,
+  // which is why every message in this file goes to stderr.
+  if (parsed.flags.get("acp")) {
+    const { runAcpServer } = await import("./acp/server.ts");
+    await runAcpServer({ config, provider });
+    return;
+  }
+
+  if (!config.apiKey) {
+    console.error("fox: set FOX_API_KEY / OPENAI_API_KEY / ANTHROPIC_API_KEY (or FOX_BASE_URL pointing at your gateway)");
+    process.exit(1);
+  }
+
   const cont = !!parsed.flags.get("continue");
   const printMode = parsed.flags.has("print") || (!process.stdin.isTTY && !process.stdout.isTTY);
 
@@ -189,6 +207,9 @@ function emitHuman(ev: import("./core/events.ts").AgentEvent) {
       break;
     case "retry":
       console.error(`\nfox: retry ${ev.attempt}: ${ev.error}`);
+      break;
+    case "child_tool":
+      if (ev.done) console.error(`  ↳ ${ev.session} · ${ev.name}${ev.ok ? "" : " ✗"}`);
       break;
     case "compacted":
       console.error(`\nfox: auto-compacted ${ev.removed.length} messages (${ev.tokens_before} → ${ev.tokens_after} est tok)`);

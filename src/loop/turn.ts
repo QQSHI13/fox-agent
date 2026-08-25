@@ -7,7 +7,7 @@ import type { Tool, ToolContext, PtyState } from "../tools/types.ts";
 import { OUT_CAP } from "../tools/files.ts";
 import { buildRegistry } from "../tools/index.ts";
 import type { Config } from "../core/config.ts";
-import { buildSystemPrompt, type RuntimeCache } from "./prompt.ts";
+import { buildSystemPrompt } from "./prompt.ts";
 import { renderContext } from "../context/render.ts";
 import { compactIfNeeded } from "../context/compact.ts";
 
@@ -35,6 +35,53 @@ interface StepOutcome {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const estTok = (s: string) => Math.ceil(s.length / 4);
+
+/**
+ * A queue for events a tool emits while it is still running.
+ *
+ * Tools are awaited together in a `Promise.all`, so a tool cannot yield into the
+ * turn's generator directly — it can only call a callback. This buffers those
+ * calls and lets the loop interleave them with the await, which is the difference
+ * between a delegated agent's progress appearing live and appearing all at once
+ * when it finishes.
+ */
+class EventQueue {
+  private items: AgentEvent[] = [];
+  private wake: (() => void) | null = null;
+  private closed = false;
+
+  push = (ev: AgentEvent): void => {
+    this.items.push(ev);
+    this.wake?.();
+  };
+
+  /** no more events will arrive; unblocks a pending `ready()` */
+  close(): void {
+    this.closed = true;
+    this.wake?.();
+  }
+
+  drain(): AgentEvent[] {
+    const out = this.items;
+    this.items = [];
+    return out;
+  }
+
+  /** resolves when something is queued or the queue closes */
+  ready(): Promise<void> {
+    if (this.items.length || this.closed) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      this.wake = () => {
+        this.wake = null;
+        resolve();
+      };
+    });
+  }
+
+  get done(): boolean {
+    return this.closed && this.items.length === 0;
+  }
+}
 
 /**
  * Drain one model step, streaming text/reasoning through to the consumer,
@@ -139,6 +186,7 @@ function fallbackConfig(cfg: ProviderConfig, opts: TurnOptions): Config {
     compactAt: opts.compactAt ?? 0.85,
     requestTimeoutMs: cfg.requestTimeoutMs ?? 120_000,
     mcpServers: {},
+    agents: {},
     projectInstructions: "",
   };
 }
@@ -177,8 +225,6 @@ export async function* runTurnCore(
   const turnReads = new Set<string>();
   const maxSteps = opts.maxSteps ?? 40;
   const quiet = opts.quiet ?? false;
-  // git state is stable across a turn — probing it per step costs 2 spawns/step
-  const runtimeCache: RuntimeCache = {};
 
   // surface MCP connection failures once, at the top of the turn
   if (!quiet) for (const w of mcpWarnings) yield { type: "warn", message: w };
@@ -214,7 +260,6 @@ export async function* runTurnCore(
       model: cfg.model,
       tools: toolDefs,
       projectInstructions: opts.projectInstructions ?? "",
-      cache: runtimeCache,
     });
     const messages = renderContext(sessionId, sysPrompt);
 
@@ -270,7 +315,8 @@ export async function* runTurnCore(
       yield { type: "tool_start", id: call.id, name: call.name, args: call.arguments.slice(0, 200) };
     }
 
-    const results = await Promise.all(
+    const liveEvents = new EventQueue();
+    const settled = Promise.all(
       outcome.calls.map(async (call) => {
         const res = await execToolCall(call, tools, {
           sessionId,
@@ -279,7 +325,8 @@ export async function* runTurnCore(
           readFiles: turnReads,
           signal,
           providerCfg: cfg,
-          registryFactory: async (excl) => (await buildRegistry(effCfg, excl)).tools,
+          agents: effCfg.agents,
+          emit: quiet ? undefined : liveEvents.push,
           get pty() {
             return ptyState;
           },
@@ -298,6 +345,16 @@ export async function* runTurnCore(
         return { call, node, res };
       }),
     );
+
+    // Interleave whatever the tools emit with waiting for them, rather than
+    // awaiting `settled` and flushing at the end — the latter would show a
+    // delegated agent's whole run in one burst after it had finished.
+    const finished = settled.finally(() => liveEvents.close());
+    while (!liveEvents.done) {
+      await liveEvents.ready();
+      for (const ev of liveEvents.drain()) yield ev;
+    }
+    const results = await finished;
 
     for (const { call, node, res } of results) {
       yield { type: "tool_end", id: call.id, seq: node.seq, name: call.name, output: res.output, ok: res.ok };

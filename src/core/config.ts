@@ -9,6 +9,20 @@ export interface McpServerConfig {
   env?: Record<string, string>;
 }
 
+/**
+ * An external ACP agent fox can delegate to (`task { agent: "<name>" }`).
+ *
+ * Same shape as an MCP server, different protocol and a different trust story:
+ * an MCP server provides tools, an ACP agent is a peer harness that runs with
+ * fox's full environment (see `src/acp/client.ts`). Only names present in this
+ * table are reachable, so the model can pick among them but cannot invent one.
+ */
+export interface AcpAgentConfig {
+  command: string;
+  args?: string[];
+  env?: Record<string, string>;
+}
+
 export interface Config {
   model: string;
   baseUrl: string;
@@ -21,6 +35,8 @@ export interface Config {
   /** abort a provider request after this long with no streamed progress (0 = never) */
   requestTimeoutMs: number;
   mcpServers: Record<string, McpServerConfig>;
+  /** external ACP agents available to the `task` tool, by name */
+  agents: Record<string, AcpAgentConfig>;
   /** contents of AGENTS.md / CLAUDE.md found walking up from cwd ("" if none) */
   projectInstructions: string;
 }
@@ -35,6 +51,7 @@ const DEFAULTS: Omit<Config, "projectInstructions"> = {
   compactAt: 0.85,
   requestTimeoutMs: 120_000,
   mcpServers: {},
+  agents: {},
 };
 
 /**
@@ -120,6 +137,17 @@ function applyTable(cfg: Config, t: Record<string, unknown> | null) {
       cfg.mcpServers[name] = { command: s.command, args: s.args, env: s.env };
     }
   }
+  if (t.agents && typeof t.agents === "object") {
+    for (const [name, v] of Object.entries(t.agents as Record<string, unknown>)) {
+      const s = v as { command?: string; args?: string[]; env?: Record<string, string> };
+      if (typeof s?.command !== "string") continue;
+      // "default" is fox delegating to itself and is synthesized at call time, so
+      // it is not a name a config file may rebind — silently accepting a rebind
+      // would make `task` route somewhere the model has no way to know about.
+      if (name === "default") continue;
+      cfg.agents[name] = { command: s.command, args: s.args, env: s.env };
+    }
+  }
 }
 
 export const GLOBAL_CONFIG_NAME = join("fox", "config.toml");
@@ -147,7 +175,11 @@ export function loadConfig(
   }
 
   // merge order: defaults <- global <- project <- env <- explicit overrides
-  const merged: Config = { ...DEFAULTS, mcpServers: {}, projectInstructions: "" };
+  // `mcpServers` and `agents` are re-initialized, not spread: DEFAULTS holds one
+  // shared object for each, and applyTable writes into them, so reusing the
+  // reference would leak one config's servers/agents into every later load in
+  // the same process (the ACP server loads config per run, so this is reachable).
+  const merged: Config = { ...DEFAULTS, mcpServers: {}, agents: {}, projectInstructions: "" };
   // An explicit --config that does not exist is a mistake worth surfacing; the
   // default global path being absent is normal and stays silent.
   if (overrides.configPath && !existsSync(overrides.configPath)) {

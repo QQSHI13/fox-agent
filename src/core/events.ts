@@ -14,5 +14,8 @@ export type AgentEvent =
   | { type: "step"; n: number }
   | { type: "retry"; attempt: number; delay_ms: number; error: string }
   | { type: "compacted"; removed: number[]; tokens_before: number; tokens_after: number }
+  /** a delegated agent's tool activity, forwarded live from its ACP session so
+   *  the parent's UI shows work in progress instead of a silent wait */
+  | { type: "child_tool"; session: string; name: string; done: boolean; ok: boolean }
   | { type: "warn"; message: string }
   | { type: "done"; reason: string };

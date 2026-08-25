@@ -32,8 +32,12 @@ export function baseRegistry(): Map<string, Tool> {
 
 /**
  * Full registry: built-ins + MCP servers from config. `exclude` names tools to
- * drop (the task tool builds restricted registries this way). Returns any MCP
- * connection warnings so the caller can surface them as `warn` events.
+ * drop; nothing in fox uses it now that delegation is a separate process with its
+ * own full registry (`src/tools/task.ts`), and it is kept only as a general
+ * facility for an embedder that wants a reduced tool set. Note that a reduced
+ * registry is *safe* to build — `buildSystemPrompt` gates every tool-specific
+ * section on what is actually present — but it is no longer how subagents work.
+ * Returns any MCP connection warnings so the caller can surface them as `warn`.
  */
 export async function buildRegistry(
   cfg: Config,

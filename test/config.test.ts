@@ -55,6 +55,43 @@ args = ["-y", "@modelcontextprotocol/server-fs"]
     expect(withoutEnv.mcpServers.fs.args).toEqual(["-y", "@modelcontextprotocol/server-fs"]);
   });
 
+  test("[agents.*] tables become delegation targets; 'default' cannot be rebound", async () => {
+    writeFileSync(
+      join(projectDir, "fox.toml"),
+      `[agents.helper]
+command = "some-other-agent"
+args = ["--acp"]
+
+[agents.broken]
+args = ["--acp"]
+
+[agents.default]
+command = "not-fox"
+`,
+    );
+    const { loadConfig } = await import("../src/core/config.ts");
+    const cfg = loadConfig({ cwd: projectDir }, { FOX_API_KEY: "k" });
+    expect(cfg.agents.helper).toEqual({ command: "some-other-agent", args: ["--acp"], env: undefined });
+    // a table with no command is skipped, exactly like a malformed mcpServers entry
+    expect(cfg.agents.broken).toBeUndefined();
+    // "default" is fox delegating to itself, synthesized at call time; letting a
+    // config rebind it would silently route `task` somewhere the model can't know
+    expect(cfg.agents.default).toBeUndefined();
+  });
+
+  test("agents from one load do not leak into the next", async () => {
+    // DEFAULTS holds one shared object per table and applyTable writes into it, so
+    // reusing the reference would carry a project's agents into every later load
+    // in the process — and `fox --acp` loads config per run.
+    writeFileSync(join(projectDir, "fox.toml"), `[agents.helper]\ncommand = "x"\n`);
+    const clean = join(dir, "clean");
+    mkdirSync(clean, { recursive: true });
+    const { loadConfig } = await import("../src/core/config.ts");
+    loadConfig({ cwd: projectDir }, { FOX_API_KEY: "k" });
+    // `clean` is a sibling of `proj`, so findUp cannot reach proj/fox.toml
+    expect(loadConfig({ cwd: clean }, { FOX_API_KEY: "k" }).agents).toEqual({});
+  });
+
   test("explicit override beats everything + AGENTS.md discovery", async () => {
     writeFileSync(join(projectDir, "AGENTS.md"), "# rules\nbe terse");
     const sub = join(projectDir, "deep", "deeper");

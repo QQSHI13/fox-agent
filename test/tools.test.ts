@@ -227,6 +227,18 @@ describe("registry", () => {
     expect(tools.has("ctx_edit")).toBe(false);
     expect(tools.has("read")).toBe(true);
   });
+
+  test("a delegated agent gets the full registry, ctx_edit/pty/task included", async () => {
+    // The inverse of a measured defect: subagents used to be built with
+    // RESTRICTED = {task, ctx_edit, pty} removed while the system prompt still
+    // described all three, so a child was told about tools it could not call.
+    // Delegation is now a separate `fox --acp` process (src/tools/task.ts), which
+    // reaches this same unexcluded path — nothing in fox passes `exclude` at all;
+    // it survives only as a facility for an embedder that wants a reduced set.
+    const { tools } = await buildRegistry({ mcpServers: {} } as any);
+    for (const name of ["task", "ctx_edit", "pty"]) expect(tools.has(name)).toBe(true);
+    expect([...tools.keys()].sort()).toEqual([...baseRegistry().keys()].sort());
+  });
 });
 
 describe("childEnv", () => {

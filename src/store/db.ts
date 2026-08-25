@@ -235,6 +235,30 @@ export function getSession(id: string): SessionRow | null {
     .get(id) as SessionRow | null;
 }
 
+/**
+ * Erase a session: its database file and its row in the index.
+ *
+ * Both halves matter. Deleting only the file leaves the session listed and
+ * openable — `sessionDb` would recreate an empty database under the same id, so
+ * `/sessions` shows a ghost. Deleting only the row orphans the file. The cached
+ * handle is closed first, because on Windows an open handle blocks the unlink and
+ * on any platform a stale handle would keep answering queries for a file that is
+ * no longer there.
+ *
+ * Returns false if the id was not in the index, so callers can report "no such
+ * session" instead of silently succeeding.
+ */
+export function deleteSession(id: string): boolean {
+  ready();
+  const existed = !!getSession(id);
+  _sessions.get(id)?.close();
+  _sessions.delete(id);
+  const path = sessionDbPath(id);
+  for (const p of [path, `${path}-wal`, `${path}-shm`]) rmSync(p, { force: true });
+  indexDb().prepare("DELETE FROM sessions WHERE id = ?").run(id);
+  return existed;
+}
+
 export function latestSessionFor(cwd: string): SessionRow | null {
   return indexDb()
     .prepare("SELECT id, cwd, model, title, created_at FROM sessions WHERE cwd = ? ORDER BY created_at DESC LIMIT 1")
