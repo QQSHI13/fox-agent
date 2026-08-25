@@ -1,6 +1,7 @@
 import {
   allOps,
   createSession,
+  deleteSession,
   forkSession,
   getMessage,
   getSession,
@@ -38,6 +39,7 @@ export const COMMANDS = [
   { name: "/sessions", desc: "list sessions" },
   { name: "/resume", desc: "resume session by id or index" },
   { name: "/fork", desc: "fork current session at [mN] (default: tip)" },
+  { name: "/delete", desc: "delete another session for good (needs 'yes')" },
   { name: "/undo", desc: "revert last ctx_edit op (append-only)" },
   { name: "/prune", desc: "delete hidden context for good + VACUUM (needs 'yes')" },
   { name: "/ops", desc: "show context surgery ops" },
@@ -53,6 +55,7 @@ export const SLASH_HELP = `/help              this list
 /sessions          list sessions
 /resume <id|n>     resume session by id or list index
 /fork [mN]         fork this session up to marker mN into a new one
+/delete <id|n> yes delete that session's database for good (not the current one)
 /undo              revert the last ctx_edit op (log stays append-only)
 /prune [yes]       report reclaimable disk; "/prune yes" deletes hidden context + VACUUM
 /ops               show pending context surgery ops
@@ -61,6 +64,18 @@ export const SLASH_HELP = `/help              this list
 /usage             token totals for this session
 /model [name]      show or switch model (persists to the session row)
 /exit              quit`;
+
+/**
+ * Accept either a session id or a 1-based index into `/sessions`, returning null
+ * if neither resolves. Shared so `/resume` and `/delete` cannot disagree about
+ * what "2" means — a mismatch there would delete a different session than the
+ * one the list showed.
+ */
+function resolveSessionArg(arg: string): string | null {
+  const n = Number(arg);
+  if (Number.isInteger(n) && n >= 1) return listSessions()[n - 1]?.id ?? null;
+  return getSession(arg) ? arg : null;
+}
 
 export function runSlashCommand(input: string, state: HarnessState): CommandResult | null {
   if (!input.startsWith("/")) return null;
@@ -87,15 +102,13 @@ export function runSlashCommand(input: string, state: HarnessState): CommandResu
     }
 
     case "resume": {
-      let id = arg;
       if (!arg) return { handled: true, output: "usage: /resume <id|list-index>" };
-      const n = Number(arg);
-      if (Number.isInteger(n) && n >= 1) {
-        const rows = listSessions();
-        if (!rows[n - 1]) return { handled: true, output: `no session at index ${n}` };
-        id = rows[n - 1].id;
+      const id = resolveSessionArg(arg);
+      if (!id) {
+        const n = Number(arg);
+        const numeric = Number.isInteger(n) && n >= 1;
+        return { handled: true, output: numeric ? `no session at index ${n}` : `unknown session ${arg}` };
       }
-      if (!getSession(id)) return { handled: true, output: `unknown session ${id}` };
       return { handled: true, newSessionId: id, output: `resumed ${id}` };
     }
 
@@ -110,6 +123,22 @@ export function runSlashCommand(input: string, state: HarnessState): CommandResu
       const fork = forkSession(state.sessionId, upto);
       if (!fork) return { handled: true, output: "fork failed" };
       return { handled: true, newSessionId: fork.id, output: `forked -> ${fork.id}` };
+    }
+
+    case "delete": {
+      // Deliberately narrower than ACP's session/delete: the id must be spelled
+      // out and confirmed, because unlike /prune this destroys a whole session
+      // and /undo cannot reach it.
+      const [target, confirm] = rest;
+      if (!target) return { handled: true, output: "usage: /delete <id|list-index> yes" };
+      const id = resolveSessionArg(target);
+      if (!id) return { handled: true, output: `unknown session ${target}` };
+      // The live session's database handle is open and the turn loop keeps
+      // appending to it; deleting the file underneath would leave a TUI writing
+      // into an unlinked inode with no visible error. /new first, then delete.
+      if (id === state.sessionId) return { handled: true, output: `${id} is the current session — /new or /resume elsewhere first` };
+      if (confirm !== "yes") return { handled: true, output: `would delete ${id} and its history for good — repeat as "/delete ${target} yes"` };
+      return { handled: true, output: deleteSession(id) ? `deleted ${id}` : `unknown session ${id}` };
     }
 
     case "undo": {

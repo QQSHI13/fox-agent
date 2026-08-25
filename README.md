@@ -110,6 +110,11 @@ $FOX_HOME (default ~/.local/share/fox)
 
 `/fork` is therefore a file copy — the fork and its source cannot affect each other afterward.
 
+**`/delete <id|n> yes`** removes a session's database and its index row together. It refuses the session you
+are currently in — its database handle is open and the turn loop is appending to it, so unlinking the file
+underneath would leave fox writing into a vanished inode with nothing to show for it. `/new` first, then
+delete. Unlike `/prune`, `/undo` cannot walk this back.
+
 **`/prune`** reclaims the disk that auto-compaction leaves behind. Compaction only *hides* messages (so
 `/undo` can bring them back); their text stays in the log. `/prune` reports what it would delete and
 changes nothing; `/prune yes` deletes those bodies for good and runs `VACUUM`. It never changes what the
@@ -136,7 +141,7 @@ fox is a **trusted-workspace** tool. Read this before pointing it at code you di
 - **No sandbox, no permission prompts.** `exec`, `pty`, `write`, `edit` and MCP tools run with your full user privileges in your cwd. Anything the model decides to run, runs.
 - **Prompt injection is the real risk.** Tool output — file contents, `fetch` responses, MCP server replies — enters the context as data the model acts on. A repo or web page can therefore attempt to steer the agent. Treat a fox session on untrusted input as equivalent to running that input's code.
 - **API keys are stripped from child processes.** `exec`, `pty` (tmux) and MCP servers get a filtered env (`src/core/childenv.ts`): `FOX_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `*_API_KEY` and `FOX_AUTH*` are removed. Everything else in your env is inherited, so other secrets there are still visible to tools. **ACP agents spawned by `task` are the exception** — they need a key to call a model at all, and the model cannot choose which command runs (see the ACP section).
-- **Session data is local and unencrypted**: one SQLite file per session under `FOX_HOME`, containing full transcripts and tool output. `pty/` additionally holds raw shell output logs. Delete a session with ACP `session/delete` (or `deleteSession` in the SDK), which removes the file *and* its `index.db` row; removing only the file leaves it listed as an empty session.
+- **Session data is local and unencrypted**: one SQLite file per session under `FOX_HOME`, containing full transcripts and tool output. `pty/` additionally holds raw shell output logs. Delete a session with `/delete <id> yes` in the TUI or ACP `session/delete` (`deleteSession` in the SDK), which removes the file *and* its `index.db` row; removing only the file leaves it listed as an empty session.
 - **MCP servers are arbitrary executables** you configure by command line; fox spawns them and trusts their tool descriptions.
 
 Run it in a container or VM for anything you don't trust.
