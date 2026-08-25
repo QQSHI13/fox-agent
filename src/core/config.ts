@@ -37,11 +37,25 @@ const DEFAULTS: Omit<Config, "projectInstructions"> = {
   mcpServers: {},
 };
 
-function readJsonIfExists(path: string): Record<string, unknown> | null {
+/**
+ * Parse a TOML config, or return null if the file simply isn't there.
+ *
+ * A *malformed* file throws instead: previously every failure was swallowed, so
+ * a typo made a config indistinguishable from no config at all and settings
+ * vanished silently.
+ */
+function readToml(path: string | null): Record<string, unknown> | null {
+  if (!path || !existsSync(path)) return null;
+  let text: string;
   try {
-    return JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
-  } catch {
-    return null;
+    text = readFileSync(path, "utf8");
+  } catch (e) {
+    throw new ConfigError(`cannot read ${path}: ${(e as Error).message}`);
+  }
+  try {
+    return Bun.TOML.parse(text) as Record<string, unknown>;
+  } catch (e) {
+    throw new ConfigError(`invalid TOML in ${path}: ${(e as Error).message}`);
   }
 }
 
@@ -84,18 +98,23 @@ function applyEnv(cfg: Config, env: Record<string, string | undefined>) {
   if (Number.isFinite(reqTimeout) && reqTimeout >= 0) cfg.requestTimeoutMs = Math.floor(reqTimeout);
 }
 
-function applyJson(cfg: Config, json: Record<string, unknown> | null) {
-  if (!json) return;
-  if (typeof json.model === "string") cfg.model = json.model;
-  if (typeof json.baseUrl === "string") cfg.baseUrl = json.baseUrl.replace(/\/$/, "");
-  if (typeof json.apiKey === "string") cfg.apiKey = json.apiKey;
-  if (json.provider === "anthropic" || json.provider === "openai-compatible") cfg.provider = json.provider;
-  if (typeof json.maxSteps === "number" && json.maxSteps > 0) cfg.maxSteps = Math.floor(json.maxSteps);
-  if (typeof json.retryLimit === "number" && json.retryLimit >= 0) cfg.retryLimit = Math.floor(json.retryLimit);
-  if (typeof json.compactAt === "number" && json.compactAt > 0 && json.compactAt <= 1) cfg.compactAt = json.compactAt;
-  if (typeof json.requestTimeoutMs === "number" && json.requestTimeoutMs >= 0) cfg.requestTimeoutMs = Math.floor(json.requestTimeoutMs);
-  if (json.mcpServers && typeof json.mcpServers === "object") {
-    for (const [name, v] of Object.entries(json.mcpServers as Record<string, unknown>)) {
+/**
+ * Copy recognised keys off a parsed config table. Unknown keys are ignored and
+ * out-of-range values leave the current setting alone, so a bad entry degrades
+ * to the default rather than propagating a nonsense number into the loop.
+ */
+function applyTable(cfg: Config, t: Record<string, unknown> | null) {
+  if (!t) return;
+  if (typeof t.model === "string") cfg.model = t.model;
+  if (typeof t.baseUrl === "string") cfg.baseUrl = t.baseUrl.replace(/\/$/, "");
+  if (typeof t.apiKey === "string") cfg.apiKey = t.apiKey;
+  if (t.provider === "anthropic" || t.provider === "openai-compatible") cfg.provider = t.provider;
+  if (typeof t.maxSteps === "number" && t.maxSteps > 0) cfg.maxSteps = Math.floor(t.maxSteps);
+  if (typeof t.retryLimit === "number" && t.retryLimit >= 0) cfg.retryLimit = Math.floor(t.retryLimit);
+  if (typeof t.compactAt === "number" && t.compactAt > 0 && t.compactAt <= 1) cfg.compactAt = t.compactAt;
+  if (typeof t.requestTimeoutMs === "number" && t.requestTimeoutMs >= 0) cfg.requestTimeoutMs = Math.floor(t.requestTimeoutMs);
+  if (t.mcpServers && typeof t.mcpServers === "object") {
+    for (const [name, v] of Object.entries(t.mcpServers as Record<string, unknown>)) {
       const s = v as { command?: string; args?: string[]; env?: Record<string, string> };
       if (typeof s?.command !== "string") continue;
       cfg.mcpServers[name] = { command: s.command, args: s.args, env: s.env };
@@ -103,18 +122,39 @@ function applyJson(cfg: Config, json: Record<string, unknown> | null) {
   }
 }
 
+export const GLOBAL_CONFIG_NAME = join("fox", "config.toml");
+export const PROJECT_CONFIG_NAME = "fox.toml";
+/** Pre-TOML project config. Detected only so it can be reported, never parsed. */
+const LEGACY_PROJECT_NAME = ".fox.json";
+
 export function loadConfig(
   overrides: Partial<Config> & { configPath?: string; cwd?: string } = {},
   env: Record<string, string | undefined> = process.env,
 ): Config {
   const cwd = overrides.cwd ?? process.cwd();
-  const globalPath = overrides.configPath ?? join(homedir(), ".config", "fox", "config.json");
-  const projectPath = findUp(cwd, [".fox.json"]);
+  const globalPath = overrides.configPath ?? join(homedir(), ".config", GLOBAL_CONFIG_NAME);
+  const projectPath = findUp(cwd, [PROJECT_CONFIG_NAME]);
+
+  // A leftover .fox.json is refused rather than ignored: fox used to read it, so
+  // silently dropping every setting in it is the one outcome the user can't see.
+  if (!projectPath) {
+    const legacy = findUp(cwd, [LEGACY_PROJECT_NAME]);
+    if (legacy) {
+      throw new ConfigError(
+        `${legacy} is no longer read — fox config is TOML now. Rename it to ${PROJECT_CONFIG_NAME} and convert the keys (model = "gpt-4o", maxSteps = 40, [mcpServers.fs] tables).`,
+      );
+    }
+  }
 
   // merge order: defaults <- global <- project <- env <- explicit overrides
   const merged: Config = { ...DEFAULTS, mcpServers: {}, projectInstructions: "" };
-  applyJson(merged, readJsonIfExists(globalPath));
-  applyJson(merged, readJsonIfExists(projectPath!));
+  // An explicit --config that does not exist is a mistake worth surfacing; the
+  // default global path being absent is normal and stays silent.
+  if (overrides.configPath && !existsSync(overrides.configPath)) {
+    throw new ConfigError(`config file not found: ${overrides.configPath}`);
+  }
+  applyTable(merged, readToml(globalPath));
+  applyTable(merged, readToml(projectPath));
   applyEnv(merged, env);
 
   if (overrides.model) merged.model = overrides.model;

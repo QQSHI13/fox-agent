@@ -11,6 +11,7 @@ import {
   undoLastOp,
 } from "./store/db.ts";
 import { projectView } from "./context/view.ts";
+import { formatPruneReport, pruneSession } from "./store/prune.ts";
 import { viewTokenEstimate } from "./context/render.ts";
 import { checkBudget } from "./context/budget.ts";
 import type { ProviderConfig } from "./providers/types.ts";
@@ -38,6 +39,7 @@ export const COMMANDS = [
   { name: "/resume", desc: "resume session by id or index" },
   { name: "/fork", desc: "fork current session at [mN] (default: tip)" },
   { name: "/undo", desc: "revert last ctx_edit op (append-only)" },
+  { name: "/prune", desc: "delete hidden context for good + VACUUM (needs 'yes')" },
   { name: "/ops", desc: "show context surgery ops" },
   { name: "/view", desc: "preview visible nodes" },
   { name: "/todos", desc: "show agent todo list" },
@@ -52,6 +54,7 @@ export const SLASH_HELP = `/help              this list
 /resume <id|n>     resume session by id or list index
 /fork [mN]         fork this session up to marker mN into a new one
 /undo              revert the last ctx_edit op (log stays append-only)
+/prune [yes]       report reclaimable disk; "/prune yes" deletes hidden context + VACUUM
 /ops               show pending context surgery ops
 /view              show visible nodes ([mN] role preview)
 /todos             show the agent todo list
@@ -112,6 +115,14 @@ export function runSlashCommand(input: string, state: HarnessState): CommandResu
     case "undo": {
       const msg = undoLastOp(state.sessionId);
       return { handled: true, output: msg ? `undid: ${msg}` : "nothing to undo" };
+    }
+
+    case "prune": {
+      // two-step rather than an interactive prompt: this runs identically in the
+      // TUI, plain mode and -p, none of which can block on a keypress here
+      if (arg && arg !== "yes") return { handled: true, output: 'usage: /prune  (report only)  |  /prune yes  (do it)' };
+      const report = pruneSession(state.sessionId, { dryRun: arg !== "yes" });
+      return { handled: true, output: formatPruneReport(report) };
     }
 
     case "ops": {

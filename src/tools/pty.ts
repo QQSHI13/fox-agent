@@ -3,19 +3,25 @@
 // stream — immune to pane rewrapping (the old capture-pane byte cursor
 // corrupted on resize). Draining waits for output to go quiet instead of a
 // fixed sleep.
-import { openSync, readSync, fstatSync, closeSync, statSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+//
+// This is a separate tool from `exec`, and the cwd rules are deliberately
+// opposite: exec re-resolves from the session directory on every call and can
+// never drift, while this shell starts in the session directory and then keeps
+// whatever cwd it has been walked to. That persistence is the whole point —
+// `cd build && make` has to still be in build/ on the next call.
+import { openSync, readSync, fstatSync, closeSync, statSync, writeFileSync, mkdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import type { ToolDef } from "../providers/types.ts";
 import type { ToolContext, ToolResult, PtyState } from "./types.ts";
-import { ok } from "./types.ts";
+import { fail, ok } from "./types.ts";
 import { childEnv } from "../core/childenv.ts";
+import { ptyDir } from "../core/paths.ts";
 import { OUT_CAP } from "./files.ts";
 
 export const ptyDef: ToolDef = {
   name: "pty",
   description:
-    "Drive one persistent interactive shell for this session (tmux-backed): send keystrokes, drain new output since last call, send control chars like ^c. Use for servers, REPLs, watch modes — poll instead of re-running.",
+    "Drive one persistent interactive shell for this session (tmux-backed): send keystrokes, drain new output since last call, send control chars like ^c. Use for servers, REPLs, watch modes — poll instead of re-running. The shell starts in the session directory and KEEPS its own working directory and environment between calls, so a `cd` or an exported variable persists (unlike exec, which always starts fresh in the session directory).",
   parameters: {
     type: "object",
     properties: {
@@ -25,10 +31,17 @@ export const ptyDef: ToolDef = {
   },
 };
 
-const PTY_DIR = () => {
-  const dir = process.env.FOX_HOME ?? join(homedir(), ".local", "share", "fox");
-  return join(dir, "pty");
-};
+/** Raised when tmux is missing — reported to the model, not thrown as a crash. */
+export class PtyUnavailable extends Error {}
+
+/**
+ * `Bun.which` resolves against the PATH it was *started* with unless one is
+ * passed explicitly, so a PATH change made after boot would go unnoticed and we
+ * would report tmux as present right before failing to spawn it.
+ */
+function tmuxPath(): string | null {
+  return Bun.which("tmux", { PATH: process.env.PATH ?? "" });
+}
 
 async function tmux(...argv: string[]): Promise<{ code: number; out: string }> {
   const proc = Bun.spawn(["tmux", ...argv], { stdout: "pipe", stderr: "pipe", env: childEnv() });
@@ -43,22 +56,119 @@ export function ptySessionName(sessionId: string): string {
   return `fox-${sessionId.slice(0, 12)}`;
 }
 
-export async function ensurePty(ctx: ToolContext): Promise<PtyState> {
-  if (!ctx.pty) {
-    const name = ptySessionName(ctx.sessionId);
-    await tmux("kill-session", "-t", name).catch(() => {});
-    const { code, out } = await tmux("new-session", "-d", "-s", name, "-x", "220", "-y", "50");
-    if (code !== 0) throw new Error(`tmux new-session failed: ${out}`);
-    const logPath = join(PTY_DIR(), `${name}.log`);
-    try {
-      writeFileSync(logPath, "");
-    } catch {}
-    // logPath goes through a shell; FOX_HOME is user-supplied so quote properly
-    await tmux("pipe-pane", "-o", "-t", name, `cat >> '${logPath.replace(/'/g, `'\\''`)}'`);
-    ctx.pty = { session: name, logPath, cursor: 0 };
-  }
-  return ctx.pty;
+/**
+ * Exact-match targets. A bare name is a *prefix* match in tmux, so `fox-abc`
+ * would happily resolve to `fox-abcdef` once the real session is gone — the `=`
+ * forbids that. The two forms are not interchangeable: session commands take
+ * `=name`, while anything addressing a pane needs the trailing colon (`=name:`),
+ * which fails with "can't find pane" if omitted.
+ */
+const sessionTarget = (name: string) => `=${name}`;
+const paneTarget = (name: string) => `=${name}:`;
+
+async function hasSession(name: string): Promise<boolean> {
+  const { code } = await tmux("has-session", "-t", sessionTarget(name));
+  return code === 0;
 }
+
+/** Where tmux says the pane actually is, or null if it won't say. */
+async function panePath(name: string): Promise<string | null> {
+  const { code, out } = await tmux("display-message", "-p", "-t", paneTarget(name), "#{pane_current_path}");
+  const p = out.trim();
+  return code === 0 && p ? p : null;
+}
+
+/**
+ * Did the shell land somewhere other than where we asked?
+ *
+ * Compared through `realpath` because tmux reports the pane's resolved path: a
+ * session directory reached through a symlink would otherwise look like a
+ * mismatch on every spawn. A requested path that cannot be resolved at all is a
+ * mismatch by definition — that is the case tmux silently redirects to $HOME.
+ */
+function landedElsewhere(requested: string, actual: string): boolean {
+  if (requested === actual) return false;
+  try {
+    return realpathSync(requested) !== actual;
+  } catch {
+    return true;
+  }
+}
+
+/** Create the tmux session and wire pipe-pane. Assumes nothing exists yet. */
+async function spawnSession(sessionId: string, cwd: string): Promise<PtyState> {
+  const name = ptySessionName(sessionId);
+  await tmux("kill-session", "-t", sessionTarget(name)).catch(() => {});
+  // -c is what pins the starting directory. Without it tmux inherits the *client's*
+  // cwd (fox's own process.cwd()), which is not necessarily the session's dir.
+  const { code, out } = await tmux("new-session", "-d", "-s", name, "-c", cwd, "-x", "220", "-y", "50");
+  if (code !== 0) throw new Error(`tmux new-session failed: ${out}`);
+  // pty owns this directory. It used to rely on the store having created it as a
+  // side effect, so pty in a fresh FOX_HOME logged into a nonexistent path and
+  // silently returned "(no new output)" forever.
+  mkdirSync(ptyDir(), { recursive: true });
+  const logPath = join(ptyDir(), `${name}.log`);
+  // truncate: a log left over from a previous shell would be re-read from
+  // offset 0 and served as if it were this shell's output. A failure here means
+  // every later drain is empty, so it must not be swallowed.
+  try {
+    writeFileSync(logPath, "");
+  } catch (e) {
+    throw new PtyUnavailable(`pty unavailable: cannot write the output log ${logPath}: ${(e as Error).message}`);
+  }
+  // logPath goes through a shell; FOX_HOME is user-supplied so quote properly
+  await tmux("pipe-pane", "-o", "-t", paneTarget(name), `cat >> '${logPath.replace(/'/g, `'\\''`)}'`);
+  // start the byte cursor past the shell's own startup noise (prompt, terminal
+  // integration escapes) so the first drain returns the command's output, not a
+  // banner the model has to read around
+  const cursor = await waitForShell(logPath);
+  // Where the shell *actually* is, which is not always where we asked. tmux does
+  // not fail when -c names a missing or unreadable directory — it quietly falls
+  // back to $HOME — so trusting the requested path would make PtyState.cwd, the
+  // lost-session note and the tool description all describe a directory the shell
+  // is nowhere near. This has to come after waitForShell: pane_current_path
+  // reports the pane process's cwd, and until bash is up that is still fox's own,
+  // which would read as a mismatch on every single spawn.
+  const actual = (await panePath(name)) ?? cwd;
+  return { session: name, logPath, cursor, cwd: actual, requestedCwd: cwd };
+}
+
+/**
+ * Wait for a freshly spawned shell to be ready for input.
+ *
+ * `tmux new-session` returns as soon as the pane exists — bash has not yet run
+ * its rc files or drawn a prompt. Keys sent into that window are buffered by the
+ * tty and do eventually run, so nothing is lost, but the *echo* of those
+ * keystrokes hits the log immediately while the command's real output only
+ * appears whenever the shell finally gets to it. `waitForQuiet` then sees the
+ * echo go quiet and returns before the command ran, and its output surfaces on
+ * the following call instead. Waiting for the first prompt is what keeps a
+ * command's output attached to the call that issued it.
+ */
+async function waitForShell(logPath: string): Promise<number> {
+  const deadline = Date.now() + 3_000;
+  while (Date.now() < deadline && fileSize(logPath) === 0) await Bun.sleep(25);
+  await waitForQuiet(logPath, 200);
+  return fileSize(logPath);
+}
+
+/**
+ * Get the session's shell, creating it if needed.
+ *
+ * Returns a `lost` flag when state existed but the tmux session was gone (tmux
+ * server killed, machine rebooted). Silently building a fresh shell there would
+ * let the model keep believing its earlier `cd`, exports and running processes
+ * were still in place, so the caller reports the loss.
+ */
+export async function ensurePty(ctx: ToolContext): Promise<{ pty: PtyState; lost: boolean }> {
+  if (!tmuxPath()) throw new PtyUnavailable("pty unavailable: tmux is not installed");
+
+  if (ctx.pty && (await hasSession(ctx.pty.session))) return { pty: ctx.pty, lost: false };
+  const lost = !!ctx.pty;
+  ctx.pty = await spawnSession(ctx.sessionId, ctx.cwd);
+  return { pty: ctx.pty, lost };
+}
+
 
 function fileSize(path: string): number {
   try {
@@ -107,16 +217,23 @@ async function waitForQuiet(logPath: string, quietMs: number): Promise<void> {
 }
 
 export async function drivePty(args: { keys?: string; quiet_ms?: number }, ctx: ToolContext): Promise<ToolResult> {
-  const pty = await ensurePty(ctx);
+  let pty: PtyState;
+  let lost: boolean;
+  try {
+    ({ pty, lost } = await ensurePty(ctx));
+  } catch (e) {
+    if (e instanceof PtyUnavailable) return fail(e.message);
+    throw e;
+  }
 
   if (args.keys) {
     if (args.keys === "^c") {
-      await tmux("send-keys", "-t", pty.session, "C-c");
+      await tmux("send-keys", "-t", paneTarget(pty.session), "C-c");
     } else {
       const hasEnter = args.keys.endsWith("\n");
       const body = hasEnter ? args.keys.slice(0, -1) : args.keys;
-      if (body) await tmux("send-keys", "-t", pty.session, "-l", body);
-      if (hasEnter) await tmux("send-keys", "-t", pty.session, "Enter");
+      if (body) await tmux("send-keys", "-t", paneTarget(pty.session), "-l", body);
+      if (hasEnter) await tmux("send-keys", "-t", paneTarget(pty.session), "Enter");
     }
     await waitForQuiet(pty.logPath, Math.min(5_000, Math.max(200, args.quiet_ms ?? 400)));
   }
@@ -124,10 +241,24 @@ export async function drivePty(args: { keys?: string; quiet_ms?: number }, ctx: 
   const { text, end } = readRange(pty.logPath, pty.cursor);
   pty.cursor = end;
   const fresh = text.replace(/\r/g, "").trimEnd();
-  return ok(fresh.length > OUT_CAP ? `…\n${fresh.slice(-OUT_CAP)}` : fresh || "(no new output)");
+  const body = fresh.length > OUT_CAP ? `…\n${fresh.slice(-OUT_CAP)}` : fresh || "(no new output)";
+  // tell the model plainly that its shell is not the one it was using, rather
+  // than handing back a pristine prompt that looks like nothing happened
+  let note = lost
+    ? `(pty: the tmux session was lost — started a fresh shell in ${pty.cwd}; the previous working directory, environment and any running processes are gone)\n`
+    : "";
+  // A shell in an unexpected directory is as misleading as a lost one: every
+  // relative path the model writes would land somewhere else. Report it once, on
+  // the call that created the shell, and then stop — after that the model may
+  // have `cd`'d deliberately and a standing warning would be noise.
+  if (pty.requestedCwd && landedElsewhere(pty.requestedCwd, pty.cwd)) {
+    note += `(pty: ${pty.requestedCwd} was not usable as a starting directory, so the shell is in ${pty.cwd} instead — use absolute paths or cd first)\n`;
+    pty.requestedCwd = undefined;
+  }
+  return ok(note + body);
 }
 
 export async function cleanupPty(ctxOrSession: ToolContext | string): Promise<void> {
   const session = typeof ctxOrSession === "string" ? ctxOrSession : ctxOrSession.pty?.session;
-  if (session) await tmux("kill-session", "-t", session).catch(() => {});
+  if (session && tmuxPath()) await tmux("kill-session", "-t", sessionTarget(session)).catch(() => {});
 }

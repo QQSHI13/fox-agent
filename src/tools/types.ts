@@ -4,6 +4,15 @@ export interface PtyState {
   session: string; // tmux session name
   logPath: string; // raw output stream (pipe-pane)
   cursor: number; // byte offset already returned to the model
+  /** Where the shell really started, as reported by tmux. It may `cd` away later. */
+  cwd: string;
+  /**
+   * Set only while a start-directory mismatch is still unreported: tmux silently
+   * falls back to $HOME when it can't use the directory we asked for. Cleared
+   * once the model has been told, so the warning doesn't repeat over a `cd` the
+   * model made on purpose.
+   */
+  requestedCwd?: string;
 }
 
 export interface ToolContext {

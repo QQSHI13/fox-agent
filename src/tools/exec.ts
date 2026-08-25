@@ -8,12 +8,12 @@ import { OUT_CAP } from "./files.ts";
 export const execDef: ToolDef = {
   name: "exec",
   description:
-    "Run a shell command (bash). Returns exit code + merged output (tail-capped). For long-running/interactive things use pty instead. Runs with full machine access.",
+    "Run a shell command (bash) starting from the session's directory. Each call is independent: the working directory NEVER carries over from a previous exec, so a `cd` has no effect on the next call — use the workdir argument (or `cd x && cmd` within one call) instead. For long-running/interactive things, or when you need a shell that remembers its directory, use pty. Returns exit code + merged output (tail-capped). Runs with full machine access.",
   parameters: {
     type: "object",
     properties: {
       cmd: { type: "string" },
-      workdir: { type: "string" },
+      workdir: { type: "string", description: "Directory to run in, relative to the session directory. Applies to this call only." },
       timeout_ms: { type: "number", description: "Kill the process tree after this long, default 120000" },
     },
     required: ["cmd"],
@@ -42,6 +42,11 @@ export async function execRun(
   ctx: ToolContext,
 ): Promise<ToolResult> {
   if (!args.cmd) return fail("error: exec needs cmd");
+  // Contract: exec's cwd never drifts. `ctx.cwd` is the session's directory and
+  // is immutable for the session's lifetime, and `workdir` is resolved against it
+  // per call rather than being remembered — so no command, however it wanders,
+  // can move where the *next* exec starts. `pty` is the tool for a shell that
+  // keeps its place.
   const cwd = args.workdir ? resolve(ctx.cwd, args.workdir) : ctx.cwd;
   const timeout = Math.min(600_000, Math.max(1_000, args.timeout_ms ?? 120_000));
 
@@ -51,7 +56,7 @@ export async function execRun(
     stdout: "pipe",
     stderr: "pipe",
     stdin: "ignore",
-    env: childEnv(),
+    env: childEnv(undefined, cwd),
   });
 
   let killedBy = "";

@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { createSession, getSession, latestSessionFor } from "./store/db.ts";
 import { loadConfig, type Config } from "./core/config.ts";
-import { errMsg } from "./core/errors.ts";
+import { ConfigError, errMsg } from "./core/errors.ts";
 import { runTurnCore } from "./loop/turn.ts";
 import { resolveChat } from "./providers/index.ts";
 import { runSlashCommand, type HarnessState } from "./commands.ts";
@@ -138,8 +138,27 @@ async function main() {
     await shutdownTools(sessionId);
     return;
   }
+  // A slash command headlessly means the same thing it means in the TUI: run the
+  // command, not a turn. Without this `-p '/prune'` would be sent to the model as
+  // a prompt, which both costs a request and does nothing the user asked for.
+  const trimmed = prompt.trim();
+  if (trimmed.startsWith("/")) {
+    try {
+      if (trimmed === "/help" || trimmed === "/?") console.log((await import("./commands.ts")).SLASH_HELP);
+      else {
+        const res = runSlashCommand(trimmed, state);
+        if (res?.output) console.log(jsonMode ? JSON.stringify({ type: "command", output: res.output }) : res.output);
+      }
+    } catch (e) {
+      console.error(`fox error: ${errMsg(e)}`);
+      process.exitCode = 1;
+    } finally {
+      await shutdownTools(sessionId);
+    }
+    return;
+  }
   try {
-    for await (const ev of runTurnCore(sessionId, provider, prompt.trim(), undefined, {
+    for await (const ev of runTurnCore(sessionId, provider, trimmed, undefined, {
       maxSteps: config.maxSteps,
       retryLimit: config.retryLimit,
       compactAt: config.compactAt,
@@ -227,4 +246,15 @@ async function plainLoop(state: HarnessState) {
   }
 }
 
-await main();
+// A bad config is now a thrown ConfigError rather than a silently ignored file,
+// and loadConfig runs before any of main's own try/catch. Without this the user
+// gets a Bun stack trace for what is really a one-line "fix your config" message.
+try {
+  await main();
+} catch (e) {
+  if (e instanceof ConfigError) {
+    console.error(`fox: ${e.message}`);
+    process.exit(1);
+  }
+  throw e;
+}
