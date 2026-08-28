@@ -38,7 +38,23 @@ export function toModelMessages(messages: ChatMessage[]): ModelMessage[] {
           type: "tool-result",
           toolCallId: m.tool_call_id!,
           toolName: names.get(m.tool_call_id!) ?? "unknown",
-          output: { type: "text", value: m.content },
+          // Media rides as file parts next to the text note. Whether they reach
+          // the API is decided upstream: `read` only attaches kinds the active
+          // model accepts, and a deleted/replaced ctx_edit node drops them here.
+          output: m.media?.length
+            ? {
+                type: "content",
+                value: [
+                  { type: "text", text: m.content },
+                  ...m.media.map((p) => ({
+                    type: "file" as const,
+                    data: { type: "data" as const, data: p.data },
+                    mediaType: p.mimeType,
+                    filename: p.filename,
+                  })),
+                ],
+              }
+            : { type: "text", value: m.content },
         },
       ],
     };

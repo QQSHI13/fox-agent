@@ -3,7 +3,7 @@ import type { ProviderConfig, ChatMessage, ToolDef, ToolCall, ChatFn } from "../
 import { resolveChat } from "../providers/index.ts";
 import { classifyProviderError, FoxError, isTimeout } from "../core/errors.ts";
 import type { AgentEvent } from "../core/events.ts";
-import type { Tool, ToolContext, PtyState } from "../tools/types.ts";
+import type { Tool, ToolContext, ToolResult, PtyState } from "../tools/types.ts";
 import { OUT_CAP } from "../tools/files.ts";
 import { buildRegistry } from "../tools/index.ts";
 import type { Config } from "../core/config.ts";
@@ -164,7 +164,7 @@ function missingRequired(def: ToolDef, args: any): string | null {
   return null;
 }
 
-async function execToolCall(call: ToolCall, tools: Map<string, Tool>, tctx: ToolContext): Promise<{ ok: boolean; output: string }> {
+async function execToolCall(call: ToolCall, tools: Map<string, Tool>, tctx: ToolContext): Promise<ToolResult> {
   const tool = tools.get(call.name);
   if (!tool) return { ok: false, output: `error: unknown tool ${call.name}` };
 
@@ -177,7 +177,7 @@ async function execToolCall(call: ToolCall, tools: Map<string, Tool>, tctx: Tool
     const r = await tool.run(args, tctx);
     const result = typeof r === "string" ? { ok: true, output: r } : r;
     const output = result.output.length > OUT_CAP * 2 ? result.output.slice(-OUT_CAP * 2) : result.output; // tail-cap
-    return { ok: result.ok, output };
+    return { ok: result.ok, output, media: result.media };
   } catch (e) {
     return { ok: false, output: `error: ${(e as Error).message}` };
   }
@@ -459,7 +459,10 @@ export async function* runTurnCore(
           role: "tool",
           content: res.output,
           tool_call_id: call.id,
-          tokens: estTok(res.output),
+          media: res.media?.length ? JSON.stringify(res.media) : undefined,
+          // media is billed at a flat estimate: chars/4 of base64 would report
+          // ~3/4 of the raw file size as "tokens", drowning the real figure
+          tokens: estTok(res.output) + (res.media?.length ?? 0) * 1500,
           error: res.ok ? null : res.output.slice(0, 200),
         });
         return { call, node, res };

@@ -10,6 +10,10 @@ export interface ModelInfo {
   costIn?: number;
   costOut?: number;
   vision?: boolean;
+  /** accepts audio input (mp3/wav/...) */
+  audio?: boolean;
+  /** accepts video input (mp4/webm/...) */
+  video?: boolean;
   reasoning?: boolean;
 }
 
@@ -23,8 +27,11 @@ const TABLE: [RegExp, ModelInfo][] = [
   [/claude-3-7-sonnet/, { contextWindow: 200_000, maxOutput: 64_000, costIn: 3, costOut: 15, vision: true }],
   [/claude-3-5-sonnet/, { contextWindow: 200_000, maxOutput: 8_192, costIn: 3, costOut: 15, vision: true }],
   [/claude-.*haiku/, { contextWindow: 200_000, maxOutput: 8_192, costIn: 0.8, costOut: 4, vision: true }],
-  [/gemini-2\.5/, { contextWindow: 1_048_576, maxOutput: 65_536, costIn: 1.25, costOut: 10, vision: true }],
-  [/gemini-2\.0/, { contextWindow: 1_048_576, maxOutput: 8_192, costIn: 0.1, costOut: 0.4, vision: true }],
+  // Gemini 2.x takes images, audio and video natively; the other families here
+  // are vision-only through their chat APIs (gpt-4o audio is a separate
+  // realtime/preview surface, not chat-completions input).
+  [/gemini-2\.5/, { contextWindow: 1_048_576, maxOutput: 65_536, costIn: 1.25, costOut: 10, vision: true, audio: true, video: true }],
+  [/gemini-2\.0/, { contextWindow: 1_048_576, maxOutput: 8_192, costIn: 0.1, costOut: 0.4, vision: true, audio: true, video: true }],
   [/deepseek-chat/, { contextWindow: 65_536, maxOutput: 8_192, costIn: 0.27, costOut: 1.1 }],
   [/deepseek-reasoner/, { contextWindow: 65_536, maxOutput: 8_192, costIn: 0.55, costOut: 2.19, reasoning: true }],
   [/kimi-k2/, { contextWindow: 262_144, maxOutput: 16_384, costIn: 0.6, costOut: 2.5 }],

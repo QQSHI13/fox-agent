@@ -4,11 +4,20 @@ export interface ToolCall {
   arguments: string; // raw JSON string
 }
 
+/** A binary attachment on a message: base64 bytes plus its IANA media type. */
+export interface MediaPart {
+  mimeType: string;
+  data: string; // base64
+  filename?: string;
+}
+
 export interface ChatMessage {
   role: "system" | "user" | "assistant" | "tool";
   content: string;
   tool_calls?: ToolCall[];
   tool_call_id?: string;
+  /** binary attachments (images/audio/video from `read`); tool messages only */
+  media?: MediaPart[];
 }
 
 export interface ToolDef {

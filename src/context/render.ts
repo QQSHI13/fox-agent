@@ -70,7 +70,13 @@ export function renderContext(sessionId: string, systemPrompt: string): ChatMess
       out.push(entry);
     } else if (m.role === "tool") {
       // deliberately no flush: see `pending`
-      out.push({ role: "tool", tool_call_id: m.tool_call_id!, content: `${marker(m.seq)} ${n.content}` });
+      const entry: ChatMessage = { role: "tool", tool_call_id: m.tool_call_id!, content: `${marker(m.seq)} ${n.content}` };
+      if (m.media) {
+        try {
+          entry.media = JSON.parse(m.media);
+        } catch {} // a corrupt media blob degrades to the text note, never a failed turn
+      }
+      out.push(entry);
     }
   }
   flush();
@@ -83,6 +89,8 @@ export function viewTokenEstimate(nodes: ViewNode[]): number {
   for (const n of nodes) {
     if (n.deleted) continue;
     total += estimateTokens(n.content) + estimateTokens(marker(n.msg.seq)) + 4;
+    // flat per-attachment estimate, matching what turn.ts bills at append time
+    if (n.msg.media) total += 1500;
     if (n.msg.role === "assistant" && n.msg.tool_calls) {
       try {
         for (const c of JSON.parse(n.msg.tool_calls) as { arguments: string }[]) total += estimateTokens(c.arguments);

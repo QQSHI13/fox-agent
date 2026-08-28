@@ -31,6 +31,8 @@ export interface MessageRow {
   content: string;
   tool_calls: string | null; // JSON: [{id, name, arguments}]
   tool_call_id: string | null;
+  /** JSON: MediaPart[] — binary attachments (image/audio/video) on a tool result */
+  media: string | null;
   tokens: number;
   error: string | null;
   created_at: number;
@@ -99,6 +101,7 @@ const SESSION_SCHEMA = `
     content TEXT NOT NULL DEFAULT '',
     tool_calls TEXT,
     tool_call_id TEXT,
+    media TEXT,
     tokens INTEGER NOT NULL DEFAULT 0,
     error TEXT,
     created_at INTEGER NOT NULL
@@ -137,7 +140,7 @@ const SESSION_SCHEMA = `
   );
 `;
 
-const USER_VERSION = 3;
+const USER_VERSION = 4;
 
 let _index: Database | null = null;
 /** Insertion-ordered, so the first key is the least recently opened. */
@@ -225,9 +228,20 @@ export function sessionDb(sessionId: string): Database {
     return hit;
   }
   const d = open(sessionDbPath(sessionId), SESSION_SCHEMA);
+  ensureColumn(d, "messages", "media", "media TEXT");
   _sessions.set(sessionId, d);
   evict(sessionId);
   return d;
+}
+
+/**
+ * Add a column a database created by an older fox-agent lacks. `CREATE TABLE IF
+ * NOT EXISTS` only shapes *new* files; an existing session db opened after an
+ * upgrade would otherwise throw `no such column` on the first media insert.
+ */
+function ensureColumn(d: Database, table: string, column: string, ddl: string): void {
+  const cols = d.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+  if (!cols.some((c) => c.name === column)) d.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
 }
 
 /**
@@ -420,7 +434,7 @@ export function setSessionModel(sessionId: string, model: string): void {
 
 export function appendMessage(
   sessionId: string,
-  msg: Partial<Pick<MessageRow, "id" | "parent_id" | "tool_calls" | "tool_call_id" | "error">> & {
+  msg: Partial<Pick<MessageRow, "id" | "parent_id" | "tool_calls" | "tool_call_id" | "media" | "error">> & {
     role: Role;
     content: string;
     tokens: number;
@@ -437,13 +451,16 @@ export function appendMessage(
     content: msg.content ?? "",
     tool_calls: msg.tool_calls ?? null,
     tool_call_id: msg.tool_call_id ?? null,
+    media: msg.media ?? null,
     tokens: msg.tokens,
     error: msg.error ?? null,
     created_at: Date.now(),
   };
   d.prepare(
-    "INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-  ).run(m.id, m.seq, m.session_id, m.parent_id, m.role, m.content, m.tool_calls, m.tool_call_id, m.tokens, m.error, m.created_at);
+    // explicit column list: a db migrated by ALTER has `media` as its LAST
+    // column, so positional VALUES would write media into tokens
+    "INSERT INTO messages (id, seq, session_id, parent_id, role, content, tool_calls, tool_call_id, media, tokens, error, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+  ).run(m.id, m.seq, m.session_id, m.parent_id, m.role, m.content, m.tool_calls, m.tool_call_id, m.media, m.tokens, m.error, m.created_at);
 
   if (m.role === "user") {
     const s = getSession(sessionId);

@@ -1,8 +1,9 @@
 import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { ToolDef } from "../providers/types.ts";
+import { lookupModel } from "../providers/models.ts";
 import type { ToolContext, ToolResult } from "./types.ts";
 import { fail, ok } from "./types.ts";
 import { applyEdits, syntaxWarning, type EditOp } from "./patch.ts";
@@ -41,8 +42,32 @@ function sniffBinary(buf: Buffer): boolean {
   return false;
 }
 
-function isImage(p: string): boolean {
-  return /\.(png|jpe?g|gif|webp|bmp|ico)$/i.test(p);
+/** Media files `read` can attach for a capable model, by extension -> [kind, IANA type]. */
+const MEDIA_TYPES: Record<string, ["image" | "video" | "audio", string]> = {
+  png: ["image", "image/png"],
+  jpg: ["image", "image/jpeg"],
+  jpeg: ["image", "image/jpeg"],
+  gif: ["image", "image/gif"],
+  webp: ["image", "image/webp"],
+  bmp: ["image", "image/bmp"],
+  ico: ["image", "image/x-icon"],
+  avif: ["image", "image/avif"],
+  mp4: ["video", "video/mp4"],
+  webm: ["video", "video/webm"],
+  mov: ["video", "video/quicktime"],
+  mkv: ["video", "video/x-matroska"],
+  avi: ["video", "video/x-msvideo"],
+  mp3: ["audio", "audio/mpeg"],
+  wav: ["audio", "audio/wav"],
+  ogg: ["audio", "audio/ogg"],
+  flac: ["audio", "audio/flac"],
+  m4a: ["audio", "audio/mp4"],
+  aac: ["audio", "audio/aac"],
+};
+
+function mediaTypeOf(p: string): ["image" | "video" | "audio", string] | null {
+  const ext = p.split(".").pop()?.toLowerCase() ?? "";
+  return MEDIA_TYPES[ext] ?? null;
 }
 
 // ---------- read ----------
@@ -50,7 +75,7 @@ function isImage(p: string): boolean {
 export const readDef: ToolDef = {
   name: "read",
   description:
-    "Read a text file. Returns line-numbered content (n: line). Caps at 2000 lines / 50KB. Refuses binary files.",
+    "Read a text file. Returns line-numbered content (n: line). Caps at 2000 lines / 50KB. Image/audio/video files are attached as media when the current model accepts that kind of input (otherwise an error says so). Refuses other binary files.",
   parameters: {
     type: "object",
     properties: {
@@ -73,7 +98,26 @@ export async function readRun(args: { path: string; offset?: number; limit?: num
   } catch (e) {
     return fail(`error: cannot read ${args.path}: ${(e as Error).message}`);
   }
-  if (isImage(p)) return fail(`error: ${args.path} looks like an image (${buf.length} bytes); vision input is not wired up yet`);
+  const media = mediaTypeOf(p);
+  if (media) {
+    const [kind, mimeType] = media;
+    // Gate on the active model's modalities: an image handed to a text-only
+    // model would either be dropped silently or fail the whole request, so the
+    // refusal has to happen here with a message that says why.
+    const info = lookupModel(ctx.providerCfg?.model ?? "");
+    const capable = kind === "image" ? info.vision : kind === "video" ? info.video : info.audio;
+    if (!ctx.providerCfg?.model || !capable) {
+      return fail(
+        `error: ${args.path} is ${kind} (${mimeType}, ${buf.length} bytes) and the current model (${ctx.providerCfg?.model ?? "unknown"}) does not accept ${kind} input`,
+      );
+    }
+    ctx.readFiles.add(p);
+    return {
+      ok: true,
+      output: `${args.path}: ${mimeType}, ${(buf.length / 1024).toFixed(1)} KB — attached as ${kind} content below`,
+      media: [{ mimeType, data: buf.toString("base64"), filename: basename(p) }],
+    };
+  }
   if (sniffBinary(buf)) return fail(`error: ${args.path} is binary (${buf.length} bytes)`);
 
   ctx.readFiles.add(p);

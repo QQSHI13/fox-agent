@@ -1,4 +1,4 @@
-import type { ProviderConfig, ToolDef } from "../providers/types.ts";
+import type { MediaPart, ProviderConfig, ToolDef } from "../providers/types.ts";
 import type { AgentEvent } from "../core/events.ts";
 import type { AcpAgentConfig, LspConfig } from "../core/config.ts";
 
@@ -48,6 +48,8 @@ export interface ToolContext {
 export interface ToolResult {
   ok: boolean;
   output: string;
+  /** binary attachments (e.g. an image `read` returns for a vision-capable model) */
+  media?: MediaPart[];
 }
 
 export interface Tool {
