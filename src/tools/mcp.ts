@@ -1,6 +1,6 @@
 // MCP client bridge: connects configured stdio servers, merges their tools
 // into the registry under mcp__<server>__<tool>. The SDK is a dynamic import
-// so fox still runs (without MCP) if it isn't installed.
+// so fox-agent still runs (without MCP) if it isn't installed.
 import type { McpServerConfig } from "../core/config.ts";
 import type { ToolDef } from "../providers/types.ts";
 import type { Tool, ToolResult } from "./types.ts";
@@ -72,7 +72,7 @@ export async function mcpTools(
       // every failing server is reported, not just the last one
       const w = `mcp server '${name}' unavailable: ${(e as Error).message.slice(0, 200)}`;
       warnings.push(w);
-      console.error(`fox: ${w}`);
+      console.error(`fox-agent: ${w}`);
     }
   }
 

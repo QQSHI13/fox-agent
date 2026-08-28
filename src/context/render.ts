@@ -13,18 +13,46 @@ export function renderContext(sessionId: string, systemPrompt: string): ChatMess
     view.filter((n) => !n.deleted && n.msg.role === "tool" && n.msg.tool_call_id).map((n) => n.msg.tool_call_id!),
   );
 
+  /**
+   * Compaction summaries waiting to be emitted.
+   *
+   * Two things make this a queue rather than a direct push.
+   *
+   * First, the role. A summary used to be rendered as `role: "user"`, which
+   * makes the harness speak in the user's voice: the model cannot tell that
+   * note apart from something the person actually typed, and the summary text
+   * is model output, so anything imperative inside it arrives with the
+   * authority of a user instruction. The summary is the model's own recap of
+   * its own conversation, so the assistant channel is where it belongs.
+   *
+   * Second, the placement. `assistant` is the one role that cannot go anywhere:
+   * a tool result has to follow the assistant turn that called it with nothing
+   * in between, so a summary landing between an assistant's tool_calls and a
+   * surviving result would be a malformed request rather than a cosmetic
+   * problem. Holding summaries across `tool` messages keeps that pairing
+   * intact; `role: "user"` never hit this because a user message between the
+   * two is (wrongly) tolerated by both providers.
+   */
+  const pending: string[] = [];
+  const flush = () => {
+    if (!pending.length) return;
+    out.push({ role: "assistant", content: pending.join("\n") });
+    pending.length = 0;
+  };
+
   for (const n of view) {
     const m = n.msg;
 
     // deleted node -> nothing but an optional tiny note
     if (n.deleted) {
-      if (n.summary) out.push({ role: "user", content: `(ctx: [m${m.seq}] summarized away) ${n.summary}` });
+      if (n.summary) pending.push(`(ctx: ${marker(m.seq)} summarized away) ${n.summary}`);
       continue;
     }
 
     if (m.role === "think") continue;
     if (m.role === "system") continue; // harness notes are storage-only
     if (m.role === "user") {
+      flush();
       out.push({ role: "user", content: `${marker(m.seq)} ${n.content}` });
     } else if (m.role === "assistant") {
       let calls: { id: string; name: string; arguments: string }[] | undefined;
@@ -36,13 +64,16 @@ export function renderContext(sessionId: string, systemPrompt: string): ChatMess
       }
       const text = n.content ? `${marker(m.seq)} ${n.content}` : "";
       if (!text && !calls) continue;
+      flush();
       const entry: ChatMessage = { role: "assistant", content: text };
       if (calls) entry.tool_calls = calls;
       out.push(entry);
     } else if (m.role === "tool") {
+      // deliberately no flush: see `pending`
       out.push({ role: "tool", tool_call_id: m.tool_call_id!, content: `${marker(m.seq)} ${n.content}` });
     }
   }
+  flush();
   return out;
 }
 

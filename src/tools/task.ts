@@ -4,9 +4,9 @@
  * A subagent used to be an in-process child session with a deliberately reduced
  * tool registry. It is now a separate ACP agent — by default another `fox --acp`
  * with the *full* registry, and optionally any agent the user named in
- * `fox.toml` under `[agents.<name>]`. There is no second code path left for
+ * `fox-agent.toml` under `[agents.<name>]`. There is no second code path left for
  * "subagent": a child is a real session in a real process, reached through the
- * same protocol an external editor would use, so anything fox can do for a user
+ * same protocol an external editor would use, so anything fox-agent can do for a user
  * it can do for its parent.
  *
  * The visible upgrade: the child's updates stream into the parent's event stream
@@ -24,13 +24,13 @@ import { runAcpAgent } from "../acp/client.ts";
 /**
  * How deep delegation may nest.
  *
- * The child is a full fox with `task` in its registry, so without a cap a
+ * The child is a full fox-agent with `task` in its registry, so without a cap a
  * subagent can spawn a subagent forever — each one a real process burning real
  * requests. The depth travels in the child's environment rather than a closure,
  * because a closure cannot cross a process boundary.
  */
 const MAX_DEPTH = 3;
-const DEPTH_ENV = "FOX_DELEGATION_DEPTH";
+const DEPTH_ENV = "FOX_AGENT_DELEGATION_DEPTH";
 
 export const taskDef: ToolDef = {
   name: "task",
@@ -43,7 +43,7 @@ export const taskDef: ToolDef = {
       prompt: { type: "string", description: "Complete, standalone instructions for the subagent" },
       agent: {
         type: "string",
-        description: 'Which agent to delegate to: "default" (another fox) or a name configured in fox.toml [agents.*]',
+        description: 'Which agent to delegate to: "default" (another fox-agent) or a name configured in fox-agent.toml [agents.*]',
       },
     },
     required: ["description", "prompt"],
@@ -51,10 +51,10 @@ export const taskDef: ToolDef = {
 };
 
 /**
- * How to re-launch this fox as an ACP server.
+ * How to re-launch this fox-agent as an ACP server.
  *
  * Compiled and from-source runs need opposite halves of the same pair. In a
- * `bun build --compile` binary `process.execPath` IS fox and `Bun.main` is a
+ * `bun build --compile` binary `process.execPath` IS fox-agent and `Bun.main` is a
  * virtual `/$bunfs/root/...` path that no process can execute; running from
  * source it is the other way around — `execPath` is bun and `Bun.main` is
  * `src/cli.ts`. Probed both, rather than assumed.
@@ -70,7 +70,7 @@ function resolveAgent(name: string | undefined, agents: Record<string, AcpAgentC
   const hit = agents[name];
   if (hit) return hit;
   const known = ["default", ...Object.keys(agents)].join(", ");
-  return `error: unknown agent "${name}" — configure it in fox.toml under [agents.${name}], or use one of: ${known}`;
+  return `error: unknown agent "${name}" — configure it in fox-agent.toml under [agents.${name}], or use one of: ${known}`;
 }
 
 export async function taskRun(

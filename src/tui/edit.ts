@@ -39,6 +39,9 @@ export function countGraphemes(s: string): number {
  * cluster, so the walk stopped early and left half the family on screen.
  */
 export function graphemeBack(buf: Ch[], end: number): number {
+  // clamp: callers keep the cursor in sync, but a stale index must degrade to
+  // "delete nothing" rather than crash on buf[end - 1] being undefined
+  end = Math.min(end, buf.length);
   if (end <= 0) return 0;
   // literal chars (from \-escapes) are individually meaningful, never merged
   if (buf[end - 1].lit) return 1;

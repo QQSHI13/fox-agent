@@ -13,12 +13,11 @@ let ctx: ToolContext;
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "fox-tools-"));
-  process.env.FOX_HOME = join(dir, ".fox");
+  process.env.FOX_AGENT_HOME = join(dir, ".fox");
   let pty: unknown;
   ctx = {
     sessionId: "s1",
     cwd: dir,
-    turnStartSeq: 0,
     readFiles: new Set<string>(),
     get pty() {
       return pty;
@@ -198,6 +197,30 @@ describe("exec", () => {
   });
 });
 
+describe("ctx_edit", () => {
+  test("nodes from the current turn are editable too", async () => {
+    // regression: the old guard refused any seq >= the turn's first node, so a
+    // big output from THIS turn could not be pruned until a turn later
+    const { createSession, appendMessage, getMessage } = await import("../src/store/db.ts");
+    const { ctxEditRun } = await import("../src/tools/ctxedit.ts");
+    const s = createSession(dir, "m1");
+    const mine = { ...ctx, sessionId: s.id };
+    const m = appendMessage(s.id, { parent_id: null, role: "tool", content: "huge dump", tokens: 10 });
+    const r = await ctxEditRun({ ops: [{ op: "delete", ids: [m.seq] }] }, mine);
+    expect(r.ok).toBe(true);
+    expect(getMessage(s.id, m.seq)).toBeTruthy(); // view-only: storage untouched
+  });
+
+  test("unknown ids are still refused", async () => {
+    const { createSession } = await import("../src/store/db.ts");
+    const { ctxEditRun } = await import("../src/tools/ctxedit.ts");
+    const s = createSession(dir, "m1");
+    const r = await ctxEditRun({ ops: [{ op: "delete", ids: [9999] }] }, { ...ctx, sessionId: s.id });
+    expect(r.ok).toBe(false);
+    expect(r.output).toContain("no message m9999");
+  });
+});
+
 describe("registry", () => {
   test("base registry exposes the built-in tools", () => {
     const reg = baseRegistry();
@@ -233,7 +256,7 @@ describe("registry", () => {
     // RESTRICTED = {task, ctx_edit, pty} removed while the system prompt still
     // described all three, so a child was told about tools it could not call.
     // Delegation is now a separate `fox --acp` process (src/tools/task.ts), which
-    // reaches this same unexcluded path — nothing in fox passes `exclude` at all;
+    // reaches this same unexcluded path — nothing in fox-agent passes `exclude` at all;
     // it survives only as a facility for an embedder that wants a reduced set.
     const { tools } = await buildRegistry({ mcpServers: {} } as any);
     for (const name of ["task", "ctx_edit", "pty"]) expect(tools.has(name)).toBe(true);
@@ -243,33 +266,33 @@ describe("registry", () => {
 
 describe("childEnv", () => {
   test("strips provider credentials but keeps ordinary vars", () => {
-    process.env.FOX_API_KEY = "secret1";
+    process.env.FOX_AGENT_API_KEY = "secret1";
     process.env.ANTHROPIC_API_KEY = "secret2";
     process.env.SOME_OTHER_API_KEY = "secret3";
-    process.env.FOX_KEEP_ME = "fine";
+    process.env.FOX_AGENT_KEEP_ME = "fine";
     try {
       const env = childEnv();
-      expect(env.FOX_API_KEY).toBeUndefined();
+      expect(env.FOX_AGENT_API_KEY).toBeUndefined();
       expect(env.ANTHROPIC_API_KEY).toBeUndefined();
       expect(env.SOME_OTHER_API_KEY).toBeUndefined();
-      expect(env.FOX_KEEP_ME).toBe("fine");
+      expect(env.FOX_AGENT_KEEP_ME).toBe("fine");
       expect(env.PATH).toBe(process.env.PATH!);
     } finally {
-      delete process.env.FOX_API_KEY;
+      delete process.env.FOX_AGENT_API_KEY;
       delete process.env.ANTHROPIC_API_KEY;
       delete process.env.SOME_OTHER_API_KEY;
-      delete process.env.FOX_KEEP_ME;
+      delete process.env.FOX_AGENT_KEEP_ME;
     }
   });
 
   test("extra vars are merged and win over the inherited set", () => {
-    process.env.FOX_OVERRIDE_ME = "before";
+    process.env.FOX_AGENT_OVERRIDE_ME = "before";
     try {
-      const env = childEnv({ FOX_OVERRIDE_ME: "after", EXTRA: "x" });
-      expect(env.FOX_OVERRIDE_ME).toBe("after");
+      const env = childEnv({ FOX_AGENT_OVERRIDE_ME: "after", EXTRA: "x" });
+      expect(env.FOX_AGENT_OVERRIDE_ME).toBe("after");
       expect(env.EXTRA).toBe("x");
     } finally {
-      delete process.env.FOX_OVERRIDE_ME;
+      delete process.env.FOX_AGENT_OVERRIDE_ME;
     }
   });
 });

@@ -168,8 +168,8 @@ describe("runTurnCore with a timing-out provider", () => {
 
   function session(): string {
     const home = mkdtempSync(join(tmpdir(), "fox-timeout-"));
-    process.env.FOX_HOME = join(home, ".fox");
-    // db module reads FOX_HOME lazily per call, so importing after the env set
+    process.env.FOX_AGENT_HOME = join(home, ".fox");
+    // db module reads FOX_AGENT_HOME lazily per call, so importing after the env set
     // is not required — but the session must be created through the store
     return home;
   }

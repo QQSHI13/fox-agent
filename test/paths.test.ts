@@ -1,4 +1,4 @@
-// The on-disk layout is a contract: FOX_HOME is honored, one file per session,
+// The on-disk layout is a contract: FOX_AGENT_HOME is honored, one file per session,
 // and the pre-1.0 single-file store is removed rather than left to rot.
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
@@ -9,7 +9,7 @@ let dir: string;
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "fox-paths-"));
-  process.env.FOX_HOME = dir;
+  process.env.FOX_AGENT_HOME = dir;
 });
 
 afterEach(() => {
@@ -17,20 +17,20 @@ afterEach(() => {
 });
 
 describe("paths", () => {
-  test("every path derives from FOX_HOME, read live", async () => {
-    const { foxHome, indexDbPath, sessionDbPath, ptyDir, legacyDbPath } = await import("../src/core/paths.ts");
-    expect(foxHome()).toBe(dir);
+  test("every path derives from FOX_AGENT_HOME, read live", async () => {
+    const { agentHome, indexDbPath, sessionDbPath, ptyDir, legacyDbPath } = await import("../src/core/paths.ts");
+    expect(agentHome()).toBe(dir);
     expect(indexDbPath()).toBe(join(dir, "index.db"));
     expect(sessionDbPath("abc")).toBe(join(dir, "sessions", "abc.db"));
     expect(ptyDir()).toBe(join(dir, "pty"));
     expect(legacyDbPath()).toBe(join(dir, "sessions.db"));
 
     // read on every call, not captured at import: the store and pty tool both
-    // depend on this to follow a FOX_HOME that changes between test cases
+    // depend on this to follow a FOX_AGENT_HOME that changes between test cases
     const other = join(dir, "elsewhere");
-    process.env.FOX_HOME = other;
-    expect(foxHome()).toBe(other);
-    process.env.FOX_HOME = dir;
+    process.env.FOX_AGENT_HOME = other;
+    expect(agentHome()).toBe(other);
+    process.env.FOX_AGENT_HOME = dir;
   });
 
   test("ensureLayout creates sessions/ and pty/", async () => {

@@ -25,7 +25,11 @@ export const ptyDef: ToolDef = {
   parameters: {
     type: "object",
     properties: {
-      keys: { type: "string", description: 'Text to type (append \\n to press enter). "^c" = ctrl+c. Omit to just drain.' },
+      keys: {
+        type: "string",
+        description:
+          'Keystrokes, sent literally — every character is typed exactly as given, nothing stripped, nothing added. A "\\n" presses Enter (in a shell that runs the line; multi-line input runs line by line). Without a newline the text just sits at the prompt. "^c" alone = ctrl+c. Omit to just drain.',
+      },
       quiet_ms: { type: "number", description: "Return once output is silent for this long (default 400, max 5000)" },
     },
   },
@@ -51,14 +55,14 @@ async function tmux(...argv: string[]): Promise<{ code: number; out: string }> {
   return { code, out: out + err };
 }
 
-/** tmux session name for a fox session — single definition for both sides. */
+/** tmux session name for a fox-agent session — single definition for both sides. */
 export function ptySessionName(sessionId: string): string {
-  return `fox-${sessionId.slice(0, 12)}`;
+  return `fox-agent-${sessionId.slice(0, 12)}`;
 }
 
 /**
- * Exact-match targets. A bare name is a *prefix* match in tmux, so `fox-abc`
- * would happily resolve to `fox-abcdef` once the real session is gone — the `=`
+ * Exact-match targets. A bare name is a *prefix* match in tmux, so `fox-agent-abc`
+ * would happily resolve to `fox-agent-abcdef` once the real session is gone — the `=`
  * forbids that. The two forms are not interchangeable: session commands take
  * `=name`, while anything addressing a pane needs the trailing colon (`=name:`),
  * which fails with "can't find pane" if omitted.
@@ -100,11 +104,11 @@ async function spawnSession(sessionId: string, cwd: string): Promise<PtyState> {
   const name = ptySessionName(sessionId);
   await tmux("kill-session", "-t", sessionTarget(name)).catch(() => {});
   // -c is what pins the starting directory. Without it tmux inherits the *client's*
-  // cwd (fox's own process.cwd()), which is not necessarily the session's dir.
+  // cwd (fox-agent's own process.cwd()), which is not necessarily the session's dir.
   const { code, out } = await tmux("new-session", "-d", "-s", name, "-c", cwd, "-x", "220", "-y", "50");
   if (code !== 0) throw new Error(`tmux new-session failed: ${out}`);
   // pty owns this directory. It used to rely on the store having created it as a
-  // side effect, so pty in a fresh FOX_HOME logged into a nonexistent path and
+  // side effect, so pty in a fresh FOX_AGENT_HOME logged into a nonexistent path and
   // silently returned "(no new output)" forever.
   mkdirSync(ptyDir(), { recursive: true });
   const logPath = join(ptyDir(), `${name}.log`);
@@ -116,7 +120,7 @@ async function spawnSession(sessionId: string, cwd: string): Promise<PtyState> {
   } catch (e) {
     throw new PtyUnavailable(`pty unavailable: cannot write the output log ${logPath}: ${(e as Error).message}`);
   }
-  // logPath goes through a shell; FOX_HOME is user-supplied so quote properly
+  // logPath goes through a shell; FOX_AGENT_HOME is user-supplied so quote properly
   await tmux("pipe-pane", "-o", "-t", paneTarget(name), `cat >> '${logPath.replace(/'/g, `'\\''`)}'`);
   // start the byte cursor past the shell's own startup noise (prompt, terminal
   // integration escapes) so the first drain returns the command's output, not a
@@ -127,7 +131,7 @@ async function spawnSession(sessionId: string, cwd: string): Promise<PtyState> {
   // back to $HOME — so trusting the requested path would make PtyState.cwd, the
   // lost-session note and the tool description all describe a directory the shell
   // is nowhere near. This has to come after waitForShell: pane_current_path
-  // reports the pane process's cwd, and until bash is up that is still fox's own,
+  // reports the pane process's cwd, and until bash is up that is still fox-agent's own,
   // which would read as a mismatch on every single spawn.
   const actual = (await panePath(name)) ?? cwd;
   return { session: name, logPath, cursor, cwd: actual, requestedCwd: cwd };
@@ -178,7 +182,41 @@ function fileSize(path: string): number {
   }
 }
 
-function readRange(path: string, from: number): { text: string; end: number } {
+/**
+ * How many trailing bytes of `buf` are the start of a UTF-8 sequence whose
+ * remaining bytes have not arrived yet.
+ *
+ * The cursor is a byte offset into a log that a live shell is still writing, so
+ * a read almost always lands mid-character eventually. `Buffer.toString("utf8")`
+ * turns a truncated sequence into U+FFFD, and because the cursor then advances
+ * past those bytes the character is lost for good — the next drain starts after
+ * them. Same defect class as the streaming-decoder bug in `tui/keys.ts`: the fix
+ * is to leave the partial sequence in the file and re-read it next time.
+ *
+ * A lead byte encodes its own length (0b110xxxxx = 2, 0b1110xxxx = 3,
+ * 0b11110xxx = 4), so scanning back over at most 3 continuation bytes to the
+ * lead is enough to decide. Returns 0 when the buffer ends on a clean boundary,
+ * and 0 for malformed bytes too — those are not going to be completed by waiting,
+ * and holding them back would stall the cursor forever.
+ */
+export function partialTailBytes(buf: Buffer): number {
+  for (let back = 1; back <= 4 && back <= buf.length; back++) {
+    const b = buf[buf.length - back];
+    if (b < 0x80) return 0; // ASCII: the buffer ends on a boundary
+    if (b < 0xc0) continue; // continuation byte; keep walking back to the lead
+    // 0xf8 and up are not lead bytes in any UTF-8 sequence. Reading a length out
+    // of one would hold it back waiting for bytes that are never coming, and a
+    // shell that then goes quiet leaves the cursor parked on it — the exact
+    // stall this function exists to avoid. Same for 0xc0/0xc1 (overlong).
+    if (b > 0xf7 || b < 0xc2) return 0;
+    const need = b >= 0xf0 ? 4 : b >= 0xe0 ? 3 : 2;
+    return back < need ? back : 0;
+  }
+  return 0;
+}
+
+/** Exported for tests: the drain step that must not lose a character. */
+export function readRange(path: string, from: number): { text: string; end: number } {
   let fd: number;
   try {
     fd = openSync(path, "r");
@@ -191,7 +229,11 @@ function readRange(path: string, from: number): { text: string; end: number } {
     const len = Math.min(size - from, OUT_CAP * 4);
     const buf = Buffer.alloc(len);
     readSync(fd, buf, 0, len, from);
-    return { text: buf.toString("utf8"), end: from + len };
+    // Stop short of a character split across this range's end (see
+    // partialTailBytes) so the cursor resumes at the lead byte, not past it.
+    const hold = partialTailBytes(buf);
+    const keep = len - hold;
+    return { text: buf.toString("utf8", 0, keep), end: from + keep };
   } finally {
     closeSync(fd);
   }
@@ -230,10 +272,11 @@ export async function drivePty(args: { keys?: string; quiet_ms?: number }, ctx: 
     if (args.keys === "^c") {
       await tmux("send-keys", "-t", paneTarget(pty.session), "C-c");
     } else {
-      const hasEnter = args.keys.endsWith("\n");
-      const body = hasEnter ? args.keys.slice(0, -1) : args.keys;
-      if (body) await tmux("send-keys", "-t", paneTarget(pty.session), "-l", body);
-      if (hasEnter) await tmux("send-keys", "-t", paneTarget(pty.session), "Enter");
+      // Literal, character for character: the agent owns this shell, so nothing
+      // is stripped or synthesized. A "\n" in the string IS the Enter key
+      // (tmux -l writes a raw LF, which a shell's line discipline reads as
+      // accept-line), so multi-line input simply runs line by line.
+      await tmux("send-keys", "-t", paneTarget(pty.session), "-l", args.keys);
     }
     await waitForQuiet(pty.logPath, Math.min(5_000, Math.max(200, args.quiet_ms ?? 400)));
   }
@@ -254,6 +297,12 @@ export async function drivePty(args: { keys?: string; quiet_ms?: number }, ctx: 
   if (pty.requestedCwd && landedElsewhere(pty.requestedCwd, pty.cwd)) {
     note += `(pty: ${pty.requestedCwd} was not usable as a starting directory, so the shell is in ${pty.cwd} instead — use absolute paths or cd first)\n`;
     pty.requestedCwd = undefined;
+  }
+  // Keys without a newline were typed but not submitted. Say so, or the model
+  // reads the unchanged output as "the command did nothing" and its next call
+  // concatenates onto a line that is still waiting.
+  if (args.keys && args.keys !== "^c" && !args.keys.includes("\n")) {
+    note += `(pty: keys contained no newline — the text was typed literally and is still sitting at the prompt unexecuted; include "\\n" to run it)\n`;
   }
   return ok(note + body);
 }

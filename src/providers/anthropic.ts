@@ -8,7 +8,7 @@ import { classifyProviderError } from "../core/errors.ts";
 import { startWatchdog } from "./watchdog.ts";
 import { toModelMessages } from "./convert.ts";
 
-const CACHE_OFF = process.env.FOX_ANTHROPIC_CACHE === "0";
+const CACHE_OFF = process.env.FOX_AGENT_ANTHROPIC_CACHE === "0";
 
 export async function* streamChat(
   cfg: ProviderConfig,

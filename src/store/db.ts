@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 import { existsSync, rmSync } from "node:fs";
 import { estimateTokens } from "../providers/models.ts";
-import { ensureLayout, foxHome, indexDbPath, legacyDbPath, sessionDbPath } from "../core/paths.ts";
+import { ensureLayout, agentHome, indexDbPath, legacyDbPath, sessionDbPath } from "../core/paths.ts";
 
 export type Role = "system" | "user" | "assistant" | "tool" | "think";
 
@@ -11,6 +11,15 @@ export interface SessionRow {
   model: string;
   title: string | null;
   created_at: number;
+  /**
+   * Last append to the session's log. Maintained by `appendMessage` since the
+   * index was introduced, but for a long time nothing read it: every listing
+   * query ordered by and projected `created_at`, so `/sessions` and `fox -c`
+   * ranked by *birth* order. A session created this morning and worked in all
+   * day sorted below one created five minutes ago and never used, which is the
+   * opposite of what "latest" means to anyone picking from the list.
+   */
+  updated_at: number;
 }
 
 export interface MessageRow {
@@ -68,8 +77,11 @@ const INDEX_SCHEMA = `
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
   );
-  CREATE INDEX IF NOT EXISTS idx_sessions_cwd ON sessions(cwd, created_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_sessions_cwd_recent ON sessions(cwd, updated_at DESC);
 `;
+
+/** Every listing/lookup projects the same columns, in SessionRow order. */
+const SESSION_COLS = "id, cwd, model, title, created_at, updated_at";
 
 /**
  * One database per session. `session_id` columns are kept even though the file
@@ -132,8 +144,30 @@ let _index: Database | null = null;
 const _sessions = new Map<string, Database>();
 /** The subagent tool mints a session per task; without a cap those fds pile up. */
 const MAX_OPEN_SESSIONS = 8;
+/**
+ * Sessions whose handle must survive eviction.
+ *
+ * The cap alone was fine while nothing enumerated sessions: the harness touched
+ * one session and the LRU order kept it hot. The interactive picker breaks that
+ * — it reads usage for every session in the list, so the *live* session becomes
+ * the least-recently-used and its handle gets closed.
+ *
+ * Most call sites survive that: they go through `sessionDb`, which reopens on a
+ * miss. The ones that do not are the callers that *hold* the `Database` across
+ * other work — `forkSession` keeps `srcDb` while it snapshots, and
+ * `pruneSession` holds `d` across `projectView` and a VACUUM. A closed
+ * `bun:sqlite` handle throws `RangeError: Cannot use a closed database` on next
+ * use rather than reopening, so an eviction landing inside one of those is an
+ * exception out of the middle of the operation, not a slow path. Measured:
+ * a statement prepared before the close still runs, but any new `prepare` on
+ * the stale handle throws — so the failure is both real and easy to miss.
+ *
+ * Pinning is a set rather than a refcount: the harness pins the one session it
+ * is driving and unpins on switch, which is the entire lifecycle.
+ */
+const _pinned = new Set<string>();
 let _legacyChecked = false;
-/** FOX_HOME the open handles belong to; if it moves, they are the wrong files. */
+/** FOX_AGENT_HOME the open handles belong to; if it moves, they are the wrong files. */
 let _home: string | null = null;
 
 function open(path: string, schema: string): Database {
@@ -146,12 +180,12 @@ function open(path: string, schema: string): Database {
 }
 
 /**
- * Prepare the state dir and invalidate cached handles if FOX_HOME moved. Tests
+ * Prepare the state dir and invalidate cached handles if FOX_AGENT_HOME moved. Tests
  * repoint it between cases, and a handle to the previous directory would keep
  * reading a database nobody asked for.
  */
 function ready(): void {
-  const home = foxHome();
+  const home = agentHome();
   if (_home !== null && _home !== home) closeAll();
   _home = home;
   ensureLayout();
@@ -170,7 +204,7 @@ function dropLegacy(): void {
   const legacy = legacyDbPath();
   if (!existsSync(legacy)) return;
   for (const p of [legacy, `${legacy}-wal`, `${legacy}-shm`]) rmSync(p, { force: true });
-  console.error(`fox: removed pre-1.0 ${legacy} (sessions are per-file now; old history was not migrated)`);
+  console.error(`fox-agent: removed pre-1.0 ${legacy} (sessions are per-file now; old history was not migrated)`);
 }
 
 export function indexDb(): Database {
@@ -192,18 +226,52 @@ export function sessionDb(sessionId: string): Database {
   }
   const d = open(sessionDbPath(sessionId), SESSION_SCHEMA);
   _sessions.set(sessionId, d);
-  while (_sessions.size > MAX_OPEN_SESSIONS) {
-    const oldest = _sessions.keys().next().value as string;
-    _sessions.get(oldest)?.close();
-    _sessions.delete(oldest);
-  }
+  evict(sessionId);
   return d;
 }
 
-/** Drop cached handles — tests point FOX_HOME at a fresh dir between cases. */
+/**
+ * Close handles past the cap, oldest first, skipping pinned sessions.
+ *
+ * Bounded by the map size rather than looping on `size > cap`: if everything
+ * open is pinned there is nothing evictable, and a `while` would spin forever.
+ * Going over the cap is the correct outcome there — an fd over budget beats a
+ * closed handle under someone's feet.
+ *
+ * `keep` is the handle the caller is about to return, and it must be immune
+ * even though it is not pinned. Without it, a cache over the cap whose older
+ * entries are all pinned walks all the way to the newest entry and closes the
+ * very handle `sessionDb` just opened — so the caller gets back a closed
+ * database and the next `prepare` throws. Found by the all-pinned test:
+ * `createSession` failed on its own fresh session.
+ */
+function evict(keep?: string): void {
+  for (const id of [..._sessions.keys()]) {
+    if (_sessions.size <= MAX_OPEN_SESSIONS) return;
+    if (id === keep || _pinned.has(id)) continue;
+    _sessions.get(id)?.close();
+    _sessions.delete(id);
+  }
+}
+
+/**
+ * Keep this session's handle open until `unpinSession`. Call it for the session
+ * a turn loop is actively writing to; see `_pinned`.
+ */
+export function pinSession(sessionId: string): void {
+  _pinned.add(sessionId);
+}
+
+export function unpinSession(sessionId: string): void {
+  _pinned.delete(sessionId);
+  evict();
+}
+
+/** Drop cached handles — tests point FOX_AGENT_HOME at a fresh dir between cases. */
 export function closeAll(): void {
   for (const d of _sessions.values()) d.close();
   _sessions.clear();
+  _pinned.clear();
   _index?.close();
   _index = null;
   _legacyChecked = false;
@@ -221,17 +289,18 @@ function rid(): string {
 }
 
 export function createSession(cwd: string, model: string): SessionRow {
-  const s: SessionRow = { id: rid(), cwd, model, title: null, created_at: Date.now() };
+  const now = Date.now();
+  const s: SessionRow = { id: rid(), cwd, model, title: null, created_at: now, updated_at: now };
   indexDb()
     .prepare("INSERT INTO sessions VALUES (?, ?, ?, ?, ?, ?)")
-    .run(s.id, s.cwd, s.model, s.title, s.created_at, s.created_at);
+    .run(s.id, s.cwd, s.model, s.title, s.created_at, s.updated_at);
   sessionDb(s.id).prepare("INSERT OR IGNORE INTO refs VALUES (?, 'main', NULL, ?)").run(s.id, Date.now());
   return s;
 }
 
 export function getSession(id: string): SessionRow | null {
   return indexDb()
-    .prepare("SELECT id, cwd, model, title, created_at FROM sessions WHERE id = ?")
+    .prepare(`SELECT ${SESSION_COLS} FROM sessions WHERE id = ?`)
     .get(id) as SessionRow | null;
 }
 
@@ -253,22 +322,41 @@ export function deleteSession(id: string): boolean {
   const existed = !!getSession(id);
   _sessions.get(id)?.close();
   _sessions.delete(id);
+  // a pin on a session whose file is gone would only keep a future handle to a
+  // recreated empty database alive
+  _pinned.delete(id);
   const path = sessionDbPath(id);
   for (const p of [path, `${path}-wal`, `${path}-shm`]) rmSync(p, { force: true });
   indexDb().prepare("DELETE FROM sessions WHERE id = ?").run(id);
   return existed;
 }
 
+/**
+ * The session a `fox -c` in this directory should land in: most recently
+ * *worked in*, not most recently created. Ties break on id, which is
+ * timestamp-prefixed, so the order is total even when two sessions were
+ * touched in the same millisecond — a bare `ORDER BY updated_at` would let
+ * SQLite pick either one and `-c` would flip between them run to run.
+ */
 export function latestSessionFor(cwd: string): SessionRow | null {
   return indexDb()
-    .prepare("SELECT id, cwd, model, title, created_at FROM sessions WHERE cwd = ? ORDER BY created_at DESC LIMIT 1")
+    .prepare(`SELECT ${SESSION_COLS} FROM sessions WHERE cwd = ? ORDER BY updated_at DESC, id DESC LIMIT 1`)
     .get(cwd) as SessionRow | null;
 }
 
-export function listSessions(limit = 20): SessionRow[] {
+/**
+ * Sessions, most recently worked in first. `cwd` narrows to one directory —
+ * the interactive picker offers that as a filter, and passing it here lets
+ * SQLite answer from `idx_sessions_cwd_recent` instead of sorting every row.
+ */
+export function listSessions(limit = 20, cwd?: string): SessionRow[] {
   return indexDb()
-    .prepare("SELECT id, cwd, model, title, created_at FROM sessions ORDER BY created_at DESC LIMIT ?")
-    .all(limit) as SessionRow[];
+    .prepare(
+      cwd
+        ? `SELECT ${SESSION_COLS} FROM sessions WHERE cwd = ? ORDER BY updated_at DESC, id DESC LIMIT ?`
+        : `SELECT ${SESSION_COLS} FROM sessions ORDER BY updated_at DESC, id DESC LIMIT ?`,
+    )
+    .all(...(cwd ? [cwd, limit] : [limit])) as SessionRow[];
 }
 
 export function setRefTitle(sessionId: string, title: string) {
@@ -289,7 +377,8 @@ export function forkSession(sourceId: string, uptoSeq?: number): SessionRow | nu
   const src = getSession(sourceId);
   if (!src) return null;
 
-  const fork: SessionRow = { id: rid(), cwd: src.cwd, model: src.model, title: null, created_at: Date.now() };
+  const now = Date.now();
+  const fork: SessionRow = { id: rid(), cwd: src.cwd, model: src.model, title: null, created_at: now, updated_at: now };
   const target = sessionDbPath(fork.id);
   ensureLayout();
   // checkpoint first: VACUUM INTO reads the database, and anything still sitting
@@ -319,7 +408,7 @@ export function forkSession(sourceId: string, uptoSeq?: number): SessionRow | nu
 
   indexDb()
     .prepare("INSERT INTO sessions VALUES (?, ?, ?, ?, ?, ?)")
-    .run(fork.id, fork.cwd, fork.model, null, fork.created_at, fork.created_at);
+    .run(fork.id, fork.cwd, fork.model, null, fork.created_at, fork.updated_at);
   setRefTitle(fork.id, `fork of ${src.title ?? src.id}`);
   return { ...fork, title: `fork of ${src.title ?? src.id}`.slice(0, 80) };
 }

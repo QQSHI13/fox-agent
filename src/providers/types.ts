@@ -28,7 +28,13 @@ export interface ProviderConfig {
   baseUrl: string;
   apiKey: string;
   model: string;
-  provider?: "openai-compatible" | "anthropic";
+  /**
+   * `"openai-compatible"` and `"anthropic"` are built in. Any other string must
+   * be registered by a plugin (`FoxPlugin.providers`); `resolveChat` throws a
+   * named error listing what is available if it is not. Typed as a plain string
+   * rather than a union for that reason — the set is open at runtime.
+   */
+  provider?: string;
   /**
    * Abort the request after this many ms with no streamed progress. The clock
    * measures idle time, not total duration, so a long legitimate response is

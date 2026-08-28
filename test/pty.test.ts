@@ -1,7 +1,7 @@
 // pty is a separate tool from exec, with the opposite cwd contract: it starts in
 // the session directory and then keeps whatever directory it is walked to. The
 // bug being pinned here is that `tmux new-session` without `-c` inherits the
-// tmux *client's* cwd (fox's own process.cwd()), so the shell could open in a
+// tmux *client's* cwd (fox-agent's own process.cwd()), so the shell could open in a
 // directory that has nothing to do with the session.
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -19,7 +19,7 @@ const spawned: string[] = [];
 
 beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), "fox-pty-"));
-  process.env.FOX_HOME = home;
+  process.env.FOX_AGENT_HOME = home;
   workdir = join(home, "project", "nested");
   mkdirSync(workdir, { recursive: true });
 });
@@ -38,7 +38,6 @@ function ctx(sessionId: string, cwd: string): ToolContext {
   return {
     sessionId,
     cwd,
-    turnStartSeq: 0,
     readFiles: new Set<string>(),
     get pty() {
       return pty;
@@ -54,7 +53,7 @@ function ctx(sessionId: string, cwd: string): ToolContext {
 const sid = (tag: string) => `ptytest${tag}${Math.random().toString(36).slice(2, 8)}`;
 
 describe("pty starting directory", () => {
-  liveTest("the shell starts in ctx.cwd, not in fox's own cwd", async () => {
+  liveTest("the shell starts in ctx.cwd, not in fox-agent's own cwd", async () => {
     const { drivePty } = await import("../src/tools/pty.ts");
     const c = ctx(sid("cwd"), workdir);
     // process.cwd() here is the repo, so a pane that ignored -c would report that
@@ -203,10 +202,10 @@ describe("pty without tmux", () => {
 });
 
 describe("pty log path", () => {
-  test("logs live under FOX_HOME/pty and survive a quoted home", async () => {
+  test("logs live under FOX_AGENT_HOME/pty and survive a quoted home", async () => {
     const { ptyDir } = await import("../src/core/paths.ts");
     expect(ptyDir()).toBe(join(home, "pty"));
-    // the log path is interpolated into a shell command, so a quote in FOX_HOME
+    // the log path is interpolated into a shell command, so a quote in FOX_AGENT_HOME
     // must not break out of it
     writeFileSync(join(home, "sentinel"), "x");
     expect(ptyDir().startsWith(home)).toBe(true);
@@ -218,5 +217,92 @@ describe("pty log path", () => {
     await drivePty({ keys: "echo ONLY_ONCE\n", quiet_ms: 400 }, c);
     const second = await drivePty({}, c);
     expect(second.output).not.toContain("ONLY_ONCE");
+  }, 20_000);
+});
+
+// The pty cursor is a byte offset into a log a live shell is still writing, so
+// a drain lands mid-character as soon as the output is not pure ASCII. These
+// need no tmux: they are the pure decoding step, exercised over a file whose
+// bytes are cut at every possible offset.
+describe("pty log decoding", () => {
+  test("partialTailBytes holds back exactly the incomplete lead", async () => {
+    const { partialTailBytes } = await import("../src/tools/pty.ts");
+    const three = Buffer.from("日"); // e6 97 a5
+    const four = Buffer.from("😀"); // f0 9f 98 80
+
+    expect(partialTailBytes(Buffer.from("abc"))).toBe(0);
+    expect(partialTailBytes(three)).toBe(0); // complete
+    expect(partialTailBytes(three.subarray(0, 1))).toBe(1);
+    expect(partialTailBytes(three.subarray(0, 2))).toBe(2);
+    expect(partialTailBytes(four.subarray(0, 3))).toBe(3);
+    expect(partialTailBytes(Buffer.concat([Buffer.from("ok"), four.subarray(0, 2)]))).toBe(2);
+    expect(partialTailBytes(Buffer.alloc(0))).toBe(0);
+
+    // malformed input must return 0: those bytes will never be completed by
+    // waiting, and holding them would freeze the cursor forever
+    expect(partialTailBytes(Buffer.from([0x80, 0x80, 0x80, 0x80, 0x80]))).toBe(0);
+    expect(partialTailBytes(Buffer.from([0xff]))).toBe(0); // not a lead byte at all
+    expect(partialTailBytes(Buffer.from([0xf8]))).toBe(0); // 5-byte form: not UTF-8
+    expect(partialTailBytes(Buffer.from([0xc0]))).toBe(0); // overlong 2-byte lead
+    expect(partialTailBytes(Buffer.from([0x61, 0xff, 0x80]))).toBe(0);
+  });
+
+  test("consecutive reads of a multi-byte log lose nothing at any cut point", async () => {
+    const { readRange } = await import("../src/tools/pty.ts");
+    // the measured symptom of the old code: reading "abc日本語です" as bytes
+    // 0-5 then 5-11 produced "abc�" then "�本�" — two characters
+    // destroyed, permanently, because the cursor advanced past the split bytes
+    const full = "abc日本語です漢字ok";
+    const log = join(home, "utf8.log");
+    const bytes = Buffer.from(full);
+    writeFileSync(log, bytes);
+
+    for (let cut = 1; cut < bytes.length; cut++) {
+      // simulate a shell that had only written `cut` bytes when we first drained
+      const head = join(home, `head-${cut}.log`);
+      writeFileSync(head, bytes.subarray(0, cut));
+      const first = readRange(head, 0);
+      expect(first.text).not.toContain("�");
+
+      // then the rest arrives and we resume from wherever the first read stopped
+      const rest = readRange(log, first.end);
+      expect(rest.text).not.toContain("�");
+      expect(first.text + rest.text).toBe(full);
+      expect(rest.end).toBe(bytes.length);
+    }
+  });
+
+  test("a read at the end of the log yields nothing and holds the cursor", async () => {
+    const { readRange } = await import("../src/tools/pty.ts");
+    const log = join(home, "eof.log");
+    writeFileSync(log, "done");
+    expect(readRange(log, 4)).toEqual({ text: "", end: 4 });
+    // a log that does not exist yet (pty never started) must not throw
+    expect(readRange(join(home, "missing.log"), 7)).toEqual({ text: "", end: 7 });
+  });
+});
+
+// Keys are sent literally, character for character: nothing stripped, nothing
+// synthesized. The report these pin is "keys need a trailing \n to execute and
+// multi-line input gets flattened" — the old code special-cased one trailing
+// newline into a synthetic Enter and dropped every other one into `-l` raw.
+describe("literal keys", () => {
+  liveTest("multi-line keys run line by line in one call", async () => {
+    const { drivePty } = await import("../src/tools/pty.ts");
+    const c = ctx(sid("multi"), workdir);
+    const res = await drivePty({ keys: "echo MULTI_FIRST\necho MULTI_SECOND\n", quiet_ms: 400 }, c);
+    expect(res.output).toContain("MULTI_FIRST");
+    expect(res.output).toContain("MULTI_SECOND");
+  }, 20_000);
+
+  liveTest("keys without a newline are typed, not run — and the result says so", async () => {
+    const { drivePty } = await import("../src/tools/pty.ts");
+    const c = ctx(sid("noenter"), workdir);
+    const res = await drivePty({ keys: "echo STILL_PENDING" }, c);
+    expect(res.output).toContain("unexecuted");
+    expect(res.output).not.toContain("STILL_PENDING\n");
+    // a bare newline completes exactly the pending line
+    const second = await drivePty({ keys: "\n", quiet_ms: 400 }, c);
+    expect(second.output).toContain("STILL_PENDING");
   }, 20_000);
 });

@@ -31,7 +31,7 @@ export function buildSystemPrompt(
   const have = toolNames(opts.tools);
   const sections: string[] = [];
 
-  sections.push(`You are fox, a light coding harness with full machine control — no permission prompts. Work directly and verify your changes.`);
+  sections.push(`You are fox-agent, a light coding harness with full machine control — no permission prompts. Work directly and verify your changes.`);
 
   if (opts.projectInstructions) sections.push(`## Project instructions\n${opts.projectInstructions}`);
 
@@ -53,7 +53,7 @@ export function buildSystemPrompt(
         `Every message in your view carries a stable marker [mN]. Large old tool outputs are dead weight:\n` +
         `- after using a big result, hide it: {"op":"delete","ids":[3,5],"summary":"ran build; fixed 2 errors"}\n` +
         `- rewrite stale/wrong nodes: {"op":"replace","id":7,"content":"…"}\n` +
-        `Batch multiple ops in one ctx_edit call. Never edit nodes from the current turn. Edits apply from your NEXT step; storage is permanent — nothing is ever lost, ops are revertible (/undo).`,
+        `Batch multiple ops in one ctx_edit call. Any node is editable, including ones from the current turn. Edits apply from your NEXT step; storage is permanent — nothing is ever lost, ops are revertible (/undo).`,
     );
   }
 
@@ -74,7 +74,7 @@ export function buildSystemPrompt(
       `os: ${process.platform} shell=/bin/bash`,
       `date: ${new Date().toISOString().slice(0, 10)}`,
       `model: ${opts.model} ctx=${info.contextWindow} out=${info.maxOutput}`,
-      `fox: v${VERSION}`,
+      `fox-agent: v${VERSION}`,
       ...(todos ? [`todos:\n${todos}`] : []),
       "</runtime>",
     ].join("\n"),

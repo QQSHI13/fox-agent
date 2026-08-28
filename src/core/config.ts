@@ -1,4 +1,4 @@
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { existsSync, readFileSync } from "node:fs";
 import { ConfigError } from "./errors.ts";
@@ -10,11 +10,11 @@ export interface McpServerConfig {
 }
 
 /**
- * An external ACP agent fox can delegate to (`task { agent: "<name>" }`).
+ * An external ACP agent fox-agent can delegate to (`task { agent: "<name>" }`).
  *
  * Same shape as an MCP server, different protocol and a different trust story:
  * an MCP server provides tools, an ACP agent is a peer harness that runs with
- * fox's full environment (see `src/acp/client.ts`). Only names present in this
+ * fox-agent's full environment (see `src/acp/client.ts`). Only names present in this
  * table are reachable, so the model can pick among them but cannot invent one.
  */
 export interface AcpAgentConfig {
@@ -24,7 +24,7 @@ export interface AcpAgentConfig {
 }
 
 /**
- * A language server fox may consult for diagnostics after an edit.
+ * A language server fox-agent may consult for diagnostics after an edit.
  *
  * `extensions` is what makes an entry usable — a server with no extensions can
  * never be selected, so it is required here even though the built-in table in
@@ -42,7 +42,12 @@ export interface Config {
   model: string;
   baseUrl: string;
   apiKey: string;
-  provider: "openai-compatible" | "anthropic";
+  /**
+   * `openai-compatible` and `anthropic` are built in; any other string must be
+   * registered by a plugin (`FoxPlugin.providers`), and `resolveChat` throws a
+   * named error if it is not. Widened from a union for that reason.
+   */
+  provider: string;
   maxSteps: number;
   retryLimit: number;
   /** fraction of the model context window that triggers auto-compaction */
@@ -56,8 +61,27 @@ export interface Config {
   lsp: Record<string, LspConfig>;
   /** consult language servers after edit/write at all (built-ins are PATH-detected) */
   diagnostics: boolean;
-  /** contents of AGENTS.md / CLAUDE.md found walking up from cwd ("" if none) */
+  /**
+   * Plugin modules to load, **from the global config only**.
+   *
+   * Every other extension point here — `[mcpServers.*]`, `[agents.*]`, `[lsp.*]`
+   * — spawns a child process through `childEnv()`, which strips `*_API_KEY` and
+   * `FOX_AGENT_AUTH*`. A plugin cannot be sandboxed that way: it is imported into fox-agent's
+   * own process and gets the whole environment, the API key included. So a
+   * project file naming one is skipped with a warning — "clone a repo, cd in, run
+   * fox" must not be able to execute that repo's code. `default` in `[agents.*]`
+   * is unbindable for a smaller version of the same reason.
+   */
+  plugins: string[];
+  /** every AGENTS.md / CLAUDE.md on the path from root to cwd, each labeled with its source path ("" if none) */
   projectInstructions: string;
+  /**
+   * Problems found while loading config that are not fatal — a project file
+   * naming a plugin, for instance. Surfaced as `warn` events at the top of a
+   * turn, the way MCP connection failures already are: silence is the one
+   * outcome a user cannot debug.
+   */
+  warnings: string[];
 }
 
 const DEFAULTS: Omit<Config, "projectInstructions"> = {
@@ -73,6 +97,8 @@ const DEFAULTS: Omit<Config, "projectInstructions"> = {
   agents: {},
   lsp: {},
   diagnostics: true,
+  plugins: [],
+  warnings: [],
 };
 
 /**
@@ -111,6 +137,46 @@ export function findUp(cwd: string, names: string[]): string | null {
   }
 }
 
+/**
+ * Walk up from `cwd` collecting EVERY existing candidate, root-most first.
+ *
+ * Instructions nest: a monorepo root AGENTS.md and a package-local one both
+ * apply, and the nearest one should get the last word, so it comes last.
+ */
+export function findUpAll(cwd: string, names: string[]): string[] {
+  const found: string[] = [];
+  let dir = cwd;
+  for (;;) {
+    for (const n of names) {
+      const p = join(dir, n);
+      if (existsSync(p)) found.push(p);
+    }
+    const parent = join(dir, "..");
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return found.reverse();
+}
+
+/**
+ * Every AGENTS.md / CLAUDE.md on the path from the filesystem root to cwd,
+ * each labeled with the file it came from.
+ *
+ * The label is load-bearing, not decoration: instructions that say "run
+ * ./scripts/x" mean the file's own directory, and a bare concatenation leaves
+ * the model guessing which directory that is — or even whether the file came
+ * from cwd at all.
+ */
+function loadProjectInstructions(cwd: string): string {
+  return findUpAll(cwd, ["AGENTS.md", "CLAUDE.md"])
+    .map((p) => {
+      const text = readTextFile(p);
+      return text ? `From ${p} (relative paths in it resolve against ${dirname(p)}):\n${text}` : "";
+    })
+    .filter(Boolean)
+    .join("\n\n");
+}
+
 function readTextFile(path: string, cap = 8192): string {
   try {
     return readFileSync(path, "utf8").slice(0, cap).trim();
@@ -120,36 +186,45 @@ function readTextFile(path: string, cap = 8192): string {
 }
 
 function applyEnv(cfg: Config, env: Record<string, string | undefined>) {
-  cfg.model = env.FOX_MODEL ?? cfg.model;
-  cfg.baseUrl = (env.FOX_BASE_URL ?? env.OPENAI_BASE_URL ?? cfg.baseUrl).replace(/\/$/, "");
-  cfg.apiKey = env.FOX_API_KEY ?? env.OPENAI_API_KEY ?? env.ANTHROPIC_API_KEY ?? cfg.apiKey;
-  if (env.FOX_PROVIDER === "anthropic" || env.FOX_PROVIDER === "openai-compatible") cfg.provider = env.FOX_PROVIDER;
-  else if (!env.FOX_PROVIDER && /^claude/i.test(env.FOX_MODEL ?? "")) cfg.provider = "anthropic";
-  const steps = Number(env.FOX_MAX_STEPS);
+  cfg.model = env.FOX_AGENT_MODEL ?? cfg.model;
+  cfg.baseUrl = (env.FOX_AGENT_BASE_URL ?? env.OPENAI_BASE_URL ?? cfg.baseUrl).replace(/\/$/, "");
+  cfg.apiKey = env.FOX_AGENT_API_KEY ?? env.OPENAI_API_KEY ?? env.ANTHROPIC_API_KEY ?? cfg.apiKey;
+  // any string is accepted now that a plugin may register a provider name;
+  // `resolveChat` is what reports an unresolvable one, with the list of what is
+  // available, rather than this silently falling through to openai-compatible
+  if (env.FOX_AGENT_PROVIDER) cfg.provider = env.FOX_AGENT_PROVIDER;
+  else if (/^claude/i.test(env.FOX_AGENT_MODEL ?? "")) cfg.provider = "anthropic";
+  const steps = Number(env.FOX_AGENT_MAX_STEPS);
   if (Number.isFinite(steps) && steps > 0) cfg.maxSteps = Math.floor(steps);
-  const at = Number(env.FOX_COMPACT_AT);
+  const at = Number(env.FOX_AGENT_COMPACT_AT);
   if (Number.isFinite(at) && at > 0 && at <= 1) cfg.compactAt = at;
-  const retries = Number(env.FOX_RETRY_LIMIT);
+  const retries = Number(env.FOX_AGENT_RETRY_LIMIT);
   if (Number.isFinite(retries) && retries >= 0) cfg.retryLimit = Math.floor(retries);
   // 0 is meaningful here (disable the timeout), so the guard is >= 0
-  const reqTimeout = Number(env.FOX_REQUEST_TIMEOUT_MS);
+  const reqTimeout = Number(env.FOX_AGENT_REQUEST_TIMEOUT_MS);
   if (Number.isFinite(reqTimeout) && reqTimeout >= 0) cfg.requestTimeoutMs = Math.floor(reqTimeout);
   // an escape hatch for a machine with a pathological language server: any of
   // 0/false/no turns post-edit diagnostics off without touching a config file
-  if (env.FOX_DIAGNOSTICS !== undefined) cfg.diagnostics = !/^(0|false|no)$/i.test(env.FOX_DIAGNOSTICS.trim());
+  if (env.FOX_AGENT_DIAGNOSTICS !== undefined) cfg.diagnostics = !/^(0|false|no)$/i.test(env.FOX_AGENT_DIAGNOSTICS.trim());
 }
 
 /**
  * Copy recognised keys off a parsed config table. Unknown keys are ignored and
  * out-of-range values leave the current setting alone, so a bad entry degrades
  * to the default rather than propagating a nonsense number into the loop.
+ *
+ * `scope` exists for exactly one key. `plugins` is global-only (see the field's
+ * comment on `Config`), and a source-blind version of this function could not
+ * tell a global file from a project one — both are applied through here.
  */
-function applyTable(cfg: Config, t: Record<string, unknown> | null) {
+function applyTable(cfg: Config, t: Record<string, unknown> | null, scope: "global" | "project") {
   if (!t) return;
   if (typeof t.model === "string") cfg.model = t.model;
   if (typeof t.baseUrl === "string") cfg.baseUrl = t.baseUrl.replace(/\/$/, "");
   if (typeof t.apiKey === "string") cfg.apiKey = t.apiKey;
-  if (t.provider === "anthropic" || t.provider === "openai-compatible") cfg.provider = t.provider;
+  // any non-empty string: a plugin may register its own provider name, and
+  // `resolveChat` reports one it cannot resolve
+  if (typeof t.provider === "string" && t.provider.trim()) cfg.provider = t.provider.trim();
   if (typeof t.maxSteps === "number" && t.maxSteps > 0) cfg.maxSteps = Math.floor(t.maxSteps);
   if (typeof t.retryLimit === "number" && t.retryLimit >= 0) cfg.retryLimit = Math.floor(t.retryLimit);
   if (typeof t.compactAt === "number" && t.compactAt > 0 && t.compactAt <= 1) cfg.compactAt = t.compactAt;
@@ -166,7 +241,7 @@ function applyTable(cfg: Config, t: Record<string, unknown> | null) {
     for (const [name, v] of Object.entries(t.agents as Record<string, unknown>)) {
       const s = v as { command?: string; args?: string[]; env?: Record<string, string> };
       if (typeof s?.command !== "string") continue;
-      // "default" is fox delegating to itself and is synthesized at call time, so
+      // "default" is fox-agent delegating to itself and is synthesized at call time, so
       // it is not a name a config file may rebind — silently accepting a rebind
       // would make `task` route somewhere the model has no way to know about.
       if (name === "default") continue;
@@ -192,10 +267,25 @@ function applyTable(cfg: Config, t: Record<string, unknown> | null) {
       };
     }
   }
+  if (Array.isArray(t.plugins)) {
+    const entries = t.plugins.filter((p): p is string => typeof p === "string" && p.trim().length > 0);
+    if (scope === "project") {
+      // Reported, not ignored. A plugin runs in fox-agent's own process with the API
+      // key in its environment, so a repo cannot be allowed to name one — but a
+      // user who wrote the entry and sees nothing happen has no way to find out why.
+      if (entries.length) {
+        cfg.warnings.push(
+          `${PROJECT_CONFIG_NAME}: 'plugins' is ignored in a project config (${entries.length} skipped) — a plugin runs in fox-agent's own process with your credentials, so it must be listed in ~/.config/${GLOBAL_CONFIG_NAME}`,
+        );
+      }
+    } else {
+      for (const p of entries) cfg.plugins.push(p.trim());
+    }
+  }
 }
 
-export const GLOBAL_CONFIG_NAME = join("fox", "config.toml");
-export const PROJECT_CONFIG_NAME = "fox.toml";
+export const GLOBAL_CONFIG_NAME = join("fox-agent", "config.toml");
+export const PROJECT_CONFIG_NAME = "fox-agent.toml";
 /** Pre-TOML project config. Detected only so it can be reported, never parsed. */
 const LEGACY_PROJECT_NAME = ".fox.json";
 
@@ -207,30 +297,31 @@ export function loadConfig(
   const globalPath = overrides.configPath ?? join(homedir(), ".config", GLOBAL_CONFIG_NAME);
   const projectPath = findUp(cwd, [PROJECT_CONFIG_NAME]);
 
-  // A leftover .fox.json is refused rather than ignored: fox used to read it, so
+  // A leftover .fox.json is refused rather than ignored: fox-agent used to read it, so
   // silently dropping every setting in it is the one outcome the user can't see.
   if (!projectPath) {
     const legacy = findUp(cwd, [LEGACY_PROJECT_NAME]);
     if (legacy) {
       throw new ConfigError(
-        `${legacy} is no longer read — fox config is TOML now. Rename it to ${PROJECT_CONFIG_NAME} and convert the keys (model = "gpt-4o", maxSteps = 40, [mcpServers.fs] tables).`,
+        `${legacy} is no longer read — fox-agent config is TOML now. Rename it to ${PROJECT_CONFIG_NAME} and convert the keys (model = "gpt-4o", maxSteps = 40, [mcpServers.fs] tables).`,
       );
     }
   }
 
   // merge order: defaults <- global <- project <- env <- explicit overrides
-  // `mcpServers`, `agents` and `lsp` are re-initialized, not spread: DEFAULTS
-  // holds one shared object for each, and applyTable writes into them, so reusing
-  // the reference would leak one config's entries into every later load in the
-  // same process (the ACP server loads config per run, so this is reachable).
-  const merged: Config = { ...DEFAULTS, mcpServers: {}, agents: {}, lsp: {}, projectInstructions: "" };
+  // `mcpServers`, `agents`, `lsp`, `plugins` and `warnings` are re-initialized,
+  // not spread: DEFAULTS holds one shared object for each, and applyTable writes
+  // into them, so reusing the reference would leak one config's entries into
+  // every later load in the same process (the ACP server loads config per run,
+  // so this is reachable).
+  const merged: Config = { ...DEFAULTS, mcpServers: {}, agents: {}, lsp: {}, plugins: [], warnings: [], projectInstructions: "" };
   // An explicit --config that does not exist is a mistake worth surfacing; the
   // default global path being absent is normal and stays silent.
   if (overrides.configPath && !existsSync(overrides.configPath)) {
     throw new ConfigError(`config file not found: ${overrides.configPath}`);
   }
-  applyTable(merged, readToml(globalPath));
-  applyTable(merged, readToml(projectPath));
+  applyTable(merged, readToml(globalPath), "global");
+  applyTable(merged, readToml(projectPath), "project");
   applyEnv(merged, env);
 
   if (overrides.model) merged.model = overrides.model;
@@ -242,7 +333,7 @@ export function loadConfig(
   if (overrides.compactAt !== undefined) merged.compactAt = overrides.compactAt;
 
   merged.maxSteps = Math.min(200, Math.max(1, merged.maxSteps));
-  merged.projectInstructions = readTextFile(findUp(cwd, ["AGENTS.md", "CLAUDE.md"]) ?? "");
+  merged.projectInstructions = loadProjectInstructions(cwd);
 
   if (!merged.model) throw new ConfigError("no model configured");
   return merged;

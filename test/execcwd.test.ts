@@ -23,7 +23,7 @@ afterEach(() => {
 });
 
 function ctx(): ToolContext {
-  return { sessionId: "execcwd", cwd: session, turnStartSeq: 0, readFiles: new Set<string>() } as ToolContext;
+  return { sessionId: "execcwd", cwd: session, readFiles: new Set<string>() } as ToolContext;
 }
 
 describe("exec never drifts", () => {
@@ -58,7 +58,7 @@ describe("exec never drifts", () => {
     // observed through exec at all: exec always goes via `bash -c`, and bash
     // rewrites PWD and unsets OLDPWD for its own children regardless. The fix
     // therefore protects shell-less children (MCP servers), and this is the
-    // level where fox's own behavior is visible.
+    // level where fox-agent's own behavior is visible.
     const { childEnv } = await import("../src/core/childenv.ts");
     const prev = { PWD: process.env.PWD, OLDPWD: process.env.OLDPWD };
     process.env.PWD = "/somewhere/else";
@@ -85,7 +85,7 @@ describe("exec vs pty: the contrast is deliberate", () => {
     if (!Bun.which("tmux")) return; // covered by test/pty.test.ts when tmux exists
     const { execRun } = await import("../src/tools/exec.ts");
     const { drivePty, cleanupPty } = await import("../src/tools/pty.ts");
-    process.env.FOX_HOME = root;
+    process.env.FOX_AGENT_HOME = root;
     const c = ctx();
     c.sessionId = `execpty${Math.random().toString(36).slice(2, 8)}`;
     try {

@@ -69,7 +69,7 @@ const RETRIABLE_PATTERNS = [
   /eai_again/i,
 ];
 
-/** Programmer errors — a bug in fox, not a provider fault. */
+/** Programmer errors — a bug in fox-agent, not a provider fault. */
 const INTERNAL_NAMES = new Set(["TypeError", "ReferenceError", "SyntaxError", "RangeError"]);
 
 /** SDK debugging tails that are noise in a chat transcript. */

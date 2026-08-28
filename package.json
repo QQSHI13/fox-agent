@@ -1,13 +1,14 @@
 {
   "name": "fox-agent",
   "version": "0.2.0",
-  "description": "fox - a light coding harness with agent-controlled context",
+  "description": "fox-agent - a light coding harness with agent-controlled context",
   "type": "module",
   "bin": {
     "fox": "./src/cli.ts"
   },
   "exports": {
-    ".": "./src/sdk.ts"
+    ".": "./src/sdk.ts",
+    "./sdk": "./src/sdk.ts"
   },
   "scripts": {
     "dev": "bun src/cli.ts",

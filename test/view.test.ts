@@ -7,7 +7,7 @@ let dir: string;
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "fox-test-"));
-  process.env.FOX_HOME = dir;
+  process.env.FOX_AGENT_HOME = dir;
 });
 
 afterEach(() => {
@@ -115,5 +115,81 @@ describe("view projection", () => {
     expect(asstMsg.tool_calls).toHaveLength(1);
     expect(asstMsg.tool_calls![0].id).toBe("keep");
     expect(msgs.filter((m) => m.role === "tool")).toHaveLength(1);
+  });
+});
+
+describe("render roles", () => {
+  test("a compaction summary is the assistant's voice, not the user's", async () => {
+    const { createSession, appendMessage, appendOps } = await import("../src/store/db.ts");
+    const { renderContext } = await import("../src/context/render.ts");
+
+    const s = createSession("/tmp", "m1");
+    const a = appendMessage(s.id, { parent_id: null, role: "user", content: "old question", tokens: 2 });
+    appendMessage(s.id, { parent_id: null, role: "user", content: "new question", tokens: 2 });
+    appendOps(s.id, [{ kind: "delete", ids: [a.seq], summary: "SUMMARY: we discussed X" }]);
+
+    const msgs = renderContext(s.id, "SYS");
+    const note = msgs.find((m) => m.content.includes("SUMMARY: we discussed X"))!;
+    expect(note).toBeTruthy();
+    // the summary is the model's own recap of its own conversation. Rendering it
+    // as `user` made the harness speak in the user's voice: the model cannot
+    // tell that note apart from something the person typed, and anything
+    // imperative inside it then arrives with a user instruction's authority.
+    expect(note.role).toBe("assistant");
+    expect(note.content).toContain(`(ctx: [m${a.seq}] summarized away)`);
+    // and it must not be mistaken for a real turn
+    expect(msgs.filter((m) => m.role === "user").map((m) => m.content)).toEqual([`[m2] new question`]);
+  });
+
+  test("a summary never lands between an assistant's tool call and its result", async () => {
+    // that pairing is a hard API requirement, so a note wedged in the middle is
+    // a rejected request rather than a cosmetic problem
+    const { createSession, appendMessage, appendOps } = await import("../src/store/db.ts");
+    const { renderContext } = await import("../src/context/render.ts");
+
+    const s = createSession("/tmp", "m1");
+    appendMessage(s.id, { parent_id: null, role: "user", content: "run it", tokens: 2 });
+    const asst = appendMessage(s.id, {
+      parent_id: null,
+      role: "assistant",
+      content: "",
+      tokens: 1,
+      tool_calls: JSON.stringify([{ id: "c1", name: "exec", arguments: "{}" }]),
+    });
+    const junk = appendMessage(s.id, { parent_id: null, role: "user", content: "noise", tokens: 1 });
+    appendMessage(s.id, { parent_id: null, role: "tool", tool_call_id: "c1", content: "output", tokens: 2 });
+    // the hidden span sits immediately before the tool result
+    appendOps(s.id, [{ kind: "delete", ids: [junk.seq], summary: "dropped the noise" }]);
+
+    const msgs = renderContext(s.id, "SYS");
+    const roles = msgs.map((m) => m.role);
+    const call = roles.indexOf("assistant");
+    expect(msgs[call].tool_calls).toBeTruthy();
+    // whatever else happens, the message right after the call is its result
+    expect(msgs[call + 1].role).toBe("tool");
+    // and the summary was not dropped on the floor to achieve that
+    expect(msgs.some((m) => m.content.includes("dropped the noise"))).toBe(true);
+    expect(asst.seq).toBeGreaterThan(0);
+  });
+
+  test("consecutive hidden spans collapse into one note, not one per row", async () => {
+    const { createSession, appendMessage, appendOps } = await import("../src/store/db.ts");
+    const { renderContext } = await import("../src/context/render.ts");
+
+    const s = createSession("/tmp", "m1");
+    const a = appendMessage(s.id, { parent_id: null, role: "user", content: "one", tokens: 1 });
+    const b = appendMessage(s.id, { parent_id: null, role: "assistant", content: "two", tokens: 1 });
+    appendMessage(s.id, { parent_id: null, role: "user", content: "live", tokens: 1 });
+    appendOps(s.id, [
+      { kind: "delete", ids: [a.seq], summary: "first recap" },
+      { kind: "delete", ids: [b.seq], summary: "second recap" },
+    ]);
+
+    const msgs = renderContext(s.id, "SYS");
+    const notes = msgs.filter((m) => m.content.includes("recap"));
+    expect(notes).toHaveLength(1);
+    expect(notes[0].role).toBe("assistant");
+    expect(notes[0].content).toContain("first recap");
+    expect(notes[0].content).toContain("second recap");
   });
 });

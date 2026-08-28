@@ -200,7 +200,7 @@ describe("gestureFor: press decides nothing, drag never clicks", () => {
   });
 
   test("motion or release with no press belongs to nobody", () => {
-    // a release whose press landed before fox took the mouse, or in another pane
+    // a release whose press landed before fox-agent took the mouse, or in another pane
     expect(gestureFor("drag", null, 5, 5)).toEqual({ kind: "none" });
     expect(gestureFor("up", null, 5, 5)).toEqual({ kind: "none" });
   });

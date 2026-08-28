@@ -32,7 +32,6 @@ export const ctxEditDef: ToolDef = {
 
 function validateSeq(ctx: ToolContext, seq: number): string | null {
   if (typeof seq !== "number" || !Number.isInteger(seq)) return `error: invalid id ${seq}`;
-  if (seq >= ctx.turnStartSeq) return `error: m${seq} belongs to the current turn and cannot be edited yet`;
   if (!getMessage(ctx.sessionId, seq)) return `error: no message m${seq}`;
   return null;
 }

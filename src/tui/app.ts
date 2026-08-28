@@ -1,4 +1,4 @@
-// fox TUI v5 — custom ANSI renderer (no framework). Immediate-mode paint,
+// fox-agent TUI v5 — custom ANSI renderer (no framework). Immediate-mode paint,
 // row-diffed flushing, explicit frame scheduling: keystrokes, stream deltas
 // and the spinner tick all just mark dirty; the frame loop owns the tty.
 import { openTerm, type Term } from "./term.ts";
@@ -17,12 +17,24 @@ import {
 import { renderMarkdown } from "./markdown.ts";
 import { wrapSegs, segWidth, type Seg } from "./wrap.ts";
 import { charWidth } from "./screen.ts";
+import { Picker, type PickerRow } from "./picker.ts";
+import { sessionRows } from "./pickerui.ts";
 import { runTurn, VERSION } from "../loop/agent.ts";
 import { projectView } from "../context/view.ts";
 import { viewTokenEstimate } from "../context/render.ts";
 import { lookupModel } from "../providers/models.ts";
-import { getSession, sessionUsage, lastPromptTokens as storedPromptTokens } from "../store/db.ts";
-import { runSlashCommand, COMMANDS, type HarnessState } from "../commands.ts";
+import { getSession, sessionUsage, lastPromptTokens as storedPromptTokens, pinSession, unpinSession } from "../store/db.ts";
+import {
+  runSlashCommand,
+  COMMANDS,
+  matchCommands,
+  helpText,
+  sessionList,
+  relTime,
+  type CommandSpec,
+  type HarnessState,
+  type PickerRequest,
+} from "../commands.ts";
 import { childEnv } from "../core/childenv.ts";
 import { killTree } from "../tools/exec.ts";
 
@@ -56,8 +68,9 @@ const C = {
   selBg: "#364a82", // selection highlight; readable behind every fg above
 };
 const SPIN = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-const ARG_COMMANDS = new Set(["/resume", "/model"]);
 const HINT_WINDOW = 5;
+/** rows the session overlay may occupy, excluding its title and footer */
+const OVERLAY_MAX_ROWS = 14;
 
 
 
@@ -66,7 +79,10 @@ const nk = () => ++keySeq;
 
 async function clipRead(): Promise<string> {
   const cmds = [
-    ["powershell.exe", "-NoProfile", "-Command", "Get-Clipboard"],
+    // Windows from WSL: force UTF-8 on the pipe. Without it powershell writes
+    // in the console OEM codepage (GBK on a zh-CN machine), and decoding those
+    // bytes as UTF-8 mangles every non-ASCII character on the way into fox-agent.
+    ["powershell.exe", "-NoProfile", "-Command", "[Console]::OutputEncoding=[Text.Encoding]::UTF8; Get-Clipboard -Raw"],
     ["wl-paste", "--no-newline"],
     ["xclip", "-selection", "clipboard", "-o"],
   ];
@@ -90,7 +106,7 @@ async function clipRead(): Promise<string> {
  * Copy to the system clipboard, reporting whether anything actually took it.
  *
  * Mirrors `clipRead`'s probe-in-order approach, but the exit code is the only
- * signal available: `clip.exe` and `wl-copy` both say nothing on success. A
+ * signal available: `powershell.exe` and `wl-copy` both say nothing on success. A
  * command that is missing throws from `Bun.spawn`; one that is present but
  * broken (X11 tools with no DISPLAY) exits non-zero — both fall through to the
  * next candidate, and OSC 52 is the last resort because it is the only one that
@@ -99,13 +115,26 @@ async function clipRead(): Promise<string> {
  * helper exists we want its definite success over a write into the void.
  */
 async function clipWrite(text: string, term: Term): Promise<boolean> {
-  const cmds = [
-    ["clip.exe"],
-    ["wl-copy"],
-    ["xclip", "-selection", "clipboard", "-i"],
-    ["pbcopy"],
+  // clip.exe is deliberately absent: it decodes stdin in the console OEM
+  // codepage (GBK on a zh-CN machine), so UTF-8 bytes arrived as mojibake —
+  // "•" became "鈥?" (measured). The Windows path goes through powershell with
+  // the text base64-encoded instead: pure ASCII on the wire, immune to
+  // codepages, decoded as UTF-8 on the Windows side.
+  const cmds: { argv: string[]; b64?: boolean }[] = [
+    {
+      argv: [
+        "powershell.exe",
+        "-NoProfile",
+        "-Command",
+        "Set-Clipboard -Value ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::In.ReadToEnd())))",
+      ],
+      b64: true,
+    },
+    { argv: ["wl-copy"] },
+    { argv: ["xclip", "-selection", "clipboard", "-i"] },
+    { argv: ["pbcopy"] },
   ];
-  for (const argv of cmds) {
+  for (const { argv, b64 } of cmds) {
     try {
       const p = Bun.spawn(argv, { stdin: "pipe", stdout: "ignore", stderr: "ignore" });
       const timer = setTimeout(() => {
@@ -113,7 +142,7 @@ async function clipWrite(text: string, term: Term): Promise<boolean> {
           p.kill();
         } catch {}
       }, 1500);
-      p.stdin.write(text);
+      p.stdin.write(b64 ? Buffer.from(text, "utf8").toString("base64") : text);
       await p.stdin.end();
       const code = await p.exited;
       clearTimeout(timer);
@@ -122,9 +151,11 @@ async function clipWrite(text: string, term: Term): Promise<boolean> {
   }
   // OSC 52: hand the bytes to the terminal itself. Capped because the sequence
   // travels in-band and a multi-megabyte selection would stall the render loop
-  // mid-frame; a truncated copy beats a frozen UI.
+  // mid-frame; a truncated copy beats a frozen UI. The cut is on code points —
+  // slicing a UTF-16 string at 100k can split a surrogate pair, and the lone
+  // half encodes as U+FFFD, corrupting the last character of the copy.
   try {
-    const b64 = Buffer.from(text.slice(0, 100_000), "utf8").toString("base64");
+    const b64 = Buffer.from([...text].slice(0, 100_000).join(""), "utf8").toString("base64");
     term.write(`\x1b]52;c;${b64}\x07`);
     term.flush();
     return true;
@@ -184,6 +215,17 @@ export async function startTui(state: HarnessState) {
   let press: PressState | null = null;
   let selA: Anchor | null = null;
   let selB: Anchor | null = null;
+
+  /**
+   * The session overlay, or null when there is no modal up.
+   *
+   * This is the TUI's only modal: while it is set, `onKey` hands every keystroke
+   * to it before the input buffer sees anything, and `paint` draws it over the
+   * transcript. Nothing else in the app has to know it exists — the transcript,
+   * the turn loop and a streaming response all keep running underneath, which is
+   * deliberate: opening the list mid-turn must not interrupt the turn.
+   */
+  let overlay: Picker | null = null;
   const hasSel = () => selA !== null && selB !== null && !(selA.row === selB.row && selA.col === selB.col);
   function clearSel() {
     if (selA || selB) {
@@ -287,17 +329,98 @@ export async function startTui(state: HarnessState) {
   }
 
   function runSlash(t: string) {
-    if (t === "/help" || t === "/?")
-      push("info", COMMANDS.map((c) => `${c.name.padEnd(12)} ${c.desc}`).join("\n"));
-    else {
-      const res = runSlashCommand(t, state);
-      if (res?.output) push("info", res.output);
-      if (res?.newSessionId) {
-        state.sessionId = res.newSessionId;
-        refresh();
-      }
-      if (res?.exit) gracefulExit(0);
+    if (t === "/help" || t === "/?") return push("info", helpText());
+    const res = runSlashCommand(t, state);
+    if (res?.output) push("info", res.output);
+    if (res?.newSessionId) switchSession(res.newSessionId);
+    if (res?.picker) openPicker(res.picker);
+    if (res?.exit) gracefulExit(0);
+  }
+
+  /**
+   * Move the harness to another session.
+   *
+   * The pin is what keeps the store from closing the handle the turn loop is
+   * writing to once the picker has opened every other session's database to read
+   * its usage — see `pinSession`. Unpinning the old id here rather than in
+   * `refresh` keeps the invariant simple: exactly one session is pinned, and it
+   * is always the one `state.sessionId` names.
+   */
+  function switchSession(id: string) {
+    if (id === state.sessionId) return;
+    unpinSession(state.sessionId);
+    state.sessionId = id;
+    pinSession(id);
+    expandedRefs.clear(); // refs are per-session seqs; carrying them over expands unrelated nodes
+    refresh();
+  }
+
+  /** Build and show the session overlay. */
+  function openPicker(req: PickerRequest) {
+    if (req.kind !== "sessions") return;
+    overlay = new Picker(currentSessionRows(), {
+      title: "sessions — most recently used first",
+      allowNew: true,
+      allowDelete: true,
+      allowFork: true,
+    });
+    markDirty();
+  }
+
+  function currentSessionRows(): PickerRow[] {
+    return sessionRows(sessionList({ currentId: state.sessionId }), relTime);
+  }
+
+  /**
+   * Route a key to the overlay. Returns true when the overlay consumed it, so
+   * `onKey` can stop before the input buffer or any of the app's own chords see
+   * it — otherwise `d` would delete a session *and* be typed, and `escape` would
+   * both close the picker and clear the input.
+   */
+  function overlayKey(k: Key): boolean {
+    if (!overlay) return false;
+    if (k.type === "mouse") return true; // the modal owns the screen; clicks do nothing
+    if (k.type === "paste") {
+      for (const ch of k.text.replace(/\s+/g, "")) overlay.key({ ch });
+      markDirty();
+      return true;
     }
+    const action = k.type === "char" ? overlay.key({ ch: k.ch }) : overlay.key({ name: k.name, ctrl: k.ctrl });
+    markDirty();
+    if (!action) return true;
+    switch (action.kind) {
+      case "cancel":
+        overlay = null;
+        break;
+      case "choose":
+        overlay = null;
+        switchSession(action.id);
+        push("info", `switched to ${action.id}`);
+        break;
+      case "new": {
+        overlay = null;
+        const res = runSlashCommand("/new", state);
+        if (res?.newSessionId) switchSession(res.newSessionId);
+        if (res?.output) push("info", res.output);
+        break;
+      }
+      case "fork": {
+        overlay = null;
+        const res = runSlashCommand(`/fork ${action.id}`, state);
+        if (res?.output) push("info", res.output);
+        if (res?.newSessionId) switchSession(res.newSessionId);
+        break;
+      }
+      case "delete": {
+        // stays open: cleaning up several sessions should not mean reopening the
+        // list between each one. The confirm already happened inside the picker.
+        const res = runSlashCommand(`/delete ${action.id} yes`, state);
+        if (res?.output) flash(res.output);
+        overlay.setRows(currentSessionRows());
+        break;
+      }
+    }
+    return true;
   }
 
   async function runAgent(raw: string) {
@@ -349,7 +472,7 @@ export async function startTui(state: HarnessState) {
       }
     } catch (e) {
       const msg = (e as Error).message ?? "";
-      push("error", ac?.signal.aborted ? "[interrupted]" : `✗ fox error: ${msg}`);
+      push("error", ac?.signal.aborted ? "[interrupted]" : `✗ fox-agent error: ${msg}`);
     } finally {
       if (md) push("md", md);
       streamText = null;
@@ -392,23 +515,27 @@ export async function startTui(state: HarnessState) {
     const raw = display();
     const lit = firstCharLit();
     buf = [];
+    cur = 0; // a stale index past the new (empty) buffer crashes graphemeBack on the next backspace
     markDirty();
     const t = raw.trim();
     if (!t) return;
 
+    // A partial command name resolves to the highlighted hint. Only when there
+    // is no argument yet: `/de foo` must not be silently rewritten, since the
+    // argument was typed for whatever the user thought they were running.
     if (!lit && t.startsWith("/") && !t.includes(" ")) {
-      const exact = COMMANDS.find((c) => c.name === t);
-      if (!exact) {
-        const matches = COMMANDS.filter((c) => c.name.startsWith(t));
-        const target = matches[Math.min(hintSel, matches.length - 1)] ?? matches[0];
-        if (target) {
-          hintSel = 0;
-          if (ARG_COMMANDS.has(target.name)) {
-            chsSet(target.name);
-            return;
-          }
-          return void runSlash(target.name);
+      const matches = matchCommands(t);
+      const exact = matches.length === 1 && matches[0].name === t;
+      if (!exact && matches.length) {
+        const target = matches[Math.min(hintSel, matches.length - 1)];
+        hintSel = 0;
+        // a command that wants an argument gets completed, not fired — running
+        // `/delete` on enter with no id would just print a usage line
+        if (target.usage) {
+          chsSet(`${target.name} `);
+          return;
         }
+        return void runSlash(target.name);
       }
     }
 
@@ -431,6 +558,9 @@ export async function startTui(state: HarnessState) {
     exitCode = code;
     try {
       ac?.abort();
+    } catch {}
+    try {
+      unpinSession(state.sessionId);
     } catch {}
     try {
       term.end();
@@ -488,6 +618,8 @@ export async function startTui(state: HarnessState) {
 
   // ---- keyboard ----
   function onKey(k: Key) {
+    // the modal gets first refusal on every key (see overlayKey)
+    if (overlayKey(k)) return;
     if (k.type === "paste") return insertText(k.text, true);
     if (k.type === "mouse") return onMouse(k.action, k.x, k.y);
     if (k.type === "char") {
@@ -537,9 +669,13 @@ export async function startTui(state: HarnessState) {
         flash("cleared");
         return;
       }
+      // `return` matters: without it this fell through to the ctrl+d branch
+      // below, so one keystroke ran gracefulExit twice. It is idempotent today,
+      // which is the only reason that was invisible.
       gracefulExit(0);
+      return;
     }
-    if (name === "d" && ctrl) gracefulExit(0);
+    if (name === "d" && ctrl) return gracefulExit(0);
     if (name === "t" && ctrl) {
       // unfold/fold every thinking block
       const anyFolded = items.some((it) => it.kind === "think" && !isExpanded(it));
@@ -642,25 +778,39 @@ export async function startTui(state: HarnessState) {
       return;
     }
     if (name === "tab") {
-      const d = display();
-      if (!firstCharLit() && d.startsWith("/") && !d.includes(" ")) {
-        const all = COMMANDS.filter((c) => c.name.startsWith(d));
-        if (all.length) {
-          chsSet(all[Math.min(hintSel, all.length - 1)].name);
-          hintSel = 0;
-        }
+      const all = hintMatches();
+      if (all.length) {
+        const target = all[Math.min(hintSel, all.length - 1)];
+        // completing to a command that takes an argument leaves a trailing space
+        // so the next keystroke starts the argument rather than extending a name
+        chsSet(target.usage ? `${target.name} ` : target.name);
+        hintSel = 0;
       }
       return;
     }
     if (name === "up" || name === "down") {
-      const d = display();
-      if (!firstCharLit() && d.startsWith("/") && !d.includes(" ")) {
-        const n = COMMANDS.filter((c) => c.name.startsWith(d)).length;
-        if (n > 1) hintSel = Math.max(0, Math.min(n - 1, hintSel + (name === "up" ? -1 : 1)));
+      const n = hintMatches().length;
+      if (n > 1) {
+        hintSel = Math.max(0, Math.min(n - 1, hintSel + (name === "up" ? -1 : 1)));
         markDirty();
       }
       return;
     }
+  }
+
+  /**
+   * Commands matching what is typed, or none when the input is not a bare
+   * command word. One helper for the popup, tab, up/down and submit — those were
+   * four separate `COMMANDS.filter(startsWith)` calls that had to agree on the
+   * ordering for `hintSel` to mean anything, and the matcher itself now lives in
+   * `commands.ts` so fuzzy matching improved all of them at once.
+   */
+  function hintMatches(): CommandSpec[] {
+    const d = display();
+    if (firstCharLit() || !d.startsWith("/")) return [];
+    // an argument being typed still shows its command, so the usage hint stays
+    // visible — but only while the argument is unambiguous (one match)
+    return matchCommands(d);
   }
 
   // ---- mouse ----
@@ -752,7 +902,7 @@ export async function startTui(state: HarnessState) {
         const idx = (hints.start ?? 0) + (y - hTop);
         const target = hints.matches?.[idx];
         if (target) {
-          chsSet(target.name);
+          chsSet(target.usage ? `${target.name} ` : target.name);
           hintSel = 0;
         }
         return;
@@ -972,18 +1122,31 @@ export async function startTui(state: HarnessState) {
   function hintText(): {
     rows: { text: string; sel: boolean }[];
     active: boolean;
-    matches?: typeof COMMANDS;
+    matches?: CommandSpec[];
     start?: number;
   } {
-    const d = display();
-    if (firstCharLit() || !d.startsWith("/") || d.includes(" ")) return { rows: [], active: false };
-    const matches = COMMANDS.filter((c) => c.name.startsWith(d));
+    const matches = hintMatches();
     if (!matches.length) return { rows: [], active: false };
+    const d = display();
+    // Once an argument is being typed the roster is not useful any more, but the
+    // syntax for the command in hand is: show one line with its usage. The old
+    // popup vanished at the first space, which is exactly when a user typing
+    // `/delete <id> yes` most needs to be told what comes next.
+    if (d.includes(" ")) {
+      const c = matches[0];
+      if (matches.length > 1 || !c.usage) return { rows: [], active: false };
+      return {
+        rows: [{ text: `${c.name} ${c.usage}  —  ${c.help ?? c.desc}`, sel: false }],
+        active: true,
+        matches: [c],
+        start: 0,
+      };
+    }
     const sel = Math.max(0, Math.min(matches.length - 1, hintSel));
     const start = Math.max(0, Math.min(sel - HINT_WINDOW + 1, matches.length - HINT_WINDOW));
     return {
       rows: matches.slice(start, start + HINT_WINDOW).map((c, i) => ({
-        text: `${c.name.padEnd(14)} ${c.desc}`,
+        text: `${(c.usage ? `${c.name} ${c.usage}` : c.name).padEnd(20)} ${c.desc}`,
         sel: start + i === sel,
       })),
       active: true,
@@ -1056,6 +1219,8 @@ export async function startTui(state: HarnessState) {
     inputBgRow: 0,
     barBgRow: 0,
     sbThumb: 0,
+    overlayRow: 0,
+    overlaySel: 0,
   };
   function initStyles() {
     S.base = screen.sgr({ fg: C.fg });
@@ -1073,6 +1238,8 @@ export async function startTui(state: HarnessState) {
     S.inputBgRow = screen.sgr({ fg: C.fg, bg: C.inputBg });
     S.barBgRow = screen.sgr({ fg: C.fg, bg: C.barBg });
     S.sbThumb = screen.sgr({ bg: "#6e7681" }); // neutral gray, distinct from chrome blue
+    S.overlayRow = screen.sgr({ fg: C.fg, bg: C.inputBg });
+    S.overlaySel = screen.sgr({ fg: C.hintSel, bg: C.selBg });
   }
 
   /** shared dock geometry for paint + click mapping */
@@ -1166,6 +1333,12 @@ export async function startTui(state: HarnessState) {
       }
     }
 
+    // Session overlay, painted last over the transcript so it is unambiguously
+    // modal. The input dock stays visible underneath it — the turn running down
+    // there is not interrupted by opening the list, and hiding it would suggest
+    // otherwise.
+    if (overlay) paintOverlay(inputTop);
+
     // status bar
     screen.fillRow(barY, 0, W, S.barBgRow);
     let lx = 1;
@@ -1189,6 +1362,54 @@ export async function startTui(state: HarnessState) {
       }
       screen.text(W - 1 - wAcc, barY, acc, S.chromeOnBar);
     }
+  }
+
+  /**
+   * Draw the modal list in the space above the input dock.
+   *
+   * Every row is a filled background before any text, so nothing of the
+   * transcript shows through — a half-transparent modal over a live streaming
+   * response is unreadable. Rows are clipped by display *width*, not character
+   * count, or a CJK title would push the columns past the right edge and the
+   * no-autowrap grid would clip mid-cell.
+   */
+  function paintOverlay(inputTop: number) {
+    const p = overlay!;
+    const bodyH = Math.max(1, Math.min(OVERLAY_MAX_ROWS, inputTop - 3));
+    const top = Math.max(0, inputTop - bodyH - 2);
+    const win = p.window(bodyH);
+    const q = p.filter();
+
+    screen.fillRow(top, 0, W, S.barBgRow);
+    screen.text(1, top, clipW(`sessions ${q ? `· filter: ${q}` : "· type to filter"}`, W - 2), S.accent);
+    for (let i = 0; i < bodyH; i++) {
+      const y = top + 1 + i;
+      const r = win.rows[i];
+      const on = i === win.selRow;
+      screen.fillRow(y, 0, W, on ? S.overlaySel : S.overlayRow);
+      if (!r) {
+        if (i === 0 && !win.rows.length) screen.text(1, y, q ? `no match for "${q}"` : "(no sessions)", S.dim);
+        continue;
+      }
+      const mark = r.current ? "*" : on ? "›" : " ";
+      screen.text(1, y, clipW(`${mark} ${r.cells.join("  ")}`, W - 2), on ? S.overlaySel : S.overlayRow);
+    }
+    const y = top + 1 + bodyH;
+    screen.fillRow(y, 0, W, S.barBgRow);
+    screen.text(1, y, clipW(p.footer(), W - 2), p.pendingConfirm() ? S.err : S.hintDim);
+  }
+
+  /** Truncate to `cols` display columns (wide chars count as two). */
+  function clipW(s: string, cols: number): string {
+    let out = "";
+    let w = 0;
+    for (const ch of s) {
+      const cw = charWidth(ch.codePointAt(0)!);
+      if (w + cw > cols) break;
+      out += ch;
+      w += cw;
+    }
+    return out;
   }
 
   // ---- loop ----
@@ -1231,8 +1452,12 @@ export async function startTui(state: HarnessState) {
       });
 
       getSession(state.sessionId);
+      // the TUI can open a picker, and holds the one session whose handle must
+      // survive the picker reading every other session's usage
+      state.interactive = true;
+      pinSession(state.sessionId);
       refresh();
-      push("info", `fox v${VERSION} — agent-controlled context`);
+      push("info", `fox-agent v${VERSION} — agent-controlled context`);
       push("toolbody", `model ${state.provider.model} · /commands · ! shell · \\ newline · esc interrupt`);
 
       const dec = createDecoder(onKey);
@@ -1249,9 +1474,9 @@ export async function startTui(state: HarnessState) {
           term.hideCursor();
           paint();
           screen.flush();
-          if (process.env.FOX_TRACE && screen.lastDirty()) {
+          if (process.env.FOX_AGENT_TRACE && screen.lastDirty()) {
             try {
-              appendFileSync(process.env.FOX_TRACE + ".grid", `⟦frame⟧\n${screen.dumpGrid()}\n`);
+              appendFileSync(process.env.FOX_AGENT_TRACE + ".grid", `⟦frame⟧\n${screen.dumpGrid()}\n`);
             } catch {}
           }
           term.flush();
@@ -1259,7 +1484,7 @@ export async function startTui(state: HarnessState) {
           if (nextCaret) term.setCursor(nextCaret.x, nextCaret.y);
           else term.setCursor(3, H - 2);
         } catch (e) {
-          console.error("fox tui error:", e);
+          console.error("fox-agent tui error:", e);
           gracefulExit(1);
         }
       }, 33);
@@ -1274,7 +1499,7 @@ export async function startTui(state: HarnessState) {
       }
       if (exitCode) process.exitCode = exitCode;
     } catch (e) {
-      console.error("[fox] fatal:", e);
+      console.error("[fox-agent] fatal:", e);
       try {
         term.end();
       } catch {}

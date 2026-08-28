@@ -13,7 +13,7 @@ let home: string;
 
 beforeEach(async () => {
   home = mkdtempSync(join(tmpdir(), "fox-prompt-"));
-  process.env.FOX_HOME = home;
+  process.env.FOX_AGENT_HOME = home;
   (await import("../src/store/db.ts")).closeAll();
 });
 

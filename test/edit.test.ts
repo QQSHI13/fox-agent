@@ -109,3 +109,12 @@ describe("countGraphemes", () => {
     expect(countGraphemes("")).toBe(0);
   });
 });
+
+describe("graphemeBack bounds", () => {
+  test("an index past the end of the buffer degrades instead of crashing", () => {
+    // regression: submit() emptied the buffer without resetting the cursor, and
+    // the next backspace crashed on buf[end - 1] being undefined
+    expect(graphemeBack(bufOf("ab"), 10)).toBe(1);
+    expect(graphemeBack([], 5)).toBe(0);
+  });
+});

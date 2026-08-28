@@ -12,7 +12,7 @@ let dir: string;
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "fox-prune-"));
-  process.env.FOX_HOME = dir;
+  process.env.FOX_AGENT_HOME = dir;
 });
 
 afterEach(() => {
@@ -213,8 +213,8 @@ describe("/prune slash command", () => {
   });
 
   test("/prune is listed in help", async () => {
-    const { SLASH_HELP, COMMANDS } = await import("../src/commands.ts");
-    expect(SLASH_HELP).toContain("/prune");
+    const { helpText, COMMANDS } = await import("../src/commands.ts");
+    expect(helpText()).toContain("/prune");
     expect(COMMANDS.some((c) => c.name === "/prune")).toBe(true);
   });
 });

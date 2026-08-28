@@ -7,7 +7,7 @@ import { findUp } from "../core/config.ts";
  *
  * The three built-ins are detected on `PATH` — nothing is spawned unless the
  * user already installed it, so this feature is silent rather than surprising on
- * a machine without a server. `[lsp.*]` in `fox.toml` adds or overrides any of
+ * a machine without a server. `[lsp.*]` in `fox-agent.toml` adds or overrides any of
  * them.
  */
 export interface LspServerConfig {
@@ -79,7 +79,7 @@ export function languageId(path: string): string {
  * Resolve the server for a file, or null if none handles that extension.
  *
  * Config entries are consulted before built-ins so a project can point at a
- * pinned binary (`vtsls`, a workspace-local `pyright`) without fox second-guessing
+ * pinned binary (`vtsls`, a workspace-local `pyright`) without fox-agent second-guessing
  * it; a config entry is used even if the command is not on `PATH`, because the
  * user naming it explicitly is a stronger signal than our detection, and the
  * spawn failure it produces is visible and specific.

@@ -1,13 +1,13 @@
 /**
- * fox as an ACP *client* — fox driving another agent.
+ * fox as an ACP *client* — fox-agent driving another agent.
  *
  * This is what makes delegation (`src/tools/task.ts`) a protocol boundary instead
  * of an in-process special case: the child is any ACP agent, spawned as a
  * subprocess, and by default it is another `fox --acp` with the full tool
  * registry. Nothing about the child is privileged or restricted by the parent.
  *
- * The client handlers here reflect fox's own posture rather than a generic host's:
- * `fs/*` is honored (fox has full disk access anyway, so refusing would be
+ * The client handlers here reflect fox-agent's own posture rather than a generic host's:
+ * `fs/*` is honored (fox-agent has full disk access anyway, so refusing would be
  * theater), `session/request_permission` auto-approves, and `terminal/*` is left
  * unimplemented — a child that wants a terminal should run its own, and a
  * half-built terminal host is worse than a clear "unsupported".
@@ -67,12 +67,12 @@ function resolvePath(cwd: string, path: string): string {
 }
 
 /**
- * The client half fox presents to a child agent. Exported so tests can pair it
+ * The client half fox-agent presents to a child agent. Exported so tests can pair it
  * against an in-process agent app with no subprocess.
  */
 export function buildClient(cwd: string): acp.ClientApp {
   return acp
-    .client({ name: "fox" })
+    .client({ name: "fox-agent" })
     .onRequest(acp.methods.client.fs.readTextFile, async ({ params }) => {
       const full = resolvePath(cwd, params.path);
       try {
@@ -98,7 +98,7 @@ export function buildClient(cwd: string): acp.ClientApp {
       }
     })
     .onRequest(acp.methods.client.session.requestPermission, async ({ params }) => {
-      // fox never prompts (see the security model), so it cannot start prompting
+      // fox-agent never prompts (see the security model), so it cannot start prompting
       // on a child's behalf either. Pick the first allow-shaped option; if the
       // agent offered none, report cancellation rather than inventing an id.
       const opt =
@@ -118,8 +118,8 @@ export function buildClient(cwd: string): acp.ClientApp {
  * in-process subagent already runs with the key by virtue of sharing the process.
  *
  * What keeps that safe is that the model cannot choose the command: the default
- * is fox itself, and every alternative is a `[agents.<name>]` entry the user
- * wrote in `fox.toml`. The model only picks a name from that fixed set. If you
+ * is fox-agent itself, and every alternative is a `[agents.<name>]` entry the user
+ * wrote in `fox-agent.toml`. The model only picks a name from that fixed set. If you
  * ever let a tool argument reach `command`, this reasoning collapses and the env
  * must be filtered again.
  */

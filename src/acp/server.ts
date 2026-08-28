@@ -9,14 +9,14 @@
  *
  * Two deliberate non-implementations:
  *
- * - **fox never calls `session/request_permission`.** fox is a no-prompt harness
+ * - **fox-agent never calls `session/request_permission`.** fox-agent is a no-prompt harness
  *   by design (see the security model in the README); tools just run. A client
- *   connecting to fox will never be asked to approve anything, which it must know
- *   before pointing fox at code it doesn't trust.
- * - **fox does not route its own tools through the client's `fs/*` and
+ *   connecting to fox-agent will never be asked to approve anything, which it must know
+ *   before pointing fox-agent at code it doesn't trust.
+ * - **fox-agent does not route its own tools through the client's `fs/*` and
  *   `terminal/*`.** `read`/`write`/`exec`/`pty` must behave identically with no
  *   ACP client present at all (TUI, `-p`), and the exec-never-drifts /
- *   pty-keeps-its-shell contracts are fox's own, pinned by `test/execcwd.test.ts`
+ *   pty-keeps-its-shell contracts are fox-agent's own, pinned by `test/execcwd.test.ts`
  *   and `test/pty.test.ts`. Delegating them to a host would make those contracts
  *   depend on whoever is driving. Do not "fix" this later.
  */
@@ -47,7 +47,7 @@ export interface AcpServerOptions {
   chat?: ChatFn;
 }
 
-/** Text content of one ACP prompt request, flattened for fox's single-string turn API. */
+/** Text content of one ACP prompt request, flattened for fox-agent's single-string turn API. */
 function promptText(blocks: acp.ContentBlock[]): string {
   const parts: string[] = [];
   for (const b of blocks) {
@@ -96,7 +96,7 @@ async function replay(sessionId: string, notify: (u: acp.SessionUpdate) => Promi
         content: [{ type: "content", content: { type: "text", text } }],
       });
     }
-    // role "system" is fox's own bookkeeping (step limits, provider errors) and
+    // role "system" is fox-agent's own bookkeeping (step limits, provider errors) and
     // has no ACP equivalent that isn't a lie about who said it.
   }
 }
@@ -124,10 +124,10 @@ export function buildAgent(opts: AcpServerOptions): acp.AgentApp {
   const running = new Map<string, AbortController>();
 
   return acp
-    .agent({ name: "fox" })
+    .agent({ name: "fox-agent" })
     .onRequest(acp.methods.agent.initialize, async () => ({
       protocolVersion: acp.PROTOCOL_VERSION,
-      agentInfo: { name: "fox", version: VERSION },
+      agentInfo: { name: "fox-agent", version: VERSION },
       agentCapabilities: {
         loadSession: true,
         promptCapabilities: { embeddedContext: true },
@@ -145,7 +145,7 @@ export function buildAgent(opts: AcpServerOptions): acp.AgentApp {
         sessionId: s.id,
         cwd: s.cwd,
         title: s.title ?? undefined,
-        updatedAt: new Date(s.created_at).toISOString(),
+        updatedAt: new Date(s.updated_at).toISOString(),
       })),
     }))
     .onRequest(acp.methods.agent.session.load, async ({ params, client }) => {
@@ -187,7 +187,7 @@ export function buildAgent(opts: AcpServerOptions): acp.AgentApp {
       // editor renders `auth_required` as an actionable message, whereas the
       // provider's 401 arrives as unexplained turn failure.
       if (!provider.apiKey) {
-        throw RequestError.authRequired(undefined, "no API key: set FOX_API_KEY / OPENAI_API_KEY / ANTHROPIC_API_KEY");
+        throw RequestError.authRequired(undefined, "no API key: set FOX_AGENT_API_KEY / OPENAI_API_KEY / ANTHROPIC_API_KEY");
       }
       const text = promptText(params.prompt);
       // the message is the *second* argument; the first is JSON-RPC `data`, which

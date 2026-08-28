@@ -7,7 +7,7 @@ let dir: string;
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "fox-turn-"));
-  process.env.FOX_HOME = dir;
+  process.env.FOX_AGENT_HOME = dir;
 });
 
 afterEach(() => {

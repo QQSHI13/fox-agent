@@ -1,6 +1,6 @@
 /**
- * The ACP layer: fox as an agent (server), fox as a client, and the pure event
- * mapping between fox's `AgentEvent` stream and ACP's `SessionUpdate`.
+ * The ACP layer: fox-agent as an agent (server), fox as a client, and the pure event
+ * mapping between fox-agent's `AgentEvent` stream and ACP's `SessionUpdate`.
  *
  * Every case here pairs a client app to an agent app IN PROCESS —
  * `client().connectWith(agentApp, …)`, no subprocess, no stdio — so the protocol
@@ -24,7 +24,7 @@ let work: string;
 beforeEach(async () => {
   home = mkdtempSync(join(tmpdir(), "fox-acp-"));
   work = mkdtempSync(join(tmpdir(), "fox-acp-cwd-"));
-  process.env.FOX_HOME = home;
+  process.env.FOX_AGENT_HOME = home;
   (await import("../src/store/db.ts")).closeAll();
 });
 
@@ -49,6 +49,8 @@ const cfg = (): Config => ({
   // no language server in an ACP prompt test: it would spawn a real tsserver on
   // whatever the mock happens to edit and add seconds per assertion
   diagnostics: false,
+  plugins: [],
+  warnings: [],
   projectInstructions: "",
 });
 
@@ -117,18 +119,18 @@ const textOf = (updates: acp.SessionUpdate[], kind: acp.SessionUpdate["sessionUp
     .join("");
 
 describe("acp server: initialize", () => {
-  test("reports protocol 1, fox's identity, and only the capabilities it implements", async () => {
+  test("reports protocol 1, fox-agent's identity, and only the capabilities it implements", async () => {
     const res = await acp.client({ name: "test" }).connectWith(await build([]), (agent) =>
       agent.request(acp.methods.agent.initialize, { protocolVersion: acp.PROTOCOL_VERSION, clientCapabilities: {} }),
     );
     expect(res.protocolVersion).toBe(1);
-    expect(res.agentInfo?.name).toBe("fox");
+    expect(res.agentInfo?.name).toBe("fox-agent");
     expect(res.agentCapabilities?.loadSession).toBe(true);
     // Every one of these is backed by a store primitive that predates ACP; `{}`
     // is how the protocol says "supported".
     const caps = res.agentCapabilities?.sessionCapabilities ?? {};
     for (const k of ["list", "delete", "fork", "resume", "close"]) expect(caps).toHaveProperty(k);
-    // fox reaches MCP servers itself rather than through the client's transport
+    // fox-agent reaches MCP servers itself rather than through the client's transport
     expect(res.agentCapabilities?.mcpCapabilities).toMatchObject({ http: false, sse: false });
   });
 });
@@ -157,7 +159,7 @@ describe("acp server: prompt turns", () => {
   });
 
   test("a tool call reports pending, then completed with its output as content", async () => {
-    // A real fox tool through the real registry: `read` on a real file, so the
+    // A real fox-agent tool through the real registry: `read` on a real file, so the
     // kind mapping and the output path are both exercised rather than mocked.
     const f = join(work, "note.txt");
     await Bun.write(f, "file body here");
@@ -208,7 +210,7 @@ describe("acp server: prompt turns", () => {
 
   test("harness chatter never reaches the client, not even disguised as text", async () => {
     // step/retry/warn have no ACP vocabulary. Mapping them to a text chunk would
-    // print fox's internals inside the assistant's own message in every client,
+    // print fox-agent's internals inside the assistant's own message in every client,
     // so the assertion is on the message *content*, not just the update kinds —
     // a leaked `step` mapped to agent_message_chunk would pass a kinds-only check.
     const { updates } = await promptTurn([textTurn("clean")]);
@@ -351,6 +353,32 @@ describe("acp server: session lifecycle", () => {
     expect(existsSync(join(home, "sessions", `${out.forked}.db`))).toBe(true);
   });
 
+  test("session/list reports when a session was last used, not when it was made", async () => {
+    const app = await build([textTurn("a")]);
+    const db = await import("../src/store/db.ts");
+    const out = await withAgent(app, async (agent) => {
+      const first = await agent.buildSession(work).withSession(async (s) => {
+        await s.prompt("older");
+        return s.sessionId;
+      });
+      // created second and never used again
+      const second = await agent.request(acp.methods.agent.session.new, { cwd: work, mcpServers: [] });
+      // the clock has millisecond resolution and all of this fits inside one tick
+      await Bun.sleep(3);
+      // work in the first one again, the way a resumed session would
+      db.appendMessage(first, { parent_id: null, role: "user", content: "back again", tokens: 1 });
+      const listed = await agent.request(acp.methods.agent.session.list, {});
+      return { first, second: second.sessionId, listed };
+    });
+
+    const row = out.listed.sessions.find((s) => s.sessionId === out.first)!;
+    const idle = out.listed.sessions.find((s) => s.sessionId === out.second)!;
+    // an ACP client sorts and labels by this field, so reporting created_at made
+    // a session worked in all day look older than one opened and abandoned
+    expect(Date.parse(row.updatedAt!)).toBeGreaterThan(Date.parse(idle.updatedAt!));
+    expect(Date.parse(row.updatedAt!)).toBeLessThanOrEqual(Date.now());
+  });
+
   test("session/load replays the stored transcript before it returns", async () => {
     // `buildSession` only routes updates for the id IT created, so the replay is
     // observed with a raw notification handler on the client app instead.
@@ -418,8 +446,8 @@ describe("acp server: session lifecycle", () => {
   });
 });
 
-describe("acp client: fox driving another agent", () => {
-  /** Pair fox's client half against a scripted agent and read its message text. */
+describe("acp client: fox-agent driving another agent", () => {
+  /** Pair fox-agent's client half against a scripted agent and read its message text. */
   async function driveProbe(app: acp.AgentApp): Promise<string> {
     const { buildClient } = await import("../src/acp/client.ts");
     return buildClient(work).connectWith(app, async (agent) => {
@@ -440,7 +468,7 @@ describe("acp client: fox driving another agent", () => {
     });
   }
 
-  /** A minimal ACP agent whose prompt handler calls back into fox's client. */
+  /** A minimal ACP agent whose prompt handler calls back into fox-agent's client. */
   const probe = (onPrompt: (client: acp.AgentContext) => Promise<string>) =>
     acp
       .agent({ name: "probe" })
@@ -518,7 +546,7 @@ describe("acp client: fox driving another agent", () => {
   });
 
   test("permission requests are auto-approved with an allow option", async () => {
-    // fox never prompts a human, so it cannot start prompting on a child's
+    // fox-agent never prompts a human, so it cannot start prompting on a child's
     // behalf; picking the allow option beats stalling the child forever.
     const text = await driveProbe(
       probe(async (client) => {
@@ -534,11 +562,11 @@ describe("acp client: fox driving another agent", () => {
         return res.outcome.outcome === "selected" ? res.outcome.optionId : res.outcome.outcome;
       }),
     );
-    // allow_always is preferred over allow_once: fox's answer will not change
+    // allow_always is preferred over allow_once: fox-agent's answer will not change
     expect(text).toBe("always");
   });
 
-  test("with no allow option offered, fox reports cancelled instead of inventing an id", async () => {
+  test("with no allow option offered, fox-agent reports cancelled instead of inventing an id", async () => {
     const text = await driveProbe(
       probe(async (client) => {
         const res = await client.request(acp.methods.client.session.requestPermission, {
@@ -619,11 +647,11 @@ describe("event mapping", () => {
     }
     expect(toolKind("read")).toBe("read");
     expect(toolKind("exec")).toBe("execute");
-    // an MCP tool fox knows nothing about
+    // an MCP tool fox-agent knows nothing about
     expect(toolKind("some_mcp_tool")).toBe("other");
   });
 
-  test("fox's free-form finish reasons narrow to ACP's closed set", async () => {
+  test("fox-agent's free-form finish reasons narrow to ACP's closed set", async () => {
     const { stopReasonFor } = await import("../src/acp/updates.ts");
     expect(stopReasonFor("stop")).toBe("end_turn");
     expect(stopReasonFor("aborted")).toBe("cancelled");
@@ -656,7 +684,6 @@ describe("delegation targets", () => {
       {
         sessionId: "s",
         cwd: work,
-        turnStartSeq: 0,
         readFiles: new Set(),
         agents: { helper: { command: "true" } },
         pty: undefined,
@@ -672,18 +699,18 @@ describe("delegation targets", () => {
     // The cap travels in the environment because a child is a separate process;
     // a closure or a kv row could not cross that boundary.
     const { taskRun } = await import("../src/tools/task.ts");
-    const prev = process.env.FOX_DELEGATION_DEPTH;
-    process.env.FOX_DELEGATION_DEPTH = "3";
+    const prev = process.env.FOX_AGENT_DELEGATION_DEPTH;
+    process.env.FOX_AGENT_DELEGATION_DEPTH = "3";
     try {
       const res = await taskRun(
         { description: "d", prompt: "p" },
-        { sessionId: "s", cwd: work, turnStartSeq: 0, readFiles: new Set(), pty: undefined },
+        { sessionId: "s", cwd: work, readFiles: new Set(), pty: undefined },
       );
       expect(res.ok).toBe(false);
       expect(res.output).toContain("depth limit");
     } finally {
-      if (prev === undefined) delete process.env.FOX_DELEGATION_DEPTH;
-      else process.env.FOX_DELEGATION_DEPTH = prev;
+      if (prev === undefined) delete process.env.FOX_AGENT_DELEGATION_DEPTH;
+      else process.env.FOX_AGENT_DELEGATION_DEPTH = prev;
     }
   });
 });

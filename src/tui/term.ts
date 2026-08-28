@@ -128,7 +128,7 @@ export function openTerm(): Term {
       // and NO autowrap: the renderer owns an exact grid — a row that
       // overflows must clip, not wrap (wrapping shreds absolute positioning).
       //
-      // ?1002h rather than ?1003h (any-motion): fox needs drags, not a mouse
+      // ?1002h rather than ?1003h (any-motion): fox-agent needs drags, not a mouse
       // position event for every pixel of idle movement, which would wake the
       // frame loop constantly for nothing.
       out.write("\x1b[?1049h\x1b[2J\x1b[H\x1b[?25l\x1b[?2004h\x1b[?1000h\x1b[?1002h\x1b[?1006h\x1b[?7l");
@@ -145,7 +145,7 @@ export function openTerm(): Term {
        * *referenced* event-loop handle. Restoring raw mode does not undo that,
        * so after the TUI tore down its screen the loop still had a live handle
        * and the process sat in `epoll_wait` forever — the caller's `await
-       * startTui()` had returned, `shutdownTools` had finished, and fox still
+       * startTui()` had returned, `shutdownTools` had finished, and fox-agent still
        * would not exit. Ctrl+C looked like it took two presses: the first
        * closed the UI, the second was the tty's SIGINT killing the husk.
        *

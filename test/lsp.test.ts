@@ -119,10 +119,10 @@ describe("lsp server selection", () => {
   });
 
   test("no server for unhandled extensions or extensionless files", () => {
-    // this is the common case for fox's own edits (.md, .toml, Makefile) and must
+    // this is the common case for fox-agent's own edits (.md, .toml, Makefile) and must
     // cost nothing at all
     expect(serverFor("/x/README.md", {}, always)).toBeNull();
-    expect(serverFor("/x/fox.toml", {}, always)).toBeNull();
+    expect(serverFor("/x/fox-agent.toml", {}, always)).toBeNull();
     expect(serverFor("/x/Makefile", {}, always)).toBeNull();
   });
 
@@ -361,7 +361,7 @@ describe.skipIf(!CAN_RUN)("diagnose: end to end against typescript-language-serv
     writeFileSync(join(dir, rel), "export const n: number = 1;\n");
     let pty: unknown;
     const ctx = {
-      sessionId: "s", cwd: dir, turnStartSeq: 0, readFiles: new Set([join(dir, rel)]),
+      sessionId: "s", cwd: dir, readFiles: new Set([join(dir, rel)]),
       get pty() { return pty; }, set pty(v: unknown) { pty = v; },
     } as any;
 
@@ -383,7 +383,7 @@ describe.skipIf(!CAN_RUN)("diagnose: end to end against typescript-language-serv
     const rel = "off.ts";
     let pty: unknown;
     const ctx = {
-      sessionId: "s", cwd: dir, turnStartSeq: 0, readFiles: new Set<string>(), diagnostics: false,
+      sessionId: "s", cwd: dir, readFiles: new Set<string>(), diagnostics: false,
       get pty() { return pty; }, set pty(v: unknown) { pty = v; },
     } as any;
     const r = await F.writeRun({ path: rel, content: "export const s: string = 42;\n" }, ctx);

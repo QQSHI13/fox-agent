@@ -60,7 +60,7 @@ function start(name: string, cfg: LspServerConfig, root: string): Session {
     stdin: "pipe",
     stdout: "pipe",
     // A language server logs volumes of progress to stderr. It must not reach
-    // fox's stderr, which is the TUI's own surface (and the ACP server's only
+    // fox-agent's stderr, which is the TUI's own surface (and the ACP server's only
     // legal diagnostic channel).
     stderr: "ignore",
     env: childEnv(cfg.env, root),
@@ -177,7 +177,7 @@ function send(s: Session, msg: unknown): boolean {
 }
 
 /**
- * Diagnostics for one file after fox changed it on disk, or null if nothing can
+ * Diagnostics for one file after fox-agent changed it on disk, or null if nothing can
  * be said: no server for this language, the server won't start, it stayed silent
  * within the deadline, or it found nothing worth reporting.
  *
@@ -234,7 +234,7 @@ export async function diagnose(
         params: { textDocument: { uri, languageId: languageId(file), version, text: content } },
       });
     } else {
-      // full-document sync: fox always has the whole new text, and computing
+      // full-document sync: fox-agent always has the whole new text, and computing
       // incremental ranges would be effort spent to send fewer bytes to a
       // localhost process
       send(s, {
@@ -337,7 +337,7 @@ function sleepOrWake(s: Session, ms: number): Promise<boolean> {
  * Stop every language server.
  *
  * Called from `shutdownTools`, so a session that spawned servers does not leave
- * them behind — an idle tsserver holds a project's worth of memory, and fox may
+ * them behind — an idle tsserver holds a project's worth of memory, and fox-agent may
  * be started and stopped many times in one shell.
  */
 export async function shutdownLsp(): Promise<void> {

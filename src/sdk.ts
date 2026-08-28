@@ -1,4 +1,4 @@
-// Library entry: embed fox in other tools or scripts.
+// Library entry: embed fox-agent in other tools or scripts.
 //   import { createAgent } from "fox-agent/sdk";
 import { createSession, getSession } from "./store/db.ts";
 import { loadConfig } from "./core/config.ts";
@@ -8,6 +8,22 @@ import type { ProviderConfig } from "./providers/types.ts";
 import { resolveChat } from "./providers/index.ts";
 import { runTurnCore, type TurnOptions } from "./loop/turn.ts";
 import { shutdownTools } from "./tools/index.ts";
+
+// The plugin surface. Re-exported here rather than only from src/plugins/ so a
+// plugin author writes one import — `import type { FoxPlugin } from "fox-agent/sdk"`
+// — and gets the tool and provider types a plugin needs along with it.
+export type {
+  FoxPlugin,
+  PluginHooks,
+  SessionStartContext,
+  BeforeLLMCallContext,
+  BeforeLLMCallPatch,
+  AfterToolContext,
+  AfterToolPatch,
+} from "./plugins/types.ts";
+export type { Tool, ToolContext, ToolResult } from "./tools/types.ts";
+export { ok, fail } from "./tools/types.ts";
+export type { ChatFn, ChatMessage, ProviderConfig, StreamEvent, ToolDef } from "./providers/types.ts";
 
 export interface AgentRunResult {
   text: string;
@@ -35,7 +51,7 @@ export async function createAgent(opts: {
 } = {}): Promise<FoxAgent> {
   const cwd = opts.cwd ?? process.cwd();
   const config = loadConfig({ cwd, ...opts });
-  if (!config.apiKey) throw new Error("fox: no API key (set FOX_API_KEY / OPENAI_API_KEY / ANTHROPIC_API_KEY)");
+  if (!config.apiKey) throw new Error("fox-agent: no API key (set FOX_AGENT_API_KEY / OPENAI_API_KEY / ANTHROPIC_API_KEY)");
 
   const provider: ProviderConfig = { baseUrl: config.baseUrl, apiKey: config.apiKey, model: config.model, provider: config.provider };
   const sessionId = createSession(cwd, config.model).id;
@@ -70,7 +86,7 @@ export async function createAgent(opts: {
       try {
         await shutdownTools(sessionId);
       } catch (e) {
-        console.error(`fox: cleanup: ${errMsg(e)}`);
+        console.error(`fox-agent: cleanup: ${errMsg(e)}`);
       }
     },
   };

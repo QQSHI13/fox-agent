@@ -189,9 +189,9 @@ export class Screen {
     }
     if (dirty) {
       this.term.write(out);
-      if (process.env.FOX_TRACE) {
+      if (process.env.FOX_AGENT_TRACE) {
         try {
-          require("node:fs").appendFileSync(process.env.FOX_TRACE, out + "\x00FLUSH\x00");
+          require("node:fs").appendFileSync(process.env.FOX_AGENT_TRACE, out + "\x00FLUSH\x00");
         } catch {}
       }
     }

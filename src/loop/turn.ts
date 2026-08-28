@@ -7,6 +7,8 @@ import type { Tool, ToolContext, PtyState } from "../tools/types.ts";
 import { OUT_CAP } from "../tools/files.ts";
 import { buildRegistry } from "../tools/index.ts";
 import type { Config } from "../core/config.ts";
+import type { FoxPlugin } from "../plugins/types.ts";
+import { loadPlugins } from "../plugins/load.ts";
 import { buildSystemPrompt } from "./prompt.ts";
 import { renderContext } from "../context/render.ts";
 import { compactIfNeeded } from "../context/compact.ts";
@@ -20,6 +22,12 @@ export interface TurnOptions {
   /** dependency injection — tests mock the provider here */
   chat?: ChatFn;
   registryOverride?: Map<string, Tool>;
+  /**
+   * Plugins to run hooks from, bypassing config. Mirrors `registryOverride`: a
+   * test injects a plugin object without writing one to disk and pointing a
+   * global config at it. When set, config-named plugins are not loaded.
+   */
+  pluginsOverride?: FoxPlugin[];
   projectInstructions?: string;
   /** full config enables MCP tool merging */
   config?: Config;
@@ -189,8 +197,39 @@ function fallbackConfig(cfg: ProviderConfig, opts: TurnOptions): Config {
     agents: {},
     lsp: {},
     diagnostics: true,
+    // a caller that passed only a ProviderConfig has no config file in play, so
+    // there is nothing to load plugins from — an override is the way in
+    plugins: [],
+    warnings: [],
     projectInstructions: "",
   };
+}
+
+/**
+ * Run one plugin hook, converting any failure into a warning.
+ *
+ * Every hook goes through here, and that is the whole contract: a plugin is
+ * third-party code running inside fox-agent's turn loop, so a hook that throws must
+ * cost the user a `warn` line and nothing else. Without this, a plugin with a
+ * typo in `afterTool` would reject the `Promise.all` in the tool step and take
+ * down a turn that had already done real work.
+ *
+ * `warn` is a callback rather than a yield because `afterTool` is called from
+ * inside that `Promise.all` closure, where yielding is not possible — the
+ * existing `EventQueue` is how a tool already reports mid-flight.
+ */
+async function runHook<T>(
+  plugin: FoxPlugin,
+  which: string,
+  fn: () => T | Promise<T>,
+  warn: (message: string) => void,
+): Promise<T | null> {
+  try {
+    return await fn();
+  } catch (e) {
+    warn(`plugin '${plugin.name}' ${which} failed: ${(e as Error).message.slice(0, 200)}`);
+    return null;
+  }
 }
 
 export async function* runTurnCore(
@@ -205,15 +244,28 @@ export async function* runTurnCore(
 
   const chat = opts.chat ?? resolveChat;
   const effCfg = opts.config ?? fallbackConfig(cfg, opts);
-  let mcpWarnings: string[] = [];
+  let setupWarnings: string[] = [];
   let tools: Map<string, Tool>;
-  if (opts.registryOverride) tools = opts.registryOverride;
-  else {
+  let plugins: FoxPlugin[] = opts.pluginsOverride ?? [];
+  if (opts.registryOverride) {
+    tools = opts.registryOverride;
+    // an override skips buildRegistry, so config-named plugins are loaded here —
+    // otherwise a test that injects a registry would silently lose every hook
+    if (!opts.pluginsOverride && effCfg.plugins?.length) {
+      const res = await loadPlugins(effCfg.plugins);
+      plugins = res.plugins;
+      setupWarnings = [...(effCfg.warnings ?? []), ...res.warnings];
+    } else {
+      setupWarnings = [...(effCfg.warnings ?? [])];
+    }
+  } else {
     const built = await buildRegistry(effCfg);
     tools = built.tools;
-    mcpWarnings = built.warnings;
+    setupWarnings = built.warnings;
+    if (!opts.pluginsOverride) plugins = built.plugins;
   }
   const toolDefs = [...tools.values()].map((t) => t.def);
+  const hooked = plugins.filter((p) => p.hooks);
 
   const userNode = appendMessage(sessionId, {
     parent_id: null,
@@ -221,15 +273,33 @@ export async function* runTurnCore(
     content: userText,
     tokens: estTok(userText),
   });
-  const turnStartSeq = userNode.seq;
 
   let ptyState: PtyState | undefined;
   const turnReads = new Set<string>();
   const maxSteps = opts.maxSteps ?? 40;
   const quiet = opts.quiet ?? false;
 
-  // surface MCP connection failures once, at the top of the turn
-  if (!quiet) for (const w of mcpWarnings) yield { type: "warn", message: w };
+  // Warnings a hook raises after the turn's first yield cannot be yielded from
+  // where they happen (`afterTool` runs inside a Promise.all), so they queue here
+  // and drain at the next point the loop is yielding anyway.
+  const pendingWarnings: string[] = [];
+  const hookWarn = (message: string) => {
+    if (!quiet) pendingWarnings.push(message);
+  };
+
+  // surface MCP, plugin and config warnings once, at the top of the turn
+  if (!quiet) for (const w of setupWarnings) yield { type: "warn", message: w };
+
+  // `onSessionStart` fires when this turn's user message is the session's first,
+  // which is exactly `seq === 1` — no extra state to keep, and it stays correct
+  // for a session resumed in a new process.
+  if (userNode.seq === 1) {
+    for (const p of hooked) {
+      if (!p.hooks?.onSessionStart) continue;
+      await runHook(p, "onSessionStart", () => p.hooks!.onSessionStart!({ sessionId, cwd: session.cwd, model: cfg.model }), hookWarn);
+    }
+    if (!quiet) for (const w of pendingWarnings.splice(0)) yield { type: "warn", message: w };
+  }
 
   // the parent of each step's assistant node: the user turn for step 1, then
   // the previous step's tool results, so the chain reflects actual lineage
@@ -250,7 +320,7 @@ export async function* runTurnCore(
     }
 
     if (step > maxSteps) {
-      appendMessage(sessionId, { parent_id: null, role: "system", content: `fox: step limit (${maxSteps}) reached mid-turn`, tokens: 16 });
+      appendMessage(sessionId, { parent_id: null, role: "system", content: `fox-agent: step limit (${maxSteps}) reached mid-turn`, tokens: 16 });
       yield { type: "warn", message: `step limit ${maxSteps} reached` };
       yield { type: "done", reason: "max_steps" };
       return;
@@ -265,6 +335,27 @@ export async function* runTurnCore(
     });
     const messages = renderContext(sessionId, sysPrompt);
 
+    // `beforeLLMCall`: additive only. The patch appends to the system message
+    // rather than replacing the array, so `renderContext`'s invariant — every
+    // assistant tool_call followed by its tool_result — cannot be broken by a
+    // plugin. `messages` is passed for the hook to *decide* with.
+    for (const p of hooked) {
+      if (!p.hooks?.beforeLLMCall) continue;
+      const patch = await runHook(
+        p,
+        "beforeLLMCall",
+        () => p.hooks!.beforeLLMCall!({ sessionId, step, messages, tools: toolDefs }),
+        hookWarn,
+      );
+      const extra = patch?.appendSystem;
+      if (typeof extra !== "string" || !extra.trim()) continue;
+      // the system message is index 0 by construction in renderContext; appending
+      // there keeps the prompt deterministic per step, so caching still works
+      if (messages[0]?.role === "system") messages[0].content += `\n\n${extra.trim()}`;
+      else messages.unshift({ role: "system", content: extra.trim() });
+    }
+    if (!quiet) for (const w of pendingWarnings.splice(0)) yield { type: "warn", message: w };
+
     let outcome: StepOutcome;
     try {
       outcome = yield* drainStep(chat, cfg, messages, toolDefs, signal, opts.retryLimit ?? 3);
@@ -275,7 +366,7 @@ export async function* runTurnCore(
       appendMessage(sessionId, {
         parent_id: null,
         role: "system",
-        content: `fox: provider error: ${pe.message}`,
+        content: `fox-agent: provider error: ${pe.message}`,
         tokens: 24,
         error: pe.detail ?? pe.message,
       });
@@ -323,7 +414,6 @@ export async function* runTurnCore(
         const res = await execToolCall(call, tools, {
           sessionId,
           cwd: session.cwd,
-          turnStartSeq,
           readFiles: turnReads,
           signal,
           providerCfg: cfg,
@@ -338,6 +428,32 @@ export async function* runTurnCore(
             ptyState = v;
           },
         } satisfies ToolContext);
+
+        // `afterTool` runs HERE — after the tool, before appendMessage. That
+        // ordering is the point: the patched output becomes the only version in
+        // the system, so what the transcript stores, what the model reads on the
+        // next step, and what `tool_end` reports are all the same text. Patching
+        // after the append would leave the DB holding the unpatched output and
+        // the model seeing it on every subsequent step.
+        // `afterTool` runs HERE — after the tool, before appendMessage. That
+        // ordering is the point: the patched output becomes the only version in
+        // the system, so what the transcript stores, what the model reads on the
+        // next step, and what `tool_end` reports are all the same text. Patching
+        // after the append would leave the DB holding the unpatched output and
+        // the model seeing it on every subsequent step.
+        for (const p of hooked) {
+          if (!p.hooks?.afterTool) continue;
+          const patch = await runHook(
+            p,
+            "afterTool",
+            () => p.hooks!.afterTool!({ sessionId, name: call.name, args: safeParseArgs(call.arguments).args, ok: res.ok, output: res.output }),
+            // a warning from inside this closure cannot be yielded, so it takes
+            // the same route a tool's own progress does
+            (message) => liveEvents.push({ type: "warn", message }),
+          );
+          if (typeof patch?.output === "string") res.output = patch.output;
+        }
+
         const node = appendMessage(sessionId, {
           parent_id: asstNode.id,
           role: "tool",

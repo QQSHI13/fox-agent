@@ -1,15 +1,15 @@
 /**
- * fox deliberately runs tools with full machine access (see README), but that
+ * fox-agent deliberately runs tools with full machine access (see README), but that
  * is about filesystem and process reach — not about handing our own provider
  * credentials to every subprocess. Strip them so a command the model runs
  * can't read the key that is driving the model.
  */
-const SECRET_PATTERNS = [/^FOX_API_KEY$/, /^ANTHROPIC_API_KEY$/, /^OPENAI_API_KEY$/, /_API_KEY$/, /^FOX_AUTH/];
+const SECRET_PATTERNS = [/^FOX_AGENT_API_KEY$/, /^ANTHROPIC_API_KEY$/, /^OPENAI_API_KEY$/, /_API_KEY$/, /^FOX_AGENT_AUTH/];
 
 /**
  * @param extra  per-server / per-call additions; these win over the inherited env.
  * @param cwd    the directory the child is actually being spawned into. When
- *               given, `PWD` is pinned to it instead of inheriting fox's own,
+ *               given, `PWD` is pinned to it instead of inheriting fox-agent's own,
  *               which would otherwise disagree with the real cwd. This matters
  *               for children spawned *without* a shell — an MCP server reading
  *               `os.environ["PWD"]`, say. Anything launched through `bash -c`

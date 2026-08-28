@@ -9,7 +9,7 @@
  * Two events deliberately produce nothing:
  * - `step` / `retry` / `warn` are harness chatter. ACP has no vocabulary for
  *   "I am on step 4" or "429, backing off 2s", and inventing one as a text chunk
- *   would put fox's internals into the *assistant's message* in every client.
+ *   would put fox-agent's internals into the *assistant's message* in every client.
  * - `done` is not an update at all; it becomes `PromptResponse.stopReason`,
  *   which is what `stopReasonFor` below is for.
  */
@@ -17,13 +17,13 @@ import type { SessionUpdate, StopReason, ToolKind } from "@agentclientprotocol/s
 import type { AgentEvent } from "../core/events.ts";
 
 /**
- * fox tool -> ACP ToolKind. Clients pick icons and UI affordances from this, so
+ * fox-agent tool -> ACP ToolKind. Clients pick icons and UI affordances from this, so
  * a wrong kind is a visibly wrong icon, not a protocol error.
  *
  * `ctx_edit` is `think`: it rewrites the agent's own context, touching no file
  * and running no command, which is closer to reasoning than to editing. MCP
  * tools and anything unlisted fall through to `other` — the honest answer for a
- * tool whose semantics fox does not know.
+ * tool whose semantics fox-agent does not know.
  */
 export const TOOL_KIND: Record<string, ToolKind> = {
   read: "read",
@@ -53,7 +53,7 @@ function titleFor(name: string, args: string): string {
 /**
  * `size` for `usage_update` is the model's context window, which the mapper
  * cannot know — the caller passes it in. `used` is prompt+completion of the last
- * step, matching what fox's own status bar reports.
+ * step, matching what fox-agent's own status bar reports.
  */
 export interface MapOptions {
   contextWindow: number;
@@ -116,7 +116,7 @@ export function toSessionUpdate(ev: AgentEvent, opts: MapOptions): SessionUpdate
 }
 
 /**
- * fox's `done.reason` is a free-form string (`"stop"`, `"aborted"`,
+ * fox-agent's `done.reason` is a free-form string (`"stop"`, `"aborted"`,
  * `"max_steps"`, `"error: …"`, or whatever the provider's finish_reason was).
  * ACP's StopReason is a closed set, so anything unrecognized becomes `end_turn`:
  * the turn did end, and claiming `refusal` or `max_tokens` on a guess would be a

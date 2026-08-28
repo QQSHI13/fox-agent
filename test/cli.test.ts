@@ -27,12 +27,12 @@ function runCli(args: string[], env: Record<string, string> = {}) {
     cwd: work,
     env: {
       ...process.env,
-      FOX_HOME: home,
-      FOX_API_KEY: "test-key",
+      FOX_AGENT_HOME: home,
+      FOX_AGENT_API_KEY: "test-key",
       // a closed port: an unintended turn shows up as a connection error, and a
       // silently-passing test cannot be hiding a real provider call
-      FOX_BASE_URL: "http://127.0.0.1:1",
-      FOX_MODEL: "test-model",
+      FOX_AGENT_BASE_URL: "http://127.0.0.1:1",
+      FOX_AGENT_MODEL: "test-model",
       ...env,
     },
   });
@@ -58,7 +58,7 @@ describe("headless slash commands", () => {
     // the mirror image of the case above: proves the routing is a slash-only
     // branch and not an accidental short-circuit of every -p. Retries off, or
     // the backoff loop would keep hammering the closed port until the timeout.
-    const r = runCli(["-p", "hello"], { FOX_RETRY_LIMIT: "0", FOX_REQUEST_TIMEOUT_MS: "2000" });
+    const r = runCli(["-p", "hello"], { FOX_AGENT_RETRY_LIMIT: "0", FOX_AGENT_REQUEST_TIMEOUT_MS: "2000" });
     expect(r.out + r.err).toMatch(/ECONNREFUSED|fetch failed|Unable to connect|error/i);
   }, 30_000);
 });
@@ -84,7 +84,7 @@ describe("config failures are one-liners", () => {
     // user needs. Exactly one line of stderr is the whole point of catching it.
     const lines = errLines(r.err);
     expect(lines).toHaveLength(1);
-    expect(lines[0]!.startsWith("fox: ")).toBe(true);
+    expect(lines[0]!.startsWith("fox-agent: ")).toBe(true);
   }, 30_000);
 
   test("a stale .fox.json explains the rename instead of being ignored", () => {
@@ -92,7 +92,61 @@ describe("config failures are one-liners", () => {
     const r = runCli(["-p", "hi"]);
     expect(r.code).toBe(1);
     expect(r.err).toContain(".fox.json");
-    expect(r.err).toContain("fox.toml");
+    expect(r.err).toContain("fox-agent.toml");
     expect(errLines(r.err)).toHaveLength(1);
+  }, 30_000);
+});
+
+describe("session selection from the CLI", () => {
+  test("`fox ls` renders the same list `/sessions` prints", () => {
+    // one session to list, made by a headless command that touches the store
+    runCli(["-p", "/usage"]);
+    const r = runCli(["ls"]);
+    expect(r.code).toBe(0);
+    expect(r.out.trim()).not.toBe("");
+    // the old `ls` had its own loop over created_at and disagreed with every
+    // other listing about ordering; now both go through formatSessionList
+    expect(r.out).toContain("tok");
+    expect(r.out).toContain(work);
+  }, 30_000);
+
+  test("`ls` with nothing to show says so rather than printing blank", () => {
+    const r = runCli(["ls"]);
+    expect(r.code).toBe(0);
+    expect(r.out).toContain("(no sessions)");
+  }, 30_000);
+
+  test("-c without a tty still resumes the latest session in this directory", () => {
+    // spawnSync gives no tty, which is the standing constraint: -c has to answer
+    // without a keypress under -p and in pipes
+    runCli(["-p", "/usage"]);
+    const first = runCli(["ls"]).out.trim().split(/\s+/)[1];
+    const r = runCli(["-c", "-p", "/usage"]);
+    expect(r.code).toBe(0);
+    expect(r.err).toContain(`resuming ${first}`);
+  }, 30_000);
+
+  test("-c in a directory with no history exits 1 and says why", () => {
+    const r = runCli(["-c", "-p", "/usage"]);
+    expect(r.code).toBe(1);
+    expect(r.err).toContain("no previous session in this directory");
+    expect(errLines(r.err)).toHaveLength(1);
+  }, 30_000);
+
+  test("--last is accepted and does not become a stray prompt", () => {
+    runCli(["-p", "/usage"]);
+    const r = runCli(["-c", "--last", "-p", "/usage"]);
+    expect(r.code).toBe(0);
+    expect(r.err).toContain("resuming ");
+    // an unknown flag exits 1 before anything else, so this proves it parsed
+    expect(r.err).not.toContain("unknown flag");
+  }, 30_000);
+
+  test("help documents the interactive -c and no longer mentions /resume", () => {
+    const r = runCli(["help"]);
+    expect(r.code).toBe(0);
+    expect(r.out).toContain("--last");
+    expect(r.out).toMatch(/-c, --continue\s+pick a session/);
+    expect(r.out).not.toContain("/resume");
   }, 30_000);
 });

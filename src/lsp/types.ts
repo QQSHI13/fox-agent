@@ -1,8 +1,8 @@
 /**
- * The slice of LSP fox actually uses, and how a diagnostic is rendered for the
+ * The slice of LSP fox-agent actually uses, and how a diagnostic is rendered for the
  * model.
  *
- * fox is not an editor: it never asks for completions, hovers or code actions.
+ * fox-agent is not an editor: it never asks for completions, hovers or code actions.
  * It wants one thing — "did the edit I just made break anything" — so this file
  * describes diagnostics and nothing else.
  */
@@ -40,7 +40,7 @@ const LABEL: Record<number, string> = { 1: "error", 2: "warning", 3: "info", 4: 
  * Render diagnostics as a block appended to an `edit`/`write` result, or null
  * when there is nothing worth saying.
  *
- * LSP line/character are 0-based; every human-facing line/column in fox (`read`'s
+ * LSP line/character are 0-based; every human-facing line/column in fox-agent (`read`'s
  * gutter, `grep` output, editor jump targets) is 1-based, so they are converted
  * here. Getting this wrong is invisible in tests that only check for a substring
  * and infuriating in use.

@@ -20,7 +20,7 @@ export const MAX_READ_BYTES = 10_000_000;
  * catches the errors that matter, and its output supersedes the transpiler's
  * parse check. `syntaxWarning` stays as the fallback for when no server is
  * configured, not installed, or silent — without it, a `.py` edit on a machine
- * with no pyright would lose the one check fox used to do.
+ * with no pyright would lose the one check fox-agent used to do.
  */
 async function afterWrite(path: string, absPath: string, content: string, ctx: ToolContext): Promise<string> {
   if (ctx.diagnostics !== false) {

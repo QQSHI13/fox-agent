@@ -20,13 +20,11 @@ export interface PtyState {
 export interface ToolContext {
   sessionId: string;
   cwd: string;
-  /** seq of the user message that started the current turn; nodes >= this are in-flight */
-  turnStartSeq: number;
   readFiles: Set<string>;
   signal?: AbortSignal;
   /** provider config for tools that need to know the active model */
   providerCfg?: ProviderConfig;
-  /** external ACP agents `task` may delegate to, from `fox.toml [agents.*]` */
+  /** external ACP agents `task` may delegate to, from `fox-agent.toml [agents.*]` */
   agents?: Record<string, AcpAgentConfig>;
   /**
    * Post-edit diagnostics. `lsp` overrides the built-in server table by

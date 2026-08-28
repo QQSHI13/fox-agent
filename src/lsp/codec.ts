@@ -2,7 +2,7 @@
  * LSP's base protocol framing: `Content-Length: N\r\n\r\n<N bytes of JSON>`.
  *
  * Hand-rolled rather than pulled from `vscode-jsonrpc`, because that package
- * brings a Node stream abstraction fox would have to adapt Bun's `FileSink` into
+ * brings a Node stream abstraction fox-agent would have to adapt Bun's `FileSink` into
  * anyway (the same friction the ACP layer already pays twice), and the entire
  * codec is the two functions below. One dependency avoided for ~40 lines.
  *
