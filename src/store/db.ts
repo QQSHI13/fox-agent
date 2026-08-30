@@ -500,6 +500,20 @@ export function allMessages(sessionId: string): MessageRow[] {
   return sessionDb(sessionId).prepare("SELECT * FROM messages WHERE session_id = ? ORDER BY seq").all(sessionId) as MessageRow[];
 }
 
+/** Messages with seq > afterSeq — the incremental feed for the view cache. */
+export function messagesAfter(sessionId: string, afterSeq: number): MessageRow[] {
+  return sessionDb(sessionId)
+    .prepare("SELECT * FROM messages WHERE session_id = ? AND seq > ? ORDER BY seq")
+    .all(sessionId, afterSeq) as MessageRow[];
+}
+
+/** Ops with seq > afterSeq — same, for the op log. */
+export function opsAfter(sessionId: string, afterSeq: number): OpRow[] {
+  return sessionDb(sessionId)
+    .prepare("SELECT * FROM ops WHERE session_id = ? AND seq > ? ORDER BY seq")
+    .all(sessionId, afterSeq) as OpRow[];
+}
+
 function advanceMain(sessionId: string, messageId: string) {
   sessionDb(sessionId)
     .prepare("UPDATE refs SET message_id = ?, updated_at = ? WHERE session_id = ? AND name = 'main'")

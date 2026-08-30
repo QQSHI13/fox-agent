@@ -134,7 +134,12 @@ export function openTerm(): Term {
       out.write("\x1b[?1049h\x1b[2J\x1b[H\x1b[?25l\x1b[?2004h\x1b[?1000h\x1b[?1002h\x1b[?1006h\x1b[?7l");
     },
     end() {
-      out.write("\x1b[?7h\x1b[?1006l\x1b[?1002l\x1b[?1000l\x1b[?2004l\x1b[?25h\x1b[?1049l");
+      // \x1b[0m FIRST: the last frame may have left a colored SGR active (the
+      // status bar's background, an error's red), and without a reset the shell
+      // prompt and everything the user types next inherits it — the "exit left
+      // the terminal red" bug. Reset before leaving the alt screen so even the
+      // restore sequence itself is unstyled.
+      out.write("\x1b[0m\x1b[?7h\x1b[?1006l\x1b[?1002l\x1b[?1000l\x1b[?2004l\x1b[?25h\x1b[?1049l\x1b[0m");
       try {
         stdin.setRawMode(wasRaw);
       } catch {}

@@ -21,9 +21,8 @@ import { Picker, type PickerRow } from "./picker.ts";
 import { sessionRows } from "./pickerui.ts";
 import { runTurn, VERSION } from "../loop/agent.ts";
 import { projectView } from "../context/view.ts";
-import { viewTokenEstimate } from "../context/render.ts";
 import { lookupModel } from "../providers/models.ts";
-import { getSession, sessionUsage, lastPromptTokens as storedPromptTokens, pinSession, unpinSession } from "../store/db.ts";
+import { getSession, lastPromptTokens as storedPromptTokens, pinSession, unpinSession } from "../store/db.ts";
 import {
   runSlashCommand,
   COMMANDS,
@@ -203,9 +202,8 @@ export async function startTui(state: HarnessState) {
   const queued: { raw: string; lit: boolean }[] = [];
   const expandedRefs = new Set<number>(); // think nodes expanded across refreshes
   // provider-reported usage for the CURRENT turn's last step (real numbers,
-  // not estimates) + chars streamed since, for a live completion figure
+  // not estimates) — the only token figure the status bar is willing to show
   let lastPromptTokens = 0;
-  let streamCharsSinceUsage = 0;
 
   const revs = new Map<number, number>();
   const touch = (k: number) => revs.set(k, (revs.get(k) ?? 0) + 1);
@@ -456,10 +454,8 @@ export async function startTui(state: HarnessState) {
     let md = "";
     try {
       for await (const ev of runTurn(state.sessionId, state.provider, raw, ac.signal, state.config)) {        if (ev.type === "reasoning") {
-          streamCharsSinceUsage += ev.delta.length;
           appendToLastThink(ev.delta);
         } else if (ev.type === "text") {
-          streamCharsSinceUsage += ev.delta.length;
           md += ev.delta;
           if (streamText !== md) {
             streamText = md;
@@ -467,7 +463,6 @@ export async function startTui(state: HarnessState) {
           }
         } else if (ev.type === "usage") {
           lastPromptTokens = ev.prompt_tokens; // provider-reported context size
-          streamCharsSinceUsage = 0;
           statsRev++;
         } else if (ev.type === "tool_end") {
           if (md) {
@@ -1184,24 +1179,16 @@ export async function startTui(state: HarnessState) {
 
   function statusText(): string {
     try {
-      // u.prompt/u.completion are session TOTALS (what we've spent). The
-      // context figure must be the size of the CURRENT window instead — the
-      // last provider-reported prompt, or our own estimate if we have no
-      // report yet. Using the cumulative total here would climb to 100% and
-      // never fall after a compaction.
-      const u = sessionUsage(state.sessionId);
-      const nodes = projectView(state.sessionId);
-      const vis = nodes.filter((n) => !n.deleted).length;
-      const liveCompletionTok = Math.ceil(streamCharsSinceUsage / 4);
-      const outTok = u.completion + liveCompletionTok;
+      // Context % comes from the provider's own last report (live this turn,
+      // else the persisted one) — never a chars/4 estimate. Before the first
+      // report there is simply nothing honest to show.
       const reported = lastPromptTokens || storedPromptTokens(state.sessionId);
-      const ctxTok = Math.max(reported, viewTokenEstimate(nodes));
       const info = lookupModel(state.provider.model);
-      const ctxPct = Math.min(100, Math.round((ctxTok / info.contextWindow) * 100));
+      const ctx = reported ? `ctx ${Math.min(100, Math.round((reported / info.contextWindow) * 100))}%` : "ctx —";
       const home = process.env.HOME ?? "";
       const cwdShort = home && state.cwd.startsWith(home) ? "~" + state.cwd.slice(home.length) : state.cwd;
       const q = queued.length ? ` · ⏸ ${queued.length}` : "";
-      return `${cwdShort} · ${vis}/${nodes.length} nodes · ↑${u.prompt} ↓${outTok} tok · ctx ~${ctxPct}%${q}`;
+      return `${cwdShort} · ${ctx}${q}`;
     } catch {
       return state.cwd;
     }

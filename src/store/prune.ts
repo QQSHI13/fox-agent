@@ -14,7 +14,7 @@
  * stub, and only the bodies go.
  */
 import { sessionDb } from "./db.ts";
-import { projectView } from "../context/view.ts";
+import { projectView, dropViewCache } from "../context/view.ts";
 import type { DeleteOp, ViewOp } from "./db.ts";
 import { allOps } from "./db.ts";
 
@@ -123,6 +123,9 @@ export function pruneSession(sessionId: string, opts: { dryRun?: boolean } = {})
   // VACUUM is what actually returns pages to the filesystem, and SQLite refuses
   // to run it inside a transaction — hence outside the block above.
   d.exec("VACUUM;");
+  // Prune is the one place the append-only contract is broken (rows deleted,
+  // stubs blanked), so the incremental projection cache must not survive it.
+  dropViewCache(sessionId);
   return { messages: toDelete.length, stubs: toStub.length, usage: usageRemoved, bytesBefore, bytesAfter: dbBytes(sessionId), applied: true };
 }
 

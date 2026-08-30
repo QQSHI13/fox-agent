@@ -1,6 +1,6 @@
 import type { ChatMessage } from "../providers/types.ts";
 import { estimateTokens } from "../providers/models.ts";
-import { projectView, type ViewNode } from "./view.ts";
+import { projectView, parseToolCalls, type ViewNode } from "./view.ts";
 
 function marker(seq: number): string {
   return `[m${seq}]`;
@@ -58,8 +58,7 @@ export function renderContext(sessionId: string, systemPrompt: string): ChatMess
       let calls: { id: string; name: string; arguments: string }[] | undefined;
       if (m.tool_calls) {
         // keep only calls whose tool result is still visible (API requires 1:1 pairing)
-        const all = JSON.parse(m.tool_calls) as { id: string; name: string; arguments: string }[];
-        const kept = all.filter((c) => visibleToolIds.has(c.id));
+        const kept = parseToolCalls(m).filter((c) => visibleToolIds.has(c.id));
         if (kept.length) calls = kept;
       }
       const text = n.content ? `${marker(m.seq)} ${n.content}` : "";
@@ -92,9 +91,7 @@ export function viewTokenEstimate(nodes: ViewNode[]): number {
     // flat per-attachment estimate, matching what turn.ts bills at append time
     if (n.msg.media) total += 1500;
     if (n.msg.role === "assistant" && n.msg.tool_calls) {
-      try {
-        for (const c of JSON.parse(n.msg.tool_calls) as { arguments: string }[]) total += estimateTokens(c.arguments);
-      } catch {}
+      for (const c of parseToolCalls(n.msg)) total += estimateTokens(c.arguments);
     }
   }
   return total;

@@ -26,9 +26,10 @@ const summarizer = (text: string) =>
     yield { type: "done", reason: "stop" };
   };
 
-/** Fill a session past the compaction threshold. Returns the seqs added. */
-async function fillSession(nodes: number, charsEach: number) {
-  const { createSession, appendMessage } = await import("../src/store/db.ts");
+/** Fill a session and record a provider usage report of `reported` prompt tokens
+ *  (compaction triggers on the provider's number, never on an estimate). */
+async function fillSession(nodes: number, charsEach: number, reported = 0) {
+  const { createSession, appendMessage, recordUsage } = await import("../src/store/db.ts");
   const s = createSession("/w", MODEL);
   const seqs: number[] = [];
   for (let i = 0; i < nodes; i++) {
@@ -41,6 +42,7 @@ async function fillSession(nodes: number, charsEach: number) {
     });
     seqs.push(m.seq);
   }
+  if (reported) recordUsage(s.id, null, reported, 100);
   return { id: s.id, seqs };
 }
 
@@ -57,7 +59,7 @@ describe("auto-compaction", () => {
   test("compacts the oldest span and emits a compacted event", async () => {
     const { compactIfNeeded } = await import("../src/context/compact.ts");
     const { projectView } = await import("../src/context/view.ts");
-    const { id } = await fillSession(60, 4_000); // ~60k est tokens > 0.85 * 65_536
+    const { id } = await fillSession(60, 4_000, 60_000); // provider reports 60k > 0.85 * 65_536
 
     const ev = (await compactIfNeeded(id, cfg as any, summarizer("THE SUMMARY") as any)) as any;
     expect(ev).not.toBeNull();
@@ -76,7 +78,7 @@ describe("auto-compaction", () => {
   test("the model's summary is attached to the first hidden node", async () => {
     const { compactIfNeeded } = await import("../src/context/compact.ts");
     const { projectView } = await import("../src/context/view.ts");
-    const { id } = await fillSession(60, 4_000);
+    const { id } = await fillSession(60, 4_000, 60_000);
     const ev = (await compactIfNeeded(id, cfg as any, summarizer("THE SUMMARY") as any)) as any;
     const first = projectView(id).find((n) => n.msg.seq === ev.removed[0])!;
     expect(first.deleted).toBe(true);
@@ -86,7 +88,7 @@ describe("auto-compaction", () => {
   test("protects the newest span — the tail stays visible", async () => {
     const { compactIfNeeded } = await import("../src/context/compact.ts");
     const { projectView, visibleNodes } = await import("../src/context/view.ts");
-    const { id } = await fillSession(60, 4_000);
+    const { id } = await fillSession(60, 4_000, 60_000);
     await compactIfNeeded(id, cfg as any, summarizer("s") as any);
     const vis = visibleNodes(projectView(id));
     // at least the protected fraction of the window survives
@@ -99,7 +101,7 @@ describe("auto-compaction", () => {
   test("a failing summarizer still compacts with a mechanical note", async () => {
     const { compactIfNeeded } = await import("../src/context/compact.ts");
     const { projectView } = await import("../src/context/view.ts");
-    const { id } = await fillSession(60, 4_000);
+    const { id } = await fillSession(60, 4_000, 60_000);
     const boom = async function* (): AsyncGenerator<any> {
       throw new Error("summarizer down");
     };
@@ -113,7 +115,7 @@ describe("auto-compaction", () => {
     const { compactIfNeeded } = await import("../src/context/compact.ts");
     const { projectView, visibleNodes } = await import("../src/context/view.ts");
     const { undoLastOp } = await import("../src/store/db.ts");
-    const { id } = await fillSession(60, 4_000);
+    const { id } = await fillSession(60, 4_000, 60_000);
     const beforeCount = visibleNodes(projectView(id)).length;
     await compactIfNeeded(id, cfg as any, summarizer("s") as any);
     expect(visibleNodes(projectView(id)).length).toBeLessThan(beforeCount);
@@ -123,7 +125,7 @@ describe("auto-compaction", () => {
 
   test("a lower compactAt threshold triggers on a smaller view", async () => {
     const { compactIfNeeded } = await import("../src/context/compact.ts");
-    const { id } = await fillSession(60, 3_000); // ~45k est tok: under 0.85, over 0.6
+    const { id } = await fillSession(60, 3_000, 45_000); // provider reports 45k: under 0.85, over 0.6
     expect(await compactIfNeeded(id, cfg as any, summarizer("s") as any)).toBeNull();
     const ev = await compactIfNeeded(id, cfg as any, summarizer("s") as any, { compactAt: 0.6 });
     expect(ev).not.toBeNull();

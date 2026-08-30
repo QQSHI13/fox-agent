@@ -2,7 +2,7 @@
 // model's context window, the oldest span (up to a protected tail) is
 // summarized by the model itself and hidden with a single delete+summary op
 // — the same machinery ctx_edit uses, so /undo reverts it too.
-import { appendOps } from "../store/db.ts";
+import { appendOps, lastPromptTokens } from "../store/db.ts";
 import type { ChatMessage, ChatFn } from "../providers/types.ts";
 import { estimateTokens } from "../providers/models.ts";
 import { projectView, visibleNodes } from "./view.ts";
@@ -47,9 +47,18 @@ export async function compactIfNeeded(
 ): Promise<AgentEvent | null> {
   const info = modelBudget(cfg.model);
   const at = opts.compactAt ?? 0.85;
+  /**
+   * The trigger is the provider's own last-reported prompt size — the one
+   * number that is definitionally the truth about how full the window is. A
+   * chars/4 estimate used to drive this, which both over-fired on dense
+   * Unicode and under-fired on chatty English. No report yet means no
+   * completed call yet, which means the window cannot be full.
+   */
+  const reported = lastPromptTokens(sessionId);
+  if (!reported || reported < info.contextWindow * at) return null;
+  const before = reported;
+
   const nodes = projectView(sessionId);
-  const before = viewTokenEstimate(nodes) + 1500;
-  if (before < info.contextWindow * at) return null;
 
   // pick oldest-span candidates up to the protected tail boundary
   const vis = visibleNodes(nodes);
@@ -66,6 +75,9 @@ export async function compactIfNeeded(
   if (maxBoundary <= 1) return null;
 
   const protectFrom = before - Math.floor(info.contextWindow * TARGET_AFTER_FRACTION);
+  // Per-node numbers below ARE chars/4 estimates — but they only decide *where*
+  // to cut, never *whether* to cut, so an inaccurate node size costs a
+  // slightly different boundary, not a wrong compaction.
   let acc = 0;
   let boundary = 0; // exclusive index into `vis`
   for (; boundary < maxBoundary; boundary++) {

@@ -5,6 +5,7 @@ import {
   forkSession,
   getMessage,
   getSession,
+  kvGet,
   latestSessionFor,
   listSessions,
   sessionUsage,
@@ -356,15 +357,18 @@ export function runSlashCommand(input: string, state: HarnessState): CommandResu
     }
 
     case "/usage": {
-      const u = sessionUsage(state.sessionId);
-      const nodes = projectView(state.sessionId);
+      // provider-reported only: totals accumulate from each call's usage event
+      // (kv in the session file), and the live window figure is the last
+      // request's billed prompt size. No estimates — a number we invented is
+      // worse than no number.
+      const t = kvGet<{ prompt: number; completion: number }>(state.sessionId, "usage") ?? { prompt: 0, completion: 0 };
       const b = checkBudget(state.sessionId, state.provider.model, 0, state.config?.compactAt);
       const pct = Math.round(b.ratio * 100);
       return {
         handled: true,
-        output: `prompt ${u.prompt} + completion ${u.completion} = ${u.prompt + u.completion} tok billed\nview: ${
-          nodes.filter((n) => !n.deleted).length
-        }/${nodes.length} nodes visible, ~${b.estimated}/${b.limit} est tok (${pct}%)${b.over ? " — over compaction threshold" : ""}`,
+        output:
+          `billed: ↑${t.prompt} ↓${t.completion} = ${t.prompt + t.completion} tok (provider-reported)\n` +
+          `context: ${b.reported ? `${b.reported}/${b.limit} tok (${pct}%)` : "no provider report yet"}${b.over ? " — over compaction threshold" : ""}`,
       };
     }
 

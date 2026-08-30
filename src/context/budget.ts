@@ -1,24 +1,30 @@
 import { lookupModel, type ModelInfo } from "../providers/models.ts";
-import { projectView } from "./view.ts";
-import { viewTokenEstimate } from "./render.ts";
-
-/** Conservative overhead fudge: system prompt + message framing. */
-export const PROMPT_OVERHEAD_TOKENS = 1_500;
+import { lastPromptTokens } from "../store/db.ts";
 
 export function modelBudget(model: string): ModelInfo {
   return lookupModel(model);
 }
 
 export interface BudgetCheck {
-  estimated: number;
+  /** provider-reported size of the last request's prompt; 0 before the first call */
+  reported: number;
   limit: number;
   over: boolean;
   ratio: number;
 }
 
-export function checkBudget(sessionId: string, model: string, systemExtraTokens = 0, compactAt = 0.85): BudgetCheck {
+/**
+ * How full the context window is, per the provider's own accounting.
+ *
+ * This deliberately does not estimate: `lastPromptTokens` is the number the
+ * API billed us for the previous call, which includes the system prompt, tool
+ * schemas and message framing — everything a chars/4 estimate had to fudge
+ * (PROMPT_OVERHEAD_TOKENS, RIP). Before the first call there is no report and
+ * the window is definitionally near-empty, so `reported` is 0 and `over` false.
+ */
+export function checkBudget(sessionId: string, model: string, _unused = 0, compactAt = 0.85): BudgetCheck {
   const info = modelBudget(model);
-  const estimated = viewTokenEstimate(projectView(sessionId)) + PROMPT_OVERHEAD_TOKENS + systemExtraTokens;
+  const reported = lastPromptTokens(sessionId);
   const threshold = Math.floor(info.contextWindow * compactAt);
-  return { estimated, limit: info.contextWindow, over: estimated >= threshold, ratio: estimated / info.contextWindow };
+  return { reported, limit: info.contextWindow, over: reported >= threshold, ratio: reported / info.contextWindow };
 }

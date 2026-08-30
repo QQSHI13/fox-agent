@@ -1,4 +1,4 @@
-import { appendMessage, getSession, recordUsage } from "../store/db.ts";
+import { appendMessage, getSession, kvGet, kvSet, recordUsage } from "../store/db.ts";
 import type { ProviderConfig, ChatMessage, ToolDef, ToolCall, ChatFn } from "../providers/types.ts";
 import { resolveChat } from "../providers/index.ts";
 import { classifyProviderError, FoxError, isTimeout } from "../core/errors.ts";
@@ -394,6 +394,17 @@ export async function* runTurnCore(
       tokens: estTok(outcome.text) + outcome.calls.reduce((a, c) => a + estTok(c.arguments), 0),
     });
     if (outcome.usage) recordUsage(sessionId, asstNode.id, outcome.usage.prompt_tokens, outcome.usage.completion_tokens);
+    if (outcome.usage) {
+      // running totals in the session's kv, from the provider's own reports —
+      // the session file is the one place that outlives the process, and no
+      // token figure the harness keeps should be an estimate when the provider
+      // already told us the truth
+      const t = kvGet<{ prompt: number; completion: number }>(sessionId, "usage") ?? { prompt: 0, completion: 0 };
+      kvSet(sessionId, "usage", {
+        prompt: t.prompt + outcome.usage.prompt_tokens,
+        completion: t.completion + outcome.usage.completion_tokens,
+      });
+    }
     if (outcome.usage && !quiet) yield { type: "usage", ...outcome.usage };
 
     if (!outcome.calls.length) {
