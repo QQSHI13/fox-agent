@@ -1,6 +1,7 @@
 import type { MediaPart, ProviderConfig, ToolDef } from "../providers/types.ts";
 import type { AgentEvent } from "../core/events.ts";
 import type { ExternalAgentConfig, LspConfig } from "../core/config.ts";
+import type { UiBridge } from "../core/ui.ts";
 
 export interface PtyState {
   session: string; // tmux session name
@@ -41,6 +42,13 @@ export interface ToolContext {
    * SDK) stays valid.
    */
   emit?: (ev: AgentEvent) => void;
+  /**
+   * Ask the user questions mid-run — select menus, text input, wizards (see
+   * core/ui.ts). Present only when the host is interactive (today: the TUI);
+   * a tool on a headless host must not block waiting for an answer that can
+   * never come, so check for its presence first.
+   */
+  ui?: UiBridge;
   get pty(): PtyState | undefined;
   set pty(v: PtyState | undefined);
 }

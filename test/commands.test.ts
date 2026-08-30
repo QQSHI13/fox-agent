@@ -233,6 +233,61 @@ describe("/login", () => {
   });
 });
 
+describe("interactive wizards", () => {
+  test("an interactive host always gets the /login wizard, kv args only prefill it", async () => {
+    const t = await setup();
+    const cfgPath = join(dir, "config.toml");
+    const s = t.createSession("/w", "m1");
+    const state = {
+      sessionId: s.id,
+      cwd: "/w",
+      provider: { baseUrl: "http://x", apiKey: "", model: "m" } as any,
+      configPath: cfgPath,
+      interactive: true,
+    };
+
+    // bare: wizard with a provider select starting on the current provider
+    const bare = t.runSlashCommand("/login", state)!;
+    expect(bare.prompt).toBeDefined();
+    expect(bare.prompt!.steps.map((st) => st.key)).toEqual(["provider", "apiKey", "baseUrl", "model"]);
+    expect(bare.prompt!.steps[0].kind).toBe("select");
+    expect(bare.prompt!.steps[0].initial).toBe("openai-compatible");
+    expect(bare.prompt!.steps[1].secret).toBe(true);
+
+    // kv args: still the wizard, but prefilled — nothing applied yet
+    const pre = t.runSlashCommand("/login provider=google", state)!;
+    expect(pre.prompt!.steps[0].initial).toBe("google");
+    expect(existsSync(cfgPath)).toBe(false);
+
+    // the wizard's run applies the answers like kv pairs would
+    const res = pre.prompt!.run({ provider: "google", apiKey: "gk-9", baseUrl: "", model: "" }, state);
+    expect(res.output).toContain("saved");
+    expect(state.provider.provider).toBe("google");
+    expect(state.provider.apiKey).toBe("gk-9");
+    expect(readFileSync(cfgPath, "utf8")).toContain('provider = "google"');
+  });
+
+  test("bare /model, /prune and /fork ask; bare /delete opens the session picker", async () => {
+    const t = await setup();
+    const s = t.createSession("/w", "m1");
+    const state = { sessionId: s.id, cwd: "/w", provider: { baseUrl: "http://x", apiKey: "k", model: "m" }, interactive: true };
+
+    const model = t.runSlashCommand("/model", state)!;
+    expect(model.prompt!.steps[0].initial).toBe("m");
+    const applied = model.prompt!.run({ model: "m2" }, state);
+    expect(applied.output).toContain("m2");
+    expect(state.provider.model).toBe("m2");
+
+    const prune = t.runSlashCommand("/prune", state)!;
+    expect(prune.prompt!.steps[0].kind).toBe("select");
+    // the report option runs a dry-run — nothing deleted
+    expect(prune.prompt!.run({ mode: "" }, state).output).toBeTruthy();
+
+    expect(t.runSlashCommand("/fork", state)!.prompt).toBeDefined();
+    expect(t.runSlashCommand("/delete", state)!.picker).toEqual({ kind: "sessions" });
+  });
+});
+
 describe("session listing", () => {
   test("lists most recently used first, not most recently created", async () => {
     const t = await setup();

@@ -245,6 +245,59 @@ describe("turn manager", () => {
 
 const cfg = () => ({ baseUrl: "http://localhost:9", apiKey: "test", model: "test-model" });
 
+describe("ui bridge", () => {
+  test("a tool can ask the host a question mid-run via ctx.ui", async () => {
+    const t = await setup();
+    const s = t.createSession("/w", "m1");
+    const asker: [string, any] = [
+      "ask",
+      {
+        def: { name: "ask", description: "ask the user", parameters: { type: "object", properties: {} } },
+        run: async (_args: any, ctx: any) => {
+          if (!ctx.ui) return "no ui";
+          const v = await ctx.ui.select("pick one", [{ value: "a" }, { value: "b", label: "B" }]);
+          return `picked: ${v}`;
+        },
+      },
+    ];
+    const registry = new Map([asker]);
+    const mock = mockChat([
+      [{ type: "tool_call", call: { id: "t1", name: "ask", arguments: "{}" } }, { type: "done", reason: "tool_calls" }],
+      textDone("done"),
+    ]);
+    const events = await collect(
+      t.runTurnCore(s.id, cfg(), "go", undefined, {
+        chat: mock.fn as any,
+        registryOverride: registry,
+        quiet: true,
+        ui: { select: async () => "b", input: async () => "x", wizard: async () => ({}) },
+      }),
+    );
+    const te = events.find((e): e is Extract<typeof e, { type: "tool_end" }> => e.type === "tool_end")!;
+    expect(te.output).toBe("picked: b");
+  });
+
+  test("ctx.ui is absent when the host provides none", async () => {
+    const t = await setup();
+    const s = t.createSession("/w", "m1");
+    const asker: [string, any] = [
+      "ask",
+      {
+        def: { name: "ask", description: "ask the user", parameters: { type: "object", properties: {} } },
+        run: async (_args: any, ctx: any) => (ctx.ui ? "has ui" : "no ui"),
+      },
+    ];
+    const mock = mockChat([
+      [{ type: "tool_call", call: { id: "t1", name: "ask", arguments: "{}" } }, { type: "done", reason: "tool_calls" }],
+      textDone("done"),
+    ]);
+    const events = await collect(
+      t.runTurnCore(s.id, cfg(), "go", undefined, { chat: mock.fn as any, registryOverride: new Map([asker]), quiet: true }),
+    );
+    expect(events.find((e) => e.type === "tool_end")!.output).toBe("no ui");
+  });
+});
+
 function echoTool(): [string, any] {
   return [
     "echo",

@@ -33,7 +33,9 @@ import {
   type CommandSpec,
   type HarnessState,
   type PickerRequest,
+  type PromptRequest,
 } from "../commands.ts";
+import type { UiBridge, UiStep } from "../core/ui.ts";
 import { childEnv } from "../core/childenv.ts";
 import { killTree } from "../tools/exec.ts";
 import { debugLog, debugLogPath } from "../core/debuglog.ts";
@@ -236,6 +238,27 @@ export async function startTui(state: HarnessState) {
    * deliberate: opening the list mid-turn must not interrupt the turn.
    */
   let overlay: Picker | null = null;
+
+  /**
+   * The active question wizard, or null.
+   *
+   * One hosting implementation for every consumer: slash commands return a
+   * `PromptRequest` (see commands.ts) and plugin tools await the `UiBridge`
+   * (see core/ui.ts); both land here as title + steps + a `done` callback.
+   * While a prompt is set the input dock is the answer field — the step label
+   * replaces the `❯` prefix, selects draw their option list where the command
+   * hints would float, and `secret` steps paint bullets. The turn loop keeps
+   * running underneath: a tool awaiting `ui.select` is just one more pending
+   * promise, and escape resolving it with `undefined` is how the user says no.
+   */
+  let prompt: {
+    title: string;
+    steps: UiStep[];
+    idx: number;
+    answers: Record<string, string>;
+    sel: number;
+    done: (answers: Record<string, string> | null) => void;
+  } | null = null;
   const hasSel = () => selA !== null && selB !== null && !(selA.row === selB.row && selA.col === selB.col);
   function clearSel() {
     if (selA || selB) {
@@ -338,13 +361,167 @@ export async function startTui(state: HarnessState) {
     }
   }
 
+  /** Apply a command result's effects — shared by runSlash and wizard `run`s. */
+  function applyResult(res: CommandResultLike | null) {
+    if (!res) return;
+    if (res.output) push("info", res.output);
+    if (res.newSessionId) switchSession(res.newSessionId);
+    if (res.picker) openPicker(res.picker);
+    // a wizard's run may itself answer with another wizard — chain it
+    if (res.prompt) startPrompt(res.prompt);
+    if (res.exit) gracefulExit(0);
+  }
+
+  type CommandResultLike = ReturnType<typeof runSlashCommand>;
+
   function runSlash(t: string) {
     if (t === "/help" || t === "/?") return push("info", helpText());
-    const res = runSlashCommand(t, state);
-    if (res?.output) push("info", res.output);
-    if (res?.newSessionId) switchSession(res.newSessionId);
-    if (res?.picker) openPicker(res.picker);
-    if (res?.exit) gracefulExit(0);
+    applyResult(runSlashCommand(t, state));
+  }
+
+  // ---- prompt wizard hosting (slash commands + plugin UiBridge) ----
+  function startPrompt(req: PromptRequest) {
+    prompt = {
+      title: req.title,
+      steps: req.steps,
+      idx: 0,
+      answers: {},
+      sel: 0,
+      done: (answers) => {
+        if (answers === null) return flash("cancelled");
+        try {
+          applyResult(req.run(answers, state));
+        } catch (e) {
+          reportError(`prompt run failed: ${(e as Error).message ?? e}`, e);
+        }
+      },
+    };
+    enterPromptStep();
+  }
+
+  /** The UiBridge handed to every turn, so plugin tools can ask questions. */
+  const uiBridge: UiBridge = {
+    select: (title, options, opts) =>
+      askPrompt(title, [
+        {
+          key: "v",
+          label: title,
+          kind: "select",
+          options: options.map((o) => ({ value: o.value, label: o.label ?? o.value })),
+          initial: opts?.initial,
+        },
+      ]).then((a) => a?.v),
+    input: (title, opts) =>
+      askPrompt(title, [
+        {
+          key: "v",
+          label: title,
+          kind: "text",
+          initial: opts?.initial,
+          hint: opts?.hint,
+          secret: opts?.secret,
+          allowEmpty: opts?.allowEmpty,
+        },
+      ]).then((a) => a?.v),
+    wizard: (title, steps) => askPrompt(title, steps),
+  };
+
+  function askPrompt(title: string, steps: UiStep[]): Promise<Record<string, string> | undefined> {
+    // One question at a time: a second caller (two tools racing in one step's
+    // Promise.all) queues behind the first rather than clobbering its wizard.
+    return new Promise((resolve) => {
+      askQueue.push({ title, steps, resolve });
+      pumpAskQueue();
+    });
+  }
+  const askQueue: { title: string; steps: UiStep[]; resolve: (a: Record<string, string> | undefined) => void }[] = [];
+  function pumpAskQueue() {
+    if (prompt || !askQueue.length) return;
+    const { title, steps, resolve } = askQueue.shift()!;
+    prompt = {
+      title,
+      steps,
+      idx: 0,
+      answers: {},
+      sel: 0,
+      done: (answers) => {
+        resolve(answers ?? undefined);
+        pumpAskQueue();
+      },
+    };
+    enterPromptStep();
+  }
+
+  function enterPromptStep() {
+    const st = prompt!.steps[prompt!.idx];
+    if (st.kind === "select") {
+      const i = st.options?.findIndex((o) => o.value === st.initial) ?? -1;
+      prompt!.sel = i >= 0 ? i : 0;
+      buf = [];
+      cur = 0;
+      inputRev++;
+    } else {
+      chsSet(st.initial ?? "");
+    }
+    markDirty();
+  }
+
+  function finishPrompt(answers: Record<string, string> | null) {
+    const p = prompt!;
+    prompt = null;
+    buf = [];
+    cur = 0;
+    inputRev++;
+    markDirty();
+    p.done(answers);
+  }
+
+  function promptSubmit() {
+    const p = prompt!;
+    const st = p.steps[p.idx];
+    const value = st.kind === "select" ? (st.options?.[p.sel]?.value ?? "") : display().trim();
+    if (st.kind === "text" && !value && st.allowEmpty === false) return flash("required — esc cancels");
+    p.answers[st.key] = value;
+    if (p.idx + 1 < p.steps.length) {
+      p.idx++;
+      enterPromptStep();
+    } else {
+      finishPrompt(p.answers);
+    }
+  }
+
+  /**
+   * Keys a prompt owns outright. Returns false for ordinary editing keys on a
+   * text step, letting them fall through to the normal input handling — the
+   * answer field is the same buffer, with the same cursor rules.
+   */
+  function promptKey(k: Key): boolean {
+    if (!prompt) return false;
+    const st = prompt.steps[prompt.idx];
+    if (k.type === "mouse") return true; // a question is modal, like the picker
+    if (k.type === "paste") {
+      if (st.kind === "text") insertText(k.text);
+      return true;
+    }
+    if (k.type === "char") return st.kind !== "text"; // selects swallow chars
+    const { name } = k;
+    if (name === "escape") {
+      finishPrompt(null);
+      return true;
+    }
+    if (name === "return") {
+      promptSubmit();
+      return true;
+    }
+    if (st.kind === "select") {
+      const n = st.options?.length ?? 0;
+      if (name === "up" || name === "down") {
+        prompt.sel = (prompt.sel + (name === "up" ? -1 : 1) + n) % Math.max(1, n);
+        markDirty();
+      }
+      return true; // everything else would be typing into a menu
+    }
+    return false; // text step: normal editing keys fall through
   }
 
   /**
@@ -453,7 +630,7 @@ export async function startTui(state: HarnessState) {
     ac = new AbortController();
     let md = "";
     try {
-      for await (const ev of runTurn(state.sessionId, state.provider, raw, ac.signal, state.config)) {        if (ev.type === "reasoning") {
+      for await (const ev of runTurn(state.sessionId, state.provider, raw, ac.signal, state.config, uiBridge)) {        if (ev.type === "reasoning") {
           appendToLastThink(ev.delta);
         } else if (ev.type === "text") {
           md += ev.delta;
@@ -642,6 +819,8 @@ export async function startTui(state: HarnessState) {
   function onKey(k: Key) {
     // the modal gets first refusal on every key (see overlayKey)
     if (overlayKey(k)) return;
+    // an open question wizard owns the input dock next (see promptKey)
+    if (promptKey(k)) return;
     if (k.type === "paste") return insertText(k.text, true);
     if (k.type === "mouse") return onMouse(k.action, k.x, k.y);
     if (k.type === "char") {
@@ -807,6 +986,9 @@ export async function startTui(state: HarnessState) {
         // so the next keystroke starts the argument rather than extending a name
         chsSet(target.usage ? `${target.name} ` : target.name);
         hintSel = 0;
+      } else {
+        // no completion in play — tab is just whitespace the user wants to send
+        insertText("\t");
       }
       return;
     }
@@ -828,6 +1010,8 @@ export async function startTui(state: HarnessState) {
    * `commands.ts` so fuzzy matching improved all of them at once.
    */
   function hintMatches(): CommandSpec[] {
+    // the input dock is answering a question, not naming a command
+    if (prompt) return [];
     const d = display();
     if (firstCharLit() || !d.startsWith("/")) return [];
     // an argument being typed still shows its command, so the usage hint stays
@@ -1062,10 +1246,21 @@ export async function startTui(state: HarnessState) {
   }
 
   let inputRev = 0; // bumped on every buffer mutation
+  /**
+   * What the input dock paints. Identical to the buffer except on a secret
+   * prompt step (an api key), where every non-newline code point is a bullet —
+   * one bullet per code point keeps the caret math honest (see caretPos).
+   */
+  function inputText(): string {
+    const d = display();
+    const st = prompt?.steps[prompt.idx];
+    if (!st?.secret) return d;
+    return [...d].map((c) => (c === "\n" ? c : "•")).join("");
+  }
   let layoutCache: { rev: number; layout: InputLayout } | null = null;
   function inputLayout(): InputLayout {
     if (layoutCache && layoutCache.rev === inputRev) return layoutCache.layout;
-    const d = display();
+    const d = inputText();
     const logical = d.split("\n");
     const maxCols = Math.max(8, W - 4);
     const rows: VisualRow[] = [];
@@ -1084,13 +1279,16 @@ export async function startTui(state: HarnessState) {
 
   /** map cursor index -> visual row + display-width column */
   function caretPos(layout: InputLayout): { visRow: number; colW: number } {
+    // walk the painted text (inputText), not buf: a secret step's bullets are
+    // all width 1, and the wrap this maps into was computed on those bullets
+    const chars = [...inputText()];
     let li = 0;
     let colW = 0;
-    for (let i = 0; i < cur && i < buf.length; i++) {
-      if (buf[i].c === "\n") {
+    for (let i = 0; i < cur && i < chars.length; i++) {
+      if (chars[i] === "\n") {
         li++;
         colW = 0;
-      } else colW += charWidth(buf[i].c.codePointAt(0)!);
+      } else colW += charWidth(chars[i].codePointAt(0)!);
     }
     let visRow = layout.rows.findIndex((r) => r.logical === li && colW >= r.startCol && colW < r.startCol + layout.maxCols);
     if (visRow < 0) visRow = layout.rows.length - 1; // past EOL lands on last row
@@ -1317,10 +1515,19 @@ export async function startTui(state: HarnessState) {
     for (let i = 0; i < shownCount; i++) screen.fillRow(inputTop + i, 0, W, S.inputBgRow);
 
     const d = display();
-    const empty = !d.trim();
+    // any real char — even whitespace — is content; the placeholder only fills
+    // a truly empty box, or it paints over leading indentation the user typed
+    const empty = !buf.length;
+    const pfx = prompt ? "› " : "❯ ";
     if (empty) {
-      screen.text(1, inputTop, "❯ ", S.dim);
-      screen.text(3, inputTop, "(type here — / commands · \\ escapes · ! shell · wheel/pgup scroll · click expands · drag selects)", S.dim);
+      const st = prompt?.steps[prompt.idx];
+      const placeholder = prompt
+        ? st!.kind === "select"
+          ? "(↑↓ choose · enter confirms · esc cancels)"
+          : `(${st!.hint ?? "type your answer"} · enter submits · esc cancels)`
+        : "(type here — / commands · \\ escapes · ! shell · wheel/pgup scroll · click expands · drag selects)";
+      screen.text(1, inputTop, pfx, prompt ? S.accent : S.dim);
+      screen.text(3, inputTop, placeholder, S.dim);
       pendingCaret = { x: 3, y: inputTop };
     } else {
       const totalVis = layout.rows.length;
@@ -1328,7 +1535,7 @@ export async function startTui(state: HarnessState) {
         const vr = layout.rows[v];
         const yy = inputTop + (v - firstShown);
         const isFirstVisual = vr.index === 0 && vr.startCol === 0;
-        const prefix = isFirstVisual ? "❯ " : "  ";
+        const prefix = isFirstVisual ? pfx : "  ";
         screen.text(1, yy, prefix, S.accent);
         screen.text(3, yy, vr.text, S.inputFg);
       }
@@ -1336,6 +1543,25 @@ export async function startTui(state: HarnessState) {
       pendingCaret = { x: 3 + caret.colW, y: cy };
     }
     nextCaret = pendingCaret;
+
+    // the question wizard floats where the command hints would (it supersedes
+    // them — the dock is an answer field while a prompt is open)
+    if (prompt) {
+      const st = prompt.steps[prompt.idx];
+      const rows: { text: string; sel: boolean }[] = [
+        { text: `${prompt.title} — ${st.label}${st.hint ? ` (${st.hint})` : ""}`, sel: false },
+      ];
+      if (st.kind === "select") {
+        for (let i = 0; i < (st.options?.length ?? 0); i++) {
+          rows.push({ text: `${i === prompt.sel ? "›" : " "} ${st.options![i].label}`, sel: i === prompt.sel });
+        }
+      }
+      const hTop = inputTop - rows.length;
+      for (let i = 0; i < rows.length; i++) {
+        screen.fillRow(hTop + i, 0, W, S.barBgRow);
+        screen.text(1, hTop + i, clipW(rows[i].text, W - 2), rows[i].sel ? S.hintSel : S.hintDim);
+      }
+    }
 
     // hints popup floats directly above the input box
     const hints = hintText();

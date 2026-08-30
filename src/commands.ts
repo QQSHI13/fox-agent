@@ -21,6 +21,7 @@ import { renderTodos, getTodos } from "./tools/todo.ts";
 import type { Config } from "./core/config.ts";
 import { saveGlobalConfig } from "./core/config.ts";
 import { availableProviders } from "./providers/index.ts";
+import type { UiStep } from "./core/ui.ts";
 
 export interface HarnessState {
   sessionId: string;
@@ -41,6 +42,24 @@ export interface HarnessState {
 /** A front end that set `interactive` is asked to open one of these. */
 export type PickerRequest = { kind: "sessions"; cwd?: string };
 
+/** One question in a prompt wizard — the shared protocol from core/ui.ts. */
+export type PromptStep = UiStep;
+
+/**
+ * A multi-step question flow the interactive host runs on a command's behalf.
+ *
+ * The command layer stays UI-agnostic: it describes the steps and supplies
+ * `run`, the TUI collects the answers (text in the input dock, selects as an
+ * option list) and calls `run(answers, state)` at the end. Hosts that cannot
+ * take over the keyboard never see one — commands only return a prompt when
+ * `state.interactive` is set, and keep their printed/argument forms otherwise.
+ */
+export interface PromptRequest {
+  title: string;
+  steps: PromptStep[];
+  run: (answers: Record<string, string>, state: HarnessState) => CommandResult;
+}
+
 export interface CommandResult {
   handled: true;
   output?: string;
@@ -48,6 +67,8 @@ export interface CommandResult {
   exit?: boolean;
   /** open an interactive chooser instead of printing (interactive hosts only) */
   picker?: PickerRequest;
+  /** ask the user a series of questions, then `run` with the answers */
+  prompt?: PromptRequest;
 }
 
 /**
@@ -111,7 +132,7 @@ export const COMMANDS: CommandSpec[] = [
     desc: "set provider credentials, live and in the global config",
     usage: "[provider=<p>] [key=<k>] [baseUrl=<u>] [model=<m>]",
     arg: true,
-    help: "with no arguments, shows the current provider setup; with key=value pairs, saves to the global config and activates them immediately",
+    help: "bare: interactive setup wizard in the TUI, status print elsewhere; with key=value pairs, saves to the global config and activates immediately",
   },
   { name: "/exit", aliases: ["/quit"], desc: "quit fox-agent" },
 ];
@@ -252,6 +273,75 @@ function resolveSessionArg(arg: string): string | null {
   return getSession(arg) ? arg : null;
 }
 
+interface LoginFields {
+  provider?: string;
+  apiKey?: string;
+  baseUrl?: string;
+  model?: string;
+}
+
+/**
+ * Persist login fields to the global config and activate them on the live
+ * state — shared by `/login key=value…` and the interactive wizard, so the two
+ * cannot drift apart on what "save and apply" means.
+ */
+function applyLogin(fields: LoginFields, state: HarnessState): CommandResult {
+  if (fields.provider && !availableProviders().includes(fields.provider)) {
+    return { handled: true, output: `unknown provider "${fields.provider}" — available: ${availableProviders().join(", ")}` };
+  }
+  const path = saveGlobalConfig(fields, state.configPath);
+  // take effect immediately — the point is not having to restart
+  if (fields.provider) state.provider.provider = fields.provider;
+  if (fields.apiKey) state.provider.apiKey = fields.apiKey;
+  if (fields.baseUrl) state.provider.baseUrl = fields.baseUrl;
+  if (fields.model) {
+    state.provider.model = fields.model;
+    setSessionModel(state.sessionId, fields.model);
+  }
+  if (state.config) {
+    if (fields.provider) state.config.provider = fields.provider;
+    if (fields.apiKey) state.config.apiKey = fields.apiKey;
+    if (fields.baseUrl) state.config.baseUrl = fields.baseUrl;
+    if (fields.model) state.config.model = fields.model;
+  }
+  return { handled: true, output: `saved to ${path} — active immediately` };
+}
+
+/**
+ * The `/login` wizard for interactive hosts: ask, don't make them read /help.
+ * kv args from the command line prefill the steps, so `/login provider=google`
+ * still lands in the wizard with that choice already made.
+ */
+function loginPrompt(state: HarnessState, pre: LoginFields = {}): PromptRequest {
+  const p = state.provider;
+  return {
+    title: "login — leave a field empty to keep the current value",
+    steps: [
+      {
+        key: "provider",
+        label: "provider",
+        kind: "select",
+        options: availableProviders().map((v) => ({ value: v, label: v })),
+        initial: pre.provider ?? p.provider ?? "openai-compatible",
+      },
+      { key: "apiKey", label: "api key", kind: "text", secret: true, hint: "empty = keep current" },
+      { key: "baseUrl", label: "base url", kind: "text", initial: pre.baseUrl ?? p.baseUrl, hint: "empty = keep current" },
+      { key: "model", label: "model", kind: "text", initial: pre.model ?? p.model, hint: "empty = keep current" },
+    ],
+    run: (answers, s) => {
+      // the select always yields a provider; empty text answers mean "keep"
+      const fields: LoginFields = { provider: answers.provider };
+      for (const k of ["apiKey", "baseUrl", "model"] as const) {
+        const v = answers[k]?.trim();
+        if (v) fields[k] = v;
+      }
+      // kv args the user left untouched in the wizard still count as entered
+      if (pre.apiKey && !fields.apiKey) fields.apiKey = pre.apiKey;
+      return applyLogin(fields, s);
+    },
+  };
+}
+
 export function runSlashCommand(input: string, state: HarnessState): CommandResult | null {
   if (!input.startsWith("/")) return null;
   const [word, ...rest] = input.trim().split(/\s+/);
@@ -288,6 +378,17 @@ export function runSlashCommand(input: string, state: HarnessState): CommandResu
     }
 
     case "/fork": {
+      // Bare in the TUI: ask where to cut instead of printing usage.
+      if (!arg && state.interactive) {
+        return {
+          handled: true,
+          prompt: {
+            title: "fork — mN cuts this session at a marker, an id forks another session at its tip",
+            steps: [{ key: "at", label: "marker or session id", kind: "text", hint: "empty = fork here at the tip" }],
+            run: (a, s) => runSlashCommand(`/fork ${a.at?.trim() ?? ""}`, s) ?? { handled: true },
+          },
+        };
+      }
       // `/fork m3` cuts THIS session at a marker; `/fork <id>` forks another
       // session at its tip, which is what the picker's fork key sends. The two
       // cannot be confused: a marker is `m` plus digits only, and a session id
@@ -311,6 +412,9 @@ export function runSlashCommand(input: string, state: HarnessState): CommandResu
     }
 
     case "/delete": {
+      // Bare in the TUI: the session picker already has a delete key with its
+      // own confirm, so just open it rather than printing usage.
+      if (!arg && state.interactive) return { handled: true, picker: { kind: "sessions" } };
       // Deliberately narrower than ACP's session/delete: the id must be spelled
       // out and confirmed, because unlike /prune this destroys a whole session
       // and /undo cannot reach it.
@@ -334,6 +438,34 @@ export function runSlashCommand(input: string, state: HarnessState): CommandResu
     }
 
     case "/prune": {
+      // Bare in the TUI: make the destructive choice an explicit menu pick
+      // instead of a "did you mean yes?" second round-trip.
+      if (!arg && state.interactive) {
+        return {
+          handled: true,
+          prompt: {
+            title: "prune — reclaim disk from hidden context",
+            steps: [
+              {
+                key: "mode",
+                label: "mode",
+                kind: "select",
+                options: [
+                  { value: "", label: "report only — nothing is deleted" },
+                  { value: "yes", label: "delete hidden context + VACUUM (cannot be undone by /undo)" },
+                ],
+                initial: "",
+              },
+            ],
+            run: (a, s) => {
+              // direct call, not runSlashCommand("/prune") — that would just
+              // open this prompt again in an interactive host
+              const report = pruneSession(s.sessionId, { dryRun: a.mode !== "yes" });
+              return { handled: true, output: formatPruneReport(report) };
+            },
+          },
+        };
+      }
       // two-step rather than an interactive prompt: this runs identically in the
       // TUI, plain mode and -p, none of which can block on a keypress here
       if (arg && arg !== "yes") return { handled: true, output: "usage: /prune  (report only)  |  /prune yes  (do it)" };
@@ -384,6 +516,16 @@ export function runSlashCommand(input: string, state: HarnessState): CommandResu
     }
 
     case "/model": {
+      if (!arg && state.interactive) {
+        return {
+          handled: true,
+          prompt: {
+            title: "switch model (persists to this session)",
+            steps: [{ key: "model", label: "model", kind: "text", initial: state.provider.model, allowEmpty: false }],
+            run: (a, s) => runSlashCommand(`/model ${a.model.trim()}`, s) ?? { handled: true },
+          },
+        };
+      }
       if (!arg) return { handled: true, output: `model: ${state.provider.model}` };
       state.provider.model = arg;
       // persist, or reopening the session would silently snap back to the old model
@@ -392,12 +534,16 @@ export function runSlashCommand(input: string, state: HarnessState): CommandResu
     }
 
     case "/login": {
-      const fields: { provider?: string; apiKey?: string; baseUrl?: string; model?: string } = {};
+      // Parse kv pairs first — non-interactive clients need them (a headless
+      // host has no other way), and in the TUI they prefill the wizard.
+      const fields: LoginFields = {};
       for (const tok of rest) {
         const m = /^(provider|key|apiKey|baseUrl|model)=(.+)$/.exec(tok);
         if (!m) return { handled: true, output: `bad token "${tok}" — use key=value pairs: /login provider=google key=… [baseUrl=…] [model=…]` };
-        fields[m[1] === "key" ? "apiKey" : (m[1] as "provider" | "apiKey" | "baseUrl" | "model")] = m[2];
+        fields[m[1] === "key" ? "apiKey" : (m[1] as keyof LoginFields)] = m[2];
       }
+      // an interactive host always gets the wizard, args or not
+      if (state.interactive) return { handled: true, prompt: loginPrompt(state, fields) };
       if (!Object.keys(fields).length) {
         const p = state.provider;
         return {
@@ -405,30 +551,12 @@ export function runSlashCommand(input: string, state: HarnessState): CommandResu
           output: [
             `provider: ${p.provider ?? "openai-compatible"}   model: ${p.model}`,
             `baseUrl: ${p.baseUrl}`,
-            `api key: ${p.apiKey ? "set" : "NOT SET — /login provider=<p> key=<k> to configure"}`,
+            `api key: ${p.apiKey ? "set" : "NOT SET — /login to configure"}`,
             `providers: ${availableProviders().join(", ")}`,
           ].join("\n"),
         };
       }
-      if (fields.provider && !availableProviders().includes(fields.provider)) {
-        return { handled: true, output: `unknown provider "${fields.provider}" — available: ${availableProviders().join(", ")}` };
-      }
-      const path = saveGlobalConfig(fields, state.configPath);
-      // take effect immediately — the point is not having to restart
-      if (fields.provider) state.provider.provider = fields.provider;
-      if (fields.apiKey) state.provider.apiKey = fields.apiKey;
-      if (fields.baseUrl) state.provider.baseUrl = fields.baseUrl;
-      if (fields.model) {
-        state.provider.model = fields.model;
-        setSessionModel(state.sessionId, fields.model);
-      }
-      if (state.config) {
-        if (fields.provider) state.config.provider = fields.provider;
-        if (fields.apiKey) state.config.apiKey = fields.apiKey;
-        if (fields.baseUrl) state.config.baseUrl = fields.baseUrl;
-        if (fields.model) state.config.model = fields.model;
-      }
-      return { handled: true, output: `saved to ${path} — active immediately` };
+      return applyLogin(fields, state);
     }
 
     case "/exit":

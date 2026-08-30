@@ -59,8 +59,9 @@ down to cwd, each labeled with its own path so relative paths in it resolve agai
 
 Env vars: `FOX_AGENT_MODEL`, `FOX_AGENT_BASE_URL`, `FOX_AGENT_API_KEY`, `FOX_AGENT_PROVIDER` (`openai-compatible` | `anthropic` | `google` | a plugin-registered name), `FOX_AGENT_MAX_STEPS`, `FOX_AGENT_COMPACT_AT`, `FOX_AGENT_RETRY_LIMIT`, `FOX_AGENT_REQUEST_TIMEOUT_MS`, `FOX_AGENT_DIAGNOSTICS` (`0`/`false`/`no` turns off post-edit diagnostics), `FOX_AGENT_HOME` (state dir, default `~/.local/share/fox-agent`). `OPENAI_BASE_URL` / `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` / `GOOGLE_API_KEY` are honored as fallbacks.
 
-No key at all? The TUI opens anyway: `/login provider=<p> key=<k> [baseUrl=<u>] [model=<m>]` writes
-`~/.config/fox-agent/config.toml` and takes effect without a restart. `/login` alone shows the current setup.
+No key at all? The TUI opens anyway and `/login` walks you through provider, key, base URL and model as an
+interactive wizard (the key is typed masked), writes `~/.config/fox-agent/config.toml` and takes effect without
+a restart. Headless clients use kv pairs instead: `/login provider=<p> key=<k> [baseUrl=<u>] [model=<m>]`.
 
 `FOX_AGENT_REQUEST_TIMEOUT_MS` (default `120000`, `0` disables) bounds **time without progress**, not total
 request duration: the clock is rearmed on every streamed chunk, so a model that reasons or writes for
@@ -256,8 +257,12 @@ points at a missing file costs you one `warn` line at the top of the turn — th
 MCP server gets. A hook that throws mid-turn is caught per call, so a typo in `afterTool` cannot take down a
 turn that has already done real work.
 
+A plugin tool can also ask the user questions mid-run: `ctx.ui` is a `UiBridge` with `select` (an option
+menu), `input` (a text field, optionally masked) and `wizard` (a multi-step mix of both). It exists only on
+interactive hosts — check for it and treat a `undefined` answer as "the user cancelled".
+
 The types (`FoxPlugin`, `PluginHooks`, and the context/patch types for each hook) are re-exported from
-`fox-agent`, alongside `Tool`, `ToolContext`, `ok`/`fail` and `ChatFn`.
+`fox-agent`, alongside `Tool`, `ToolContext`, `ok`/`fail`, `ChatFn` and `UiBridge`/`UiStep`.
 
 ## Sessions on disk
 
@@ -276,11 +281,13 @@ $FOX_AGENT_HOME (default ~/.local/share/fox-agent)
 **`/delete <id|n> yes`** removes a session's database and its index row together. It refuses the session you
 are currently in — its database handle is open and the turn loop is appending to it, so unlinking the file
 underneath would leave fox-agent writing into a vanished inode with nothing to show for it. `/new` first, then
-delete. Unlike `/prune`, `/undo` cannot walk this back.
+delete. Unlike `/prune`, `/undo` cannot walk this back. (Bare `/delete` in the TUI opens the session picker,
+which has its own delete-with-confirm key.)
 
 **`/prune`** reclaims the disk that auto-compaction leaves behind. Compaction only *hides* messages (so
 `/undo` can bring them back); their text stays in the log. `/prune` reports what it would delete and
-changes nothing; `/prune yes` deletes those bodies for good and runs `VACUUM`. It never changes what the
+changes nothing; `/prune yes` deletes those bodies for good and runs `VACUUM`. In the TUI a bare `/prune`
+asks with a menu instead of the two-step. It never changes what the
 model sees: each compacted span keeps its first row as an empty stub, because that is the row the summary
 line is rendered against.
 

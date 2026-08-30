@@ -23,6 +23,7 @@ export type {
 } from "./plugins/types.ts";
 export type { Tool, ToolContext, ToolResult } from "./tools/types.ts";
 export { ok, fail } from "./tools/types.ts";
+export type { UiBridge, UiStep } from "./core/ui.ts";
 export type { ChatFn, ChatMessage, ProviderConfig, StreamEvent, ToolDef } from "./providers/types.ts";
 
 export interface AgentRunResult {

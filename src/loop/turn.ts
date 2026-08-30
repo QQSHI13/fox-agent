@@ -9,6 +9,7 @@ import { buildRegistry } from "../tools/index.ts";
 import type { Config } from "../core/config.ts";
 import type { FoxPlugin } from "../plugins/types.ts";
 import { loadPlugins } from "../plugins/load.ts";
+import type { UiBridge } from "../core/ui.ts";
 import { buildSystemPrompt } from "./prompt.ts";
 import { renderContext } from "../context/render.ts";
 import { compactIfNeeded } from "../context/compact.ts";
@@ -31,6 +32,11 @@ export interface TurnOptions {
   projectInstructions?: string;
   /** full config enables MCP tool merging */
   config?: Config;
+  /**
+   * Interactive host's question bridge, handed to tools as `ctx.ui`. Absent on
+   * headless hosts — a tool must not expect it.
+   */
+  ui?: UiBridge;
 }
 
 interface StepOutcome {
@@ -432,6 +438,7 @@ export async function* runTurnCore(
           lsp: effCfg.lsp,
           diagnostics: effCfg.diagnostics,
           emit: quiet ? undefined : liveEvents.push,
+          ui: opts.ui,
           get pty() {
             return ptyState;
           },
