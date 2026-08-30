@@ -7,9 +7,9 @@ A light coding harness with **agent-controlled context** — the agent edits its
 - Full machine control, zero permission prompts (pi-style)
 - Production turn loop: step caps, retry/backoff on 429/5xx, parallel tool execution, abort-safe partial persistence, **auto-compaction** near the context limit
 - SQLite event-sourced sessions, one database per session: append-only log + view ops + refs (reverts/forks are queries, not rewrites)
-- OpenAI-compatible gateway first (tokenguard etc.) + native Anthropic provider with prompt caching
-- Tools: read/write/edit (whitespace-tolerant patch engine)/glob/grep (ripgrep when present)/exec (process-group kill)/pty (tmux pipe-pane, resize-proof)/ctx_edit/todowrite/task (delegation over ACP)/fetch/MCP client. `read` attaches images, audio and video as media when the active model accepts them (gemini: all three; gpt/claude families: images)
-- **ACP both ways**: `fox --acp` serves the Agent Client Protocol to Zed/acpx, and fox drives other ACP agents as a client (that is what `task` is built on)
+- OpenAI-compatible gateway first (tokenguard etc.) + native Anthropic (prompt caching) and Google/Gemini providers
+- Tools: read/write/edit (whitespace-tolerant patch engine)/glob/grep (ripgrep when present)/exec (process-group kill)/pty (tmux pipe-pane, resize-proof)/ctx_edit/todowrite/task (delegation over ACP or A2A)/fetch/MCP client. `read` attaches images, audio and video as media when the active model accepts them (gemini: all three; gpt/claude families: images)
+- **ACP both ways**: `fox --acp` serves the Agent Client Protocol to Zed/acpx, and fox drives other ACP agents as a client (that is what `task` is built on); agents configured with a `url` are reached over **A2A** (HTTP/JSON-RPC, SSE streaming when offered)
 - **Plugins**: one module adds tools, lifecycle hooks (`onSessionStart`/`beforeLLMCall`/`afterTool`) and custom providers; global config only, and a broken one costs a warning rather than the run
 - TUI on custom ANSI renderer: streaming markdown, inline `[mN]` markers, slash commands, `!` shell mode, esc interrupt
 - Headless: `-p "prompt"` one-shot, `--json` NDJSON event stream, stdin piping — plus a library API (`createAgent`)
@@ -57,7 +57,10 @@ than being silently ignored. (Pre-1.0 `.fox.json` is rejected with a message tel
 Project instructions are loaded from every `AGENTS.md` / `CLAUDE.md` on the path from the filesystem root
 down to cwd, each labeled with its own path so relative paths in it resolve against the right directory.
 
-Env vars: `FOX_AGENT_MODEL`, `FOX_AGENT_BASE_URL`, `FOX_AGENT_API_KEY`, `FOX_AGENT_PROVIDER`, `FOX_AGENT_MAX_STEPS`, `FOX_AGENT_COMPACT_AT`, `FOX_AGENT_RETRY_LIMIT`, `FOX_AGENT_REQUEST_TIMEOUT_MS`, `FOX_AGENT_DIAGNOSTICS` (`0`/`false`/`no` turns off post-edit diagnostics), `FOX_AGENT_HOME` (state dir, default `~/.local/share/fox-agent`). `OPENAI_BASE_URL` / `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` are honored as fallbacks.
+Env vars: `FOX_AGENT_MODEL`, `FOX_AGENT_BASE_URL`, `FOX_AGENT_API_KEY`, `FOX_AGENT_PROVIDER` (`openai-compatible` | `anthropic` | `google` | a plugin-registered name), `FOX_AGENT_MAX_STEPS`, `FOX_AGENT_COMPACT_AT`, `FOX_AGENT_RETRY_LIMIT`, `FOX_AGENT_REQUEST_TIMEOUT_MS`, `FOX_AGENT_DIAGNOSTICS` (`0`/`false`/`no` turns off post-edit diagnostics), `FOX_AGENT_HOME` (state dir, default `~/.local/share/fox-agent`). `OPENAI_BASE_URL` / `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` / `GOOGLE_API_KEY` are honored as fallbacks.
+
+No key at all? The TUI opens anyway: `/login provider=<p> key=<k> [baseUrl=<u>] [model=<m>]` writes
+`~/.config/fox-agent/config.toml` and takes effect without a restart. `/login` alone shows the current setup.
 
 `FOX_AGENT_REQUEST_TIMEOUT_MS` (default `120000`, `0` disables) bounds **time without progress**, not total
 request duration: the clock is rearmed on every streamed chunk, so a model that reasons or writes for

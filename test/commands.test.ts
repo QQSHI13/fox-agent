@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -202,6 +202,34 @@ describe("command matching", () => {
     }
     expect(help.split("\n")).toHaveLength(t.COMMANDS.length);
     expect(help).not.toContain("/resume");
+  });
+});
+
+describe("/login", () => {
+  test("/login reports status, rejects unknown providers, and saves+activates credentials", async () => {
+    const t = await setup();
+    const cfgPath = join(dir, "config.toml"); // sandbox: state.configPath is where /login writes
+    const s = t.createSession("/w", "m1");
+    const state = { sessionId: s.id, cwd: "/w", provider: { baseUrl: "http://x", apiKey: "", model: "m" } as any, configPath: cfgPath };
+
+    const status = t.runSlashCommand("/login", state)!;
+    expect(status.output).toContain("NOT SET");
+    expect(status.output).toContain("google");
+
+    expect(t.runSlashCommand("/login provider=nope key=k", state)!.output).toContain('unknown provider "nope"');
+    expect(t.runSlashCommand("/login garbage", state)!.output).toContain("key=value");
+
+    const done = t.runSlashCommand("/login provider=google key=gk-1 model=gemini-2.5-flash", state)!;
+    expect(done.output).toContain("saved");
+    // live state changed without a restart
+    expect(state.provider.provider).toBe("google");
+    expect(state.provider.apiKey).toBe("gk-1");
+    expect(state.provider.model).toBe("gemini-2.5-flash");
+    // and the global config holds it for the next launch
+    expect(existsSync(cfgPath)).toBe(true);
+    const text = readFileSync(cfgPath, "utf8");
+    expect(text).toContain('provider = "google"');
+    expect(text).toContain('apiKey = "gk-1"');
   });
 });
 

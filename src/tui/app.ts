@@ -1471,6 +1471,8 @@ export async function startTui(state: HarnessState) {
       pinSession(state.sessionId);
       refresh();
       push("info", `fox-agent v${VERSION} — ${BANNERS[Math.floor(Math.random() * BANNERS.length)]}`);
+      if (!state.provider.apiKey)
+        push("error", "no API key configured — /login provider=<p> key=<k> sets one up now (saved to ~/.config/fox-agent/config.toml)");
       push("toolbody", `model ${state.provider.model} · /commands · ! shell · \\ newline · esc interrupt`);
 
       const dec = createDecoder(onKey);

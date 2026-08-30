@@ -19,12 +19,16 @@ import { checkBudget } from "./context/budget.ts";
 import type { ProviderConfig } from "./providers/types.ts";
 import { renderTodos, getTodos } from "./tools/todo.ts";
 import type { Config } from "./core/config.ts";
+import { saveGlobalConfig } from "./core/config.ts";
+import { availableProviders } from "./providers/index.ts";
 
 export interface HarnessState {
   sessionId: string;
   cwd: string;
   provider: ProviderConfig;
   config?: Config;
+  /** where /login writes — the --config override when given, else the global default */
+  configPath?: string;
   /**
    * True only for a front end that can take over the keyboard — today just the
    * TUI. Commands that would rather show a picker check this and fall back to
@@ -102,6 +106,13 @@ export const COMMANDS: CommandSpec[] = [
   { name: "/todos", desc: "show agent todo list" },
   { name: "/usage", desc: "token totals + budget" },
   { name: "/model", desc: "show or switch model (persists to session)", usage: "[name]", arg: true },
+  {
+    name: "/login",
+    desc: "set provider credentials, live and in the global config",
+    usage: "[provider=<p>] [key=<k>] [baseUrl=<u>] [model=<m>]",
+    arg: true,
+    help: "with no arguments, shows the current provider setup; with key=value pairs, saves to the global config and activates them immediately",
+  },
   { name: "/exit", aliases: ["/quit"], desc: "quit fox-agent" },
 ];
 
@@ -378,6 +389,46 @@ export function runSlashCommand(input: string, state: HarnessState): CommandResu
       // persist, or reopening the session would silently snap back to the old model
       setSessionModel(state.sessionId, arg);
       return { handled: true, output: `model switched to ${arg}` };
+    }
+
+    case "/login": {
+      const fields: { provider?: string; apiKey?: string; baseUrl?: string; model?: string } = {};
+      for (const tok of rest) {
+        const m = /^(provider|key|apiKey|baseUrl|model)=(.+)$/.exec(tok);
+        if (!m) return { handled: true, output: `bad token "${tok}" — use key=value pairs: /login provider=google key=… [baseUrl=…] [model=…]` };
+        fields[m[1] === "key" ? "apiKey" : (m[1] as "provider" | "apiKey" | "baseUrl" | "model")] = m[2];
+      }
+      if (!Object.keys(fields).length) {
+        const p = state.provider;
+        return {
+          handled: true,
+          output: [
+            `provider: ${p.provider ?? "openai-compatible"}   model: ${p.model}`,
+            `baseUrl: ${p.baseUrl}`,
+            `api key: ${p.apiKey ? "set" : "NOT SET — /login provider=<p> key=<k> to configure"}`,
+            `providers: ${availableProviders().join(", ")}`,
+          ].join("\n"),
+        };
+      }
+      if (fields.provider && !availableProviders().includes(fields.provider)) {
+        return { handled: true, output: `unknown provider "${fields.provider}" — available: ${availableProviders().join(", ")}` };
+      }
+      const path = saveGlobalConfig(fields, state.configPath);
+      // take effect immediately — the point is not having to restart
+      if (fields.provider) state.provider.provider = fields.provider;
+      if (fields.apiKey) state.provider.apiKey = fields.apiKey;
+      if (fields.baseUrl) state.provider.baseUrl = fields.baseUrl;
+      if (fields.model) {
+        state.provider.model = fields.model;
+        setSessionModel(state.sessionId, fields.model);
+      }
+      if (state.config) {
+        if (fields.provider) state.config.provider = fields.provider;
+        if (fields.apiKey) state.config.apiKey = fields.apiKey;
+        if (fields.baseUrl) state.config.baseUrl = fields.baseUrl;
+        if (fields.model) state.config.model = fields.model;
+      }
+      return { handled: true, output: `saved to ${path} — active immediately` };
     }
 
     case "/exit":

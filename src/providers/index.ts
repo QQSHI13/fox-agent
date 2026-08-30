@@ -8,7 +8,7 @@ import { FoxError } from "../core/errors.ts";
 export * from "./types.ts";
 
 /** Built-in names, so an unresolvable one can say what it could have been. */
-const BUILT_IN = ["openai-compatible", "anthropic"] as const;
+const BUILT_IN = ["openai-compatible", "anthropic", "google"] as const;
 
 /**
  * Providers a plugin registered, by config name.
@@ -42,7 +42,7 @@ export function availableProviders(): string[] {
 
 export function isAnthropic(cfg: ProviderConfig): boolean {
   if (cfg.provider === "anthropic") return true;
-  if (cfg.provider === "openai-compatible") return false;
+  if (cfg.provider === "openai-compatible" || cfg.provider === "google") return false;
   return /^claude/i.test(cfg.model) && !/openai\.com/.test(cfg.baseUrl);
 }
 
@@ -60,6 +60,9 @@ export const resolveChat: ChatFn = async function* (cfg, messages, tools, signal
     yield* fn(cfg, messages, tools, signal);
     return;
   }
-  const mod = isAnthropic(cfg) ? await import("./anthropic.ts") : await import("./openai-compatible.ts");
+  // lazy, always: importing a provider module must not pull its SDK into a
+  // process that never calls it (TUI startup, tests with injected ChatFn)
+  const mod =
+    name === "google" ? await import("./google.ts") : isAnthropic(cfg) ? await import("./anthropic.ts") : await import("./openai-compatible.ts");
   yield* mod.streamChat(cfg, messages, tools, signal);
 };

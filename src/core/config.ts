@@ -1,6 +1,6 @@
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { ConfigError } from "./errors.ts";
 
 export interface McpServerConfig {
@@ -50,9 +50,9 @@ export interface Config {
   baseUrl: string;
   apiKey: string;
   /**
-   * `openai-compatible` and `anthropic` are built in; any other string must be
-   * registered by a plugin (`FoxPlugin.providers`), and `resolveChat` throws a
-   * named error if it is not. Widened from a union for that reason.
+   * `openai-compatible`, `anthropic` and `google` are built in; any other string
+   * must be registered by a plugin (`FoxPlugin.providers`), and `resolveChat`
+   * throws a named error if it is not. Widened from a union for that reason.
    */
   provider: string;
   maxSteps: number;
@@ -195,12 +195,13 @@ function readTextFile(path: string, cap = 8192): string {
 function applyEnv(cfg: Config, env: Record<string, string | undefined>) {
   cfg.model = env.FOX_AGENT_MODEL ?? cfg.model;
   cfg.baseUrl = (env.FOX_AGENT_BASE_URL ?? env.OPENAI_BASE_URL ?? cfg.baseUrl).replace(/\/$/, "");
-  cfg.apiKey = env.FOX_AGENT_API_KEY ?? env.OPENAI_API_KEY ?? env.ANTHROPIC_API_KEY ?? cfg.apiKey;
+  cfg.apiKey = env.FOX_AGENT_API_KEY ?? env.OPENAI_API_KEY ?? env.ANTHROPIC_API_KEY ?? env.GEMINI_API_KEY ?? env.GOOGLE_API_KEY ?? cfg.apiKey;
   // any string is accepted now that a plugin may register a provider name;
   // `resolveChat` is what reports an unresolvable one, with the list of what is
   // available, rather than this silently falling through to openai-compatible
   if (env.FOX_AGENT_PROVIDER) cfg.provider = env.FOX_AGENT_PROVIDER;
   else if (/^claude/i.test(env.FOX_AGENT_MODEL ?? "")) cfg.provider = "anthropic";
+  else if (/^gemini/i.test(env.FOX_AGENT_MODEL ?? "")) cfg.provider = "google";
   const steps = Number(env.FOX_AGENT_MAX_STEPS);
   if (Number.isFinite(steps) && steps > 0) cfg.maxSteps = Math.floor(steps);
   const at = Number(env.FOX_AGENT_COMPACT_AT);
@@ -296,6 +297,49 @@ export const GLOBAL_CONFIG_NAME = join("fox-agent", "config.toml");
 export const PROJECT_CONFIG_NAME = "fox-agent.toml";
 /** Pre-TOML project config. Detected only so it can be reported, never parsed. */
 const LEGACY_PROJECT_NAME = ".fox.json";
+
+export function globalConfigPath(): string {
+  return join(homedir(), ".config", GLOBAL_CONFIG_NAME);
+}
+
+/**
+ * Write login fields into the global config, preserving everything else.
+ *
+ * There is no TOML *writer* in Bun, so this is a line-level patch: top-level
+ * assignments of the named keys (only those above the first `[table]` header)
+ * are dropped and the new values prepended. Comments and tables survive
+ * untouched. Values go through JSON.stringify, which is a valid TOML basic
+ * string for anything a key/URL/model id can contain.
+ */
+export function saveGlobalConfig(
+  fields: { provider?: string; apiKey?: string; baseUrl?: string; model?: string },
+  path = globalConfigPath(),
+): string {
+  const KEYS = new Set(["provider", "apiKey", "baseUrl", "model"]);
+  let rest = "";
+  try {
+    const lines = readFileSync(path, "utf8").split("\n");
+    let inTables = false;
+    const kept: string[] = [];
+    for (const line of lines) {
+      if (/^\s*\[/.test(line)) inTables = true;
+      if (!inTables && new RegExp(`^\\s*(${[...KEYS].join("|")})\\s*=`).test(line)) continue;
+      kept.push(line);
+    }
+    rest = kept.join("\n").replace(/^\n+/, "");
+  } catch {
+    // no existing file — start fresh
+  }
+  const head = [
+    fields.provider !== undefined ? `provider = ${JSON.stringify(fields.provider)}` : null,
+    fields.apiKey !== undefined ? `apiKey = ${JSON.stringify(fields.apiKey)}` : null,
+    fields.baseUrl !== undefined ? `baseUrl = ${JSON.stringify(fields.baseUrl)}` : null,
+    fields.model !== undefined ? `model = ${JSON.stringify(fields.model)}` : null,
+  ].filter(Boolean);
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, `${head.join("\n")}\n${rest ? `\n${rest.replace(/\n*$/, "\n")}` : ""}`);
+  return path;
+}
 
 export function loadConfig(
   overrides: Partial<Config> & { configPath?: string; cwd?: string } = {},

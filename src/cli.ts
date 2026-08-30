@@ -12,7 +12,6 @@ import {
   sessionList,
   type HarnessState,
 } from "./commands.ts";
-import { startTui } from "./tui/app.ts";
 import { shutdownTools } from "./tools/index.ts";
 import { VERSION } from "./loop/prompt.ts";
 
@@ -112,13 +111,18 @@ async function main() {
     return;
   }
 
-  if (!config.apiKey) {
-    console.error("fox-agent: set FOX_AGENT_API_KEY / OPENAI_API_KEY / ANTHROPIC_API_KEY (or FOX_AGENT_BASE_URL pointing at your gateway)");
-    process.exit(1);
-  }
-
   const cont = !!parsed.flags.get("continue");
   const printMode = parsed.flags.has("print") || (!process.stdin.isTTY && !process.stdout.isTTY);
+
+  // No key is not a startup refusal when there is a UI to fix it in: the TUI
+  // opens anyway and /login configures a key without a restart. Headless fails
+  // fast instead — there is no /login there, just a guaranteed 401.
+  if (!config.apiKey && printMode) {
+    console.error(
+      "fox-agent: no API key — set FOX_AGENT_API_KEY / OPENAI_API_KEY / ANTHROPIC_API_KEY / GEMINI_API_KEY, or run fox interactively and use /login",
+    );
+    process.exit(1);
+  }
 
   let sessionId: string;
   if (cont) {
@@ -137,11 +141,13 @@ async function main() {
   }
   getSession(sessionId); // warm
 
-  const state = { sessionId, cwd, provider, config };
+  const state = { sessionId, cwd, provider, config, configPath: (parsed.flags.get("config") as string) || undefined };
 
   // ---- TUI ----
   if (!printMode && !parsed.flags.get("no-tui") && process.stdout.isTTY) {
     try {
+      // lazy: headless/-p/--acp runs should not pay for the renderer's modules
+      const { startTui } = await import("./tui/app.ts");
       await startTui(state);
     } finally {
       await shutdownTools(sessionId);
