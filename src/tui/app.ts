@@ -14,7 +14,7 @@ import {
   type Anchor,
   type PressState,
 } from "./select.ts";
-import { renderMarkdown } from "./markdown.ts";
+import { renderMarkdown, type MdState } from "./markdown.ts";
 import { wrapSegs, segWidth, type Seg } from "./wrap.ts";
 import { charWidth } from "./screen.ts";
 import { Picker, type PickerRow } from "./picker.ts";
@@ -1301,7 +1301,71 @@ export async function startTui(state: HarnessState) {
 
   let rowBuf: Row[] = [];
   let rowOwner: number[] = []; // rowBuf index -> item key (for click hit-testing)
-  let streamCache: { text: string; w: number; rows: Row[] } | null = null;
+
+  /**
+   * Incremental stream rendering.
+   *
+   * A streaming response re-renders every frame (~30/s) and grows by a few
+   * tokens per frame, so re-parsing and re-wrapping the whole partial message
+   * each frame was the single hottest path in the draw loop. Streaming is
+   * append-only and every rendered line is line-local (the one cross-line
+   * construct, code fences, is carried through `MdState`), so the text up to
+   * the last newline is immutable: parse and wrap it exactly once into
+   * `prefixRows`, and each frame re-render only the unterminated tail.
+   */
+  interface StreamCache {
+    w: number;
+    /** text length already rendered into prefixRows */
+    cut: number;
+    /** fence state at `cut` */
+    md: MdState;
+    /** the full text this cache validated against */
+    text: string;
+    prefixRows: Row[];
+  }
+  let streamCache: StreamCache | null = null;
+
+  function streamRows(text: string, w: number): Row[] {
+    let c = streamCache;
+    // width changes reflow everything; a prefix mismatch means a new stream
+    // (or a rewind) — either way the settled rows are only valid if the text
+    // they were rendered from is still there, verbatim
+    if (!c || c.w !== w || !text.startsWith(c.text.slice(0, c.cut))) {
+      c = streamCache = { w, cut: 0, md: { inFence: false, hadCode: false }, text: "", prefixRows: [] };
+    }
+    // advance the cut to the last newline, tracking fence state as we go
+    let scan = c.cut;
+    let newCut = c.cut;
+    const md = { ...c.md };
+    for (;;) {
+      const nl = text.indexOf("\n", scan);
+      if (nl < 0) break;
+      if (/^```/.test(text.slice(scan, nl))) {
+        md.inFence = !md.inFence;
+        md.hadCode = false;
+      } else if (md.inFence) {
+        md.hadCode = true;
+      }
+      newCut = nl + 1;
+      scan = nl + 1;
+    }
+    if (newCut > c.cut) {
+      // minus the trailing newline: with it the segment's split would end on an
+      // empty line and emit a row for content that belongs to the tail
+      for (const mline of renderMarkdown(text.slice(c.cut, newCut - 1), c.md)) {
+        c.prefixRows.push(...wrapSegs(mline, w).map((segs) => ({ segs })));
+      }
+      c.cut = newCut;
+    }
+    c.text = text;
+    const rows = c.prefixRows.slice();
+    for (const mline of renderMarkdown(text.slice(c.cut), { ...c.md })) {
+      rows.push(...wrapSegs(mline, w).map((segs) => ({ segs })));
+    }
+    rows.push({ segs: [] });
+    return rows;
+  }
+
   function totalRows(): number {
     buildRows();
     return rowBuf.length;
@@ -1319,16 +1383,7 @@ export async function startTui(state: HarnessState) {
       }
     }
     if (streamText !== null) {
-      // the stream re-renders on every frame (~30/s); parsing markdown and
-      // re-wrapping the whole partial message each time is the single hottest
-      // path in the draw loop, so memoize on (text, width)
-      if (streamCache?.text !== streamText || streamCache.w !== w) {
-        const rows: Row[] = [];
-        for (const mline of renderMarkdown(streamText)) rows.push(...wrapSegs(mline, w).map((segs) => ({ segs })));
-        rows.push({ segs: [] });
-        streamCache = { text: streamText, w, rows };
-      }
-      for (const r of streamCache.rows) {
+      for (const r of streamRows(streamText, w)) {
         rowBuf.push(r);
         rowOwner.push(-1); // one owner per row, or hit-testing drifts below here
       }

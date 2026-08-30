@@ -296,3 +296,40 @@ describe("open session handles", () => {
     for (const h of held) db.unpinSession(h.id);
   });
 });
+
+describe("index usage totals", () => {
+  test("recordUsage maintains running totals on the index row", async () => {
+    const { createSession, recordUsage, getSession } = await import("../src/store/db.ts");
+    const s = createSession("/w", "m1");
+    expect(getSession(s.id)!.prompt_tokens).toBe(0);
+    recordUsage(s.id, null, 100, 10);
+    recordUsage(s.id, null, 50, 5);
+    const row = getSession(s.id)!;
+    expect(row.prompt_tokens).toBe(150);
+    expect(row.completion_tokens).toBe(15);
+  });
+
+  test("sessionList reads totals from the index; a legacy NULL row backfills once", async () => {
+    const t = await import("../src/store/db.ts");
+    const { sessionList } = await import("../src/commands.ts");
+    const s = t.createSession("/w", "m1");
+    t.recordUsage(s.id, null, 42, 7);
+    expect(sessionList().find((it) => it.id === s.id)!.tokens).toBe(49);
+
+    // simulate a row written before the index carried totals
+    t.indexDb().prepare("UPDATE sessions SET prompt_tokens = NULL, completion_tokens = NULL WHERE id = ?").run(s.id);
+    expect(sessionList().find((it) => it.id === s.id)!.tokens).toBe(49); // backfilled from the session file
+    const row = t.getSession(s.id)!; // and written back: the next listing does no reopen
+    expect(row.prompt_tokens).toBe(42);
+    expect(row.completion_tokens).toBe(7);
+  });
+
+  test("a fork starts with zeroed totals even when the source has history", async () => {
+    const t = await import("../src/store/db.ts");
+    const s = t.createSession("/w", "m1");
+    t.appendMessage(s.id, { parent_id: null, role: "user", content: "hi", tokens: 1 });
+    t.recordUsage(s.id, null, 100, 10);
+    const fork = t.forkSession(s.id)!;
+    expect(t.getSession(fork.id)!.prompt_tokens).toBe(0);
+  });
+});

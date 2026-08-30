@@ -7,10 +7,25 @@ const HEAD = "#7aa2f7";
 const DIM = "#565f89";
 const LINK = "#89ddff";
 
-export function renderMarkdown(src: string): Seg[][] {
+/**
+ * Parser state that can cross a call boundary. The streaming path in the TUI
+ * parses the settled prefix once and only re-parses the tail on each frame;
+ * `state` is how the tail parse knows it begins inside a code fence (and
+ * whether that fence has emitted any code lines yet — an empty one gets a
+ * placeholder row). Callers parsing a whole document pass nothing.
+ */
+export interface MdState {
+  inFence: boolean;
+  hadCode: boolean;
+}
+
+export function renderMarkdown(src: string, state?: MdState): Seg[][] {
   const out: Seg[][] = [];
   const lines = src.split("\n");
   let i = 0;
+  // local aliases; written back into `state` (if given) as the parse advances
+  let inFence = state?.inFence ?? false;
+  let hadCode = state?.hadCode ?? false;
 
   const inline = (text: string, base?: Partial<Seg>): Seg[] => {
     const segs: Seg[] = [];
@@ -35,13 +50,32 @@ export function renderMarkdown(src: string): Seg[][] {
   while (i < lines.length) {
     const line = lines[i];
 
+    // inside a fence every line is literal code; the opener itself emits nothing
+    if (inFence) {
+      if (/^```/.test(line)) {
+        inFence = false;
+        if (state) {
+          state.inFence = false;
+          state.hadCode = false;
+        }
+        if (!hadCode) out.push([{ t: "│", fg: CODE_FG }]);
+      } else {
+        hadCode = true;
+        if (state) state.hadCode = true;
+        out.push([{ t: "│ " + line, fg: CODE_FG }]);
+      }
+      i++;
+      continue;
+    }
+
     if (/^```/.test(line)) {
+      inFence = true;
+      hadCode = false;
+      if (state) {
+        state.inFence = true;
+        state.hadCode = false;
+      }
       i++;
-      const code: string[] = [];
-      while (i < lines.length && !/^```/.test(lines[i])) code.push(lines[i++]);
-      i++;
-      for (const c of code) out.push([{ t: "│ " + c, fg: CODE_FG }]);
-      if (!code.length) out.push([{ t: "│", fg: CODE_FG }]);
       continue;
     }
 

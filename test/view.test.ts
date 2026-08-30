@@ -193,3 +193,28 @@ describe("render roles", () => {
     expect(notes[0].content).toContain("second recap");
   });
 });
+
+describe("renderContext node memo", () => {
+  test("re-renders only what changed: replace and delete ops are picked up", async () => {
+    const db = await import("../src/store/db.ts");
+    const { renderContext } = await import("../src/context/render.ts");
+    const s = db.createSession("/tmp", "m1");
+    const a = db.appendMessage(s.id, { parent_id: null, role: "user", content: "hello", tokens: 2 });
+    const b = db.appendMessage(s.id, { parent_id: a.id, role: "assistant", content: "world", tokens: 2 });
+
+    const first = renderContext(s.id, "sys");
+    expect(first.map((m) => m.content)).toEqual(["sys", `[m${a.seq}] hello`, `[m${b.seq}] world`]);
+
+    // a replace op rewrites the view content; the memo must not serve the old text
+    db.appendOps(s.id, [{ kind: "replace", id: b.seq, content: "WORLD" }]);
+    const second = renderContext(s.id, "sys");
+    expect(second[2].content).toBe(`[m${b.seq}] WORLD`);
+
+    // a delete-with-summary hides the node and emits the summary note instead
+    db.appendOps(s.id, [{ kind: "delete", ids: [b.seq], summary: "greeting done" }]);
+    const third = renderContext(s.id, "sys");
+    expect(third).toHaveLength(3); // system + user + summary
+    expect(third[2].role).toBe("assistant");
+    expect(third[2].content).toContain("greeting done");
+  });
+});

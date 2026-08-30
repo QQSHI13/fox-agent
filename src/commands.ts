@@ -1,5 +1,6 @@
 import {
   allOps,
+  backfillUsage,
   createSession,
   deleteSession,
   forkSession,
@@ -8,7 +9,6 @@ import {
   kvGet,
   latestSessionFor,
   listSessions,
-  sessionUsage,
   setSessionModel,
   undoLastOp,
 } from "./store/db.ts";
@@ -217,13 +217,17 @@ export interface SessionListItem {
 /**
  * The session list, most recently worked in first, as data.
  *
- * `sessionUsage` opens each session's database, so this is the one call that
- * puts real pressure on the store's handle cache — see `pinSession`, which is
- * what keeps the live session's handle from being the one evicted here.
+ * Token totals come from the index row itself (maintained by `recordUsage`), so
+ * listing no longer opens every session's database. Rows written before the
+ * index carried totals are backfilled lazily — one file open per legacy session,
+ * once, then never again.
  */
 export function sessionList(opts: { currentId?: string; cwd?: string; limit?: number } = {}): SessionListItem[] {
   return listSessions(opts.limit ?? 50, opts.cwd).map((s, i) => {
-    const u = sessionUsage(s.id);
+    const u =
+      s.prompt_tokens === null || s.completion_tokens === null
+        ? backfillUsage(s.id)
+        : { prompt: s.prompt_tokens, completion: s.completion_tokens };
     return {
       index: i + 1,
       id: s.id,

@@ -20,6 +20,14 @@ export interface SessionRow {
    * opposite of what "latest" means to anyone picking from the list.
    */
   updated_at: number;
+  /**
+   * Running provider-reported token totals, maintained by `recordUsage`. NULL
+   * means "written before this column existed — not yet backfilled", which is
+   * what lets a listing tell a legacy row apart from a genuinely unused session
+   * without opening every session file.
+   */
+  prompt_tokens: number | null;
+  completion_tokens: number | null;
 }
 
 export interface MessageRow {
@@ -77,13 +85,15 @@ const INDEX_SCHEMA = `
     model TEXT NOT NULL,
     title TEXT,
     created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL
+    updated_at INTEGER NOT NULL,
+    prompt_tokens INTEGER,
+    completion_tokens INTEGER
   );
   CREATE INDEX IF NOT EXISTS idx_sessions_cwd_recent ON sessions(cwd, updated_at DESC);
 `;
 
 /** Every listing/lookup projects the same columns, in SessionRow order. */
-const SESSION_COLS = "id, cwd, model, title, created_at, updated_at";
+const SESSION_COLS = "id, cwd, model, title, created_at, updated_at, prompt_tokens, completion_tokens";
 
 /**
  * One database per session. `session_id` columns are kept even though the file
@@ -214,6 +224,9 @@ export function indexDb(): Database {
   ready();
   if (_index) return _index;
   _index = open(indexDbPath(), INDEX_SCHEMA);
+  // token totals were added after the first index databases existed
+  ensureColumn(_index, "sessions", "prompt_tokens", "prompt_tokens INTEGER");
+  ensureColumn(_index, "sessions", "completion_tokens", "completion_tokens INTEGER");
   return _index;
 }
 
@@ -323,10 +336,10 @@ export function createSession(cwd: string, model: string): SessionRow {
   // created_at and updated_at are the same stamp at birth (a test and the
   // picker both rely on it), so one touch() serves both — two calls could tick.
   const now = touch();
-  const s: SessionRow = { id: rid(), cwd, model, title: null, created_at: now, updated_at: now };
+  const s: SessionRow = { id: rid(), cwd, model, title: null, created_at: now, updated_at: now, prompt_tokens: 0, completion_tokens: 0 };
   indexDb()
-    .prepare("INSERT INTO sessions VALUES (?, ?, ?, ?, ?, ?)")
-    .run(s.id, s.cwd, s.model, s.title, s.created_at, s.updated_at);
+    .prepare("INSERT INTO sessions VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+    .run(s.id, s.cwd, s.model, s.title, s.created_at, s.updated_at, 0, 0);
   sessionDb(s.id).prepare("INSERT OR IGNORE INTO refs VALUES (?, 'main', NULL, ?)").run(s.id, Date.now());
   return s;
 }
@@ -410,7 +423,7 @@ export function forkSession(sourceId: string, uptoSeq?: number): SessionRow | nu
   if (!src) return null;
 
   const now = touch(); // one stamp for created_at and updated_at, as in createSession
-  const fork: SessionRow = { id: rid(), cwd: src.cwd, model: src.model, title: null, created_at: now, updated_at: now };
+  const fork: SessionRow = { id: rid(), cwd: src.cwd, model: src.model, title: null, created_at: now, updated_at: now, prompt_tokens: 0, completion_tokens: 0 };
   const target = sessionDbPath(fork.id);
   ensureLayout();
   // checkpoint first: VACUUM INTO reads the database, and anything still sitting
@@ -439,8 +452,8 @@ export function forkSession(sourceId: string, uptoSeq?: number): SessionRow | nu
   })();
 
   indexDb()
-    .prepare("INSERT INTO sessions VALUES (?, ?, ?, ?, ?, ?)")
-    .run(fork.id, fork.cwd, fork.model, null, fork.created_at, fork.updated_at);
+    .prepare("INSERT INTO sessions VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+    .run(fork.id, fork.cwd, fork.model, null, fork.created_at, fork.updated_at, 0, 0);
   setRefTitle(fork.id, `fork of ${src.title ?? src.id}`);
   return { ...fork, title: `fork of ${src.title ?? src.id}`.slice(0, 80) };
 }
@@ -595,6 +608,19 @@ export function kvGet<T>(sessionId: string, key: string): T | null {
 
 export function recordUsage(sessionId: string, messageId: string | null, promptTokens: number, completionTokens: number) {
   sessionDb(sessionId).prepare("INSERT INTO usage VALUES (?, ?, ?, ?, ?)").run(sessionId, messageId, promptTokens, completionTokens, Date.now());
+  // running totals on the index row too, so a session listing never has to open
+  // the file to answer "how much has this session burned" — NULL means a legacy
+  // row awaiting backfill, which COALESCE treats as zero going forward
+  indexDb()
+    .prepare("UPDATE sessions SET prompt_tokens = COALESCE(prompt_tokens, 0) + ?, completion_tokens = COALESCE(completion_tokens, 0) + ? WHERE id = ?")
+    .run(promptTokens, completionTokens, sessionId);
+}
+
+/** Backfill the index's token totals from the session file (legacy rows). */
+export function backfillUsage(sessionId: string): { prompt: number; completion: number } {
+  const u = sessionUsage(sessionId);
+  indexDb().prepare("UPDATE sessions SET prompt_tokens = ?, completion_tokens = ? WHERE id = ?").run(u.prompt, u.completion, sessionId);
+  return u;
 }
 
 export function sessionUsage(sessionId: string): { prompt: number; completion: number } {
