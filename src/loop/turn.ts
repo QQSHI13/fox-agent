@@ -435,12 +435,6 @@ export async function* runTurnCore(
         // next step, and what `tool_end` reports are all the same text. Patching
         // after the append would leave the DB holding the unpatched output and
         // the model seeing it on every subsequent step.
-        // `afterTool` runs HERE — after the tool, before appendMessage. That
-        // ordering is the point: the patched output becomes the only version in
-        // the system, so what the transcript stores, what the model reads on the
-        // next step, and what `tool_end` reports are all the same text. Patching
-        // after the append would leave the DB holding the unpatched output and
-        // the model seeing it on every subsequent step.
         for (const p of hooked) {
           if (!p.hooks?.afterTool) continue;
           const patch = await runHook(

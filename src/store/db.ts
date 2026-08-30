@@ -302,8 +302,27 @@ function rid(): string {
   return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
 }
 
+/**
+ * A strictly increasing clock for `updated_at`, per process.
+ *
+ * `updated_at` is what /sessions, `fox -c` and the picker rank by, and it has
+ * millisecond resolution: two sessions created and touched in the same ms tie,
+ * and the `id DESC` tiebreak is then random (ids share a timestamp prefix; only
+ * the random suffix differs), so "most recently used" flip-flopped run to run
+ * — an intermittent test failure that was really a real ordering bug. A touch
+ * is always *after* any previous touch in this process, so force it to be.
+ * Drift from wall time is bounded by the number of touches in one ms.
+ */
+let _lastTouch = 0;
+function touch(): number {
+  _lastTouch = Math.max(Date.now(), _lastTouch + 1);
+  return _lastTouch;
+}
+
 export function createSession(cwd: string, model: string): SessionRow {
-  const now = Date.now();
+  // created_at and updated_at are the same stamp at birth (a test and the
+  // picker both rely on it), so one touch() serves both — two calls could tick.
+  const now = touch();
   const s: SessionRow = { id: rid(), cwd, model, title: null, created_at: now, updated_at: now };
   indexDb()
     .prepare("INSERT INTO sessions VALUES (?, ?, ?, ?, ?, ?)")
@@ -347,10 +366,9 @@ export function deleteSession(id: string): boolean {
 
 /**
  * The session a `fox -c` in this directory should land in: most recently
- * *worked in*, not most recently created. Ties break on id, which is
- * timestamp-prefixed, so the order is total even when two sessions were
- * touched in the same millisecond — a bare `ORDER BY updated_at` would let
- * SQLite pick either one and `-c` would flip between them run to run.
+ * *worked in*, not most recently created. `updated_at` comes from `touch()`,
+ * which is strictly increasing per process, so ties only survive across
+ * processes touching in the same ms; `id DESC` settles those.
  */
 export function latestSessionFor(cwd: string): SessionRow | null {
   return indexDb()
@@ -374,7 +392,7 @@ export function listSessions(limit = 20, cwd?: string): SessionRow[] {
 }
 
 export function setRefTitle(sessionId: string, title: string) {
-  indexDb().prepare("UPDATE sessions SET title = ?, updated_at = ? WHERE id = ?").run(title.slice(0, 80), Date.now(), sessionId);
+  indexDb().prepare("UPDATE sessions SET title = ?, updated_at = ? WHERE id = ?").run(title.slice(0, 80), touch(), sessionId);
 }
 
 /**
@@ -391,7 +409,7 @@ export function forkSession(sourceId: string, uptoSeq?: number): SessionRow | nu
   const src = getSession(sourceId);
   if (!src) return null;
 
-  const now = Date.now();
+  const now = touch(); // one stamp for created_at and updated_at, as in createSession
   const fork: SessionRow = { id: rid(), cwd: src.cwd, model: src.model, title: null, created_at: now, updated_at: now };
   const target = sessionDbPath(fork.id);
   ensureLayout();
@@ -428,7 +446,7 @@ export function forkSession(sourceId: string, uptoSeq?: number): SessionRow | nu
 }
 
 export function setSessionModel(sessionId: string, model: string): void {
-  indexDb().run("UPDATE sessions SET model = ?, updated_at = ? WHERE id = ?", [model, Date.now(), sessionId]);
+  indexDb().run("UPDATE sessions SET model = ?, updated_at = ? WHERE id = ?", [model, touch(), sessionId]);
 }
 
 
@@ -466,8 +484,10 @@ export function appendMessage(
     const s = getSession(sessionId);
     if (!s?.title) setRefTitle(sessionId, m.content.replace(/\s+/g, " ").slice(0, 60));
   }
-  // keep the index's recency in step with the log, so /sessions sorts sensibly
-  indexDb().run("UPDATE sessions SET updated_at = ? WHERE id = ?", [m.created_at, sessionId]);
+  // keep the index's recency in step with the log, so /sessions sorts sensibly.
+  // touch(), not m.created_at: a same-ms create+append must still order the
+  // appended session after the untouched one, and ms resolution alone ties.
+  indexDb().run("UPDATE sessions SET updated_at = ? WHERE id = ?", [touch(), sessionId]);
   advanceMain(sessionId, m.id);
   return m;
 }

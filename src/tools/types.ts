@@ -24,7 +24,7 @@ export interface ToolContext {
   signal?: AbortSignal;
   /** provider config for tools that need to know the active model */
   providerCfg?: ProviderConfig;
-  /** external ACP agents `task` may delegate to, from `fox-agent.toml [agents.*]` */
+  /** external agents `task` may delegate to (ACP command or A2A url), from `[agents.*]` */
   agents?: Record<string, ExternalAgentConfig>;
   /**
    * Post-edit diagnostics. `lsp` overrides the built-in server table by

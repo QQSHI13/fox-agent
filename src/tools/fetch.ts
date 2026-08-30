@@ -2,6 +2,7 @@ import type { ToolDef } from "../providers/types.ts";
 import type { ToolContext, ToolResult } from "./types.ts";
 import { fail, ok } from "./types.ts";
 import { MAX_READ_BYTES, modelAcceptsMedia } from "./files.ts";
+import { VERSION } from "../core/version.ts";
 
 export const fetchDef: ToolDef = {
   name: "fetch",
@@ -46,7 +47,7 @@ export async function fetchRun(args: { url?: string }, ctx: ToolContext): Promis
     const res = await fetch(url, {
       redirect: "follow",
       signal: AbortSignal.any([AbortSignal.timeout(20_000), ...(ctx.signal ? [ctx.signal] : [])]),
-      headers: { "user-agent": "fox-agent/0.2 (+https://github.com/QQSHI13/fox-agent)" },
+      headers: { "user-agent": `fox-agent/${VERSION} (+https://github.com/QQSHI13/fox-agent)` },
     });
     if (!res.ok) return fail(`error: HTTP ${res.status} ${res.statusText} for ${url}`);
     const ctype = (res.headers.get("content-type") ?? "").split(";")[0].trim().toLowerCase();

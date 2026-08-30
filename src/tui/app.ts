@@ -37,6 +37,7 @@ import {
 } from "../commands.ts";
 import { childEnv } from "../core/childenv.ts";
 import { killTree } from "../tools/exec.ts";
+import { debugLog, debugLogPath } from "../core/debuglog.ts";
 
 type ItemKind = "user" | "toolhead" | "toolbody" | "info" | "error" | "md" | "think";
 interface Item {
@@ -68,6 +69,17 @@ const C = {
   selBg: "#364a82", // selection highlight; readable behind every fg above
 };
 const SPIN = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+/** Startup taglines; one is picked at random per launch. */
+const BANNERS = [
+  "agent-controlled context",
+  "every keystroke accounted for",
+  "context is a file — edit it",
+  "full machine control, no permission theater",
+  "small harness, sharp teeth",
+  "the context window is yours to prune",
+  "real protocols, real processes",
+  "delegate deep, prune deep",
+];
 const HINT_WINDOW = 5;
 /** rows the session overlay may occupy, excluding its title and footer */
 const OVERLAY_MAX_ROWS = 14;
@@ -423,14 +435,27 @@ export async function startTui(state: HarnessState) {
     return true;
   }
 
+  /**
+   * One clean error line in the transcript; the whole truth in the debug log.
+   *
+   * Raw provider bodies used to land on the grid verbatim — a 401 from a gateway
+   * prints its own multi-line HTML/JSON, which paints over the UI and teaches
+   * the user nothing at a glance. The transcript gets the summary; the log gets
+   * the stack, the body, and everything else (see src/core/debuglog.ts).
+   */
+  function reportError(summary: string, detail?: unknown) {
+    debugLog(summary, detail);
+    const short = summary.replace(/\s+/g, " ").slice(0, 160);
+    push("error", `✗ ${short} · log: ${debugLogPath()}`);
+  }
+
   async function runAgent(raw: string) {
     setBusy(true);
     push("user", `❯ ${raw}`);
     ac = new AbortController();
     let md = "";
     try {
-      for await (const ev of runTurn(state.sessionId, state.provider, raw, ac.signal, state.config)) {
-        if (ev.type === "reasoning") {
+      for await (const ev of runTurn(state.sessionId, state.provider, raw, ac.signal, state.config)) {        if (ev.type === "reasoning") {
           streamCharsSinceUsage += ev.delta.length;
           appendToLastThink(ev.delta);
         } else if (ev.type === "text") {
@@ -467,12 +492,14 @@ export async function startTui(state: HarnessState) {
             push("toolbody", `  ↳ ${ev.session} · ${ev.name}${ev.ok ? "" : " ✗"}`);
           }
         } else if (ev.type === "done") {
-          if (ev.reason.startsWith("error")) push("error", `✗ ${ev.reason}`);
+          // turn.ts already persisted the full error to the session log; the
+          // transcript gets one line, the debug log gets the whole reason
+          if (ev.reason.startsWith("error")) reportError(ev.reason.slice(7));
         }
       }
     } catch (e) {
-      const msg = (e as Error).message ?? "";
-      push("error", ac?.signal.aborted ? "[interrupted]" : `✗ fox-agent error: ${msg}`);
+      if (ac?.signal.aborted) push("error", "[interrupted]");
+      else reportError(`fox-agent error: ${(e as Error).message ?? e}`, e);
     } finally {
       if (md) push("md", md);
       streamText = null;
@@ -1445,8 +1472,7 @@ export async function startTui(state: HarnessState) {
       // spinner running forever with no way to submit. console.error would
       // corrupt the grid, so surface it as a transcript item instead.
       process.on("unhandledRejection", (reason) => {
-        const msg = reason instanceof Error ? reason.message : String(reason);
-        push("error", `✗ internal error: ${msg.replace(/\s+/g, " ").slice(0, 200)}`);
+        reportError("internal error", reason);
         setBusy(false);
         drainQueue();
       });
@@ -1457,7 +1483,7 @@ export async function startTui(state: HarnessState) {
       state.interactive = true;
       pinSession(state.sessionId);
       refresh();
-      push("info", `fox-agent v${VERSION} — agent-controlled context`);
+      push("info", `fox-agent v${VERSION} — ${BANNERS[Math.floor(Math.random() * BANNERS.length)]}`);
       push("toolbody", `model ${state.provider.model} · /commands · ! shell · \\ newline · esc interrupt`);
 
       const dec = createDecoder(onKey);
@@ -1484,7 +1510,12 @@ export async function startTui(state: HarnessState) {
           if (nextCaret) term.setCursor(nextCaret.x, nextCaret.y);
           else term.setCursor(3, H - 2);
         } catch (e) {
-          console.error("fox-agent tui error:", e);
+          // painting over the grid with a stack trace is how raw errors leak;
+          // the log gets it, the transcript gets one line, and the UI exits
+          debugLog("tui frame error", e);
+          try {
+            push("error", `✗ internal tui error — log: ${debugLogPath()}`);
+          } catch {}
           gracefulExit(1);
         }
       }, 33);
@@ -1499,7 +1530,8 @@ export async function startTui(state: HarnessState) {
       }
       if (exitCode) process.exitCode = exitCode;
     } catch (e) {
-      console.error("[fox-agent] fatal:", e);
+      debugLog("tui fatal", e);
+      console.error("[fox-agent] fatal:", (e as Error)?.message ?? e);
       try {
         term.end();
       } catch {}
