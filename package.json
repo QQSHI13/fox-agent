@@ -17,7 +17,8 @@
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
-    "bun-types": "^1.4.0"
+    "bun-types": "^1.4.0",
+    "typescript": "^7.0.2"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "^1.4.0",
