@@ -1,10 +1,12 @@
 import type { ToolDef } from "../providers/types.ts";
 import type { ToolContext, ToolResult } from "./types.ts";
 import { fail, ok } from "./types.ts";
+import { MAX_READ_BYTES, modelAcceptsMedia } from "./files.ts";
 
 export const fetchDef: ToolDef = {
   name: "fetch",
-  description: "Fetch a URL and return its content as text. HTML is stripped to readable text; JSON is returned raw. Caps ~20KB.",
+  description:
+    "Fetch a URL and return its content as text. HTML is stripped to readable text; JSON is returned raw. Image/audio/video URLs attach as media when the current model accepts that kind of input (otherwise an error says so). Caps ~20KB of text, 10MB of media.",
   parameters: {
     type: "object",
     properties: { url: { type: "string", description: "http(s) URL" } },
@@ -47,7 +49,21 @@ export async function fetchRun(args: { url?: string }, ctx: ToolContext): Promis
       headers: { "user-agent": "fox-agent/0.2 (+https://github.com/QQSHI13/fox-agent)" },
     });
     if (!res.ok) return fail(`error: HTTP ${res.status} ${res.statusText} for ${url}`);
-    const ctype = res.headers.get("content-type") ?? "";
+    const ctype = (res.headers.get("content-type") ?? "").split(";")[0].trim().toLowerCase();
+    // Binary media: attach for a capable model rather than dumping bytes as text
+    const mediaKind = /^(image|audio|video)$/.exec(ctype.split("/")[0] ?? "")?.[0] as "image" | "audio" | "video" | undefined;
+    if (mediaKind) {
+      if (!modelAcceptsMedia(mediaKind, ctx)) {
+        return fail(`error: ${url} is ${mediaKind} (${ctype}) and the current model (${ctx.providerCfg?.model ?? "unknown"}) does not accept ${mediaKind} input`);
+      }
+      const buf = Buffer.from(await res.arrayBuffer());
+      if (buf.length > MAX_READ_BYTES) return fail(`error: ${url} is ${(buf.length / 1e6).toFixed(1)}MB — too large to attach (cap ${MAX_READ_BYTES / 1e6}MB)`);
+      return {
+        ok: true,
+        output: `${url}: ${ctype}, ${(buf.length / 1024).toFixed(1)} KB — attached as ${mediaKind} content below`,
+        media: [{ mimeType: ctype, data: buf.toString("base64"), filename: url.pathname.split("/").pop() || undefined }],
+      };
+    }
     let body = await res.text();
     if (body.length > CAP * 2) body = body.slice(0, CAP * 4);
     if (ctype.includes("html")) body = htmlToText(body);

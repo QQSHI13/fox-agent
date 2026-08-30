@@ -70,6 +70,17 @@ function mediaTypeOf(p: string): ["image" | "video" | "audio", string] | null {
   return MEDIA_TYPES[ext] ?? null;
 }
 
+/**
+ * Does the active model accept this kind of media input? Fails safe (false)
+ * with no provider config: an attachment a text-only model cannot parse would
+ * be dropped silently or fail the whole request. Shared by `read` and `fetch`.
+ */
+export function modelAcceptsMedia(kind: "image" | "video" | "audio", ctx: ToolContext): boolean {
+  if (!ctx.providerCfg?.model) return false;
+  const info = lookupModel(ctx.providerCfg.model);
+  return kind === "image" ? !!info.vision : kind === "video" ? !!info.video : !!info.audio;
+}
+
 // ---------- read ----------
 
 export const readDef: ToolDef = {
@@ -101,14 +112,10 @@ export async function readRun(args: { path: string; offset?: number; limit?: num
   const media = mediaTypeOf(p);
   if (media) {
     const [kind, mimeType] = media;
-    // Gate on the active model's modalities: an image handed to a text-only
-    // model would either be dropped silently or fail the whole request, so the
-    // refusal has to happen here with a message that says why.
-    const info = lookupModel(ctx.providerCfg?.model ?? "");
-    const capable = kind === "image" ? info.vision : kind === "video" ? info.video : info.audio;
-    if (!ctx.providerCfg?.model || !capable) {
+    const info = ctx.providerCfg?.model;
+    if (!modelAcceptsMedia(kind, ctx)) {
       return fail(
-        `error: ${args.path} is ${kind} (${mimeType}, ${buf.length} bytes) and the current model (${ctx.providerCfg?.model ?? "unknown"}) does not accept ${kind} input`,
+        `error: ${args.path} is ${kind} (${mimeType}, ${buf.length} bytes) and the current model (${info ?? "unknown"}) does not accept ${kind} input`,
       );
     }
     ctx.readFiles.add(p);

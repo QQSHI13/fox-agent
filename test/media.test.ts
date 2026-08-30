@@ -145,3 +145,30 @@ describe("media through the pipeline", () => {
     expect(getMessage("oldsession", m.seq)?.media).toContain("image/png");
   });
 });
+
+describe("fetch: media URLs", () => {
+  async function serve(bytes: number[], ctype: string): Promise<string> {
+    const server = Bun.serve({
+      port: 0,
+      fetch: () => new Response(new Uint8Array(bytes), { headers: { "content-type": ctype } }),
+    });
+    return `http://127.0.0.1:${server.port}/pic`;
+  }
+
+  test("an image URL attaches as media when the model has vision", async () => {
+    const { fetchRun } = await import("../src/tools/fetch.ts");
+    const url = await serve([0x89, 0x50, 0x4e, 0x47], "image/png");
+    const r = await fetchRun({ url }, withModel("gpt-4o"));
+    expect(r.ok).toBe(true);
+    expect(r.media![0].mimeType).toBe("image/png");
+    expect(Buffer.from(r.media![0].data, "base64")).toEqual(Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+  });
+
+  test("a media URL is refused for a text-only model", async () => {
+    const { fetchRun } = await import("../src/tools/fetch.ts");
+    const url = await serve([0x89, 0x50], "image/png");
+    const r = await fetchRun({ url }, withModel("kimi-k2"));
+    expect(r.ok).toBe(false);
+    expect(r.output).toContain("does not accept image input");
+  });
+});
