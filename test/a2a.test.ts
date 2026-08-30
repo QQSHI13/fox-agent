@@ -55,6 +55,8 @@ describe("a2a client", () => {
   test("a non-final task is polled on tasks/get until it completes", async () => {
     let gets = 0;
     const url = serve((method) => {
+      // no streaming on this fake — the client must fall back to send + poll
+      if (method === "message/stream") return { error: { code: -32601, message: "no streaming" } };
       if (method === "message/send") return { result: { id: "t1", status: { state: "working" } } };
       if (method === "tasks/get") return { result: ++gets === 1 ? { id: "t1", status: { state: "working" } } : completedTask("done eventually") };
       throw new Error(`unexpected ${method}`);
@@ -89,6 +91,56 @@ describe("a2a client", () => {
     const { agentCardName } = await import("../src/a2a/client.ts");
     expect(await agentCardName(url)).toBeNull();
   });
+
+  // SSE server: streams the given JSON-RPC results for message/stream only.
+  const serveSse = (events: any[]): string => {
+    server = Bun.serve({
+      port: 0,
+      async fetch(req) {
+        if (req.method !== "POST") return new Response("not found", { status: 404 });
+        const body = (await req.json()) as { id: number; method: string };
+        if (body.method !== "message/stream")
+          return Response.json({ jsonrpc: "2.0", id: body.id, error: { code: -32601, message: "stream only" } });
+        const payload = events.map((r) => `data: ${JSON.stringify({ jsonrpc: "2.0", id: body.id, result: r })}\n\n`).join("");
+        return new Response(payload, { headers: { "content-type": "text/event-stream" } });
+      },
+    });
+    return `http://127.0.0.1:${server.port}`;
+  };
+
+  test("message/stream: artifacts accumulate and states are reported live", async () => {
+    const url = serveSse([
+      { kind: "task", id: "t1", status: { state: "working" } },
+      { kind: "artifact-update", taskId: "t1", artifact: { artifactId: "a1", parts: [{ kind: "text", text: "half" }] } },
+      { kind: "artifact-update", taskId: "t1", append: true, artifact: { artifactId: "a1", parts: [{ kind: "text", text: "way there" }] } },
+      { kind: "status-update", taskId: "t1", status: { state: "completed" }, final: true },
+    ]);
+    const seen: { state?: string; text?: string }[] = [];
+    const { runA2aAgent } = await import("../src/a2a/client.ts");
+    const out = await runA2aAgent(url, "go", { onEvent: (e) => seen.push(e) });
+    expect(out).toBe("halfway there");
+    expect(seen.map((e) => e.state).filter(Boolean)).toEqual(["working", "completed"]);
+    expect(seen.map((e) => e.text).filter(Boolean)).toEqual(["half", "way there"]);
+  });
+
+  test("message/stream: a failed status-update throws with the agent's message", async () => {
+    const url = serveSse([
+      {
+        kind: "status-update",
+        taskId: "t1",
+        status: { state: "failed", message: { role: "agent", parts: [{ kind: "text", text: "gave up" }] } },
+        final: true,
+      },
+    ]);
+    const { runA2aAgent } = await import("../src/a2a/client.ts");
+    await expect(runA2aAgent(url, "x")).rejects.toThrow("gave up");
+  });
+
+  test("message/stream: a stream with no final event is an error, not a hang", async () => {
+    const url = serveSse([{ kind: "task", id: "t1", status: { state: "working" } }]);
+    const { runA2aAgent } = await import("../src/a2a/client.ts");
+    await expect(runA2aAgent(url, "x")).rejects.toThrow("without a final event");
+  });
 });
 
 describe("task tool: a2a routing", () => {
@@ -99,6 +151,7 @@ describe("task tool: a2a routing", () => {
 
   test("an agent with a url delegates over A2A and returns the report", async () => {
     const url = serve((method, params) => {
+      if (method === "message/stream") return { error: { code: -32601, message: "no streaming" } };
       expect(method).toBe("message/send");
       expect(params.message.parts[0].text).toBe("do the thing");
       return { result: completedTask("thing done") };

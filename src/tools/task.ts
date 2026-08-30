@@ -13,8 +13,9 @@
  *
  * The visible upgrade on ACP: the child's updates stream into the parent's
  * event stream as they happen, so the TUI shows the subagent's tool calls live
- * instead of nothing until it finishes. A2A has no streaming here yet — the
- * final report arrives when the task completes.
+ * instead of nothing until it finishes. A2A agents that implement
+ * `message/stream` (SSE) report state transitions the same way; servers
+ * without it fall back to polling and only the final report arrives.
  */
 import { existsSync } from "node:fs";
 import { kvGet, kvSet } from "../store/db.ts";
@@ -91,11 +92,25 @@ export async function taskRun(
   const children = kvGet<string[]>(ctx.sessionId, "children") ?? [];
   const label = args.description.trim();
   try {
-    // A2A: the entry points at a running agent over HTTP. No streaming on this
-    // path yet — the final report arrives when the remote task completes.
+    // A2A: the entry points at a running agent over HTTP. Streams when the
+    // server speaks message/stream (SSE), polls otherwise.
     if (spec.url) {
       const { runA2aAgent } = await import("../a2a/client.ts");
-      const text = (await runA2aAgent(spec.url, args.prompt, { signal: ctx.signal, headers: spec.headers })).trim();
+      const TERMINAL = new Set(["completed", "failed", "canceled", "rejected", "input-required"]);
+      const text = (
+        await runA2aAgent(spec.url, args.prompt, {
+          signal: ctx.signal,
+          headers: spec.headers,
+          // forward remote state transitions the way an ACP child's tool calls
+          // are forwarded — the TUI shows only completions, --json shows all
+          onEvent: ctx.emit
+            ? (ev) => {
+                if (!ev.state) return;
+                ctx.emit?.({ type: "child_tool", session: label, name: `remote ${ev.state}`, done: TERMINAL.has(ev.state), ok: ev.state !== "failed" });
+              }
+            : undefined,
+        })
+      ).trim();
       return ok(text ? `${text}\n\n[a2a task on ${args.agent ?? spec.url}]` : `[a2a agent ${args.agent ?? spec.url} finished without a final message]`);
     }
 
