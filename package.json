@@ -28,7 +28,7 @@
     "@modelcontextprotocol/sdk": "^1.30.0",
     "ai": "^7.0.85"
   },
-  "license": "MIT",
+  "license": "Apache-2.0",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/QQSHI13/fox-agent.git"

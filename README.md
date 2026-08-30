@@ -336,8 +336,3 @@ src/
 test/         bun test suites (projection, turn manager, patch engine, acp, lsp, plugins, ...)
 scripts/      acp-accept.ts — drives bin/fox --acp with a real external ACP client
 ```
-
-## Roadmap
-- v3: A2A · OpenAI-compat server endpoint · web UI
-
-MIT
