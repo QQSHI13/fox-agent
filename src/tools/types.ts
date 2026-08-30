@@ -1,6 +1,6 @@
 import type { MediaPart, ProviderConfig, ToolDef } from "../providers/types.ts";
 import type { AgentEvent } from "../core/events.ts";
-import type { AcpAgentConfig, LspConfig } from "../core/config.ts";
+import type { ExternalAgentConfig, LspConfig } from "../core/config.ts";
 
 export interface PtyState {
   session: string; // tmux session name
@@ -25,7 +25,7 @@ export interface ToolContext {
   /** provider config for tools that need to know the active model */
   providerCfg?: ProviderConfig;
   /** external ACP agents `task` may delegate to, from `fox-agent.toml [agents.*]` */
-  agents?: Record<string, AcpAgentConfig>;
+  agents?: Record<string, ExternalAgentConfig>;
   /**
    * Post-edit diagnostics. `lsp` overrides the built-in server table by
    * extension; `diagnostics === false` disables the whole path. Both absent

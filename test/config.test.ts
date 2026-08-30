@@ -79,6 +79,25 @@ command = "not-fox"
     expect(cfg.agents.default).toBeUndefined();
   });
 
+  test("[agents.*] with a url is an A2A endpoint; neither command nor url is junk", async () => {
+    writeFileSync(
+      join(projectDir, "fox-agent.toml"),
+      `[agents.remote]
+url = "https://agent.example.com"
+headers = { authorization = "Bearer t" }
+
+[agents.junk]
+args = ["--acp"]
+`,
+    );
+    const { loadConfig } = await import("../src/core/config.ts");
+    const cfg = loadConfig({ cwd: projectDir }, { FOX_AGENT_API_KEY: "k" });
+    expect(cfg.agents.remote.url).toBe("https://agent.example.com");
+    expect(cfg.agents.remote.headers).toEqual({ authorization: "Bearer t" });
+    expect(cfg.agents.remote.command).toBeUndefined();
+    expect(cfg.agents.junk).toBeUndefined();
+  });
+
   test("agents from one load do not leak into the next", async () => {
     // DEFAULTS holds one shared object per table and applyTable writes into it, so
     // reusing the reference would carry a project's agents into every later load

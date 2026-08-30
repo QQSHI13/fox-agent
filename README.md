@@ -82,11 +82,17 @@ plugins = ["~/my-fox-plugin.ts"]
 command = "npx"
 args = ["-y", "@modelcontextprotocol/server-fs", "/tmp"]
 
-# ACP agents the `task` tool may delegate to, by name. "default" is fox-agent itself
-# and is always available; it cannot be rebound here.
+# Agents the `task` tool may delegate to, by name. "default" is fox-agent itself
+# and is always available; it cannot be rebound here. The protocol follows the
+# entry's shape: `command` spawns a child and speaks ACP, `url` reaches a
+# running agent over HTTP and speaks A2A.
 [agents.reviewer]
 command = "some-other-acp-agent"
 args = ["--acp"]
+
+[agents.remote]
+url = "https://agent.example.com"
+headers = { authorization = "Bearer token" }
 
 # Extra language servers for diagnostics. TypeScript, Python and Rust are
 # built in; a table here adds a language or overrides a built-in by extension.
@@ -169,11 +175,14 @@ parse, so a stray `console.log` in the server is invisible from the outside. Run
 `src/acp/`. `test/acp.live.test.ts` runs it under `bun test` when both acpx and `bin/fox` are present, and
 skips with a reason when they are not.
 
-**As a client.** `task` delegates to a child ACP agent — by default another `fox --acp` with the *full* tool
-registry, in its own process and its own session, or any agent named in `[agents.*]`. A delegated agent is a
+**As a client.** `task` delegates to another agent — by default a spawned `fox --acp` child with the *full* tool
+registry, in its own process and its own session, or any agent named in `[agents.*]`. The protocol follows the
+entry's shape: `command` spawns a child and speaks ACP (tool calls stream into the parent's UI live), `url` reaches
+a running agent over HTTP and speaks A2A (the final report arrives when the remote task completes). A delegated
+agent is a
 peer, not a reduced-privilege subagent: nothing is withheld from it, including `task` itself, which is why
 delegation depth is capped at 3 (`FOX_AGENT_DELEGATION_DEPTH` carries it across the process boundary). The child's
-tool calls stream into the parent's UI live, and its session id is recorded so lineage stays visible.
+session id is recorded so lineage stays visible.
 
 Unlike `exec`/`pty`/MCP children, an ACP child is **not** given a credential-stripped env — it is a harness
 whose whole job is to call a model. What keeps that safe is that the model never chooses the command: it

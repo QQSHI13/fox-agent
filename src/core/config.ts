@@ -10,17 +10,24 @@ export interface McpServerConfig {
 }
 
 /**
- * An external ACP agent fox-agent can delegate to (`task { agent: "<name>" }`).
+ * An external agent fox-agent can delegate to (`task { agent: "<name>" }`).
  *
- * Same shape as an MCP server, different protocol and a different trust story:
- * an MCP server provides tools, an ACP agent is a peer harness that runs with
- * fox-agent's full environment (see `src/acp/client.ts`). Only names present in this
- * table are reachable, so the model can pick among them but cannot invent one.
+ * Two protocols, chosen by shape: `command` spawns a child process and speaks
+ * ACP (see `src/acp/client.ts`); `url` reaches an already-running agent over
+ * HTTP and speaks A2A (see `src/a2a/client.ts`). An ACP child runs with
+ * fox-agent's full environment; an A2A target gets nothing but the prompt plus
+ * whatever `headers` (e.g. a bearer token) the entry carries. Only names
+ * present in this table are reachable, so the model can pick among them but
+ * cannot invent one.
  */
-export interface AcpAgentConfig {
-  command: string;
+export interface ExternalAgentConfig {
+  command?: string;
   args?: string[];
   env?: Record<string, string>;
+  /** A2A base URL — when set, `command` is ignored */
+  url?: string;
+  /** extra HTTP headers for A2A calls (Authorization etc.) */
+  headers?: Record<string, string>;
 }
 
 /**
@@ -55,8 +62,8 @@ export interface Config {
   /** abort a provider request after this long with no streamed progress (0 = never) */
   requestTimeoutMs: number;
   mcpServers: Record<string, McpServerConfig>;
-  /** external ACP agents available to the `task` tool, by name */
-  agents: Record<string, AcpAgentConfig>;
+  /** external agents (ACP `command` or A2A `url`) available to the `task` tool, by name */
+  agents: Record<string, ExternalAgentConfig>;
   /** language servers for post-edit diagnostics; overrides the built-in table by extension */
   lsp: Record<string, LspConfig>;
   /** consult language servers after edit/write at all (built-ins are PATH-detected) */
@@ -239,13 +246,14 @@ function applyTable(cfg: Config, t: Record<string, unknown> | null, scope: "glob
   }
   if (t.agents && typeof t.agents === "object") {
     for (const [name, v] of Object.entries(t.agents as Record<string, unknown>)) {
-      const s = v as { command?: string; args?: string[]; env?: Record<string, string> };
-      if (typeof s?.command !== "string") continue;
+      const s = v as { command?: string; args?: string[]; env?: Record<string, string>; url?: string; headers?: Record<string, string> };
+      // an entry is an ACP spawn (command) or an A2A endpoint (url); neither = junk
+      if (typeof s?.command !== "string" && typeof s?.url !== "string") continue;
       // "default" is fox-agent delegating to itself and is synthesized at call time, so
       // it is not a name a config file may rebind — silently accepting a rebind
       // would make `task` route somewhere the model has no way to know about.
       if (name === "default") continue;
-      cfg.agents[name] = { command: s.command, args: s.args, env: s.env };
+      cfg.agents[name] = { command: s.command, args: s.args, env: s.env, url: s.url, headers: s.headers };
     }
   }
   if (t.lsp && typeof t.lsp === "object") {

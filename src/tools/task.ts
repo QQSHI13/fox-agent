@@ -1,25 +1,27 @@
 /**
- * Delegation over ACP.
+ * Delegation: a subagent is a real agent reached over a real protocol.
  *
  * A subagent used to be an in-process child session with a deliberately reduced
- * tool registry. It is now a separate ACP agent — by default another `fox --acp`
- * with the *full* registry, and optionally any agent the user named in
- * `fox-agent.toml` under `[agents.<name>]`. There is no second code path left for
- * "subagent": a child is a real session in a real process, reached through the
- * same protocol an external editor would use, so anything fox-agent can do for a user
- * it can do for its parent.
+ * tool registry. It is now a separate agent — by default another `fox --acp`
+ * child with the *full* registry, and optionally any agent the user named in
+ * `fox-agent.toml` under `[agents.<name>]`. The protocol follows the entry's
+ * shape: `command` spawns a child and speaks ACP, `url` reaches a running agent
+ * over HTTP and speaks A2A. There is no second code path left for "subagent":
+ * a child is a real session in a real process (or a real service), reached
+ * through the same protocols external tools use, so anything fox-agent can do
+ * for a user it can do for its parent.
  *
- * The visible upgrade: the child's updates stream into the parent's event stream
- * as they happen, so the TUI shows the subagent's tool calls live instead of
- * nothing until it finishes.
+ * The visible upgrade on ACP: the child's updates stream into the parent's
+ * event stream as they happen, so the TUI shows the subagent's tool calls live
+ * instead of nothing until it finishes. A2A has no streaming here yet — the
+ * final report arrives when the task completes.
  */
 import { existsSync } from "node:fs";
 import { kvGet, kvSet } from "../store/db.ts";
 import type { ToolDef } from "../providers/types.ts";
-import type { AcpAgentConfig } from "../core/config.ts";
+import type { ExternalAgentConfig } from "../core/config.ts";
 import type { ToolContext, ToolResult } from "./types.ts";
 import { fail, ok } from "./types.ts";
-import { runAcpAgent } from "../acp/client.ts";
 
 /**
  * How deep delegation may nest.
@@ -35,7 +37,7 @@ const DEPTH_ENV = "FOX_AGENT_DELEGATION_DEPTH";
 export const taskDef: ToolDef = {
   name: "task",
   description:
-    "Delegate a self-contained subtask to a subagent: a separate agent process with its own context window and session, driven over the Agent Client Protocol. It has the same full tool access you do and cannot see this conversation, so give it complete standalone instructions. Returns its final report.",
+    "Delegate a self-contained subtask to a subagent: a separate agent with its own context window and session — a spawned child process spoken to over ACP, or a remote agent at a configured url spoken to over A2A. It has the same full tool access you do and cannot see this conversation, so give it complete standalone instructions. Returns its final report.",
   parameters: {
     type: "object",
     properties: {
@@ -43,7 +45,7 @@ export const taskDef: ToolDef = {
       prompt: { type: "string", description: "Complete, standalone instructions for the subagent" },
       agent: {
         type: "string",
-        description: 'Which agent to delegate to: "default" (another fox-agent) or a name configured in fox-agent.toml [agents.*]',
+        description: 'Which agent to delegate to: "default" (another fox-agent) or a name configured in fox-agent.toml [agents.*] (an ACP command or an A2A url)',
       },
     },
     required: ["description", "prompt"],
@@ -59,13 +61,13 @@ export const taskDef: ToolDef = {
  * source it is the other way around — `execPath` is bun and `Bun.main` is
  * `src/cli.ts`. Probed both, rather than assumed.
  */
-export function selfAgent(): AcpAgentConfig {
+export function selfAgent(): ExternalAgentConfig {
   const main = Bun.main;
   const compiled = main.startsWith("/$bunfs/") || !existsSync(main);
   return compiled ? { command: process.execPath, args: ["--acp"] } : { command: process.execPath, args: [main, "--acp"] };
 }
 
-function resolveAgent(name: string | undefined, agents: Record<string, AcpAgentConfig>): AcpAgentConfig | string {
+function resolveAgent(name: string | undefined, agents: Record<string, ExternalAgentConfig>): ExternalAgentConfig | string {
   if (!name || name === "default") return selfAgent();
   const hit = agents[name];
   if (hit) return hit;
@@ -88,13 +90,26 @@ export async function taskRun(
 
   const children = kvGet<string[]>(ctx.sessionId, "children") ?? [];
   const label = args.description.trim();
-  // ACP sends the tool's name on `tool_call` and only the id on
-  // `tool_call_update`, so the name has to be remembered across the two. Without
-  // this the parent's UI reports raw call ids ("c1") for the child's work.
-  const names = new Map<string, string>();
   try {
+    // A2A: the entry points at a running agent over HTTP. No streaming on this
+    // path yet — the final report arrives when the remote task completes.
+    if (spec.url) {
+      const { runA2aAgent } = await import("../a2a/client.ts");
+      const text = (await runA2aAgent(spec.url, args.prompt, { signal: ctx.signal, headers: spec.headers })).trim();
+      return ok(text ? `${text}\n\n[a2a task on ${args.agent ?? spec.url}]` : `[a2a agent ${args.agent ?? spec.url} finished without a final message]`);
+    }
+
+    // ACP: spawn a child process and stream its tool activity into the parent's
+    // stream as it happens. Lazy-imported so the ACP SDK stays off TUI startup.
+    if (!spec.command) return fail(`error: agent "${args.agent ?? "default"}" has neither command nor url — fix fox-agent.toml [agents.${args.agent}]`);
+    const { runAcpAgent } = await import("../acp/client.ts");
+    // ACP sends the tool's name on `tool_call` and only the id on
+    // `tool_call_update`, so the name has to be remembered across the two. Without
+    // this the parent's UI reports raw call ids ("c1") for the child's work.
+    const names = new Map<string, string>();
     const res = await runAcpAgent({
-      ...spec,
+      command: spec.command,
+      args: spec.args,
       cwd: ctx.cwd,
       prompt: args.prompt,
       signal: ctx.signal,
