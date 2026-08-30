@@ -195,7 +195,7 @@ function fallbackConfig(cfg: ProviderConfig, opts: TurnOptions): Config {
     baseUrl: cfg.baseUrl,
     apiKey: cfg.apiKey,
     provider: cfg.provider ?? "openai-compatible",
-    maxSteps: opts.maxSteps ?? 40,
+    maxSteps: opts.maxSteps ?? 0, // 0 = no cap
     retryLimit: opts.retryLimit ?? 3,
     compactAt: opts.compactAt ?? 0.85,
     requestTimeoutMs: cfg.requestTimeoutMs ?? 120_000,
@@ -282,7 +282,9 @@ export async function* runTurnCore(
 
   let ptyState: PtyState | undefined;
   const turnReads = new Set<string>();
-  const maxSteps = opts.maxSteps ?? 40;
+  // 0 means no cap — a turn ends when the model stops calling tools, not when
+  // a counter runs out. The guard below only fires for a positive limit.
+  const maxSteps = opts.maxSteps ?? 0;
   const quiet = opts.quiet ?? false;
 
   // Warnings a hook raises after the turn's first yield cannot be yielded from
@@ -325,7 +327,7 @@ export async function* runTurnCore(
       yield { type: "step", n: step };
     }
 
-    if (step > maxSteps) {
+    if (maxSteps > 0 && step > maxSteps) {
       appendMessage(sessionId, { parent_id: null, role: "system", content: `fox-agent: step limit (${maxSteps}) reached mid-turn`, tokens: 16 });
       yield { type: "warn", message: `step limit ${maxSteps} reached` };
       yield { type: "done", reason: "max_steps" };

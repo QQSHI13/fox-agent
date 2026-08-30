@@ -22,7 +22,7 @@ describe("config cascade", () => {
     const cfg = loadConfig({ cwd: projectDir }, {});
     expect(cfg.model).toBe("gpt-4o-mini");
     expect(cfg.provider).toBe("openai-compatible");
-    expect(cfg.maxSteps).toBe(40);
+    expect(cfg.maxSteps).toBe(0); // no step cap by default
     expect(cfg.mcpServers).toEqual({});
   });
 
@@ -197,7 +197,7 @@ extensions = [".ex"]
     writeFileSync(join(projectDir, "fox-agent.toml"), "maxSteps = -5\n");
     const { loadConfig } = await import("../src/core/config.ts");
     const cfg = loadConfig({ cwd: projectDir }, {});
-    expect(cfg.maxSteps).toBe(40); // invalid -> default stands
+    expect(cfg.maxSteps).toBe(0); // invalid -> default (uncapped) stands
   });
 
   test("global config is found and outranked by the project file", async () => {

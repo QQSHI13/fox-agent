@@ -8,6 +8,7 @@ import {
   formatSessionList,
   helpText,
   relTime,
+  resolveSessionArg,
   runSlashCommand,
   sessionList,
   type HarnessState,
@@ -25,13 +26,16 @@ usage: fox [options] [-p "prompt"]
                    (reads stdin when no prompt given or stdin is piped)
   --json           with -p: emit NDJSON agent events instead of text
   --acp            serve the Agent Client Protocol on stdio (for Zed, acpx, ...)
-  -c, --continue   pick a session to continue (latest first; --last skips the picker)
-  --last           with -c: jump straight into this directory's latest session
+  -c, --continue [n|id]  continue a session: latest, a 'fox ls' index, or an id
+                   (no argument + a real terminal opens the picker)
   --no-tui         plain streaming mode (pipes)
   --model <id>     override model
-  --provider <p>   openai-compatible | anthropic
+  --provider <p>   openai-compatible | anthropic | google | plugin-registered
   --base-url <u>   override API base url
-  --max-steps <n>  turn step cap (default 40)
+  --max-steps <n>  turn step cap (default 0 = unlimited)
+  --retry-limit <n>        provider retry attempts (default 3)
+  --compact-at <f>       auto-compact at this fraction of the context window (default 0.85)
+  --request-timeout-ms <n>  abort a provider request silent this long (default 120000, 0 = never)
   --config <path>  config file override
   ls               list sessions
   help             show this
@@ -46,11 +50,27 @@ interface Parsed {
 function parseArgv(argv: string[]): Parsed {
   const flags = new Map<string, string | boolean>();
   const rest: string[] = [];
-  const VALUED = new Set(["--model", "--base-url", "--provider", "--max-steps", "--config", "-p", "--print"]);
+  const VALUED = new Set([
+    "--model",
+    "--base-url",
+    "--provider",
+    "--max-steps",
+    "--retry-limit",
+    "--compact-at",
+    "--request-timeout-ms",
+    "--config",
+    "-p",
+    "--print",
+  ]);
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a === "-c" || a === "--continue") flags.set("continue", true);
-    else if (a === "--last") flags.set("last", true);
+    if (a === "-c" || a === "--continue") {
+      // optionally followed by a session selector: `fox -c 2` or `fox -c <id>`.
+      // A following flag is never the selector, so `-c -p '...'` still parses.
+      const next = argv[i + 1];
+      if (next !== undefined && !next.startsWith("-")) flags.set("continue", next), i++;
+      else flags.set("continue", true);
+    }
     else if (a === "--no-tui") flags.set("no-tui", true);
     else if (a === "--json") flags.set("json", true);
     else if (a === "--acp") flags.set("acp", true);
@@ -66,6 +86,9 @@ function parseArgv(argv: string[]): Parsed {
   return { flags, rest };
 }
 
+/** informational startup lines — gray, not the alarming default stderr red */
+const note = (msg: string) => console.error(process.stderr.isTTY ? `\x1b[90m${msg}\x1b[0m` : msg);
+
 async function main() {
   const parsed = parseArgv(process.argv.slice(2));
 
@@ -78,6 +101,12 @@ async function main() {
     console.log(formatSessionList(sessionList()));
     return;
   }
+  // a positional argument that survived flag parsing is a command we don't
+  // have — refuse it rather than silently opening a TUI the user didn't ask for
+  if (parsed.rest.length) {
+    console.error(`fox-agent: unknown command '${parsed.rest[0]}' — try 'fox help'`);
+    process.exit(1);
+  }
 
   const cwd = process.cwd();
   const config = loadConfig({
@@ -87,6 +116,9 @@ async function main() {
     baseUrl: (parsed.flags.get("base-url") as string) || undefined,
     provider: (parsed.flags.get("provider") as Config["provider"]) || undefined,
     maxSteps: parsed.flags.has("max-steps") ? Number(parsed.flags.get("max-steps")) : undefined,
+    retryLimit: parsed.flags.has("retry-limit") ? Number(parsed.flags.get("retry-limit")) : undefined,
+    compactAt: parsed.flags.has("compact-at") ? Number(parsed.flags.get("compact-at")) : undefined,
+    requestTimeoutMs: parsed.flags.has("request-timeout-ms") ? Number(parsed.flags.get("request-timeout-ms")) : undefined,
   });
   const provider = {
     baseUrl: config.baseUrl,
@@ -111,7 +143,7 @@ async function main() {
     return;
   }
 
-  const cont = !!parsed.flags.get("continue");
+  const cont = parsed.flags.get("continue");
   const printMode = parsed.flags.has("print") || (!process.stdin.isTTY && !process.stdout.isTTY);
 
   // No key is not a startup refusal when there is a UI to fix it in: the TUI
@@ -126,18 +158,29 @@ async function main() {
 
   let sessionId: string;
   if (cont) {
-    const picked = await pickSession(cwd, {
-      // `-c --last`, `-c -p '...'` and `-c | cat` all need an answer without a
-      // keypress, so they keep the old behavior: this directory's most recent
-      // session. Only a real terminal gets the chooser.
-      interactive: !printMode && !parsed.flags.get("last") && !!process.stdout.isTTY && !!process.stdin.isTTY,
-      model: provider.model,
-    });
-    if (!picked) return; // the user cancelled out of the picker
-    sessionId = picked;
+    if (typeof cont === "string") {
+      // `fox -c 2` / `fox -c <id>`: resolve against the same list /sessions uses
+      const id = resolveSessionArg(cont);
+      if (!id) {
+        console.error(`fox-agent: no session '${cont}' — see 'fox ls'`);
+        process.exit(1);
+      }
+      note(`resuming ${id}`);
+      sessionId = id;
+    } else {
+      const picked = await pickSession(cwd, {
+        // `-c -p '...'` and `-c | cat` need an answer without a keypress, so they
+        // keep the old behavior: this directory's most recent session. Only a
+        // real terminal gets the chooser.
+        interactive: !printMode && !!process.stdout.isTTY && !!process.stdin.isTTY,
+        model: provider.model,
+      });
+      if (!picked) return; // the user cancelled out of the picker
+      sessionId = picked;
+    }
   } else {
     sessionId = createSession(cwd, provider.model).id;
-    console.error(`new session ${sessionId} (${provider.model})`);
+    note(`new session ${sessionId} (${provider.model})`);
   }
   getSession(sessionId); // warm
 
@@ -208,17 +251,13 @@ async function main() {
 }
 
 /**
- * Resolve `-c` to a session id, interactively when there is a terminal to do it in.
+ * Resolve a bare `-c` to a session id, interactively when there is a terminal
+ * to do it in. (A `-c` with a selector never reaches here — main resolves it.)
  *
- * `-c` used to mean exactly "this directory's newest session, or exit 1". That
- * is the right answer often enough to keep as the non-tty behavior, but it was
- * also the only way to get back into anything: picking the session before last
- * meant `fox ls`, copying an id, and `/sessions <id>` from inside a session you
- * did not want. The picker replaces that, and can fork or delete from the same
- * list rather than sending the user back to the shell.
- *
- * Returns null only when the user cancelled — the caller must then exit quietly
- * rather than opening something they did not choose.
+ * Non-tty callers get this directory's newest session, because that is the only
+ * answer that needs no keypress; a terminal gets the picker, which can fork or
+ * delete from the same list. Returns null only when the user cancelled — the
+ * caller must then exit quietly rather than opening something they didn't choose.
  */
 async function pickSession(cwd: string, opts: { interactive: boolean; model: string }): Promise<string | null> {
   if (!opts.interactive) {
@@ -227,7 +266,7 @@ async function pickSession(cwd: string, opts: { interactive: boolean; model: str
       console.error("fox-agent: no previous session in this directory");
       process.exit(1);
     }
-    console.error(`resuming ${s.id}`);
+    note(`resuming ${s.id}`);
     return s.id;
   }
 
@@ -237,7 +276,7 @@ async function pickSession(cwd: string, opts: { interactive: boolean; model: str
   const items = sessionList({ cwd });
   if (!items.length) {
     const id = createSession(cwd, opts.model).id;
-    console.error(`no previous session here — new session ${id} (${opts.model})`);
+    note(`no previous session here — new session ${id} (${opts.model})`);
     return id;
   }
 
@@ -251,7 +290,7 @@ async function pickSession(cwd: string, opts: { interactive: boolean; model: str
 
   switch (action.kind) {
     case "choose":
-      console.error(`resuming ${action.id}`);
+      note(`resuming ${action.id}`);
       return action.id;
     case "fork": {
       const fork = forkSession(action.id);
@@ -259,12 +298,12 @@ async function pickSession(cwd: string, opts: { interactive: boolean; model: str
         console.error("fox-agent: fork failed");
         process.exit(1);
       }
-      console.error(`forked ${action.id} -> ${fork.id}`);
+      note(`forked ${action.id} -> ${fork.id}`);
       return fork.id;
     }
     case "new": {
       const id = createSession(cwd, opts.model).id;
-      console.error(`new session ${id} (${opts.model})`);
+      note(`new session ${id} (${opts.model})`);
       return id;
     }
     default:

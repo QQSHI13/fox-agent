@@ -55,6 +55,7 @@ export interface Config {
    * throws a named error if it is not. Widened from a union for that reason.
    */
   provider: string;
+  /** max tool-call steps in one turn; 0 = unlimited (the default) */
   maxSteps: number;
   retryLimit: number;
   /** fraction of the model context window that triggers auto-compaction */
@@ -96,7 +97,7 @@ const DEFAULTS: Omit<Config, "projectInstructions"> = {
   baseUrl: "https://api.openai.com/v1",
   apiKey: "",
   provider: "openai-compatible",
-  maxSteps: 40,
+  maxSteps: 0, // 0 = no step cap; a turn ends when the model stops calling tools
   retryLimit: 3,
   compactAt: 0.85,
   requestTimeoutMs: 120_000,
@@ -203,7 +204,7 @@ function applyEnv(cfg: Config, env: Record<string, string | undefined>) {
   else if (/^claude/i.test(env.FOX_AGENT_MODEL ?? "")) cfg.provider = "anthropic";
   else if (/^gemini/i.test(env.FOX_AGENT_MODEL ?? "")) cfg.provider = "google";
   const steps = Number(env.FOX_AGENT_MAX_STEPS);
-  if (Number.isFinite(steps) && steps > 0) cfg.maxSteps = Math.floor(steps);
+  if (Number.isFinite(steps) && steps >= 0) cfg.maxSteps = Math.floor(steps);
   const at = Number(env.FOX_AGENT_COMPACT_AT);
   if (Number.isFinite(at) && at > 0 && at <= 1) cfg.compactAt = at;
   const retries = Number(env.FOX_AGENT_RETRY_LIMIT);
@@ -233,7 +234,7 @@ function applyTable(cfg: Config, t: Record<string, unknown> | null, scope: "glob
   // any non-empty string: a plugin may register its own provider name, and
   // `resolveChat` reports one it cannot resolve
   if (typeof t.provider === "string" && t.provider.trim()) cfg.provider = t.provider.trim();
-  if (typeof t.maxSteps === "number" && t.maxSteps > 0) cfg.maxSteps = Math.floor(t.maxSteps);
+  if (typeof t.maxSteps === "number" && t.maxSteps >= 0) cfg.maxSteps = Math.floor(t.maxSteps);
   if (typeof t.retryLimit === "number" && t.retryLimit >= 0) cfg.retryLimit = Math.floor(t.retryLimit);
   if (typeof t.compactAt === "number" && t.compactAt > 0 && t.compactAt <= 1) cfg.compactAt = t.compactAt;
   if (typeof t.requestTimeoutMs === "number" && t.requestTimeoutMs >= 0) cfg.requestTimeoutMs = Math.floor(t.requestTimeoutMs);
@@ -380,11 +381,12 @@ export function loadConfig(
   if (overrides.baseUrl) merged.baseUrl = overrides.baseUrl.replace(/\/$/, "");
   if (overrides.apiKey) merged.apiKey = overrides.apiKey;
   if (overrides.provider) merged.provider = overrides.provider;
-  if (overrides.maxSteps) merged.maxSteps = overrides.maxSteps;
+  if (overrides.maxSteps !== undefined) merged.maxSteps = overrides.maxSteps;
   if (overrides.retryLimit !== undefined) merged.retryLimit = overrides.retryLimit;
   if (overrides.compactAt !== undefined) merged.compactAt = overrides.compactAt;
+  if (overrides.requestTimeoutMs !== undefined) merged.requestTimeoutMs = overrides.requestTimeoutMs;
 
-  merged.maxSteps = Math.min(200, Math.max(1, merged.maxSteps));
+  merged.maxSteps = Math.max(0, Math.floor(merged.maxSteps));
   merged.projectInstructions = loadProjectInstructions(cwd);
 
   if (!merged.model) throw new ConfigError("no model configured");

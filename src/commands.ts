@@ -262,12 +262,12 @@ export function formatSessionList(items: SessionListItem[]): string {
 
 /**
  * Accept either a session id or a 1-based index into `/sessions`, returning null
- * if neither resolves. Shared so `/sessions <n>` and `/delete <n>` cannot
- * disagree about what "2" means — a mismatch there would delete a different
- * session than the one the list showed. Both resolve against the same
+ * if neither resolves. Shared so `/sessions <n>`, `/delete <n>` and `fox -c <n>`
+ * cannot disagree about what "2" means — a mismatch there would delete or resume
+ * a different session than the one the list showed. Both resolve against the same
  * recency-ordered list the picker shows.
  */
-function resolveSessionArg(arg: string): string | null {
+export function resolveSessionArg(arg: string): string | null {
   const n = Number(arg);
   if (Number.isInteger(n) && n >= 1) return listSessions(50)[n - 1]?.id ?? null;
   return getSession(arg) ? arg : null;

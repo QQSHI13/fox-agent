@@ -133,20 +133,31 @@ describe("session selection from the CLI", () => {
     expect(errLines(r.err)).toHaveLength(1);
   }, 30_000);
 
-  test("--last is accepted and does not become a stray prompt", () => {
+  test("-c takes a list index or id, and rejects an unknown one", () => {
     runCli(["-p", "/usage"]);
-    const r = runCli(["-c", "--last", "-p", "/usage"]);
-    expect(r.code).toBe(0);
-    expect(r.err).toContain("resuming ");
-    // an unknown flag exits 1 before anything else, so this proves it parsed
-    expect(r.err).not.toContain("unknown flag");
+    const first = runCli(["ls"]).out.trim().split(/\s+/)[1];
+    // index 1 = most recent — same numbering /sessions and /delete use
+    const byIndex = runCli(["-c", "1", "-p", "/usage"]);
+    expect(byIndex.code).toBe(0);
+    expect(byIndex.err).toContain(`resuming ${first}`);
+    const byId = runCli(["-c", first, "-p", "/usage"]);
+    expect(byId.code).toBe(0);
+    const bad = runCli(["-c", "999", "-p", "/usage"]);
+    expect(bad.code).toBe(1);
+    expect(bad.err).toContain("no session '999'");
   }, 30_000);
 
-  test("help documents the interactive -c and no longer mentions /resume", () => {
+  test("an unknown subcommand exits 1 instead of opening the TUI", () => {
+    const r = runCli(["frobnicate"]);
+    expect(r.code).toBe(1);
+    expect(r.err).toContain("unknown command 'frobnicate'");
+  }, 30_000);
+
+  test("help documents -c's optional selector and no longer mentions /resume or --last", () => {
     const r = runCli(["help"]);
     expect(r.code).toBe(0);
-    expect(r.out).toContain("--last");
-    expect(r.out).toMatch(/-c, --continue\s+pick a session/);
+    expect(r.out).not.toContain("--last");
+    expect(r.out).toMatch(/-c, --continue \[n\|id\]/);
     expect(r.out).not.toContain("/resume");
   }, 30_000);
 });

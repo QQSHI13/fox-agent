@@ -27,7 +27,8 @@ Headless examples:
 fox -p "summarize this repo's layout"            # one-shot answer
 fox -p "..." --json                              # NDJSON agent events
 echo "explain src/loop/turn.ts" | fox            # piped prompt
-fox -c                                           # resume latest session here
+fox -c                                           # resume latest session here (picker in a terminal)
+fox -c 2                                         # resume by 'fox ls' index, or by id
 fox --acp                                        # serve ACP on stdio (see below)
 ```
 
@@ -72,8 +73,9 @@ ten minutes is fine, while one that goes quiet past the window fails with a retr
 
 ```toml
 model = "kimi-k2"
-maxSteps = 40
+maxSteps = 0              # turn step cap; 0 (the default) = unlimited
 compactAt = 0.85
+retryLimit = 3
 requestTimeoutMs = 120000
 diagnostics = true          # report type errors after each edit (default true)
 
