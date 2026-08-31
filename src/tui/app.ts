@@ -74,13 +74,21 @@ const SPIN = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "�
 /** Startup taglines; one is picked at random per launch. */
 const BANNERS = [
   "agent-controlled context",
-  "every keystroke accounted for",
   "context is a file — edit it",
+  "every keystroke accounted for",
   "full machine control, no permission theater",
   "small harness, sharp teeth",
   "the context window is yours to prune",
   "real protocols, real processes",
   "delegate deep, prune deep",
+  "your terminal, your tokens",
+  "a pty is a tool, not a jail",
+  "undo is a first-class op",
+  "the agent reads its own context budget",
+  "plugins over patches",
+  "one binary, no runtime tax",
+  "selection, sessions, and sqlite",
+  "scriptable to the bone",
 ];
 const HINT_WINDOW = 5;
 /** rows the session overlay may occupy, excluding its title and footer */
@@ -378,6 +386,16 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     // bar caches per statsRev, and an idle session never re-polls on its own
     statsRev++;
     markDirty();
+    if (res.task) {
+      const task = res.task;
+      void (async () => {
+        try {
+          push("info", await task());
+        } catch (e) {
+          push("error", `✗ ${(e as Error).message ?? e}`);
+        }
+      })();
+    }
     if (res.exit) gracefulExit(0);
   }
 
@@ -762,8 +780,10 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   }
 
   async function dispatch(raw: string, lit = false) {
+    // emptiness is judged on the RAW buffer, not the trim: a message of pure
+    // whitespace is still a message the user chose to send
+    if (!raw) return;
     const t = raw.trim();
-    if (!t) return;
     if (!lit && t.startsWith("!")) return void runShell(t.slice(1).trim());
     if (!lit && t.startsWith("/")) return runSlash(t);
     await runAgent(raw);
@@ -788,8 +808,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     buf = [];
     cur = 0; // a stale index past the new (empty) buffer crashes graphemeBack on the next backspace
     markDirty();
+    // raw length, not trim: pure whitespace is sendable on purpose
+    if (!raw) return;
     const t = raw.trim();
-    if (!t) return;
 
     // A partial command name resolves to the highlighted hint. Only when there
     // is no argument yet: `/de foo` must not be silently rewritten, since the
@@ -1878,7 +1899,6 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       // survive the picker reading every other session's usage
       state.interactive = true;
       pinSession(state.sessionId);
-      push("info", `fox-agent v${VERSION} — ${BANNERS[Math.floor(Math.random() * BANNERS.length)]}`);
 
       const dec = createDecoder(onKey);
       term.onKey((data) => dec.feed(data));
@@ -1901,9 +1921,21 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           process.exit(1);
         }
       }
+      // The startup block comes AFTER refresh() — replay replaces the item
+      // list, so anything pushed before it never existed (the banner vanished
+      // that way once).
+      push("info", `fox-agent v${VERSION} — ${BANNERS[Math.floor(Math.random() * BANNERS.length)]}`);
+      push("toolbody", `session ${state.sessionId} · ${state.cwd}`);
       if (!state.provider.apiKey)
-        push("error", "no API key configured — /login provider=<p> key=<k> sets one up now (saved to ~/.config/fox-agent/config.toml)");
-      push("toolbody", `model ${state.provider.model} · /commands · ! shell · \\ newline · esc interrupt`);
+        push("error", "no API key configured — /login opens the setup wizard (saved to ~/.config/fox-agent/config.toml)");
+      const info = lookupModel(state.provider.model);
+      push(
+        "toolbody",
+        `model ${state.provider.model} (${Math.round(info.contextWindow / 1000)}k ctx) · ${state.provider.provider ?? "openai-compatible"}` +
+          `${state.provider.baseUrl && !/api\.openai\.com/.test(state.provider.baseUrl) ? ` · ${state.provider.baseUrl}` : ""}`,
+      );
+      push("toolbody", "enter send · \\ newline · ! shell · / commands · esc interrupt · ctrl+t thinking · drag/dbl-click select");
+      push("toolbody", "/login setup · /model switch · /sessions resume · /usage tokens · /prune context · /upgrade update · /help all");
       statsRev++;
       markDirty();
 

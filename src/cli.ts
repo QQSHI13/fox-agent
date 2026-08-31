@@ -38,6 +38,7 @@ usage: fox [options] [-p "prompt"]
   --request-timeout-ms <n>  abort a provider request silent this long (default 120000, 0 = never)
   --config <path>  config file override
   ls               list sessions
+  upgrade [--beta|<version>]  self-update from GitHub releases
   help             show this
 
 slash commands inside a session: /help`;
@@ -99,6 +100,22 @@ async function main() {
     // here looks stale there too — this used to be its own loop over
     // `created_at` and disagreed with every other listing about ordering
     console.log(formatSessionList(sessionList()));
+    return;
+  }
+  if (parsed.rest[0] === "upgrade") {
+    const sel = parsed.rest[1];
+    const opts: import("./core/upgrade.ts").UpgradeOptions =
+      sel === "--beta" || sel === "beta" ? { beta: true }
+      : sel ? { to: sel.replace(/^v/, "") }
+      : {};
+    try {
+      const { upgrade } = await import("./core/upgrade.ts");
+      const r = await upgrade(opts, console.log);
+      console.log(r.changed ? `upgraded to v${r.version} — restart fox to run it` : `already on v${r.version}`);
+    } catch (e) {
+      console.error(`fox-agent error: ${errMsg(e)}`);
+      process.exitCode = 1;
+    }
     return;
   }
   // a positional argument that survived flag parsing is a command we don't
@@ -242,6 +259,15 @@ async function main() {
       else {
         const res = runSlashCommand(trimmed, state);
         if (res?.output) console.log(jsonMode ? JSON.stringify({ type: "command", output: res.output }) : res.output);
+        if (res?.task) {
+          try {
+            const out = await res.task();
+            console.log(jsonMode ? JSON.stringify({ type: "command", output: out }) : out);
+          } catch (e) {
+            console.error(`fox-agent error: ${errMsg(e)}`);
+            process.exitCode = 1;
+          }
+        }
       }
     } catch (e) {
       console.error(`fox-agent error: ${errMsg(e)}`);
@@ -380,6 +406,13 @@ async function plainLoop(state: HarnessState) {
       else {
         const res = runSlashCommand(prompt, state);
         if (res?.output) console.log(res.output);
+        if (res?.task) {
+          try {
+            console.log(await res.task());
+          } catch (e) {
+            console.error(`fox-agent error: ${errMsg(e)}`);
+          }
+        }
         if (res?.newSessionId) state.sessionId = res.newSessionId;
         if (res?.exit) return;
       }

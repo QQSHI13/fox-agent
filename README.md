@@ -21,6 +21,12 @@ bun install && bun run build   # -> bin/fox
 FOX_AGENT_BASE_URL=... FOX_AGENT_API_KEY=... FOX_AGENT_MODEL=... bin/fox
 ```
 
+Prebuilt binaries (linux/mac/windows, x64/arm64) are on the GitHub Releases page. A binary install
+self-updates with `fox upgrade` (`fox upgrade --beta` for the latest prerelease, `fox upgrade <version>`
+to pin, `/upgrade` inside the TUI). Downloads are SHA-256 verified against the release's `SHA256SUMS`,
+and the previous binary is kept next to the new one as `.fox-previous`. Source checkouts refuse
+`fox upgrade` — there `git pull && bun run build` is the upgrade path.
+
 Headless examples:
 
 ```bash

@@ -69,6 +69,12 @@ export interface CommandResult {
   picker?: PickerRequest;
   /** ask the user a series of questions, then `run` with the answers */
   prompt?: PromptRequest;
+  /**
+   * Async work the host runs in the background; its returned lines are shown
+   * when it settles. For commands that fetch/download (`/upgrade`) — the
+   * command layer itself stays synchronous.
+   */
+  task?: () => Promise<string>;
 }
 
 /**
@@ -127,6 +133,13 @@ export const COMMANDS: CommandSpec[] = [
   { name: "/todos", desc: "show agent todo list" },
   { name: "/usage", desc: "token totals + budget" },
   { name: "/model", desc: "show or switch model (persists to session)", usage: "[name]", arg: true },
+  {
+    name: "/upgrade",
+    desc: "upgrade fox-agent to the latest release",
+    usage: "[beta|<version>]",
+    arg: true,
+    help: "bare: latest stable; 'beta': newest release incl. betas; a version installs that tag. TUI offers a chooser",
+  },
   {
     name: "/login",
     desc: "set provider credentials, live and in the global config",
@@ -655,6 +668,52 @@ export function runSlashCommand(input: string, state: HarnessState): CommandResu
         };
       }
       return applyLogin(fields, state);
+    }
+
+    case "/upgrade": {
+      const upgradeTask = (opts: import("./core/upgrade.ts").UpgradeOptions) => async () => {
+        const { upgrade } = await import("./core/upgrade.ts");
+        const lines: string[] = [];
+        const r = await upgrade(opts, (l) => lines.push(l));
+        lines.push(r.changed ? `upgraded to v${r.version} — restart fox to run it` : `already on v${r.version}`);
+        return lines.join("\n");
+      };
+      if (arg === "beta") return { handled: true, task: upgradeTask({ beta: true }) };
+      if (arg === "list") {
+        return {
+          handled: true,
+          task: async () => {
+            const { fetchReleases } = await import("./core/upgrade.ts");
+            const rs = await fetchReleases(10);
+            if (!rs.length) return "no releases yet";
+            return rs.map((r) => `${r.tag}${r.prerelease ? " (beta)" : ""} — ${r.publishedAt}`).join("\n");
+          },
+        };
+      }
+      if (arg) return { handled: true, task: upgradeTask({ to: arg }) };
+      // bare: the TUI picks a channel, other hosts get the stable default
+      if (state.interactive) {
+        return {
+          handled: true,
+          prompt: {
+            title: "upgrade fox-agent",
+            steps: [
+              {
+                key: "channel",
+                label: "channel",
+                kind: "select",
+                options: [
+                  { value: "stable", label: "latest stable release" },
+                  { value: "beta", label: "newest release, betas included" },
+                ],
+                initial: "stable",
+              },
+            ],
+            run: (answers) => ({ handled: true, task: upgradeTask({ beta: answers.channel === "beta" }) }),
+          },
+        };
+      }
+      return { handled: true, task: upgradeTask({}) };
     }
 
     case "/exit":
