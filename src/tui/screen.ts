@@ -47,10 +47,17 @@ export class Screen {
   private prevHash: Float64Array = new Float64Array(0);
   private styles: Style[] = [];
   private styleIdx = new Map<string, number>();
+  /** interned id of the empty style, so cleared cells never inherit a stale one */
+  private defSty = -1;
   private cursorRow = -1;
   private _lastDirty = false;
 
   constructor(private term: Term) {}
+
+  private defaultStyle(): number {
+    if (this.defSty < 0) this.defSty = this.sgr({});
+    return this.defSty;
+  }
 
   sgr(s: Style): number {
     const key = `${s.fg ?? ""}|${s.bg ?? ""}|${s.bold ? 1 : 0}|${s.italic ? 1 : 0}`;
@@ -66,7 +73,7 @@ export class Screen {
     this.w = w;
     this.h = h;
     this.chars = new Array(w * h).fill(undefined);
-    this.sty = new Uint16Array(w * h);
+    this.sty = new Uint16Array(w * h).fill(this.defaultStyle());
     this.prevHash = new Float64Array(h).fill(NaN);
     this.cursorRow = -1;
   }
@@ -77,6 +84,9 @@ export class Screen {
 
   clear() {
     this.chars.fill(undefined);
+    // styles too: a cell's style must come from THIS frame's fills, or text()
+    // inheriting a background would pick up one from three frames ago
+    this.sty.fill(this.defaultStyle());
   }
 
   private rowHash(y: number): number {
@@ -94,17 +104,25 @@ export class Screen {
 
   text(x: number, y: number, str: string, st: number): number {
     if (y < 0 || y >= this.h) return x;
+    const want = this.styles[st] ?? {};
     let cx = x;
     for (const ch of str) {
       const cw = charWidth(ch.codePointAt(0)!);
       if (cw === 0) continue;
       if (cx >= this.w) break;
       const i = y * this.w + cx;
+      // Text painted over a filled row keeps the fill's background: compositing
+      // belongs in the grid, not in terminal SGR state that leaks sideways.
+      let finalSt = st;
+      if (!want.bg) {
+        const curBg = (this.styles[this.sty[i]] ?? {}).bg;
+        if (curBg) finalSt = this.sgr({ ...want, bg: curBg });
+      }
       this.chars[i] = ch;
-      this.sty[i] = st;
+      this.sty[i] = finalSt;
       if (cw === 2 && cx + 1 < this.w) {
         this.chars[i + 1] = "";
-        this.sty[i + 1] = st;
+        this.sty[i + 1] = finalSt;
         cx += 2;
       } else {
         cx += cw;

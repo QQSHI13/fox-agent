@@ -127,3 +127,50 @@ describe("Screen.restyle: selection highlight over painted cells", () => {
     expect(scr.dumpGrid().split("\n")[0]).toBe("␣".repeat(10));
   });
 });
+
+describe("Screen compositing: text over fills, and SGR transitions", () => {
+  test("text over a fillRow keeps the fill's background in the grid", async () => {
+    const { Screen } = await import("../src/tui/screen.ts");
+    const term = new FakeTerm();
+    const scr = new Screen(term as any);
+    scr.resize(10, 1);
+    const fill = scr.sgr({ bg: "#1f2335" });
+    const dim = scr.sgr({ fg: "#565f89" }); // no bg — must inherit the fill
+    scr.fillRow(0, 0, 10, fill);
+    scr.text(1, 0, "hi", dim);
+    scr.flush();
+    // the 'h' must be emitted with BOTH the fill bg and the dim fg
+    const cell = term.buf.split("hi")[0];
+    expect(cell).toContain("48;2;31;35;53"); // #1f2335 as bg
+  });
+
+  test("a styled run followed by default-bg cells RESETS, never leaks the bg", async () => {
+    const { Screen } = await import("../src/tui/screen.ts");
+    const term = new FakeTerm();
+    const scr = new Screen(term as any);
+    scr.resize(12, 1);
+    const sel = scr.sgr({ bg: "#364a82" });
+    scr.text(0, 0, "ab", sel);
+    scr.text(2, 0, "cdef", scr.sgr({}));
+    scr.flush();
+    // between "ab" and "cdef" there must be a reset — this was the selection
+    // highlight leaking to end-of-line
+    expect(term.buf).toContain("ab\x1b[0m");
+  });
+
+  test("clear() drops styles too: a later frame cannot inherit a stale fill", async () => {
+    const { Screen } = await import("../src/tui/screen.ts");
+    const term = new FakeTerm();
+    const scr = new Screen(term as any);
+    scr.resize(10, 1);
+    const fill = scr.sgr({ bg: "#1f2335" });
+    const dim = scr.sgr({ fg: "#565f89" });
+    scr.fillRow(0, 0, 10, fill);
+    scr.flush();
+    term.buf = "";
+    scr.clear(); // no fillRow this frame
+    scr.text(1, 0, "hi", dim);
+    scr.flush();
+    expect(term.buf).not.toContain("48;2;31;35;53");
+  });
+});
