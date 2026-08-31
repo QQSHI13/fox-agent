@@ -284,4 +284,15 @@ describe("config failures are loud", () => {
     const { loadConfig } = await import("../src/core/config.ts");
     expect(() => loadConfig({ cwd: projectDir }, {})).not.toThrow();
   });
+
+  test("unknown keys and a non-URL baseUrl warn instead of failing silently", async () => {
+    const { loadConfig } = await import("../src/core/config.ts");
+    writeFileSync(join(projectDir, "fox-agent.toml"), 'baseUrl = "not-a-url"\nmaxStep = 5\nmodel = "m1"\n');
+    const cfg = loadConfig({ cwd: projectDir }, {});
+    expect(cfg.model).toBe("m1");
+    // bad baseUrl ignored, default kept
+    expect(cfg.baseUrl).toBe("https://api.openai.com/v1");
+    expect(cfg.warnings.some((w) => w.includes("unknown key 'maxStep'"))).toBe(true);
+    expect(cfg.warnings.some((w) => w.includes("not an http(s) URL"))).toBe(true);
+  });
 });

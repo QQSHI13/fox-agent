@@ -195,7 +195,12 @@ function readTextFile(path: string, cap = 8192): string {
 
 function applyEnv(cfg: Config, env: Record<string, string | undefined>) {
   cfg.model = env.FOX_AGENT_MODEL ?? cfg.model;
-  cfg.baseUrl = (env.FOX_AGENT_BASE_URL ?? env.OPENAI_BASE_URL ?? cfg.baseUrl).replace(/\/$/, "");
+  const envBase = env.FOX_AGENT_BASE_URL ?? env.OPENAI_BASE_URL;
+  if (envBase) {
+    const u = envBase.replace(/\/$/, "");
+    if (/^https?:\/\//.test(u)) cfg.baseUrl = u;
+    else cfg.warnings.push(`env baseUrl '${envBase}' is not an http(s) URL — ignored`);
+  }
   cfg.apiKey = env.FOX_AGENT_API_KEY ?? env.OPENAI_API_KEY ?? env.ANTHROPIC_API_KEY ?? env.GEMINI_API_KEY ?? env.GOOGLE_API_KEY ?? cfg.apiKey;
   // any string is accepted now that a plugin may register a provider name;
   // `resolveChat` is what reports an unresolvable one, with the list of what is
@@ -226,10 +231,24 @@ function applyEnv(cfg: Config, env: Record<string, string | undefined>) {
  * comment on `Config`), and a source-blind version of this function could not
  * tell a global file from a project one — both are applied through here.
  */
+const KNOWN_KEYS = new Set([
+  "model", "baseUrl", "apiKey", "provider", "maxSteps", "retryLimit", "compactAt",
+  "requestTimeoutMs", "diagnostics", "mcpServers", "agents", "lsp", "plugins",
+]);
+
 function applyTable(cfg: Config, t: Record<string, unknown> | null, scope: "global" | "project") {
   if (!t) return;
+  // a typo'd key used to vanish silently, leaving the user on defaults with no
+  // idea why — name it the way a project-file plugin entry already is
+  for (const k of Object.keys(t)) {
+    if (!KNOWN_KEYS.has(k)) cfg.warnings.push(`${scope} config: unknown key '${k}' — ignored (typo?)`);
+  }
   if (typeof t.model === "string") cfg.model = t.model;
-  if (typeof t.baseUrl === "string") cfg.baseUrl = t.baseUrl.replace(/\/$/, "");
+  if (typeof t.baseUrl === "string") {
+    const u = t.baseUrl.replace(/\/$/, "");
+    if (/^https?:\/\//.test(u)) cfg.baseUrl = u;
+    else cfg.warnings.push(`${scope} config: baseUrl '${t.baseUrl}' is not an http(s) URL — ignored`);
+  }
   if (typeof t.apiKey === "string") cfg.apiKey = t.apiKey;
   // any non-empty string: a plugin may register its own provider name, and
   // `resolveChat` reports one it cannot resolve

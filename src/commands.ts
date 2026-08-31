@@ -20,6 +20,7 @@ import { renderTodos, getTodos } from "./tools/todo.ts";
 import type { Config } from "./core/config.ts";
 import { saveGlobalConfig } from "./core/config.ts";
 import { availableProviders } from "./providers/index.ts";
+import { ensureFreshCatalog, presetById, providerPresets } from "./providers/modelsdev.ts";
 import type { UiStep } from "./core/ui.ts";
 
 export interface HarnessState {
@@ -289,8 +290,26 @@ interface LoginFields {
  * cannot drift apart on what "save and apply" means.
  */
 function applyLogin(fields: LoginFields, state: HarnessState): CommandResult {
+  // A preset id (tokenguard, openrouter, …) expands to its provider format,
+  // default endpoint and conventional env key before validation.
   if (fields.provider && !availableProviders().includes(fields.provider)) {
-    return { handled: true, output: `unknown provider "${fields.provider}" — available: ${availableProviders().join(", ")}` };
+    const preset = presetById(fields.provider);
+    if (preset) {
+      fields.provider = preset.format;
+      if (!fields.baseUrl && preset.api) fields.baseUrl = preset.api;
+      if (!fields.apiKey) {
+        for (const name of preset.env) {
+          const v = process.env[name];
+          if (v) {
+            fields.apiKey = v;
+            break;
+          }
+        }
+      }
+    }
+  }
+  if (fields.provider && !availableProviders().includes(fields.provider)) {
+    return { handled: true, output: `unknown provider "${fields.provider}" — available: ${availableProviders().join(", ")}, or a /login preset` };
   }
   const path = saveGlobalConfig(fields, state.configPath);
   // take effect immediately — the point is not having to restart
@@ -314,9 +333,32 @@ function applyLogin(fields: LoginFields, state: HarnessState): CommandResult {
  * The `/login` wizard for interactive hosts: ask, don't make them read /help.
  * kv args from the command line prefill the steps, so `/login provider=google`
  * still lands in the wizard with that choice already made.
+ *
+ * Provider choices come from the models.dev catalog (cached, refreshed in the
+ * background) plus local presets like tokenguard; picking one prefills the
+ * endpoint, names the env var an empty key falls back to, and turns the model
+ * step into a list of what that provider actually serves.
  */
 function loginPrompt(state: HarnessState, pre: LoginFields = {}): PromptRequest {
   const p = state.provider;
+  ensureFreshCatalog();
+  const presets = providerPresets();
+  // which preset does the current config most look like? An exact endpoint
+  // match first (tokenguard's local URL, openrouter, …), then the canonical
+  // preset for the configured format — but only when the endpoint is also the
+  // default one, else the honest answer is "custom".
+  const format = p.provider ?? "openai-compatible";
+  const canonical: Record<string, string> = {
+    "openai-compatible": "openai",
+    "openai-responses": "openai-responses",
+    anthropic: "anthropic",
+    google: "google",
+  };
+  const byEndpoint = presets.find((x) => x.api && x.api === p.baseUrl);
+  const canon = presets.find((x) => x.id === canonical[format]);
+  const currentPreset =
+    canon && canon.api === p.baseUrl ? canon.id : (byEndpoint?.id ?? (canon && !canon.api ? canon.id : "custom"));
+  const presetOf = (a: Record<string, string>) => presets.find((x) => x.id === a.provider);
   return {
     title: "login — leave a field empty to keep the current value",
     steps: [
@@ -324,22 +366,69 @@ function loginPrompt(state: HarnessState, pre: LoginFields = {}): PromptRequest 
         key: "provider",
         label: "provider",
         kind: "select",
-        options: availableProviders().map((v) => ({ value: v, label: v })),
-        initial: pre.provider ?? p.provider ?? "openai-compatible",
+        options: [
+          ...presets.map((x) => ({ value: x.id, label: x.api ? `${x.name} — ${x.api}` : x.name })),
+          { value: "custom", label: "custom (any provider format fox-agent speaks)" },
+        ],
+        initial: pre.provider ?? currentPreset,
       },
-      { key: "apiKey", label: "api key", kind: "text", secret: true, hint: "empty = keep current" },
-      { key: "baseUrl", label: "base url", kind: "text", initial: pre.baseUrl ?? p.baseUrl, hint: "empty = keep current" },
-      { key: "model", label: "model", kind: "text", initial: pre.model ?? p.model, hint: "empty = keep current" },
+      {
+        key: "apiKey",
+        label: "api key",
+        kind: "text",
+        secret: true,
+        hint: (a) => {
+          const env = presetOf(a)?.env ?? [];
+          return env.length ? `empty = keep current / $${env[0]}` : "empty = keep current (none needed)";
+        },
+      },
+      {
+        key: "baseUrl",
+        label: "base url",
+        kind: "text",
+        initial: (a) => pre.baseUrl ?? presetOf(a)?.api ?? p.baseUrl,
+        hint: "empty = keep current",
+      },
+      {
+        key: "model",
+        label: "model",
+        kind: "select",
+        options: (a) => {
+          const models = presetOf(a)?.models ?? [];
+          const opts = models.map((m) => ({
+            value: m.id,
+            label: m.context ? `${m.id} (${Math.round(m.context / 1000)}k ctx)` : m.id,
+          }));
+          return [...opts, { value: "__custom", label: "✎ type a model id…" }];
+        },
+        initial: (a) => {
+          const cur = pre.model ?? p.model;
+          const models = presetOf(a)?.models ?? [];
+          return models.some((m) => m.id === cur) ? cur : "__custom";
+        },
+      },
+      {
+        key: "modelCustom",
+        label: "model id",
+        kind: "text",
+        allowEmpty: true,
+        initial: pre.model ?? p.model,
+        hint: "only if you picked “type a model id”",
+      },
     ],
     run: (answers, s) => {
-      // the select always yields a provider; empty text answers mean "keep"
-      const fields: LoginFields = { provider: answers.provider };
-      for (const k of ["apiKey", "baseUrl", "model"] as const) {
+      // "custom" means an arbitrary openai-compatible endpoint; other formats
+      // can still be named explicitly via kv args (/login provider=anthropic …)
+      const fields: LoginFields = { provider: answers.provider === "custom" ? "openai-compatible" : answers.provider };
+      for (const k of ["apiKey", "baseUrl"] as const) {
         const v = answers[k]?.trim();
         if (v) fields[k] = v;
       }
+      const model = answers.model === "__custom" ? answers.modelCustom?.trim() : answers.model;
+      if (model) fields.model = model;
       // kv args the user left untouched in the wizard still count as entered
       if (pre.apiKey && !fields.apiKey) fields.apiKey = pre.apiKey;
+      if (pre.model && !fields.model) fields.model = pre.model;
       return applyLogin(fields, s);
     },
   };

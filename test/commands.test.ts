@@ -231,6 +231,21 @@ describe("/login", () => {
     expect(text).toContain('provider = "google"');
     expect(text).toContain('apiKey = "gk-1"');
   });
+
+  test("a preset id expands to its format and endpoint — tokenguard needs no key", async () => {
+    const t = await setup();
+    const cfgPath = join(dir, "config.toml");
+    const s = t.createSession("/w", "m1");
+    const state = { sessionId: s.id, cwd: "/w", provider: { baseUrl: "http://x", apiKey: "", model: "m" } as any, configPath: cfgPath };
+
+    const done = t.runSlashCommand("/login provider=tokenguard model=qwen3-max", state)!;
+    expect(done.output).toContain("saved");
+    expect(state.provider.provider).toBe("openai-compatible");
+    expect(state.provider.baseUrl).toBe("http://127.0.0.1:3742/v1");
+    expect(state.provider.model).toBe("qwen3-max");
+    const text = readFileSync(cfgPath, "utf8");
+    expect(text).toContain('baseUrl = "http://127.0.0.1:3742/v1"');
+  });
 });
 
 describe("interactive wizards", () => {
@@ -246,12 +261,12 @@ describe("interactive wizards", () => {
       interactive: true,
     };
 
-    // bare: wizard with a provider select starting on the current provider
+    // bare: wizard with a provider select; an unknown endpoint maps to "custom"
     const bare = t.runSlashCommand("/login", state)!;
     expect(bare.prompt).toBeDefined();
-    expect(bare.prompt!.steps.map((st) => st.key)).toEqual(["provider", "apiKey", "baseUrl", "model"]);
+    expect(bare.prompt!.steps.map((st) => st.key)).toEqual(["provider", "apiKey", "baseUrl", "model", "modelCustom"]);
     expect(bare.prompt!.steps[0].kind).toBe("select");
-    expect(bare.prompt!.steps[0].initial).toBe("openai-compatible");
+    expect(bare.prompt!.steps[0].initial).toBe("custom");
     expect(bare.prompt!.steps[1].secret).toBe(true);
 
     // kv args: still the wizard, but prefilled — nothing applied yet
@@ -260,7 +275,7 @@ describe("interactive wizards", () => {
     expect(existsSync(cfgPath)).toBe(false);
 
     // the wizard's run applies the answers like kv pairs would
-    const res = pre.prompt!.run({ provider: "google", apiKey: "gk-9", baseUrl: "", model: "" }, state);
+    const res = pre.prompt!.run({ provider: "google", apiKey: "gk-9", baseUrl: "", model: "", modelCustom: "" }, state);
     expect(res.output).toContain("saved");
     expect(state.provider.provider).toBe("google");
     expect(state.provider.apiKey).toBe("gk-9");

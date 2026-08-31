@@ -19,16 +19,26 @@ export interface UiStep {
   /** shown as the input prompt, e.g. "api key" */
   label: string;
   kind: "text" | "select";
-  /** select: the choices; `value` is what the answers map gets, `label` what the user sees */
-  options?: { value: string; label: string }[];
-  /** text prefill, or the select value to start on */
-  initial?: string;
-  /** dim suffix, e.g. "empty = keep current" */
-  hint?: string;
+  /**
+   * select: the choices; `value` is what the answers map gets, `label` what
+   * the user sees. May be a function of the answers collected so far, so a
+   * later step can offer choices that depend on an earlier one (a model list
+   * for the provider just picked, say).
+   */
+  options?: { value: string; label: string }[] | ((answers: Record<string, string>) => { value: string; label: string }[]);
+  /** text prefill, or the select value to start on; may also depend on earlier answers */
+  initial?: string | ((answers: Record<string, string>) => string | undefined);
+  /** dim suffix, e.g. "empty = keep current"; may also depend on earlier answers */
+  hint?: string | ((answers: Record<string, string>) => string | undefined);
   /** mask typed characters (api keys) */
   secret?: boolean;
   /** default true; when false an empty answer flashes and stays on the step */
   allowEmpty?: boolean;
+}
+
+/** Resolve a possibly-dynamic step field against the answers so far. */
+export function resolveField<T>(field: T | ((answers: Record<string, string>) => T) | undefined, answers: Record<string, string>): T | undefined {
+  return typeof field === "function" ? (field as (a: Record<string, string>) => T)(answers) : field;
 }
 
 /**

@@ -58,11 +58,15 @@ than being silently ignored. (Pre-1.0 `.fox.json` is rejected with a message tel
 Project instructions are loaded from every `AGENTS.md` / `CLAUDE.md` on the path from the filesystem root
 down to cwd, each labeled with its own path so relative paths in it resolve against the right directory.
 
-Env vars: `FOX_AGENT_MODEL`, `FOX_AGENT_BASE_URL`, `FOX_AGENT_API_KEY`, `FOX_AGENT_PROVIDER` (`openai-compatible` | `anthropic` | `google` | a plugin-registered name), `FOX_AGENT_MAX_STEPS`, `FOX_AGENT_COMPACT_AT`, `FOX_AGENT_RETRY_LIMIT`, `FOX_AGENT_REQUEST_TIMEOUT_MS`, `FOX_AGENT_DIAGNOSTICS` (`0`/`false`/`no` turns off post-edit diagnostics), `FOX_AGENT_HOME` (state dir, default `~/.local/share/fox-agent`). `OPENAI_BASE_URL` / `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` / `GOOGLE_API_KEY` are honored as fallbacks.
+Env vars: `FOX_AGENT_MODEL`, `FOX_AGENT_BASE_URL`, `FOX_AGENT_API_KEY`, `FOX_AGENT_PROVIDER` (`openai-compatible` | `openai-responses` | `anthropic` | `google` | a plugin-registered name), `FOX_AGENT_MAX_STEPS`, `FOX_AGENT_COMPACT_AT`, `FOX_AGENT_RETRY_LIMIT`, `FOX_AGENT_REQUEST_TIMEOUT_MS`, `FOX_AGENT_DIAGNOSTICS` (`0`/`false`/`no` turns off post-edit diagnostics), `FOX_AGENT_HOME` (state dir, default `~/.local/share/fox-agent`). `OPENAI_BASE_URL` / `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` / `GOOGLE_API_KEY` are honored as fallbacks. Unknown config keys and non-URL `baseUrl` values surface as warnings, not silent ignores.
 
 No key at all? The TUI opens anyway and `/login` walks you through provider, key, base URL and model as an
 interactive wizard (the key is typed masked), writes `~/.config/fox-agent/config.toml` and takes effect without
-a restart. Headless clients use kv pairs instead: `/login provider=<p> key=<k> [baseUrl=<u>] [model=<m>]`.
+a restart. Provider choices come from the models.dev catalog (cached 24h at `$FOX_AGENT_HOME/models.dev.json`,
+with static fallbacks offline), so picking e.g. OpenRouter or Token Guard prefills the endpoint, names the env
+var an empty key falls back to, and lists that provider's real models with their context windows — those exact
+figures also feed the ctx meter and budget checks. Headless clients use kv pairs instead:
+`/login provider=<p> key=<k> [baseUrl=<u>] [model=<m>]`, where `<p>` may also be a preset id like `tokenguard`.
 
 `FOX_AGENT_REQUEST_TIMEOUT_MS` (default `120000`, `0` disables) bounds **time without progress**, not total
 request duration: the clock is rearmed on every streamed chunk, so a model that reasons or writes for
@@ -328,7 +332,7 @@ src/
   store/      per-session sqlite (messages/ops/refs/kv), session index, forks, prune
   context/    view projection + pairing repair, rendering, budgets, compaction
   loop/       turn manager (retries, parallel tools, step caps), system prompt
-  providers/  openai-compatible + anthropic (cache_control), model registry
+  providers/  openai-compatible + openai-responses + anthropic (cache_control) + google, models.dev catalog
   acp/        ACP server (fox --acp), ACP client (drives other agents), event mapping
   lsp/        language server pool, frame codec, diagnostic formatting
   tools/      builtins + MCP bridge + registry

@@ -35,7 +35,7 @@ import {
   type PickerRequest,
   type PromptRequest,
 } from "../commands.ts";
-import type { UiBridge, UiStep } from "../core/ui.ts";
+import { resolveField, type UiBridge, type UiStep } from "../core/ui.ts";
 import { childEnv } from "../core/childenv.ts";
 import { killTree } from "../tools/exec.ts";
 import { debugLog, debugLogPath } from "../core/debuglog.ts";
@@ -455,13 +455,15 @@ export async function startTui(state: HarnessState) {
   function enterPromptStep() {
     const st = prompt!.steps[prompt!.idx];
     if (st.kind === "select") {
-      const i = st.options?.findIndex((o) => o.value === st.initial) ?? -1;
+      const opts = resolveField(st.options, prompt!.answers) ?? [];
+      const initial = resolveField(st.initial, prompt!.answers);
+      const i = opts.findIndex((o) => o.value === initial);
       prompt!.sel = i >= 0 ? i : 0;
       buf = [];
       cur = 0;
       inputRev++;
     } else {
-      chsSet(st.initial ?? "");
+      chsSet(resolveField(st.initial, prompt!.answers) ?? "");
     }
     markDirty();
   }
@@ -479,7 +481,7 @@ export async function startTui(state: HarnessState) {
   function promptSubmit() {
     const p = prompt!;
     const st = p.steps[p.idx];
-    const value = st.kind === "select" ? (st.options?.[p.sel]?.value ?? "") : display().trim();
+    const value = st.kind === "select" ? ((resolveField(st.options, p.answers) ?? [])[p.sel]?.value ?? "") : display().trim();
     if (st.kind === "text" && !value && st.allowEmpty === false) return flash("required — esc cancels");
     p.answers[st.key] = value;
     if (p.idx + 1 < p.steps.length) {
@@ -514,9 +516,12 @@ export async function startTui(state: HarnessState) {
       return true;
     }
     if (st.kind === "select") {
-      const n = st.options?.length ?? 0;
+      const n = (resolveField(st.options, prompt.answers) ?? []).length;
       if (name === "up" || name === "down") {
         prompt.sel = (prompt.sel + (name === "up" ? -1 : 1) + n) % Math.max(1, n);
+        markDirty();
+      } else if (name === "pageup" || name === "pagedown") {
+        prompt.sel = Math.max(0, Math.min(Math.max(0, n - 1), prompt.sel + (name === "pageup" ? -12 : 12)));
         markDirty();
       }
       return true; // everything else would be typing into a menu
@@ -1437,7 +1442,10 @@ export async function startTui(state: HarnessState) {
       // report there is simply nothing honest to show.
       const reported = lastPromptTokens || storedPromptTokens(state.sessionId);
       const info = lookupModel(state.provider.model);
-      const ctx = reported ? `ctx ${Math.min(100, Math.round((reported / info.contextWindow) * 100))}%` : "ctx —";
+      const k = (n: number) => `${Math.round(n / 1000)}k`;
+      const ctx = reported
+        ? `ctx ${Math.min(100, Math.round((reported / info.contextWindow) * 100))}% (${k(reported)}/${k(info.contextWindow)})`
+        : "ctx —";
       const home = process.env.HOME ?? "";
       const cwdShort = home && state.cwd.startsWith(home) ? "~" + state.cwd.slice(home.length) : state.cwd;
       const q = queued.length ? ` · ⏸ ${queued.length}` : "";
@@ -1603,13 +1611,22 @@ export async function startTui(state: HarnessState) {
     // them — the dock is an answer field while a prompt is open)
     if (prompt) {
       const st = prompt.steps[prompt.idx];
+      const hint = resolveField(st.hint, prompt.answers);
       const rows: { text: string; sel: boolean }[] = [
-        { text: `${prompt.title} — ${st.label}${st.hint ? ` (${st.hint})` : ""}`, sel: false },
+        { text: `${prompt.title} — ${st.label}${hint ? ` (${hint})` : ""}`, sel: false },
       ];
       if (st.kind === "select") {
-        for (let i = 0; i < (st.options?.length ?? 0); i++) {
-          rows.push({ text: `${i === prompt.sel ? "›" : " "} ${st.options![i].label}`, sel: i === prompt.sel });
+        const opts = resolveField(st.options, prompt.answers) ?? [];
+        // a models.dev-fed list can run to hundreds of entries — show a window
+        // around the selection instead of swallowing the whole scrollback
+        const MAX = 12;
+        const start = opts.length <= MAX ? 0 : Math.max(0, Math.min(prompt.sel - Math.floor(MAX / 2), opts.length - MAX));
+        const end = Math.min(opts.length, start + MAX);
+        if (start > 0) rows.push({ text: `  … ${start} more above`, sel: false });
+        for (let i = start; i < end; i++) {
+          rows.push({ text: `${i === prompt.sel ? "›" : " "} ${opts[i].label}`, sel: i === prompt.sel });
         }
+        if (end < opts.length) rows.push({ text: `  … ${opts.length - end} more below`, sel: false });
       }
       const hTop = inputTop - rows.length;
       for (let i = 0; i < rows.length; i++) {

@@ -4,6 +4,8 @@
  * families; unknown models fall back to conservative defaults so budget
  * checks stay safe.
  */
+import { lookupCatalogModel } from "./modelsdev.ts";
+
 export interface ModelInfo {
   contextWindow: number;
   maxOutput: number;
@@ -40,6 +42,19 @@ const TABLE: [RegExp, ModelInfo][] = [
 ];
 
 export function lookupModel(id: string): ModelInfo {
+  // Exact figures from the cached models.dev catalog beat substring guesses —
+  // it knows models this static table has never heard of.
+  const cat = lookupCatalogModel(id);
+  if (cat?.context) {
+    return {
+      contextWindow: cat.context,
+      maxOutput: cat.output ?? UNKNOWN.maxOutput,
+      vision: cat.inputs?.includes("image"),
+      audio: cat.inputs?.includes("audio"),
+      video: cat.inputs?.includes("video"),
+      reasoning: cat.reasoning,
+    };
+  }
   const m = id.toLowerCase();
   for (const [re, info] of TABLE) if (re.test(m)) return info;
   return UNKNOWN;

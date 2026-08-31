@@ -38,7 +38,8 @@ export interface ProviderConfig {
   apiKey: string;
   model: string;
   /**
-   * `"openai-compatible"`, `"anthropic"` and `"google"` are built in. Any other
+   * `"openai-compatible"`, `"openai-responses"`, `"anthropic"` and `"google"`
+   * are built in. Any other
    * string must be registered by a plugin (`FoxPlugin.providers`);
    * `resolveChat` throws a named error listing what is available if it is not.
    * Typed as a plain string rather than a union for that reason — the set is
