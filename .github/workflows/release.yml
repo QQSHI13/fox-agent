@@ -55,7 +55,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [bun-linux-x64, bun-linux-arm64, bun-darwin-x64, bun-darwin-arm64, bun-windows-x64]
+        include:
+          - { target: bun-linux-x64, name: fox-linux-x64 }
+          - { target: bun-linux-arm64, name: fox-linux-arm64 }
+          - { target: bun-darwin-x64, name: fox-darwin-x64 }
+          - { target: bun-darwin-arm64, name: fox-darwin-arm64 }
+          - { target: bun-windows-x64, name: fox-windows-x64.exe }
     steps:
       - uses: actions/checkout@v4
         with:
@@ -65,10 +70,7 @@ jobs:
           bun-version: latest
       - run: bun install --frozen-lockfile
       - name: build ${{ matrix.target }}
-        run: |
-          name="fox-${{ matrix.target#bun- }}"
-          case "$name" in *windows*) name="$name.exe";; esac
-          bun build --compile --bytecode --minify --target=${{ matrix.target }} ./src/cli.ts --outfile "out/$name"
+        run: bun build --compile --bytecode --minify --target=${{ matrix.target }} ./src/cli.ts --outfile "out/${{ matrix.name }}"
       - uses: actions/upload-artifact@v4
         with:
           name: binaries-${{ matrix.target }}

@@ -50,6 +50,8 @@ interface Item {
   ref?: number;
   /** expandable: thinking + long tool output */
   expanded?: boolean;
+  /** transient (/help): removed on the next keypress or click */
+  ephemeral?: boolean;
 }
 
 const COLLAPSED_TOOL_CHARS = 240;
@@ -282,8 +284,8 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   }
 
   // ---- item mutations ----
-  function push(kind: ItemKind, text: string, opts?: { ref?: number; expanded?: boolean }) {
-    const it: Item = { k: nk(), kind, text, ref: opts?.ref, expanded: opts?.expanded };
+  function push(kind: ItemKind, text: string, opts?: { ref?: number; expanded?: boolean; ephemeral?: boolean }) {
+    const it: Item = { k: nk(), kind, text, ref: opts?.ref, expanded: opts?.expanded, ephemeral: opts?.ephemeral };
     items.push(it);
     touch(it.k);
     markDirty();
@@ -402,7 +404,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   type CommandResultLike = ReturnType<typeof runSlashCommand>;
 
   function runSlash(t: string) {
-    if (t === "/help" || t === "/?") return push("info", helpText());
+    if (t === "/help" || t === "/?") return push("info", helpText(), { ephemeral: true });
     applyResult(runSlashCommand(t, state));
   }
 
@@ -807,6 +809,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     const lit = firstCharLit();
     buf = [];
     cur = 0; // a stale index past the new (empty) buffer crashes graphemeBack on the next backspace
+    inputRev++; // the layout cache is keyed on this — without it a multi-line message leaves a multi-line input box
     markDirty();
     // raw length, not trim: pure whitespace is sendable on purpose
     if (!raw) return;
@@ -910,6 +913,13 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
 
   // ---- keyboard ----
   function onKey(k: Key) {
+    // any real input dismisses transient help output first — /help is a
+    // glance, not something to scroll past forever
+    if (items.some((i) => i.ephemeral)) {
+      items = items.filter((i) => !i.ephemeral);
+      clampScroll();
+      markDirty();
+    }
     // the modal gets first refusal on every key (see overlayKey)
     if (overlayKey(k)) return;
     // an open question wizard owns the input dock next (see promptKey)
