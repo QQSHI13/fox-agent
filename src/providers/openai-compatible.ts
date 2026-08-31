@@ -17,7 +17,11 @@ export async function* streamChat(
   tools: ToolDef[],
   signal?: AbortSignal,
 ): AsyncGenerator<StreamEvent> {
-  const provider = createOpenAICompatible({ name: "fox-agent", baseURL: cfg.baseUrl, apiKey: cfg.apiKey });
+  // includeUsage asks for stream_options.include_usage: without it most
+  // OpenAI-compatible gateways never send a usage chunk, and every downstream
+  // figure (status bar ctx%, the agent's own context meter, /usage) silently
+  // stays at "no report yet" forever
+  const provider = createOpenAICompatible({ name: "fox-agent", baseURL: cfg.baseUrl, apiKey: cfg.apiKey, includeUsage: true });
   const model = provider.chatModel(cfg.model);
 
   const toolSet: ToolSet = {};
