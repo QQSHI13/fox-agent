@@ -109,6 +109,27 @@ export function extractSelection(rows: Seg[][], a: Anchor, b: Anchor): string {
  */
 export const DRAG_SLOP = 2;
 
+/**
+ * The cell-column range of the "word" around `col`, for double-click select.
+ *
+ * Word class follows terminal convention: letters/numbers/underscore run
+ * together, other non-space characters run together, whitespace belongs to
+ * no word.
+ */
+export function wordRangeAt(cells: RowCells, col: number): { from: number; to: number } | null {
+  const width = cells.start.length;
+  if (!width || col < 0 || col >= width) return null;
+  const chAt = (c: number) => cells.text.slice(cells.start[c], cells.end[c]);
+  const cls = (ch: string) => (/\s/.test(ch) ? 0 : /[\p{L}\p{N}_]/u.test(ch) ? 1 : 2);
+  const c0 = cls(chAt(col));
+  if (c0 === 0) return null;
+  let from = col;
+  let to = col;
+  while (from > 0 && cls(chAt(from - 1)) === c0) from--;
+  while (to < width - 1 && cls(chAt(to + 1)) === c0) to++;
+  return { from, to };
+}
+
 /** What a mouse gesture turned out to mean, once it is over. */
 export type Gesture =
   | { kind: "none" }

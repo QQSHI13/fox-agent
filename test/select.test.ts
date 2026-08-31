@@ -16,6 +16,7 @@ import {
   orderSel,
   rowCells,
   selRangeForRow,
+  wordRangeAt,
   type PressState,
 } from "../src/tui/select.ts";
 import type { Seg } from "../src/tui/wrap.ts";
@@ -209,5 +210,45 @@ describe("gestureFor: press decides nothing, drag never clicks", () => {
     // one cell right AND one cell down is two cells of travel: intent
     expect(gestureFor("up", press(10, 4), 11, 5)).toEqual({ kind: "copy" });
     expect(DRAG_SLOP).toBe(2);
+  });
+});
+
+describe("wordRangeAt: double-click word selection", () => {
+  const cells = (s: string) => rowCells(row(s));
+
+  test("a click inside a word selects the whole word", () => {
+    expect(wordRangeAt(cells("foo bar baz"), 5)).toEqual({ from: 4, to: 6 });
+    expect(wordRangeAt(cells("foo bar baz"), 4)).toEqual({ from: 4, to: 6 });
+    expect(wordRangeAt(cells("foo bar baz"), 6)).toEqual({ from: 4, to: 6 });
+  });
+
+  test("word edges stop at whitespace", () => {
+    expect(wordRangeAt(cells("foo bar baz"), 0)).toEqual({ from: 0, to: 2 });
+    expect(wordRangeAt(cells("foo bar baz"), 10)).toEqual({ from: 8, to: 10 });
+  });
+
+  test("whitespace belongs to no word", () => {
+    expect(wordRangeAt(cells("foo bar"), 3)).toBeNull();
+  });
+
+  test("punctuation is its own class, so a click on '/' selects just it", () => {
+    // "open src/app.ts now": segments are words, separators are one-cell runs
+    expect(wordRangeAt(cells("open src/app.ts now"), 6)).toEqual({ from: 5, to: 7 }); // src
+    expect(wordRangeAt(cells("open src/app.ts now"), 8)).toEqual({ from: 8, to: 8 }); // /
+    expect(wordRangeAt(cells("a  b"), 1)).toBeNull();
+  });
+
+  test("wide characters keep cell columns, not string indices", () => {
+    const c = cells("ab 日本語 cd"); // 日本語 occupies columns 3..8
+    expect(wordRangeAt(c, 4)).toEqual({ from: 3, to: 8 });
+    expect(wordRangeAt(c, 10)).toEqual({ from: 10, to: 11 }); // cd
+    // CJK is letters, the same class as ASCII — no separator, one word
+    expect(wordRangeAt(cells("ab日本語cd"), 3)).toEqual({ from: 0, to: 9 });
+  });
+
+  test("out-of-range columns select nothing", () => {
+    expect(wordRangeAt(cells("abc"), 3)).toBeNull();
+    expect(wordRangeAt(cells("abc"), -1)).toBeNull();
+    expect(wordRangeAt(cells(""), 0)).toBeNull();
   });
 });

@@ -11,6 +11,7 @@ import {
   gestureFor,
   rowCells,
   selRangeForRow,
+  wordRangeAt,
   type Anchor,
   type PressState,
 } from "./select.ts";
@@ -227,6 +228,8 @@ export async function startTui(state: HarnessState) {
   let press: PressState | null = null;
   let selA: Anchor | null = null;
   let selB: Anchor | null = null;
+  /** multi-click tracking: same spot inside the window extends the streak */
+  const clickStreak = { x: -1, y: -1, at: 0, count: 0 };
 
   /**
    * The session overlay, or null when there is no modal up.
@@ -257,6 +260,8 @@ export async function startTui(state: HarnessState) {
     idx: number;
     answers: Record<string, string>;
     sel: number;
+    /** typed filter for a select step's option list */
+    filter: string;
     done: (answers: Record<string, string> | null) => void;
   } | null = null;
   const hasSel = () => selA !== null && selB !== null && !(selA.row === selB.row && selA.col === selB.col);
@@ -387,6 +392,7 @@ export async function startTui(state: HarnessState) {
       idx: 0,
       answers: {},
       sel: 0,
+      filter: "",
       done: (answers) => {
         if (answers === null) return flash("cancelled");
         try {
@@ -444,6 +450,7 @@ export async function startTui(state: HarnessState) {
       idx: 0,
       answers: {},
       sel: 0,
+      filter: "",
       done: (answers) => {
         resolve(answers ?? undefined);
         pumpAskQueue();
@@ -452,18 +459,31 @@ export async function startTui(state: HarnessState) {
     enterPromptStep();
   }
 
+  /** The filtered option list of the current select step (all of them on a text step). */
+  function promptOptions(): { value: string; label: string }[] {
+    const p = prompt!;
+    const st = p.steps[p.idx];
+    const all = resolveField(st.options, p.answers) ?? [];
+    const f = p.filter.trim().toLowerCase();
+    if (!f) return all;
+    return all.filter((o) => o.label.toLowerCase().includes(f) || o.value.toLowerCase().includes(f));
+  }
+
   function enterPromptStep() {
-    const st = prompt!.steps[prompt!.idx];
+    const p = prompt!;
+    const st = p.steps[p.idx];
+    p.filter = "";
     if (st.kind === "select") {
-      const opts = resolveField(st.options, prompt!.answers) ?? [];
-      const initial = resolveField(st.initial, prompt!.answers);
+      const opts = resolveField(st.options, p.answers) ?? [];
+      // a revisited step starts on its previous answer, not the default
+      const initial = p.answers[st.key] ?? resolveField(st.initial, p.answers);
       const i = opts.findIndex((o) => o.value === initial);
-      prompt!.sel = i >= 0 ? i : 0;
+      p.sel = i >= 0 ? i : 0;
       buf = [];
       cur = 0;
       inputRev++;
     } else {
-      chsSet(resolveField(st.initial, prompt!.answers) ?? "");
+      chsSet(p.answers[st.key] ?? resolveField(st.initial, p.answers) ?? "");
     }
     markDirty();
   }
@@ -478,12 +498,22 @@ export async function startTui(state: HarnessState) {
     p.done(answers);
   }
 
-  function promptSubmit() {
+  /** Store the current step's answer. Returns false when a required field is empty. */
+  function commitStep(): boolean {
     const p = prompt!;
     const st = p.steps[p.idx];
-    const value = st.kind === "select" ? ((resolveField(st.options, p.answers) ?? [])[p.sel]?.value ?? "") : display().trim();
-    if (st.kind === "text" && !value && st.allowEmpty === false) return flash("required — esc cancels");
+    const value = st.kind === "select" ? (promptOptions()[p.sel]?.value ?? "") : display().trim();
+    if (st.kind === "text" && !value && st.allowEmpty === false) {
+      flash("required — esc cancels");
+      return false;
+    }
     p.answers[st.key] = value;
+    return true;
+  }
+
+  function promptSubmit() {
+    if (!commitStep()) return;
+    const p = prompt!;
     if (p.idx + 1 < p.steps.length) {
       p.idx++;
       enterPromptStep();
@@ -499,15 +529,29 @@ export async function startTui(state: HarnessState) {
    */
   function promptKey(k: Key): boolean {
     if (!prompt) return false;
-    const st = prompt.steps[prompt.idx];
+    const p = prompt;
+    const st = p.steps[p.idx];
     if (k.type === "mouse") return true; // a question is modal, like the picker
     if (k.type === "paste") {
       if (st.kind === "text") insertText(k.text);
+      else {
+        p.filter += k.text;
+        p.sel = 0;
+        markDirty();
+      }
       return true;
     }
-    if (k.type === "char") return st.kind !== "text"; // selects swallow chars
-    const { name } = k;
-    if (name === "escape") {
+    if (k.type === "char") {
+      if (st.kind === "text") return false; // ordinary editing falls through
+      // a select filters as you type — a 300-model list is not an arrow-key list
+      p.filter += k.ch;
+      p.sel = 0;
+      markDirty();
+      return true;
+    }
+    const { name, ctrl } = k;
+    // ctrl+c cancels too (muscle memory), but only esc is advertised
+    if (name === "escape" || (name === "c" && ctrl)) {
       finishPrompt(null);
       return true;
     }
@@ -515,14 +559,33 @@ export async function startTui(state: HarnessState) {
       promptSubmit();
       return true;
     }
+    // pgup/pgdn move between the wizard's steps, keeping entered answers
+    if (name === "pageup") {
+      if (p.idx > 0) {
+        commitStep();
+        p.idx--;
+        enterPromptStep();
+      }
+      return true;
+    }
+    if (name === "pagedown") {
+      if (p.idx + 1 < p.steps.length && commitStep()) {
+        p.idx++;
+        enterPromptStep();
+      }
+      return true;
+    }
     if (st.kind === "select") {
-      const n = (resolveField(st.options, prompt.answers) ?? []).length;
+      const n = promptOptions().length;
       if (name === "up" || name === "down") {
-        prompt.sel = (prompt.sel + (name === "up" ? -1 : 1) + n) % Math.max(1, n);
+        p.sel = (p.sel + (name === "up" ? -1 : 1) + n) % Math.max(1, n);
         markDirty();
-      } else if (name === "pageup" || name === "pagedown") {
-        prompt.sel = Math.max(0, Math.min(Math.max(0, n - 1), prompt.sel + (name === "pageup" ? -12 : 12)));
-        markDirty();
+      } else if (name === "backspace") {
+        if (p.filter) {
+          p.filter = p.filter.slice(0, -1);
+          p.sel = 0;
+          markDirty();
+        }
       }
       return true; // everything else would be typing into a menu
     }
@@ -1088,6 +1151,35 @@ export async function startTui(state: HarnessState) {
     // A tap: the selection it staged is a single cell, so drop it and treat
     // this as the click it turned out to be.
     clearSel();
+    // Multi-click: double selects the word, triple the line, quad clears,
+    // then the cycle repeats. A multi-click never fires onClick — the second
+    // click of a double-click must not re-toggle what the first one flipped.
+    const now = Date.now();
+    const sameSpot = Math.abs(x - clickStreak.x) <= 1 && Math.abs(y - clickStreak.y) <= 1;
+    clickStreak.count = sameSpot && now - clickStreak.at < 600 ? clickStreak.count + 1 : 1;
+    clickStreak.at = now;
+    clickStreak.x = x;
+    clickStreak.y = y;
+    if (clickStreak.count >= 2) {
+      const phase = (clickStreak.count - 2) % 3;
+      const row = transcriptRow(y);
+      if (phase === 2 || row === null) return; // quad-click: no selection, no toggle
+      buildRows();
+      const cells = rowCells(rowBuf[row].segs);
+      if (phase === 0) {
+        const w = wordRangeAt(cells, transcriptCol(x));
+        if (!w) return;
+        selA = { row, col: w.from };
+        selB = { row, col: w.to };
+      } else {
+        const width = cells.start.length;
+        if (!width) return;
+        selA = { row, col: 0 };
+        selB = { row, col: width - 1 };
+      }
+      markDirty();
+      return;
+    }
     onClick(x, y);
   }
 
@@ -1555,8 +1647,10 @@ export async function startTui(state: HarnessState) {
       // Selection is a re-style over the cells already painted, not a second
       // text pass: the grid holds one char per cell, so re-stamping the range
       // with a highlight background cannot disturb wide chars or wrapping.
-      if (selA && selB) {
-        const range = selRangeForRow(i, selA, selB, rowCells(row.segs));
+      // hasSel(), not selA&&selB: a staged press anchors a single cell, and
+      // painting it flashed a phantom highlight on every click.
+      if (hasSel()) {
+        const range = selRangeForRow(i, selA!, selB!, rowCells(row.segs));
         if (range) screen.restyle(y, 1 + range.from, 2 + range.to, C.selBg);
       }
     }
@@ -1588,7 +1682,7 @@ export async function startTui(state: HarnessState) {
         ? st!.kind === "select"
           ? "(↑↓ choose · enter confirms · esc cancels)"
           : `(${st!.hint ?? "type your answer"} · enter submits · esc cancels)`
-        : "(type here — / commands · \\ escapes · ! shell · wheel/pgup scroll · click expands · drag selects)";
+        : "(type here — / commands · \\ escapes · ! shell · wheel/pgup scroll · click expands · drag/dbl-click selects)";
       screen.text(1, inputTop, pfx, prompt ? S.accent : S.dim);
       screen.text(3, inputTop, placeholder, S.dim);
       pendingCaret = { x: 3, y: inputTop };
@@ -1612,21 +1706,27 @@ export async function startTui(state: HarnessState) {
     if (prompt) {
       const st = prompt.steps[prompt.idx];
       const hint = resolveField(st.hint, prompt.answers);
+      const stepPos = prompt.steps.length > 1 ? ` ${prompt.idx + 1}/${prompt.steps.length}` : "";
+      const filterNote = st.kind === "select" && prompt.filter ? ` — filter: "${prompt.filter}"` : "";
       const rows: { text: string; sel: boolean }[] = [
-        { text: `${prompt.title} — ${st.label}${hint ? ` (${hint})` : ""}`, sel: false },
+        { text: `${prompt.title}${stepPos} — ${st.label}${hint ? ` (${hint})` : ""}${filterNote} · esc cancels`, sel: false },
       ];
       if (st.kind === "select") {
-        const opts = resolveField(st.options, prompt.answers) ?? [];
-        // a models.dev-fed list can run to hundreds of entries — show a window
-        // around the selection instead of swallowing the whole scrollback
-        const MAX = 12;
-        const start = opts.length <= MAX ? 0 : Math.max(0, Math.min(prompt.sel - Math.floor(MAX / 2), opts.length - MAX));
-        const end = Math.min(opts.length, start + MAX);
-        if (start > 0) rows.push({ text: `  … ${start} more above`, sel: false });
-        for (let i = start; i < end; i++) {
-          rows.push({ text: `${i === prompt.sel ? "›" : " "} ${opts[i].label}`, sel: i === prompt.sel });
+        const opts = promptOptions();
+        if (!opts.length) {
+          rows.push({ text: "  no matches — backspace to widen", sel: false });
+        } else {
+          // a models.dev-fed list can run to hundreds of entries — show a window
+          // around the selection instead of swallowing the whole scrollback
+          const MAX = 12;
+          const start = opts.length <= MAX ? 0 : Math.max(0, Math.min(prompt.sel - Math.floor(MAX / 2), opts.length - MAX));
+          const end = Math.min(opts.length, start + MAX);
+          if (start > 0) rows.push({ text: `  … ${start} more above`, sel: false });
+          for (let i = start; i < end; i++) {
+            rows.push({ text: `${i === prompt.sel ? "›" : " "} ${opts[i].label}`, sel: i === prompt.sel });
+          }
+          if (end < opts.length) rows.push({ text: `  … ${opts.length - end} more below`, sel: false });
         }
-        if (end < opts.length) rows.push({ text: `  … ${opts.length - end} more below`, sel: false });
       }
       const hTop = inputTop - rows.length;
       for (let i = 0; i < rows.length; i++) {
