@@ -6,7 +6,6 @@ import {
   forkSession,
   getMessage,
   getSession,
-  kvGet,
   latestSessionFor,
   listSessions,
   setSessionModel,
@@ -504,11 +503,17 @@ export function runSlashCommand(input: string, state: HarnessState): CommandResu
     }
 
     case "/usage": {
-      // provider-reported only: totals accumulate from each call's usage event
-      // (kv in the session file), and the live window figure is the last
-      // request's billed prompt size. No estimates — a number we invented is
-      // worse than no number.
-      const t = kvGet<{ prompt: number; completion: number }>(state.sessionId, "usage") ?? { prompt: 0, completion: 0 };
+      // provider-reported only, from the sessions index row (the same totals
+      // every listing shows — one source of truth); the live window figure is
+      // the last request's billed prompt size. No estimates — a number we
+      // invented is worse than no number.
+      const row = getSession(state.sessionId);
+      const t =
+        row && row.prompt_tokens !== null && row.completion_tokens !== null
+          ? { prompt: row.prompt_tokens, completion: row.completion_tokens }
+          : row
+            ? backfillUsage(state.sessionId) // pre-index-totals session: fill once
+            : { prompt: 0, completion: 0 };
       const b = checkBudget(state.sessionId, state.provider.model, 0, state.config?.compactAt);
       const pct = Math.round(b.ratio * 100);
       return {

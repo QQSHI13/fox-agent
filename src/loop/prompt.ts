@@ -25,6 +25,12 @@ export function buildSystemPrompt(
     model: string;
     tools: ToolDef[];
     projectInstructions?: string;
+    /**
+     * Provider-reported context size (see checkBudget). When present and the
+     * agent has ctx_edit, the context section reports the live figure and, past
+     * the compactAt threshold, tells the agent to prune before its next step.
+     */
+    budget?: { reported: number; limit: number; ratio: number; over: boolean };
   },
 ): string {
   const info = lookupModel(opts.model);
@@ -48,13 +54,25 @@ export function buildSystemPrompt(
   sections.push(roster.join("\n"));
 
   if (have.has("ctx_edit")) {
-    sections.push(
+    const lines = [
       `## Context window management (your core ability)\n` +
         `Every message in your view carries a stable marker [mN]. Large old tool outputs are dead weight:\n` +
         `- after using a big result, hide it: {"op":"delete","ids":[3,5],"summary":"ran build; fixed 2 errors"}\n` +
         `- rewrite stale/wrong nodes: {"op":"replace","id":7,"content":"…"}\n` +
         `Batch multiple ops in one ctx_edit call. Any node is editable, including ones from the current turn. Edits apply from your NEXT step; storage is permanent — nothing is ever lost, ops are revertible (/undo).`,
-    );
+    ];
+    if (opts.budget && opts.budget.reported > 0) {
+      const pct = Math.round(opts.budget.ratio * 100);
+      lines.push(
+        `Context used at your last step: ${opts.budget.reported}/${opts.budget.limit} tokens (${pct}%), provider-reported. This figure updates every step — check it before starting another large read.`,
+      );
+      if (opts.budget.over) {
+        lines.push(
+          `You are over the compaction threshold. Before doing anything else, use ctx_edit to hide or rewrite the stale nodes you no longer need — that is cheaper and lossless compared to the automatic compaction that otherwise fires.`,
+        );
+      }
+    }
+    sections.push(lines.join("\n"));
   }
 
   const style = [

@@ -22,7 +22,15 @@ afterEach(async () => {
   rmSync(home, { recursive: true, force: true });
 });
 
-async function build(opts: { tools?: ToolDef[]; sessionId?: string; cwd?: string; projectInstructions?: string } = {}) {
+async function build(
+  opts: {
+    tools?: ToolDef[];
+    sessionId?: string;
+    cwd?: string;
+    projectInstructions?: string;
+    budget?: { reported: number; limit: number; ratio: number; over: boolean };
+  } = {},
+) {
   const { buildSystemPrompt } = await import("../src/loop/prompt.ts");
   const { baseRegistry } = await import("../src/tools/index.ts");
   const tools = opts.tools ?? [...baseRegistry().values()].map((t) => t.def);
@@ -32,6 +40,7 @@ async function build(opts: { tools?: ToolDef[]; sessionId?: string; cwd?: string
     model: "gpt-4o-mini",
     tools,
     projectInstructions: opts.projectInstructions,
+    budget: opts.budget,
   });
 }
 
@@ -170,5 +179,30 @@ describe("the rest of the prompt still assembles", () => {
     const p = await build({ sessionId: s.id });
     expect(p).toContain("todos:");
     expect(p).toContain("wire ACP");
+  });
+});
+
+describe("live context figure in the prompt", () => {
+  test("no report yet -> no figure; a report -> the figure, no nudge below threshold", async () => {
+    const none = await build();
+    expect(none).not.toContain("Context used at your last step");
+
+    const under = await build({ budget: { reported: 10_000, limit: 128_000, ratio: 10_000 / 128_000, over: false } });
+    expect(under).toContain("Context used at your last step: 10000/128000 tokens (8%)");
+    expect(under).not.toContain("over the compaction threshold");
+  });
+
+  test("past the threshold the agent is told to prune before continuing", async () => {
+    const over = await build({ budget: { reported: 120_000, limit: 128_000, ratio: 120_000 / 128_000, over: true } });
+    expect(over).toContain("over the compaction threshold");
+    expect(over).toContain("ctx_edit");
+  });
+
+  test("without ctx_edit the figure is omitted — nothing to act on it with", async () => {
+    const p = await build({
+      tools: [{ name: "read", description: "reads", parameters: { type: "object", properties: {} } }],
+      budget: { reported: 120_000, limit: 128_000, ratio: 0.94, over: true },
+    });
+    expect(p).not.toContain("Context used at your last step");
   });
 });

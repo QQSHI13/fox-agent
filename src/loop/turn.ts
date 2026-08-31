@@ -1,4 +1,4 @@
-import { appendMessage, getSession, kvGet, kvSet, recordUsage } from "../store/db.ts";
+import { appendMessage, getSession, recordUsage } from "../store/db.ts";
 import type { ProviderConfig, ChatMessage, ToolDef, ToolCall, ChatFn } from "../providers/types.ts";
 import { resolveChat } from "../providers/index.ts";
 import { classifyProviderError, FoxError, isTimeout } from "../core/errors.ts";
@@ -13,6 +13,7 @@ import type { UiBridge } from "../core/ui.ts";
 import { buildSystemPrompt } from "./prompt.ts";
 import { renderContext } from "../context/render.ts";
 import { compactIfNeeded } from "../context/compact.ts";
+import { checkBudget } from "../context/budget.ts";
 
 export interface TurnOptions {
   maxSteps?: number;
@@ -340,6 +341,9 @@ export async function* runTurnCore(
       model: cfg.model,
       tools: toolDefs,
       projectInstructions: opts.projectInstructions ?? "",
+      // the agent manages its own window, so it gets the same number the status
+      // bar shows: the provider's own report, never an estimate
+      budget: checkBudget(sessionId, cfg.model, 0, opts.compactAt ?? 0.85),
     });
     const messages = renderContext(sessionId, sysPrompt);
 
@@ -402,17 +406,6 @@ export async function* runTurnCore(
       tokens: estTok(outcome.text) + outcome.calls.reduce((a, c) => a + estTok(c.arguments), 0),
     });
     if (outcome.usage) recordUsage(sessionId, asstNode.id, outcome.usage.prompt_tokens, outcome.usage.completion_tokens);
-    if (outcome.usage) {
-      // running totals in the session's kv, from the provider's own reports —
-      // the session file is the one place that outlives the process, and no
-      // token figure the harness keeps should be an estimate when the provider
-      // already told us the truth
-      const t = kvGet<{ prompt: number; completion: number }>(sessionId, "usage") ?? { prompt: 0, completion: 0 };
-      kvSet(sessionId, "usage", {
-        prompt: t.prompt + outcome.usage.prompt_tokens,
-        completion: t.completion + outcome.usage.completion_tokens,
-      });
-    }
     if (outcome.usage && !quiet) yield { type: "usage", ...outcome.usage };
 
     if (!outcome.calls.length) {
