@@ -60,6 +60,13 @@ export const resolveChat: ChatFn = async function* (cfg, messages, tools, signal
     yield* fn(cfg, messages, tools, signal);
     return;
   }
+  // The key check lives at request time, not startup: a keyless launch opens
+  // the TUI fine (that's what /login is for), and the error names the fix at
+  // the moment it actually matters. Local gateways (tokenguard, ollama, …)
+  // legitimately need no key.
+  if (!cfg.apiKey && !/^https?:\/\/(localhost|127\.|\[::1\])/.test(cfg.baseUrl)) {
+    throw new FoxError(`no API key configured — use /login, or set FOX_AGENT_API_KEY`);
+  }
   // lazy, always: importing a provider module must not pull its SDK into a
   // process that never calls it (TUI startup, tests with injected ChatFn)
   const mod =

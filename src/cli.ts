@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { createSession, getSession, latestSessionFor } from "./store/db.ts";
+import { createSession, getSession, latestSessionFor, setSessionModel } from "./store/db.ts";
 import { loadConfig, type Config } from "./core/config.ts";
 import { ConfigError, errMsg } from "./core/errors.ts";
 import { runTurnCore } from "./loop/turn.ts";
@@ -109,7 +109,7 @@ async function main() {
   }
 
   const cwd = process.cwd();
-  const config = loadConfig({
+  const configOverrides = {
     cwd,
     configPath: (parsed.flags.get("config") as string) || undefined,
     model: (parsed.flags.get("model") as string) || undefined,
@@ -119,17 +119,33 @@ async function main() {
     retryLimit: parsed.flags.has("retry-limit") ? Number(parsed.flags.get("retry-limit")) : undefined,
     compactAt: parsed.flags.has("compact-at") ? Number(parsed.flags.get("compact-at")) : undefined,
     requestTimeoutMs: parsed.flags.has("request-timeout-ms") ? Number(parsed.flags.get("request-timeout-ms")) : undefined,
-  });
-  const provider = {
-    baseUrl: config.baseUrl,
-    apiKey: config.apiKey,
-    model: config.model,
-    provider: config.provider,
-    requestTimeoutMs: config.requestTimeoutMs,
   };
+  let config: Config | undefined;
+  // Placeholder until the real config lands — the TUI paints before config
+  // loads, so a slow config/plugin path never delays the first frame. The
+  // request-time key check (in resolveChat) is what reports a missing key.
+  let provider = {
+    baseUrl: "https://api.openai.com/v1",
+    apiKey: "",
+    model: "…",
+    provider: "openai-compatible",
+    requestTimeoutMs: 120_000,
+  };
+  function applyLoadedConfig(c: Config) {
+    config = c;
+    provider = {
+      baseUrl: c.baseUrl,
+      apiKey: c.apiKey,
+      model: c.model,
+      provider: c.provider,
+      requestTimeoutMs: c.requestTimeoutMs,
+    };
+  }
+  const needsConfigNow = !!parsed.flags.get("acp") || parsed.flags.has("print") || !process.stdout.isTTY || !!parsed.flags.get("no-tui");
+  if (needsConfigNow) applyLoadedConfig(loadConfig(configOverrides));
 
   // ---- ACP server ----
-  // Ordered ahead of the missing-key exit on purpose. An editor spawns `fox --acp`
+  // Ordered ahead of session creation on purpose. An editor spawns `fox --acp`
   // as a subprocess and often shows the user nothing but "agent exited"; ACP has a
   // vocabulary for this (`auth_required` on the first prompt), and the server
   // reports it there instead of dying silently at startup. It also runs before any
@@ -139,22 +155,13 @@ async function main() {
   // which is why every message in this file goes to stderr.
   if (parsed.flags.get("acp")) {
     const { runAcpServer } = await import("./acp/server.ts");
-    await runAcpServer({ config, provider });
+    await runAcpServer({ config: config!, provider });
     return;
   }
 
   const cont = parsed.flags.get("continue");
   const printMode = parsed.flags.has("print") || (!process.stdin.isTTY && !process.stdout.isTTY);
-
-  // No key is not a startup refusal when there is a UI to fix it in: the TUI
-  // opens anyway and /login configures a key without a restart. Headless fails
-  // fast instead — there is no /login there, just a guaranteed 401.
-  if (!config.apiKey && printMode) {
-    console.error(
-      "fox-agent: no API key — set FOX_AGENT_API_KEY / OPENAI_API_KEY / ANTHROPIC_API_KEY / GEMINI_API_KEY, or run fox interactively and use /login",
-    );
-    process.exit(1);
-  }
+  const tuiMode = !printMode && !parsed.flags.get("no-tui") && !!process.stdout.isTTY;
 
   let sessionId: string;
   if (cont) {
@@ -168,6 +175,8 @@ async function main() {
       note(`resuming ${id}`);
       sessionId = id;
     } else {
+      // the picker can create a session, which needs the real model — load now
+      if (!config) applyLoadedConfig(loadConfig(configOverrides));
       const picked = await pickSession(cwd, {
         // `-c -p '...'` and `-c | cat` need an answer without a keypress, so they
         // keep the old behavior: this directory's most recent session. Only a
@@ -178,6 +187,10 @@ async function main() {
       if (!picked) return; // the user cancelled out of the picker
       sessionId = picked;
     }
+  } else if (tuiMode) {
+    // model is a placeholder until the deferred config lands; startTui's
+    // applyConfig fixes the record up before the user can possibly submit
+    sessionId = createSession(cwd, provider.model).id;
   } else {
     sessionId = createSession(cwd, provider.model).id;
     note(`new session ${sessionId} (${provider.model})`);
@@ -187,11 +200,19 @@ async function main() {
   const state = { sessionId, cwd, provider, config, configPath: (parsed.flags.get("config") as string) || undefined };
 
   // ---- TUI ----
-  if (!printMode && !parsed.flags.get("no-tui") && process.stdout.isTTY) {
+  if (tuiMode) {
     try {
       // lazy: headless/-p/--acp runs should not pay for the renderer's modules
       const { startTui } = await import("./tui/app.ts");
-      await startTui(state);
+      await startTui(state, () => {
+        // first frame is out; now the config can load and take over
+        if (!config) applyLoadedConfig(loadConfig(configOverrides));
+        state.provider = provider;
+        state.config = config;
+        const s = getSession(sessionId);
+        if (s && s.model !== provider.model) setSessionModel(sessionId, provider.model);
+        return { warnings: config?.warnings ?? [] };
+      });
     } finally {
       await shutdownTools(sessionId);
     }
@@ -232,10 +253,11 @@ async function main() {
   }
   try {
     for await (const ev of runTurnCore(sessionId, provider, trimmed, undefined, {
-      maxSteps: config.maxSteps,
-      retryLimit: config.retryLimit,
-      compactAt: config.compactAt,
-      projectInstructions: config.projectInstructions,
+      // headless reached here only via the eager-load path, so config is set
+      maxSteps: config!.maxSteps,
+      retryLimit: config!.retryLimit,
+      compactAt: config!.compactAt,
+      projectInstructions: config!.projectInstructions,
       config,
       chat: resolveChat,
     })) {

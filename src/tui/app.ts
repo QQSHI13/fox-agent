@@ -177,7 +177,7 @@ async function clipWrite(text: string, term: Term): Promise<boolean> {
   return false;
 }
 
-export async function startTui(state: HarnessState) {
+export async function startTui(state: HarnessState, applyConfig?: () => { warnings: string[] }) {
   const term: Term = openTerm();
   const screen = new Screen(term);
   let W = 0;
@@ -374,6 +374,10 @@ export async function startTui(state: HarnessState) {
     if (res.picker) openPicker(res.picker);
     // a wizard's run may itself answer with another wizard — chain it
     if (res.prompt) startPrompt(res.prompt);
+    // a command may have changed provider/model (/login, /model) — the status
+    // bar caches per statsRev, and an idle session never re-polls on its own
+    statsRev++;
+    markDirty();
     if (res.exit) gracefulExit(0);
   }
 
@@ -1541,7 +1545,7 @@ export async function startTui(state: HarnessState) {
       const home = process.env.HOME ?? "";
       const cwdShort = home && state.cwd.startsWith(home) ? "~" + state.cwd.slice(home.length) : state.cwd;
       const q = queued.length ? ` · ⏸ ${queued.length}` : "";
-      return `${cwdShort} · ${ctx}${q}`;
+      return `${cwdShort} · ${state.provider.model} · ${ctx}${q}`;
     } catch {
       return state.cwd;
     }
@@ -1675,13 +1679,20 @@ export async function startTui(state: HarnessState) {
     // any real char — even whitespace — is content; the placeholder only fills
     // a truly empty box, or it paints over leading indentation the user typed
     const empty = !buf.length;
+    const st0 = prompt?.steps[prompt.idx];
+    const selectFilter = prompt && st0?.kind === "select" ? prompt.filter : "";
     const pfx = prompt ? "› " : "❯ ";
-    if (empty) {
-      const st = prompt?.steps[prompt.idx];
+    if (selectFilter) {
+      // a select step's keystrokes go to the filter — show them in the dock,
+      // not just in the floating header, or typing feels dead
+      screen.text(1, inputTop, pfx, S.accent);
+      screen.text(3, inputTop, selectFilter, S.inputFg);
+      pendingCaret = { x: 3 + [...selectFilter].reduce((w, ch) => w + charWidth(ch.codePointAt(0)!), 0), y: inputTop };
+    } else if (empty) {
       const placeholder = prompt
-        ? st!.kind === "select"
-          ? "(↑↓ choose · enter confirms · esc cancels)"
-          : `(${st!.hint ?? "type your answer"} · enter submits · esc cancels)`
+        ? st0!.kind === "select"
+          ? "(type to filter · ↑↓ choose · enter confirms · esc cancels)"
+          : `(${resolveField(st0!.hint, prompt!.answers) ?? "type your answer"} · enter submits · esc cancels)`
         : "(type here — / commands · \\ escapes · ! shell · wheel/pgup scroll · click expands · drag/dbl-click selects)";
       screen.text(1, inputTop, pfx, prompt ? S.accent : S.dim);
       screen.text(3, inputTop, placeholder, S.dim);
@@ -1869,12 +1880,33 @@ export async function startTui(state: HarnessState) {
       pinSession(state.sessionId);
       refresh();
       push("info", `fox-agent v${VERSION} — ${BANNERS[Math.floor(Math.random() * BANNERS.length)]}`);
-      if (!state.provider.apiKey)
-        push("error", "no API key configured — /login provider=<p> key=<k> sets one up now (saved to ~/.config/fox-agent/config.toml)");
-      push("toolbody", `model ${state.provider.model} · /commands · ! shell · \\ newline · esc interrupt`);
 
       const dec = createDecoder(onKey);
       term.onKey((data) => dec.feed(data));
+
+      // First frame BEFORE anything expensive: config/plugin loading happens
+      // after the window is already up (see cli.ts — headless paths load it
+      // eagerly instead).
+      paint();
+      screen.flush();
+      term.flush();
+      dirty = false;
+      if (applyConfig) {
+        try {
+          const r = applyConfig();
+          for (const w of r.warnings) push("info", `⚠ ${w}`);
+        } catch (e) {
+          // a broken config was always a one-line exit; keep it that way
+          term.end();
+          console.error(`fox-agent: ${(e as Error)?.message ?? e}`);
+          process.exit(1);
+        }
+      }
+      if (!state.provider.apiKey)
+        push("error", "no API key configured — /login provider=<p> key=<k> sets one up now (saved to ~/.config/fox-agent/config.toml)");
+      push("toolbody", `model ${state.provider.model} · /commands · ! shell · \\ newline · esc interrupt`);
+      statsRev++;
+      markDirty();
 
       const frameTimer = setInterval(() => {
         tickSpinner();

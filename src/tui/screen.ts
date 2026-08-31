@@ -175,7 +175,11 @@ export class Screen {
         const s = this.styles[this.sty[base + x]] ?? {};
         const sgr = sgrOf(s);
         if (sgr !== runSgr) {
-          line += sgr;
+          // sgrOf only ever ADDS attributes — a style that drops bg/bold/italic
+          // emits nothing for it, and the terminal would keep the old attribute
+          // for the rest of the run (this leaked the selection highlight to
+          // end-of-line). Reset first, then apply.
+          line += runSgr ? `\x1b[0m${sgr}` : sgr;
           runSgr = sgr;
         }
         line += ch;
