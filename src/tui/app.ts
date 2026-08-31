@@ -1878,19 +1878,18 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       // survive the picker reading every other session's usage
       state.interactive = true;
       pinSession(state.sessionId);
-      refresh();
       push("info", `fox-agent v${VERSION} — ${BANNERS[Math.floor(Math.random() * BANNERS.length)]}`);
 
       const dec = createDecoder(onKey);
       term.onKey((data) => dec.feed(data));
 
-      // First frame BEFORE anything expensive: config/plugin loading happens
-      // after the window is already up (see cli.ts — headless paths load it
-      // eagerly instead).
+      // First frame BEFORE anything expensive: transcript replay and
+      // config/plugin loading happen once the window is already up.
       paint();
       screen.flush();
       term.flush();
       dirty = false;
+      refresh();
       if (applyConfig) {
         try {
           const r = applyConfig();

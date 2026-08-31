@@ -405,15 +405,14 @@ async function plainLoop(state: HarnessState) {
   }
 }
 
-// A bad config is now a thrown ConfigError rather than a silently ignored file,
-// and loadConfig runs before any of main's own try/catch. Without this the user
-// gets a Bun stack trace for what is really a one-line "fix your config" message.
-try {
-  await main();
-} catch (e) {
+// A bad config is now a thrown ConfigError rather than a silently ignored file.
+// .catch rather than top-level await: `bun build --bytecode` targets CJS, which
+// has no TLA, and the pending handles inside main() keep the process alive the
+// same way the await did.
+main().catch((e) => {
   if (e instanceof ConfigError) {
     console.error(`fox-agent: ${e.message}`);
     process.exit(1);
   }
   throw e;
-}
+});
