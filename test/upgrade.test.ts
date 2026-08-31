@@ -23,9 +23,14 @@ describe("versionCmp", () => {
     expect(versionCmp("0.3.0-beta.1", "0.2.0")).toBeGreaterThan(0);
   });
 
-  test("two prereleases compare by tag text", () => {
+  test("two prereleases compare numerically per identifier", () => {
     expect(versionCmp("0.3.0-beta.2", "0.3.0-beta.1")).toBeGreaterThan(0);
     expect(versionCmp("0.3.0-beta.1", "0.3.0-beta.1")).toBe(0);
+    // string compare would invert this ("10" < "2" lexically)
+    expect(versionCmp("0.3.0-beta.10", "0.3.0-beta.2")).toBeGreaterThan(0);
+    // numeric identifiers rank below alphanumeric, shorter set first on a tie
+    expect(versionCmp("0.3.0-1", "0.3.0-alpha")).toBeLessThan(0);
+    expect(versionCmp("0.3.0-beta", "0.3.0-beta.1")).toBeLessThan(0);
   });
 
   test("a leading v is ignored", () => {
@@ -57,8 +62,8 @@ describe("pickRelease", () => {
 
 describe("platformAsset", () => {
   test("matches the release workflow's naming", () => {
-    const p = { linux: "linux", darwin: "darwin", win32: "windows" }[process.platform as string];
-    const expected = `fox-${p}-${process.arch}${p === "windows" ? ".exe" : ""}`;
+    const p = { linux: "linux", darwin: "darwin" }[process.platform as string];
+    const expected = p ? `fox-${p}-${process.arch}` : null;
     expect(platformAsset()).toBe(expected);
   });
 });

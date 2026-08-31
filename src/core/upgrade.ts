@@ -24,13 +24,13 @@ export function isCompiledBinary(): boolean {
   return basename(process.execPath) !== "bun" && !/bun([.-]|$)/.test(basename(process.execPath));
 }
 
-/** The asset name this platform's binary is published under. */
+/** The asset name this platform's binary is published under. Windows is not
+ *  published — nothing exercises its PTY/exec/key paths, so shipping it would
+ *  be lying about support. */
 export function platformAsset(): string | null {
-  const p =
-    process.platform === "linux" ? "linux" : process.platform === "darwin" ? "darwin" : process.platform === "win32" ? "windows" : null;
+  const p = process.platform === "linux" ? "linux" : process.platform === "darwin" ? "darwin" : null;
   const a = process.arch === "x64" ? "x64" : process.arch === "arm64" ? "arm64" : null;
-  if (!p || !a) return null;
-  return `fox-${p}-${a}${p === "windows" ? ".exe" : ""}`;
+  return p && a ? `fox-${p}-${a}` : null;
 }
 
 /** Recent releases, newest first, prereleases included. */
@@ -67,7 +67,32 @@ export function versionCmp(a: string, b: string): number {
   }
   if (preA && !preB) return -1;
   if (!preA && preB) return 1;
-  if (preA && preB) return preA < preB ? -1 : preA > preB ? 1 : 0;
+  if (preA && preB) return preCmp(preA, preB);
+  return 0;
+}
+
+/**
+ * semver §11 prerelease precedence: compare dot-separated identifiers
+ * left to right, numeric < alphanumeric, numbers numerically ("beta.10"
+ * > "beta.2" — a plain string compare inverts that), fewer identifiers
+ * first when all shared ones tie.
+ */
+function preCmp(a: string, b: string): number {
+  const as = a.split(".");
+  const bs = b.split(".");
+  for (let i = 0; i < Math.max(as.length, bs.length); i++) {
+    const x = as[i];
+    const y = bs[i];
+    if (x === undefined) return -1;
+    if (y === undefined) return 1;
+    const nx = /^\d+$/.test(x) ? Number(x) : null;
+    const ny = /^\d+$/.test(y) ? Number(y) : null;
+    if (nx !== null && ny !== null) {
+      if (nx !== ny) return nx - ny;
+    } else if (nx !== null) return -1;
+    else if (ny !== null) return 1;
+    else if (x !== y) return x < y ? -1 : 1;
+  }
   return 0;
 }
 

@@ -28,6 +28,13 @@ export interface SessionRow {
    */
   prompt_tokens: number | null;
   completion_tokens: number | null;
+  /**
+   * Snippet of the last user/assistant text message, maintained by
+   * `appendMessage` so pickers can show a preview without opening session
+   * files. NULL means "written before this column existed — not yet
+   * backfilled"; "" means backfilled and there was nothing to show.
+   */
+  preview: string | null;
 }
 
 export interface MessageRow {
@@ -87,13 +94,14 @@ const INDEX_SCHEMA = `
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
     prompt_tokens INTEGER,
-    completion_tokens INTEGER
+    completion_tokens INTEGER,
+    preview TEXT
   );
   CREATE INDEX IF NOT EXISTS idx_sessions_cwd_recent ON sessions(cwd, updated_at DESC);
 `;
 
 /** Every listing/lookup projects the same columns, in SessionRow order. */
-const SESSION_COLS = "id, cwd, model, title, created_at, updated_at, prompt_tokens, completion_tokens";
+const SESSION_COLS = "id, cwd, model, title, created_at, updated_at, prompt_tokens, completion_tokens, preview";
 
 /**
  * One database per session. `session_id` columns are kept even though the file
@@ -227,6 +235,7 @@ export function indexDb(): Database {
   // token totals were added after the first index databases existed
   ensureColumn(_index, "sessions", "prompt_tokens", "prompt_tokens INTEGER");
   ensureColumn(_index, "sessions", "completion_tokens", "completion_tokens INTEGER");
+  ensureColumn(_index, "sessions", "preview", "preview TEXT");
   return _index;
 }
 
@@ -336,9 +345,21 @@ export function createSession(cwd: string, model: string): SessionRow {
   // created_at and updated_at are the same stamp at birth (a test and the
   // picker both rely on it), so one touch() serves both — two calls could tick.
   const now = touch();
-  const s: SessionRow = { id: rid(), cwd, model, title: null, created_at: now, updated_at: now, prompt_tokens: 0, completion_tokens: 0 };
+  const s: SessionRow = {
+    id: rid(),
+    cwd,
+    model,
+    title: null,
+    created_at: now,
+    updated_at: now,
+    prompt_tokens: 0,
+    completion_tokens: 0,
+    preview: null,
+  };
   indexDb()
-    .prepare("INSERT INTO sessions VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+    // explicit columns: a migrated index has `preview` as its LAST column, so a
+    // positional VALUES would write completion_tokens into it
+    .prepare("INSERT INTO sessions (id, cwd, model, title, created_at, updated_at, prompt_tokens, completion_tokens) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
     .run(s.id, s.cwd, s.model, s.title, s.created_at, s.updated_at, 0, 0);
   sessionDb(s.id).prepare("INSERT OR IGNORE INTO refs VALUES (?, 'main', NULL, ?)").run(s.id, Date.now());
   return s;
@@ -423,7 +444,17 @@ export function forkSession(sourceId: string, uptoSeq?: number): SessionRow | nu
   if (!src) return null;
 
   const now = touch(); // one stamp for created_at and updated_at, as in createSession
-  const fork: SessionRow = { id: rid(), cwd: src.cwd, model: src.model, title: null, created_at: now, updated_at: now, prompt_tokens: 0, completion_tokens: 0 };
+  const fork: SessionRow = {
+    id: rid(),
+    cwd: src.cwd,
+    model: src.model,
+    title: null,
+    created_at: now,
+    updated_at: now,
+    prompt_tokens: 0,
+    completion_tokens: 0,
+    preview: null,
+  };
   const target = sessionDbPath(fork.id);
   ensureLayout();
   // checkpoint first: VACUUM INTO reads the database, and anything still sitting
@@ -452,7 +483,7 @@ export function forkSession(sourceId: string, uptoSeq?: number): SessionRow | nu
   })();
 
   indexDb()
-    .prepare("INSERT INTO sessions VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+    .prepare("INSERT INTO sessions (id, cwd, model, title, created_at, updated_at, prompt_tokens, completion_tokens) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
     .run(fork.id, fork.cwd, fork.model, null, fork.created_at, fork.updated_at, 0, 0);
   setRefTitle(fork.id, `fork of ${src.title ?? src.id}`);
   return { ...fork, title: `fork of ${src.title ?? src.id}`.slice(0, 80) };
@@ -500,7 +531,10 @@ export function appendMessage(
   // keep the index's recency in step with the log, so /sessions sorts sensibly.
   // touch(), not m.created_at: a same-ms create+append must still order the
   // appended session after the untouched one, and ms resolution alone ties.
-  indexDb().run("UPDATE sessions SET updated_at = ? WHERE id = ?", [touch(), sessionId]);
+  // The preview rides the same write: pickers show it without opening session files.
+  const snippet = (m.role === "user" || m.role === "assistant") && m.content.trim() ? m.content.replace(/\s+/g, " ").trim().slice(0, 120) : null;
+  if (snippet) indexDb().run("UPDATE sessions SET updated_at = ?, preview = ? WHERE id = ?", [touch(), snippet, sessionId]);
+  else indexDb().run("UPDATE sessions SET updated_at = ? WHERE id = ?", [touch(), sessionId]);
   advanceMain(sessionId, m.id);
   return m;
 }
@@ -621,6 +655,20 @@ export function backfillUsage(sessionId: string): { prompt: number; completion: 
   const u = sessionUsage(sessionId);
   indexDb().prepare("UPDATE sessions SET prompt_tokens = ?, completion_tokens = ? WHERE id = ?").run(u.prompt, u.completion, sessionId);
   return u;
+}
+
+/**
+ * Legacy-row repair for `preview`: read the last user/assistant text message
+ * from the session's own database once and cache it in the index. An empty
+ * result is cached as "" so the listing doesn't reopen the file forever.
+ */
+export function backfillPreview(sessionId: string): string {
+  const m = sessionDb(sessionId)
+    .prepare("SELECT content FROM messages WHERE session_id = ? AND role IN ('user', 'assistant') AND content != '' ORDER BY seq DESC LIMIT 1")
+    .get(sessionId) as { content: string } | null;
+  const preview = m ? m.content.replace(/\s+/g, " ").trim().slice(0, 120) : "";
+  indexDb().prepare("UPDATE sessions SET preview = ? WHERE id = ?").run(preview, sessionId);
+  return preview;
 }
 
 export function sessionUsage(sessionId: string): { prompt: number; completion: number } {

@@ -168,6 +168,7 @@ export function sessionRows(
     title?: string | null;
     model: string;
     tokens: number;
+    preview?: string;
     updatedAt: number;
     current: boolean;
   }[],
@@ -183,8 +184,9 @@ export function sessionRows(
       `${String(it.tokens).padStart(7)} tok`,
       it.model.padEnd(18),
       it.label,
+      ...(it.preview ? [`» ${it.preview.slice(0, 60)}`] : []),
     ],
-    search: `${it.id} ${it.label} ${it.model}`,
+    search: `${it.id} ${it.label} ${it.model} ${it.preview ?? ""}`,
     // What the delete confirm says out loud. The id, plus the title when there
     // is one — quoting `label` instead would put a bare cwd in quotes for an
     // untitled session, which reads like the directory is what gets deleted.

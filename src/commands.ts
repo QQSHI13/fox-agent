@@ -1,6 +1,7 @@
 import {
   allOps,
   backfillUsage,
+  backfillPreview,
   createSession,
   deleteSession,
   forkSession,
@@ -223,6 +224,8 @@ export interface SessionListItem {
   cwd: string;
   model: string;
   tokens: number;
+  /** last user/assistant message snippet; null only before backfill */
+  preview: string;
   updatedAt: number;
   current: boolean;
 }
@@ -249,6 +252,7 @@ export function sessionList(opts: { currentId?: string; cwd?: string; limit?: nu
       cwd: s.cwd,
       model: s.model,
       tokens: u.prompt + u.completion,
+      preview: s.preview ?? backfillPreview(s.id),
       updatedAt: s.updated_at,
       current: s.id === opts.currentId,
     };
@@ -272,7 +276,7 @@ export function formatSessionList(items: SessionListItem[]): string {
       (it) =>
         `${it.current ? "*" : " "}${String(it.index).padStart(2)}  ${it.id}  ${relTime(it.updatedAt).padStart(3)} ago  ${
           String(it.tokens).padStart(7)
-        } tok  ${it.model.padEnd(20)} ${it.label}`,
+        } tok  ${it.model.padEnd(20)} ${it.label}${it.preview ? `  » ${it.preview.slice(0, 60)}` : ""}`,
     )
     .join("\n");
 }
