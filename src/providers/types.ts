@@ -46,6 +46,10 @@ export interface ProviderConfig {
    * open at runtime.
    */
   provider?: string;
+  /** extra HTTP headers from the provider profile / model config */
+  headers?: Record<string, string>;
+  /** sampling overrides from the model's config entry (temperature, topP, …) */
+  sampling?: Record<string, unknown>;
   /**
    * Abort the request after this many ms with no streamed progress. The clock
    * measures idle time, not total duration, so a long legitimate response is

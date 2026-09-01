@@ -59,16 +59,31 @@ function validate(mod: unknown, path: string): { plugin: FoxPlugin } | { error: 
  * repeated `buildRegistry` calls a long session makes do not re-import — and, more
  * importantly, so `onSessionStart` state a plugin holds in module scope survives
  * the way an author would expect.
+ *
+ * `disabled` entries never reach `import()` at all: matched against the path as
+ * written, its basename, and the basename without extension, so
+ * `disabledPlugins = ["experimental"]` kills `./experimental.ts` without its
+ * code ever running.
  */
-export async function loadPlugins(paths: string[], cwd = process.cwd()): Promise<{ plugins: FoxPlugin[]; warnings: string[] }> {
-  const key = JSON.stringify([paths, cwd]);
+export async function loadPlugins(
+  paths: string[],
+  cwd = process.cwd(),
+  disabled: string[] = [],
+): Promise<{ plugins: FoxPlugin[]; warnings: string[] }> {
+  const key = JSON.stringify([paths, cwd, disabled]);
   if (cache?.key === key) return { plugins: cache.plugins, warnings: cache.warnings };
 
   const plugins: FoxPlugin[] = [];
   const warnings: string[] = [];
   const seen = new Set<string>();
+  const isDisabled = (raw: string) => {
+    const base = raw.split("/").pop() ?? raw;
+    const stem = base.replace(/\.(ts|js|mjs|mts)$/, "");
+    return disabled.some((d) => d === raw || d === base || d === stem);
+  };
 
   for (const raw of paths) {
+    if (isDisabled(raw)) continue;
     const path = expand(raw, cwd);
     let mod: unknown;
     try {

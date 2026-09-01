@@ -18,8 +18,7 @@ import { viewTokenEstimate } from "./context/render.ts";
 import { checkBudget } from "./context/budget.ts";
 import type { ProviderConfig } from "./providers/types.ts";
 import { renderTodos, getTodos } from "./tools/todo.ts";
-import type { Config } from "./core/config.ts";
-import { saveGlobalConfig } from "./core/config.ts";
+import { saveGlobalConfig, resolveValue, type Config } from "./core/config.ts";
 import { availableProviders } from "./providers/index.ts";
 import { ensureFreshCatalog, presetById, providerPresets } from "./providers/modelsdev.ts";
 import type { UiStep } from "./core/ui.ts";
@@ -133,7 +132,7 @@ export const COMMANDS: CommandSpec[] = [
   { name: "/view", desc: "preview visible nodes ([mN] role preview)" },
   { name: "/todos", desc: "show agent todo list" },
   { name: "/usage", desc: "token totals + budget" },
-  { name: "/model", desc: "show or switch model (persists to session)", usage: "[name]", arg: true },
+  { name: "/model", desc: "show or switch model — picker lists every configured profile and catalog model", usage: "[profile/][name]", arg: true },
   {
     name: "/upgrade",
     desc: "upgrade fox-agent to the latest release",
@@ -299,6 +298,197 @@ interface LoginFields {
   apiKey?: string;
   baseUrl?: string;
   model?: string;
+}
+
+// ---- /model: switching across providers, not just model ids ----
+
+/** Where a `/model` target lives: the current provider, a configured profile, or a catalog preset. */
+interface ModelTarget {
+  model: string;
+  /** configured profile or catalog preset id when the switch crosses providers */
+  profileName?: string;
+  format?: string;
+  baseUrl?: string;
+  /** resolved from the profile's apiKey or the preset's env vars; undefined = fall back at apply time */
+  apiKey?: string;
+  headers?: Record<string, string>;
+  sampling?: Record<string, unknown>;
+  error?: string;
+}
+
+/** Profile + model headers, resolved through resolveValue ($ENV / !cmd). */
+function profileHeaders(p: { headers?: Record<string, string> }, mc?: { headers?: Record<string, string> }): Record<string, string> | undefined {
+  const out: Record<string, string> = {};
+  for (const src of [p.headers, mc?.headers]) {
+    for (const [k, v] of Object.entries(src ?? {})) {
+      const r = resolveValue(v);
+      if (r !== undefined) out[k] = r;
+    }
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
+/**
+ * Parse a `/model` argument. `profile/model` splits only when the head names a
+ * configured profile or catalog preset — model ids legitimately contain "/"
+ * (openrouter's `anthropic/claude-sonnet-4`), so a bare id is never split.
+ */
+function parseModelArg(arg: string, state: HarnessState): ModelTarget {
+  const slash = arg.indexOf("/");
+  if (slash > 0) {
+    const head = arg.slice(0, slash);
+    const rest = arg.slice(slash + 1);
+    const prof = state.config?.providers[head];
+    if (prof && rest) {
+      const mc = prof.models.find((m) => m.id === rest);
+      if (mc?.disabled) return { model: rest, error: `model '${rest}' is disabled in profile '${head}'` };
+      return {
+        profileName: head,
+        format: prof.format ?? "openai-compatible",
+        baseUrl: prof.baseUrl,
+        apiKey: resolveValue(prof.apiKey),
+        model: rest,
+        headers: profileHeaders(prof, mc),
+        sampling: mc?.sampling,
+      };
+    }
+    const preset = presetById(head);
+    if (preset && rest) {
+      let key: string | undefined;
+      for (const n of preset.env) {
+        const v = process.env[n];
+        if (v) key = v;
+      }
+      return { profileName: preset.id, format: preset.format, baseUrl: preset.api, apiKey: key, model: rest };
+    }
+  }
+  const cur = state.config?.providers[state.config.provider];
+  const mc = cur?.models.find((m) => m.id === arg);
+  if (mc?.disabled) return { model: arg, error: `model '${arg}' is disabled in profile '${state.config?.provider}'` };
+  return { model: arg, sampling: mc?.sampling, headers: cur ? profileHeaders(cur, mc) : undefined };
+}
+
+/**
+ * Apply a model switch: live provider state, the session record, and the
+ * global config — so neither reopening the session nor starting a new one
+ * snaps back to the old model.
+ */
+function applyModelSwitch(t: ModelTarget, state: HarnessState, keyOverride?: string): CommandResult {
+  if (t.error) return { handled: true, output: t.error };
+  const format = t.format ?? state.provider.provider ?? "openai-compatible";
+  const baseUrl = t.baseUrl ?? state.provider.baseUrl;
+  const sameEndpoint = baseUrl === state.provider.baseUrl && format === state.provider.provider;
+  const apiKey = keyOverride ?? t.apiKey ?? (sameEndpoint ? state.provider.apiKey : "");
+  state.provider = {
+    ...state.provider,
+    provider: format,
+    baseUrl,
+    model: t.model,
+    apiKey,
+    headers: t.headers ?? (sameEndpoint ? state.provider.headers : undefined),
+    sampling: t.sampling,
+  };
+  setSessionModel(state.sessionId, t.model);
+  if (state.config) {
+    state.config.provider = t.profileName ?? format;
+    state.config.model = t.model;
+    if (!t.profileName) state.config.baseUrl = baseUrl;
+  }
+  // persist: a profile-backed switch stores the profile NAME (the endpoint and
+  // key live in its table); a preset/flat switch stores the resolved endpoint.
+  // The top-level apiKey is the fallback a keyless profile resolves against, so
+  // it is written back rather than dropped when it exists.
+  const fallbackKey = state.config?.apiKey || (sameEndpoint ? apiKey : "");
+  const saved = saveGlobalConfig(
+    t.profileName
+      ? { provider: t.profileName, model: t.model, ...(keyOverride ? { apiKey: keyOverride } : fallbackKey ? { apiKey: fallbackKey } : {}) }
+      : { provider: format, model: t.model, baseUrl, ...(apiKey ? { apiKey } : {}) },
+    state.configPath,
+  );
+  return {
+    handled: true,
+    output: `model: ${t.model}${t.profileName ? ` · profile ${t.profileName}` : ""} (${format}) — saved to session + ${saved}`,
+  };
+}
+
+/** True when the wizard must ask for a key: the target has none anywhere else. */
+function targetNeedsKey(t: ModelTarget, state: HarnessState): boolean {
+  if (t.error || t.apiKey) return false;
+  const baseUrl = t.baseUrl ?? state.provider.baseUrl;
+  if (/^https?:\/\/(localhost|127\.|\[::1\])/.test(baseUrl)) return false;
+  const sameEndpoint = baseUrl === state.provider.baseUrl && (t.format ?? state.provider.provider) === state.provider.provider;
+  return !(sameEndpoint && state.provider.apiKey);
+}
+
+/** Turn a wizard answers map into a ModelTarget, resolving the custom-model step. */
+function promptSelectionToTarget(a: Record<string, string>, state: HarnessState): ModelTarget {
+  const v = a.model ?? "";
+  if (v.startsWith("m:")) return { model: v.slice(2) };
+  if (v.startsWith("p:") || v.startsWith("x:")) {
+    const i = v.indexOf(":", 2);
+    return parseModelArg(`${v.slice(2, i)}/${v.slice(i + 1)}`, state);
+  }
+  if (v.startsWith("c:")) {
+    const custom = (a.custom ?? "").trim();
+    if (!custom) return { model: "", error: "no model id entered" };
+    const rest = v.slice(2);
+    if (!rest) return { model: custom };
+    if (rest.startsWith("p:")) return { ...parseModelArg(`${rest.slice(2)}/${custom}`, state) };
+    if (rest.startsWith("x:")) return { ...parseModelArg(`${rest.slice(2)}/${custom}`, state) };
+  }
+  return { model: "", error: `unrecognized selection '${v}'` };
+}
+
+/**
+ * The interactive `/model`: a searchable select over every configured profile's
+ * models and the whole models.dev catalog — each labeled with its provider so a
+ * cross-provider switch is one pick, not a /login. Custom entries cover models
+ * the endpoint does not advertise.
+ */
+function modelPrompt(state: HarnessState): PromptRequest {
+  ensureFreshCatalog();
+  const cur = state.provider.model;
+  const options: { value: string; label: string }[] = [{ value: `m:${cur}`, label: `${cur} (current)` }];
+  for (const [name, p] of Object.entries(state.config?.providers ?? {})) {
+    for (const m of p.models) {
+      if (m.disabled) continue;
+      const ctx = m.contextWindow ? ` — ${Math.round(m.contextWindow / 1000)}k` : "";
+      options.push({ value: `p:${name}:${m.id}`, label: `${name} · ${m.name ?? m.id}${m.name && m.name !== m.id ? ` (${m.id})` : ""}${ctx}` });
+    }
+    options.push({ value: `c:p:${name}`, label: `＋ ${name} · custom model…` });
+  }
+  for (const preset of providerPresets()) {
+    for (const m of preset.models) {
+      const ctx = m.context ? ` — ${Math.round(m.context / 1000)}k` : "";
+      options.push({ value: `x:${preset.id}:${m.id}`, label: `${preset.name} · ${m.id}${ctx}` });
+    }
+    options.push({ value: `c:x:${preset.id}`, label: `＋ ${preset.name} · custom model…` });
+  }
+  options.push({ value: "c:", label: "＋ custom model on the current provider…" });
+  return {
+    title: "switch model (persists to session + global config)",
+    steps: [
+      { key: "model", label: "model — type to search", kind: "select", options, initial: `m:${cur}` },
+      {
+        key: "custom",
+        label: "model id",
+        kind: "text",
+        allowEmpty: false,
+        hint: "any id the endpoint accepts, listed or not",
+        skipIf: (a) => !(a.model ?? "").startsWith("c"),
+      },
+      {
+        key: "key",
+        label: "api key",
+        kind: "text",
+        secret: true,
+        allowEmpty: true,
+        hint: "empty = profile key, env var, or current key",
+        skipIf: (a) => !targetNeedsKey(promptSelectionToTarget(a, state), state),
+      },
+    ],
+    run: (a, s) => applyModelSwitch(promptSelectionToTarget(a, s), s, a.key?.trim() || undefined),
+  };
 }
 
 /**
@@ -631,21 +821,9 @@ export function runSlashCommand(input: string, state: HarnessState): CommandResu
     }
 
     case "/model": {
-      if (!arg && state.interactive) {
-        return {
-          handled: true,
-          prompt: {
-            title: "switch model (persists to this session)",
-            steps: [{ key: "model", label: "model", kind: "text", initial: state.provider.model, allowEmpty: false }],
-            run: (a, s) => runSlashCommand(`/model ${a.model.trim()}`, s) ?? { handled: true },
-          },
-        };
-      }
-      if (!arg) return { handled: true, output: `model: ${state.provider.model}` };
-      state.provider.model = arg;
-      // persist, or reopening the session would silently snap back to the old model
-      setSessionModel(state.sessionId, arg);
-      return { handled: true, output: `model switched to ${arg}` };
+      if (!arg && state.interactive) return { handled: true, prompt: modelPrompt(state) };
+      if (!arg) return { handled: true, output: `model: ${state.provider.model} · provider ${state.provider.provider ?? "openai-compatible"}` };
+      return applyModelSwitch(parseModelArg(arg, state), state);
     }
 
     case "/login": {

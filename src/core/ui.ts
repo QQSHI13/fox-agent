@@ -34,6 +34,8 @@ export interface UiStep {
   secret?: boolean;
   /** default true; when false an empty answer flashes and stays on the step */
   allowEmpty?: boolean;
+  /** when this returns true the wizard skips the step entirely (conditional questions) */
+  skipIf?: (answers: Record<string, string>) => boolean;
 }
 
 /** Resolve a possibly-dynamic step field against the answers so far. */

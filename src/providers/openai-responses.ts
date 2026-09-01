@@ -6,6 +6,7 @@ import { createOpenAI } from "@ai-sdk/openai";
 import type { ChatMessage, ProviderConfig, StreamEvent, ToolDef } from "./types.ts";
 import { classifyProviderError } from "../core/errors.ts";
 import { startWatchdog } from "./watchdog.ts";
+import { samplingOptions } from "./index.ts";
 import { toModelMessages } from "./convert.ts";
 
 export * from "./types.ts";
@@ -16,7 +17,11 @@ export async function* streamChat(
   tools: ToolDef[],
   signal?: AbortSignal,
 ): AsyncGenerator<StreamEvent> {
-  const provider = createOpenAI({ baseURL: cfg.baseUrl, apiKey: cfg.apiKey });
+  const provider = createOpenAI({
+    baseURL: cfg.baseUrl,
+    apiKey: cfg.apiKey,
+    ...(cfg.headers && Object.keys(cfg.headers).length ? { headers: cfg.headers } : {}),
+  });
   const model = provider.responses(cfg.model);
 
   const toolSet: ToolSet = {};
@@ -36,6 +41,7 @@ export async function* streamChat(
       ...(sys ? { system: sys } : {}),
       messages: rest,
       ...(tools.length ? { tools: toolSet } : {}),
+      ...samplingOptions(cfg.sampling),
       abortSignal: wd.signal,
     });
 

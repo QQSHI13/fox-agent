@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 import { createSession, getSession, latestSessionFor, setSessionModel } from "./store/db.ts";
-import { loadConfig, type Config } from "./core/config.ts";
+import { loadConfig, resolveProfile, type Config } from "./core/config.ts";
+import type { ProviderConfig } from "./providers/types.ts";
 import { ConfigError, errMsg } from "./core/errors.ts";
 import { runTurnCore } from "./loop/turn.ts";
 import { resolveChat } from "./providers/index.ts";
@@ -141,7 +142,7 @@ async function main() {
   // Placeholder until the real config lands — the TUI paints before config
   // loads, so a slow config/plugin path never delays the first frame. The
   // request-time key check (in resolveChat) is what reports a missing key.
-  let provider = {
+  let provider: ProviderConfig = {
     baseUrl: "https://api.openai.com/v1",
     apiKey: "",
     model: "…",
@@ -150,11 +151,14 @@ async function main() {
   };
   function applyLoadedConfig(c: Config) {
     config = c;
+    const p = resolveProfile(c);
     provider = {
-      baseUrl: c.baseUrl,
-      apiKey: c.apiKey,
+      baseUrl: p.baseUrl,
+      apiKey: p.apiKey,
       model: c.model,
-      provider: c.provider,
+      provider: p.format,
+      headers: p.headers,
+      sampling: p.sampling,
       requestTimeoutMs: c.requestTimeoutMs,
     };
   }

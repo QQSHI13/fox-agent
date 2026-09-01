@@ -285,11 +285,15 @@ describe("interactive wizards", () => {
   test("bare /model, /prune and /fork ask; bare /delete opens the session picker", async () => {
     const t = await setup();
     const s = t.createSession("/w", "m1");
-    const state = { sessionId: s.id, cwd: "/w", provider: { baseUrl: "http://x", apiKey: "k", model: "m" }, interactive: true };
+    // configPath pointed at scratch: /model and /login persist to the global config
+    // and must never touch the real one from a test
+    const state = { sessionId: s.id, cwd: "/w", provider: { baseUrl: "http://x", apiKey: "k", model: "m" }, interactive: true, configPath: join(dir, "config.toml") };
 
     const model = t.runSlashCommand("/model", state)!;
-    expect(model.prompt!.steps[0].initial).toBe("m");
-    const applied = model.prompt!.run({ model: "m2" }, state);
+    // a searchable select now: current model first, then profiles and catalog
+    expect(model.prompt!.steps[0].kind).toBe("select");
+    expect(model.prompt!.steps[0].initial).toBe("m:m");
+    const applied = model.prompt!.run({ model: "m:m2" }, state);
     expect(applied.output).toContain("m2");
     expect(state.provider.model).toBe("m2");
 

@@ -207,6 +207,8 @@ function fallbackConfig(cfg: ProviderConfig, opts: TurnOptions): Config {
     // a caller that passed only a ProviderConfig has no config file in play, so
     // there is nothing to load plugins from — an override is the way in
     plugins: [],
+    disabledPlugins: [],
+    providers: {},
     warnings: [],
     projectInstructions: "",
   };

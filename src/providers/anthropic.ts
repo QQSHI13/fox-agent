@@ -6,6 +6,7 @@ import { createAnthropic } from "@ai-sdk/anthropic";
 import type { ChatMessage, ProviderConfig, StreamEvent, ToolDef } from "./types.ts";
 import { classifyProviderError } from "../core/errors.ts";
 import { startWatchdog } from "./watchdog.ts";
+import { samplingOptions } from "./index.ts";
 import { toModelMessages } from "./convert.ts";
 
 const CACHE_OFF = process.env.FOX_AGENT_ANTHROPIC_CACHE === "0";
@@ -16,7 +17,11 @@ export async function* streamChat(
   tools: ToolDef[],
   signal?: AbortSignal,
 ): AsyncGenerator<StreamEvent> {
-  const provider = createAnthropic({ baseURL: cfg.baseUrl || undefined, apiKey: cfg.apiKey });
+  const provider = createAnthropic({
+    baseURL: cfg.baseUrl || undefined,
+    apiKey: cfg.apiKey,
+    ...(cfg.headers && Object.keys(cfg.headers).length ? { headers: cfg.headers } : {}),
+  });
   const model = provider.languageModel(cfg.model);
 
   const toolSet: ToolSet = {};
@@ -49,6 +54,7 @@ export async function* streamChat(
       ...(sysText ? { system: sysText } : {}),
       messages: rest,
       ...(tools.length ? { tools: toolSet } : {}),
+      ...samplingOptions(cfg.sampling),
       abortSignal: wd.signal,
     });
 

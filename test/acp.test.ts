@@ -50,6 +50,8 @@ const cfg = (): Config => ({
   // whatever the mock happens to edit and add seconds per assertion
   diagnostics: false,
   plugins: [],
+  disabledPlugins: [],
+  providers: {},
   warnings: [],
   projectInstructions: "",
 });

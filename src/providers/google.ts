@@ -7,6 +7,7 @@ import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import type { ChatMessage, ProviderConfig, StreamEvent, ToolDef } from "./types.ts";
 import { classifyProviderError } from "../core/errors.ts";
 import { startWatchdog } from "./watchdog.ts";
+import { samplingOptions } from "./index.ts";
 import { toModelMessages } from "./convert.ts";
 
 export async function* streamChat(
@@ -20,6 +21,7 @@ export async function* streamChat(
     // the openai-compatible default baseUrl would be nonsense here; only honor
     // one that was actually pointed at a Gemini-compatible endpoint
     ...(cfg.baseUrl && !/api\.openai\.com/.test(cfg.baseUrl) ? { baseURL: cfg.baseUrl } : {}),
+    ...(cfg.headers && Object.keys(cfg.headers).length ? { headers: cfg.headers } : {}),
   });
   const model = provider.languageModel(cfg.model);
 
@@ -40,6 +42,7 @@ export async function* streamChat(
       ...(sys ? { system: sys } : {}),
       messages: rest,
       ...(tools.length ? { tools: toolSet } : {}),
+      ...samplingOptions(cfg.sampling),
       abortSignal: wd.signal,
     });
 

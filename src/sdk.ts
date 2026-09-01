@@ -1,7 +1,7 @@
 // Library entry: embed fox-agent in other tools or scripts.
 //   import { createAgent } from "fox-agent/sdk";
 import { createSession, getSession } from "./store/db.ts";
-import { loadConfig } from "./core/config.ts";
+import { loadConfig, resolveProfile } from "./core/config.ts";
 import { errMsg } from "./core/errors.ts";
 import type { AgentEvent } from "./core/events.ts";
 import type { ProviderConfig } from "./providers/types.ts";
@@ -54,7 +54,15 @@ export async function createAgent(opts: {
   const config = loadConfig({ cwd, ...opts });
   if (!config.apiKey) throw new Error("fox-agent: no API key (set FOX_AGENT_API_KEY / OPENAI_API_KEY / ANTHROPIC_API_KEY)");
 
-  const provider: ProviderConfig = { baseUrl: config.baseUrl, apiKey: config.apiKey, model: config.model, provider: config.provider };
+  const resolved = resolveProfile(config);
+  const provider: ProviderConfig = {
+    baseUrl: resolved.baseUrl,
+    apiKey: resolved.apiKey,
+    model: config.model,
+    provider: resolved.format,
+    headers: resolved.headers,
+    sampling: resolved.sampling,
+  };
   const sessionId = createSession(cwd, config.model).id;
   getSession(sessionId);
 

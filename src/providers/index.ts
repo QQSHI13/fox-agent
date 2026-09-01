@@ -46,6 +46,39 @@ export function isAnthropic(cfg: ProviderConfig): boolean {
   return /^claude/i.test(cfg.model) && !/openai\.com/.test(cfg.baseUrl);
 }
 
+/**
+ * Map a model config's free-form `sampling` table onto streamText's named
+ * options. Unknown keys are dropped — the AI SDK has a fixed option set, and
+ * passing a raw unknown key would silently do nothing anyway.
+ */
+export function samplingOptions(s: Record<string, unknown> | undefined): Record<string, unknown> {
+  if (!s) return {};
+  const MAP: Record<string, string> = {
+    temperature: "temperature",
+    topP: "topP",
+    top_p: "topP",
+    topK: "topK",
+    top_k: "topK",
+    presencePenalty: "presencePenalty",
+    presence_penalty: "presencePenalty",
+    frequencyPenalty: "frequencyPenalty",
+    frequency_penalty: "frequencyPenalty",
+    seed: "seed",
+    maxOutputTokens: "maxOutputTokens",
+    maxTokens: "maxOutputTokens",
+    max_tokens: "maxOutputTokens",
+    stopSequences: "stopSequences",
+    stop: "stopSequences",
+  };
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(s)) {
+    const target = MAP[k];
+    if (!target) continue;
+    if (typeof v === "number" || typeof v === "string" || Array.isArray(v)) out[target] = v;
+  }
+  return out;
+}
+
 /** Resolved default ChatFn honoring cfg.provider. */
 export const resolveChat: ChatFn = async function* (cfg, messages, tools, signal) {
   const name = cfg.provider;

@@ -21,6 +21,26 @@ export interface ModelInfo {
 
 const UNKNOWN: ModelInfo = { contextWindow: 131_072, maxOutput: 16_384 };
 
+/**
+ * Model entries from `[providers.*.models]` config tables, registered by
+ * `loadConfig`. Module-level for the same reason as `setCustomProviders` —
+ * `lookupModel` is called from budget checks deep in the render path, where
+ * threading a config through would change a dozen signatures.
+ */
+let configured: {
+  id: string;
+  contextWindow?: number;
+  maxOutput?: number;
+  reasoning?: boolean;
+  input?: string[];
+  costIn?: number;
+  costOut?: number;
+}[] = [];
+
+export function setConfiguredModels(models: typeof configured): void {
+  configured = models;
+}
+
 const TABLE: [RegExp, ModelInfo][] = [
   [/gpt-5|o3|o4-mini/, { contextWindow: 262_144, maxOutput: 65_536, costIn: 2, costOut: 8, vision: true, reasoning: true }],
   [/gpt-4\.1/, { contextWindow: 1_047_576, maxOutput: 32_768, costIn: 2, costOut: 8, vision: true }],
@@ -42,6 +62,21 @@ const TABLE: [RegExp, ModelInfo][] = [
 ];
 
 export function lookupModel(id: string): ModelInfo {
+  // The user's own config wins first: it is the only source that can describe a
+  // model no endpoint and no catalog knows about.
+  const c = configured.find((m) => m.id === id);
+  if (c) {
+    return {
+      contextWindow: c.contextWindow ?? UNKNOWN.contextWindow,
+      maxOutput: c.maxOutput ?? UNKNOWN.maxOutput,
+      costIn: c.costIn,
+      costOut: c.costOut,
+      vision: c.input?.includes("image"),
+      audio: c.input?.includes("audio"),
+      video: c.input?.includes("video"),
+      reasoning: c.reasoning,
+    };
+  }
   // Exact figures from the cached models.dev catalog beat substring guesses —
   // it knows models this static table has never heard of.
   const cat = lookupCatalogModel(id);

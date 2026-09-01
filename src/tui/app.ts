@@ -426,6 +426,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         }
       },
     };
+    prompt.idx = nextLiveStep(0, 1);
     enterPromptStep();
   }
 
@@ -480,6 +481,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         pumpAskQueue();
       },
     };
+    prompt.idx = nextLiveStep(0, 1);
     enterPromptStep();
   }
 
@@ -535,11 +537,20 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     return true;
   }
 
+  /** First index ≥ from whose step is not skipped; steps.length when none. */
+  function nextLiveStep(from: number, dir: 1 | -1): number {
+    const p = prompt!;
+    let i = from;
+    while (i >= 0 && i < p.steps.length && p.steps[i].skipIf?.(p.answers)) i += dir;
+    return i;
+  }
+
   function promptSubmit() {
     if (!commitStep()) return;
     const p = prompt!;
-    if (p.idx + 1 < p.steps.length) {
-      p.idx++;
+    const next = nextLiveStep(p.idx + 1, 1);
+    if (next < p.steps.length) {
+      p.idx = next;
       enterPromptStep();
     } else {
       finishPrompt(p.answers);
@@ -585,16 +596,18 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     }
     // pgup/pgdn move between the wizard's steps, keeping entered answers
     if (name === "pageup") {
-      if (p.idx > 0) {
+      const prev = nextLiveStep(p.idx - 1, -1);
+      if (prev >= 0) {
         commitStep();
-        p.idx--;
+        p.idx = prev;
         enterPromptStep();
       }
       return true;
     }
     if (name === "pagedown") {
-      if (p.idx + 1 < p.steps.length && commitStep()) {
-        p.idx++;
+      const next = nextLiveStep(p.idx + 1, 1);
+      if (next < p.steps.length && commitStep()) {
+        p.idx = next;
         enterPromptStep();
       }
       return true;

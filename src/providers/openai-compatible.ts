@@ -7,6 +7,7 @@ import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import type { ChatMessage, ProviderConfig, StreamEvent, ToolDef } from "./types.ts";
 import { classifyProviderError } from "../core/errors.ts";
 import { startWatchdog } from "./watchdog.ts";
+import { samplingOptions } from "./index.ts";
 import { toModelMessages } from "./convert.ts";
 
 export * from "./types.ts";
@@ -21,7 +22,13 @@ export async function* streamChat(
   // OpenAI-compatible gateways never send a usage chunk, and every downstream
   // figure (status bar ctx%, the agent's own context meter, /usage) silently
   // stays at "no report yet" forever
-  const provider = createOpenAICompatible({ name: "fox-agent", baseURL: cfg.baseUrl, apiKey: cfg.apiKey, includeUsage: true });
+  const provider = createOpenAICompatible({
+    name: "fox-agent",
+    baseURL: cfg.baseUrl,
+    apiKey: cfg.apiKey,
+    includeUsage: true,
+    ...(cfg.headers && Object.keys(cfg.headers).length ? { headers: cfg.headers } : {}),
+  });
   const model = provider.chatModel(cfg.model);
 
   const toolSet: ToolSet = {};
@@ -42,6 +49,7 @@ export async function* streamChat(
       ...(sys ? { system: sys } : {}),
       messages: rest,
       ...(tools.length ? { tools: toolSet } : {}),
+      ...samplingOptions(cfg.sampling),
       abortSignal: wd.signal,
     });
 

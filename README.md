@@ -83,6 +83,7 @@ ten minutes is fine, while one that goes quiet past the window fails with a retr
 
 ```toml
 model = "kimi-k2"
+provider = "openrouter"   # a [providers.*] profile name, or a bare API format
 maxSteps = 0              # turn step cap; 0 (the default) = unlimited
 compactAt = 0.85
 retryLimit = 3
@@ -93,8 +94,35 @@ diagnostics = true          # report type errors after each edit (default true)
 # process with your credentials, so a project file cannot introduce one.
 # (In ~/.config/fox-agent/config.toml; ignored with a warning if put in fox-agent.toml.)
 plugins = ["~/my-fox-plugin.ts"]
+# Named here, a plugin is never even imported — matched by path, basename, or stem.
+disabledPlugins = ["experimental"]
 
-[mcpServers.fs]
+# Named provider profiles. `provider = "openrouter"` selects this one; the flat
+# top-level keys (baseUrl/apiKey) are the fallback for fields a profile omits.
+# apiKey and headers values resolve "$ENV"/"${ENV}" and "!cmd" (cached per process).
+[providers.openrouter]
+format = "openai-compatible"   # openai-compatible | openai-responses | anthropic | google
+baseUrl = "https://openrouter.ai/api/v1"
+apiKey = "$OPENROUTER_API_KEY"
+headers = { "x-title" = "fox-agent" }
+defaultModel = "moonshotai/kimi-k2"
+
+# Per-model entries describe models no endpoint or catalog knows — these figures
+# win over models.dev and the built-in table in the ctx meter and budget checks.
+[[providers.openrouter.models]]
+id = "moonshotai/kimi-k2"
+name = "Kimi K2"
+contextWindow = 262144
+maxOutput = 16384
+reasoning = false
+input = ["text", "image"]     # gates media attachments in read/fetch
+costIn = 0.6                  # USD per Mtok, informational
+costOut = 2.5
+sampling = { temperature = 1.0, top_p = 0.95 }   # merged onto every request
+# disabled = true             # hide from /model, refuse as a target
+```
+
+`[mcpServers.fs]`
 command = "npx"
 args = ["-y", "@modelcontextprotocol/server-fs", "/tmp"]
 

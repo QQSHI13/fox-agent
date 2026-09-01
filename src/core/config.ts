@@ -1,7 +1,9 @@
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { execSync } from "node:child_process";
 import { ConfigError } from "./errors.ts";
+import { setConfiguredModels } from "../providers/models.ts";
 
 export interface McpServerConfig {
   command: string;
@@ -45,6 +47,56 @@ export interface LspConfig {
   rootMarkers?: string[];
 }
 
+/**
+ * One model entry inside a provider profile — pi-style depth in TOML form:
+ *
+ *   [[providers.openrouter.models]]
+ *   id = "moonshotai/kimi-k2"
+ *   contextWindow = 262144
+ *   sampling = { temperature = 1.0 }
+ *
+ * Everything but `id` is optional; unset fields fall back to the models.dev
+ * catalog, then the static table, then conservative defaults.
+ */
+export interface ModelConfig {
+  id: string;
+  name?: string;
+  contextWindow?: number;
+  maxOutput?: number;
+  reasoning?: boolean;
+  /** input modalities, e.g. ["text", "image", "audio", "video"] */
+  input?: string[];
+  /** per-Mtok USD, informational */
+  costIn?: number;
+  costOut?: number;
+  /** merged verbatim onto the request's sampling fields (temperature, topP, …) */
+  sampling?: Record<string, unknown>;
+  /** extra headers for this model only, on top of the profile's */
+  headers?: Record<string, string>;
+  /** hidden from /model and refused as a target */
+  disabled?: boolean;
+}
+
+/**
+ * A named provider profile (`[providers.openrouter]`). Selecting it is
+ * `provider = "openrouter"`; a `provider` value that names no profile keeps
+ * its legacy meaning of an API format (`openai-compatible`, …).
+ *
+ * `apiKey` and `headers` values go through `resolveValue`: "$ENV"/"${ENV}"
+ * interpolate from the environment, "!cmd" runs a command at request time,
+ * "$$"/"$!" escape. A literal key works too, but env references keep secrets
+ * out of the file.
+ */
+export interface ProviderProfile {
+  /** wire format; default "openai-compatible" */
+  format?: string;
+  baseUrl?: string;
+  apiKey?: string;
+  headers?: Record<string, string>;
+  defaultModel?: string;
+  models: ModelConfig[];
+}
+
 export interface Config {
   model: string;
   baseUrl: string;
@@ -81,6 +133,14 @@ export interface Config {
    * is unbindable for a smaller version of the same reason.
    */
   plugins: string[];
+  /**
+   * Plugin names that must not load at all, even when listed in `plugins`.
+   * Matched against the entry as written, its basename, and the basename
+   * without extension — the module is never imported, so its code never runs.
+   */
+  disabledPlugins: string[];
+  /** named provider profiles (`[providers.*]`), keyed by profile name */
+  providers: Record<string, ProviderProfile>;
   /** every AGENTS.md / CLAUDE.md on the path from root to cwd, each labeled with its source path ("" if none) */
   projectInstructions: string;
   /**
@@ -106,6 +166,8 @@ const DEFAULTS: Omit<Config, "projectInstructions"> = {
   lsp: {},
   diagnostics: true,
   plugins: [],
+  disabledPlugins: [],
+  providers: {},
   warnings: [],
 };
 
@@ -234,7 +296,49 @@ function applyEnv(cfg: Config, env: Record<string, string | undefined>) {
 const KNOWN_KEYS = new Set([
   "model", "baseUrl", "apiKey", "provider", "maxSteps", "retryLimit", "compactAt",
   "requestTimeoutMs", "diagnostics", "mcpServers", "agents", "lsp", "plugins",
+  "providers", "disabledPlugins",
 ]);
+
+/** Parse one `[[providers.x.models]]` entry; junk fields degrade to absent. */
+function parseModelConfig(v: unknown): ModelConfig | null {
+  const m = v as Record<string, unknown>;
+  if (typeof m?.id !== "string" || !m.id.trim()) return null;
+  const out: ModelConfig = { id: m.id.trim() };
+  if (typeof m.name === "string") out.name = m.name;
+  if (typeof m.contextWindow === "number" && m.contextWindow > 0) out.contextWindow = Math.floor(m.contextWindow);
+  if (typeof m.maxOutput === "number" && m.maxOutput > 0) out.maxOutput = Math.floor(m.maxOutput);
+  if (typeof m.reasoning === "boolean") out.reasoning = m.reasoning;
+  if (Array.isArray(m.input)) out.input = m.input.filter((x): x is string => typeof x === "string");
+  if (typeof m.costIn === "number") out.costIn = m.costIn;
+  if (typeof m.costOut === "number") out.costOut = m.costOut;
+  if (m.sampling && typeof m.sampling === "object") out.sampling = m.sampling as Record<string, unknown>;
+  if (m.headers && typeof m.headers === "object") {
+    out.headers = Object.fromEntries(Object.entries(m.headers as Record<string, unknown>).filter((e): e is [string, string] => typeof e[1] === "string"));
+  }
+  if (m.disabled === true) out.disabled = true;
+  return out;
+}
+
+/** Parse one `[providers.x]` table. */
+function parseProfile(v: unknown): ProviderProfile | null {
+  const p = v as Record<string, unknown>;
+  if (!p || typeof p !== "object") return null;
+  const out: ProviderProfile = { models: [] };
+  if (typeof p.format === "string" && p.format.trim()) out.format = p.format.trim();
+  if (typeof p.baseUrl === "string" && /^https?:\/\//.test(p.baseUrl)) out.baseUrl = p.baseUrl.replace(/\/$/, "");
+  if (typeof p.apiKey === "string") out.apiKey = p.apiKey;
+  if (p.headers && typeof p.headers === "object") {
+    out.headers = Object.fromEntries(Object.entries(p.headers as Record<string, unknown>).filter((e): e is [string, string] => typeof e[1] === "string"));
+  }
+  if (typeof p.defaultModel === "string") out.defaultModel = p.defaultModel;
+  if (Array.isArray(p.models)) {
+    for (const m of p.models) {
+      const parsed = parseModelConfig(m);
+      if (parsed) out.models.push(parsed);
+    }
+  }
+  return out;
+}
 
 function applyTable(cfg: Config, t: Record<string, unknown> | null, scope: "global" | "project") {
   if (!t) return;
@@ -295,6 +399,16 @@ function applyTable(cfg: Config, t: Record<string, unknown> | null, scope: "glob
         rootMarkers: s.rootMarkers,
       };
     }
+  }
+  if (t.providers && typeof t.providers === "object") {
+    for (const [name, v] of Object.entries(t.providers as Record<string, unknown>)) {
+      const p = parseProfile(v);
+      // a profile that says nothing at all is a typo, not a configuration
+      if (p && (p.format || p.baseUrl || p.apiKey || p.models.length || p.defaultModel)) cfg.providers[name] = p;
+    }
+  }
+  if (Array.isArray(t.disabledPlugins)) {
+    for (const p of t.disabledPlugins) if (typeof p === "string" && p.trim()) cfg.disabledPlugins.push(p.trim());
   }
   if (Array.isArray(t.plugins)) {
     const entries = t.plugins.filter((p): p is string => typeof p === "string" && p.trim().length > 0);
@@ -357,6 +471,12 @@ export function saveGlobalConfig(
     fields.model !== undefined ? `model = ${JSON.stringify(fields.model)}` : null,
   ].filter(Boolean);
   mkdirSync(dirname(path), { recursive: true });
+  // a wrong write loses the user's key with no undo — keep one backup
+  try {
+    writeFileSync(`${path}.bak`, readFileSync(path, "utf8"));
+  } catch {
+    /* no existing file to back up */
+  }
   writeFileSync(path, `${head.join("\n")}\n${rest ? `\n${rest.replace(/\n*$/, "\n")}` : ""}`);
   return path;
 }
@@ -386,7 +506,7 @@ export function loadConfig(
   // into them, so reusing the reference would leak one config's entries into
   // every later load in the same process (the ACP server loads config per run,
   // so this is reachable).
-  const merged: Config = { ...DEFAULTS, mcpServers: {}, agents: {}, lsp: {}, plugins: [], warnings: [], projectInstructions: "" };
+  const merged: Config = { ...DEFAULTS, mcpServers: {}, agents: {}, lsp: {}, plugins: [], disabledPlugins: [], providers: {}, warnings: [], projectInstructions: "" };
   // An explicit --config that does not exist is a mistake worth surfacing; the
   // default global path being absent is normal and stays silent.
   if (overrides.configPath && !existsSync(overrides.configPath)) {
@@ -408,6 +528,83 @@ export function loadConfig(
   merged.maxSteps = Math.max(0, Math.floor(merged.maxSteps));
   merged.projectInstructions = loadProjectInstructions(cwd);
 
+  // config model entries feed the context-window/modality lookup — registered
+  // here so every later lookupModel call sees them without threading cfg around
+  setConfiguredModels(Object.values(merged.providers).flatMap((p) => p.models));
+
   if (!merged.model) throw new ConfigError("no model configured");
   return merged;
+}
+
+/**
+ * Config value resolution, pi-style: "!cmd" runs the command and takes stdout
+ * (cached per process — a slow vault lookup must not tax every request),
+ * "$VAR"/"${VAR}" interpolate from the environment, "$$"/"$!" escape.
+ * Returns undefined when a reference cannot be resolved.
+ */
+const cmdCache = new Map<string, string>();
+export function resolveValue(v: string | undefined, env: Record<string, string | undefined> = process.env): string | undefined {
+  if (v === undefined) return undefined;
+  if (v.startsWith("!")) {
+    const cmd = v.slice(1);
+    const hit = cmdCache.get(cmd);
+    if (hit !== undefined) return hit;
+    try {
+      const out = execSync(cmd, { encoding: "utf8", timeout: 10_000, stdio: ["ignore", "pipe", "ignore"] }).trim();
+      cmdCache.set(cmd, out);
+      return out;
+    } catch {
+      return undefined;
+    }
+  }
+  const out = v.replace(/\$\$|\$!|\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g, (m, braced, bare) => {
+    if (m === "$$" || m === "$!") return m[1];
+    return env[braced ?? bare] ?? "";
+  });
+  return out;
+}
+
+/** What a resolved profile looks like to the provider layer. */
+export interface ResolvedProfile {
+  /** the API format: openai-compatible / openai-responses / anthropic / google / plugin name */
+  format: string;
+  baseUrl: string;
+  apiKey: string;
+  headers: Record<string, string>;
+  /** sampling fields from the active model's config entry, if any */
+  sampling?: Record<string, unknown>;
+  /** the active model's config entry, when the profile lists it */
+  modelConfig?: ModelConfig;
+}
+
+/**
+ * Resolve the active provider. `cfg.provider` naming a `[providers.*]` table
+ * selects that profile; anything else keeps its legacy meaning of an API
+ * format, with the flat top-level keys as the profile. Profile fields fall
+ * back to the flat keys, so `[providers.x]` with only a baseUrl still uses
+ * the top-level apiKey.
+ */
+export function resolveProfile(cfg: Config, env: Record<string, string | undefined> = process.env): ResolvedProfile {
+  const p = cfg.providers[cfg.provider];
+  if (!p) return { format: cfg.provider, baseUrl: cfg.baseUrl, apiKey: cfg.apiKey, headers: {} };
+  const headers: Record<string, string> = {};
+  for (const [k, v] of Object.entries(p.headers ?? {})) {
+    const r = resolveValue(v, env);
+    if (r !== undefined) headers[k] = r;
+  }
+  const mc = p.models.find((m) => m.id === cfg.model && !m.disabled);
+  if (mc?.headers) {
+    for (const [k, v] of Object.entries(mc.headers)) {
+      const r = resolveValue(v, env);
+      if (r !== undefined) headers[k] = r;
+    }
+  }
+  return {
+    format: p.format ?? "openai-compatible",
+    baseUrl: p.baseUrl ?? cfg.baseUrl,
+    apiKey: resolveValue(p.apiKey, env) ?? cfg.apiKey,
+    headers,
+    sampling: mc?.sampling,
+    modelConfig: mc,
+  };
 }

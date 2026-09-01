@@ -64,7 +64,7 @@ export async function buildRegistry(
 
   let plugins: FoxPlugin[] = [];
   if (cfg.plugins?.length) {
-    const res = await loadPlugins(cfg.plugins);
+    const res = await loadPlugins(cfg.plugins, process.cwd(), cfg.disabledPlugins ?? []);
     warnings.push(...res.warnings);
     plugins = res.plugins;
     for (const p of plugins) {
