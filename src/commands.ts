@@ -19,6 +19,7 @@ import { checkBudget } from "./context/budget.ts";
 import type { ProviderConfig } from "./providers/types.ts";
 import { renderTodos, getTodos } from "./tools/todo.ts";
 import { saveGlobalConfig, resolveValue, type Config } from "./core/config.ts";
+import { setTheme, themeName, themeNames } from "./tui/themes.ts";
 import { availableProviders } from "./providers/index.ts";
 import { ensureFreshCatalog, presetById, providerPresets } from "./providers/modelsdev.ts";
 import type { UiStep } from "./core/ui.ts";
@@ -135,6 +136,7 @@ export const COMMANDS: CommandSpec[] = [
   { name: "/todos", desc: "show agent todo list" },
   { name: "/usage", desc: "token totals + budget" },
   { name: "/model", desc: "show or switch model — picker lists every configured profile and catalog model", usage: "[profile/][name]", arg: true },
+  { name: "/theme", desc: "show or switch the color theme", usage: "[name]", arg: true, help: "bare: searchable chooser in the TUI; with a name, switches and saves to the global config" },
   {
     name: "/upgrade",
     desc: "upgrade fox-agent to the latest release",
@@ -902,9 +904,40 @@ export function runSlashCommand(input: string, state: HarnessState): CommandResu
       return { handled: true, task: upgradeTask({}) };
     }
 
+    case "/theme": {
+      const apply = (name: string): CommandResult => {
+        if (!setTheme(name)) {
+          return { handled: true, output: `unknown theme '${name}' — available: ${themeNames().join(", ")}` };
+        }
+        saveGlobalConfig({ theme: name }, state.configPath);
+        return { handled: true, output: `theme: ${name} (saved to global config — repaints live)` };
+      };
+      // bare in the TUI: a searchable chooser; repainting is instant, so the
+      // user can flip through and watch
+      if (!arg && state.interactive) {
+        return {
+          handled: true,
+          prompt: {
+            title: `theme — current: ${themeName()}`,
+            steps: [
+              {
+                key: "name",
+                label: "theme",
+                kind: "select",
+                options: themeNames().map((n) => ({ value: n, label: n === themeName() ? `${n} (current)` : n })),
+                initial: themeName(),
+              },
+            ],
+            run: (a) => apply(a.name ?? themeName()),
+          },
+        };
+      }
+      if (!arg) return { handled: true, output: `theme: ${themeName()}\navailable: ${themeNames().join(", ")}` };
+      return apply(arg);
+    }
+
     case "/exit":
       return { handled: true, exit: true };
-
     default:
       return { handled: true, output: `unknown command ${word} — try /help` };
   }

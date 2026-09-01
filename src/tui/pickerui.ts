@@ -15,15 +15,15 @@ import { Screen, charWidth } from "./screen.ts";
 import { createDecoder } from "./keys.ts";
 import { Picker, type PickerAction, type PickerRow } from "./picker.ts";
 
-const C = {
-  fg: "#c0caf5",
-  dim: "#565f89",
-  sel: "#c0caf5",
-  selBg: "#364a82",
-  accent: "#bb9af7",
-  warn: "#f7768e",
-  barBg: "#16161e",
-};
+import { liveTheme } from "./themes.ts";
+
+// Same live palette as the app; the picker may be the first UI shown, so honor
+// the configured theme here too (set by pickSession before runPicker).
+const C = liveTheme<"fg" | "dim" | "sel" | "selBg" | "accent" | "warn" | "barBg">({
+  dim: "hint",
+  sel: "hintSel",
+  warn: "error",
+});
 
 export interface PickerHandlers {
   /** delete the row and return the new row set, or null to leave it unchanged */

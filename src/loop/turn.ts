@@ -208,6 +208,7 @@ function fallbackConfig(cfg: ProviderConfig, opts: TurnOptions): Config {
     sessionListLimit: 50,
     tuiCollapsedChars: 240,
     tuiKeptChars: 4_000,
+    theme: "default",
     // a caller that passed only a ProviderConfig has no config file in play, so
     // there is nothing to load plugins from — an override is the way in
     plugins: [],

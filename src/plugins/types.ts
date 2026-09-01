@@ -131,4 +131,6 @@ export interface FoxPlugin {
   hooks?: PluginHooks;
   /** custom providers, keyed by the value a config's `provider` would name */
   providers?: Record<string, ChatFn>;
+  /** TUI themes (keyed by name), selectable via `/theme` or the `theme` config key */
+  themes?: Record<string, import("../tui/themes.ts").Theme>;
 }

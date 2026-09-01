@@ -305,6 +305,30 @@ describe("interactive wizards", () => {
     expect(t.runSlashCommand("/fork", state)!.prompt).toBeDefined();
     expect(t.runSlashCommand("/delete", state)!.picker).toEqual({ kind: "sessions" });
   });
+
+  test("/theme: bare lists, a name switches live and persists, junk names do not write", async () => {
+    const t = await setup();
+    const s = t.createSession("/w", "m1");
+    const cfgPath = join(dir, "theme-config.toml"); // scratch — /theme saves to the global config
+    const state = { sessionId: s.id, cwd: "/w", provider: { baseUrl: "http://x", apiKey: "k", model: "m" }, interactive: true, configPath: cfgPath };
+    const { themeName, setTheme } = await import("../src/tui/themes.ts");
+    try {
+      const chooser = t.runSlashCommand("/theme", state)!;
+      expect(chooser.prompt!.steps[0].kind).toBe("select");
+      expect(chooser.prompt!.steps[0].options!.length).toBeGreaterThan(1);
+
+      const applied = t.runSlashCommand("/theme dracula", state)!;
+      expect(applied.output).toContain("dracula");
+      expect(themeName()).toBe("dracula");
+      expect(readFileSync(cfgPath, "utf8")).toContain('theme = "dracula"');
+
+      const bad = t.runSlashCommand("/theme nope-not-a-theme", state)!;
+      expect(bad.output).toContain("unknown theme");
+      expect(themeName()).toBe("dracula"); // a miss leaves the theme alone
+    } finally {
+      setTheme("default");
+    }
+  });
 });
 
 describe("session listing", () => {

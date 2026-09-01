@@ -40,6 +40,7 @@ import { resolveField, type UiBridge, type UiStep } from "../core/ui.ts";
 import { childEnv } from "../core/childenv.ts";
 import { killTree } from "../tools/exec.ts";
 import { debugLog, debugLogPath } from "../core/debuglog.ts";
+import { liveTheme, setTheme, themeName, type Theme } from "./themes.ts";
 
 type ItemKind = "user" | "toolhead" | "toolbody" | "info" | "error" | "md" | "think";
 interface Item {
@@ -66,21 +67,9 @@ export function setTuiCaps(collapsed: number, kept: number): void {
   KEPT_TOOL_CHARS = kept;
 }
 
-const C = {
-  fg: "#c0caf5",
-  user: "#7aa2f7",
-  tool: "#e0af68",
-  info: "#89ddff",
-  hint: "#565f89",
-  error: "#f7768e",
-  chrome: "#565f89",
-  hintSel: "#c0caf5",
-  accent: "#bb9af7",
-  ok: "#9ece6a",
-  barBg: "#16161e",
-  inputBg: "#1f2335",
-  selBg: "#364a82", // selection highlight; readable behind every fg above
-};
+// Live palette: resolves against the active theme on every access, so a
+// `/theme` switch repaints on the next frame without a restart.
+const C = liveTheme<keyof Theme>();
 const SPIN = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 /** Startup taglines; one is picked at random per launch. */
 const BANNERS = [
@@ -1972,6 +1961,11 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         try {
           const r = applyConfig();
           setTuiCaps(state.config?.tuiCollapsedChars ?? 240, state.config?.tuiKeptChars ?? 4_000);
+          const wantTheme = state.config?.theme ?? "default";
+          // plugin themes register on first buildRegistry, so an unknown name
+          // here may just be a plugin theme that has not loaded yet — fall
+          // back to the preset without a warning
+          if (wantTheme !== themeName()) setTheme(wantTheme);
           for (const w of r.warnings) push("info", `⚠ ${w}`);
         } catch (e) {
           // a broken config was always a one-line exit; keep it that way

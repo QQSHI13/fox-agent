@@ -204,6 +204,7 @@ async function main() {
         // real terminal gets the chooser.
         interactive: !printMode && !!process.stdout.isTTY && !!process.stdin.isTTY,
         model: provider.model,
+        theme: config?.theme,
       });
       if (!picked) return; // the user cancelled out of the picker
       sessionId = picked;
@@ -311,7 +312,7 @@ async function main() {
  * delete from the same list. Returns null only when the user cancelled — the
  * caller must then exit quietly rather than opening something they didn't choose.
  */
-async function pickSession(cwd: string, opts: { interactive: boolean; model: string }): Promise<string | null> {
+async function pickSession(cwd: string, opts: { interactive: boolean; model: string; theme?: string }): Promise<string | null> {
   if (!opts.interactive) {
     const s = latestSessionFor(cwd);
     if (!s) {
@@ -332,6 +333,8 @@ async function pickSession(cwd: string, opts: { interactive: boolean; model: str
     return id;
   }
 
+  const { setTheme } = await import("./tui/themes.ts");
+  if (opts.theme) setTheme(opts.theme);
   const { runPicker, sessionRows } = await import("./tui/pickerui.ts");
   const { deleteSession, forkSession } = await import("./store/db.ts");
   const action = await runPicker(

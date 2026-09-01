@@ -44,6 +44,7 @@ function validate(mod: unknown, path: string): { plugin: FoxPlugin } | { error: 
   if (p.tools !== undefined && !Array.isArray(p.tools)) return { error: "`tools` must be an array" };
   if (p.hooks !== undefined && (typeof p.hooks !== "object" || p.hooks === null)) return { error: "`hooks` must be an object" };
   if (p.providers !== undefined && (typeof p.providers !== "object" || p.providers === null)) return { error: "`providers` must be an object" };
+  if (p.themes !== undefined && (typeof p.themes !== "object" || p.themes === null)) return { error: "`themes` must be an object" };
   // a tool that is not shaped like a Tool would fail deep inside the turn loop
   // with no mention of the plugin, so it is rejected here where the path is known
   for (const t of p.tools ?? []) {

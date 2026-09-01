@@ -129,6 +129,8 @@ export interface Config {
   tuiCollapsedChars: number;
   /** TUI: chars kept when a tool result is folded inline (default 4000) */
   tuiKeptChars: number;
+  /** TUI color theme: a preset name or a plugin-registered one (default "default") */
+  theme: string;
   /**
    * Plugin modules to load, **from the global config only**.
    *
@@ -177,6 +179,7 @@ const DEFAULTS: Omit<Config, "projectInstructions"> = {
   sessionListLimit: 50,
   tuiCollapsedChars: 240,
   tuiKeptChars: 4_000,
+  theme: "default",
   plugins: [],
   disabledPlugins: [],
   providers: {},
@@ -294,6 +297,7 @@ function applyEnv(cfg: Config, env: Record<string, string | undefined>) {
   // an escape hatch for a machine with a pathological language server: any of
   // 0/false/no turns post-edit diagnostics off without touching a config file
   if (env.FOX_AGENT_DIAGNOSTICS !== undefined) cfg.diagnostics = !/^(0|false|no)$/i.test(env.FOX_AGENT_DIAGNOSTICS.trim());
+  if (env.FOX_AGENT_THEME?.trim()) cfg.theme = env.FOX_AGENT_THEME.trim();
   const outCap = Number(env.FOX_AGENT_TOOL_OUTPUT_CAP);
   if (Number.isFinite(outCap) && outCap >= 1000) cfg.toolOutputCap = Math.floor(outCap);
 }
@@ -311,7 +315,7 @@ const KNOWN_KEYS = new Set([
   "model", "baseUrl", "apiKey", "provider", "maxSteps", "retryLimit", "compactAt",
   "requestTimeoutMs", "diagnostics", "mcpServers", "agents", "lsp", "plugins",
   "providers", "disabledPlugins", "toolOutputCap", "sessionListLimit",
-  "tuiCollapsedChars", "tuiKeptChars",
+  "tuiCollapsedChars", "tuiKeptChars", "theme",
 ]);
 
 /** Parse one `[[providers.x.models]]` entry; junk fields degrade to absent. */
@@ -381,6 +385,7 @@ function applyTable(cfg: Config, t: Record<string, unknown> | null, scope: "glob
   if (typeof t.sessionListLimit === "number" && t.sessionListLimit >= 1) cfg.sessionListLimit = Math.floor(t.sessionListLimit);
   if (typeof t.tuiCollapsedChars === "number" && t.tuiCollapsedChars >= 40) cfg.tuiCollapsedChars = Math.floor(t.tuiCollapsedChars);
   if (typeof t.tuiKeptChars === "number" && t.tuiKeptChars >= 200) cfg.tuiKeptChars = Math.floor(t.tuiKeptChars);
+  if (typeof t.theme === "string" && t.theme.trim()) cfg.theme = t.theme.trim();
   if (t.mcpServers && typeof t.mcpServers === "object") {
     for (const [name, v] of Object.entries(t.mcpServers as Record<string, unknown>)) {
       const s = v as { command?: string; args?: string[]; env?: Record<string, string> };
@@ -465,10 +470,10 @@ export function globalConfigPath(): string {
  * string for anything a key/URL/model id can contain.
  */
 export function saveGlobalConfig(
-  fields: { provider?: string; apiKey?: string; baseUrl?: string; model?: string },
+  fields: { provider?: string; apiKey?: string; baseUrl?: string; model?: string; theme?: string },
   path = globalConfigPath(),
 ): string {
-  const KEYS = new Set(["provider", "apiKey", "baseUrl", "model"]);
+  const KEYS = new Set(["provider", "apiKey", "baseUrl", "model", "theme"]);
   let rest = "";
   try {
     const lines = readFileSync(path, "utf8").split("\n");
@@ -488,6 +493,7 @@ export function saveGlobalConfig(
     fields.apiKey !== undefined ? `apiKey = ${JSON.stringify(fields.apiKey)}` : null,
     fields.baseUrl !== undefined ? `baseUrl = ${JSON.stringify(fields.baseUrl)}` : null,
     fields.model !== undefined ? `model = ${JSON.stringify(fields.model)}` : null,
+    fields.theme !== undefined ? `theme = ${JSON.stringify(fields.theme)}` : null,
   ].filter(Boolean);
   mkdirSync(dirname(path), { recursive: true });
   // a wrong write loses the user's key with no undo — keep one backup

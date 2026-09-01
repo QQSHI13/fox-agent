@@ -106,6 +106,9 @@ export async function buildRegistry(
     }
   }
   setCustomProviders(customProviders);
+  // plugin themes become selectable via `/theme` / the `theme` config key
+  const { registerThemes } = await import("../tui/themes.ts");
+  for (const p of plugins) if (p.themes) registerThemes(p.themes);
   // lifecycle events outside the turn loop (session switch/exit) fire on this set
   setActivePlugins(plugins);
 
