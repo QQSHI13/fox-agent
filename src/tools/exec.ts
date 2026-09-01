@@ -3,7 +3,7 @@ import type { ToolDef } from "../providers/types.ts";
 import type { ToolContext, ToolResult } from "./types.ts";
 import { fail, ok } from "./types.ts";
 import { childEnv } from "../core/childenv.ts";
-import { OUT_CAP } from "./files.ts";
+import { outCap } from "./files.ts";
 
 export const execDef: ToolDef = {
   name: "exec",
@@ -85,7 +85,7 @@ export async function execRun(
   if (stdout.trim()) s += stdout;
   if (stderr.trim()) s += (s ? "\n[stderr]\n" : "") + stderr;
   s = s.trimEnd();
-  const truncated = s.length > OUT_CAP ? s.slice(-OUT_CAP) + "\n… (head truncated)" : s;
+  const truncated = s.length > outCap() ? s.slice(-outCap()) + "\n… (head truncated)" : s;
   let head = `exit ${code}`;
   if (killedBy) head += ` (${killedBy})`;
   const body = `${head}\n${truncated || "(no output)"}`;

@@ -54,8 +54,17 @@ interface Item {
   ephemeral?: boolean;
 }
 
-const COLLAPSED_TOOL_CHARS = 240;
-const KEPT_TOOL_CHARS = 4_000;
+/**
+ * TUI display caps — configurable via tuiCollapsedChars / tuiKeptChars. Set by
+ * startTui from the loaded config; module-level because the render helpers that
+ * read them predate the config plumbing.
+ */
+let COLLAPSED_TOOL_CHARS = 240;
+let KEPT_TOOL_CHARS = 4_000;
+export function setTuiCaps(collapsed: number, kept: number): void {
+  COLLAPSED_TOOL_CHARS = collapsed;
+  KEPT_TOOL_CHARS = kept;
+}
 
 const C = {
   fg: "#c0caf5",
@@ -381,6 +390,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     if (!res) return;
     if (res.output) push("info", res.output);
     if (res.newSessionId) switchSession(res.newSessionId);
+    if (res.welcome) welcomeBlock();
     if (res.picker) openPicker(res.picker);
     // a wizard's run may itself answer with another wizard — chain it
     if (res.prompt) startPrompt(res.prompt);
@@ -630,6 +640,28 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   }
 
   /**
+   * The startup/welcome block. Pushed AFTER refresh() — replay replaces the
+   * item list, so anything pushed before it never existed (the banner vanished
+   * that way once). Runs at boot and on /new.
+   */
+  function welcomeBlock() {
+    push("info", `fox-agent v${VERSION} — ${BANNERS[Math.floor(Math.random() * BANNERS.length)]}`);
+    push("toolbody", `session ${state.sessionId} · ${state.cwd}`);
+    if (!state.provider.apiKey)
+      push("error", "no API key configured — /login opens the setup wizard (saved to ~/.config/fox-agent/config.toml)");
+    const info = lookupModel(state.provider.model);
+    push(
+      "toolbody",
+      `model ${state.provider.model} (${Math.round(info.contextWindow / 1000)}k ctx) · ${state.provider.provider ?? "openai-compatible"}` +
+        `${state.provider.baseUrl && !/api\.openai\.com/.test(state.provider.baseUrl) ? ` · ${state.provider.baseUrl}` : ""}`,
+    );
+    push("toolbody", "enter send · \\ newline · ! shell · / commands · esc interrupt · ctrl+t thinking · drag/dbl-click select");
+    push("toolbody", "/login setup · /model switch · /sessions resume · /usage tokens · /prune context · /upgrade update · /help all");
+    statsRev++;
+    markDirty();
+  }
+
+  /**
    * Move the harness to another session.
    *
    * The pin is what keeps the store from closing the handle the turn loop is
@@ -640,6 +672,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
    */
   function switchSession(id: string) {
     if (id === state.sessionId) return;
+    // the old session's resources belong to it — onSessionEnd lets every plugin
+    // release what it holds (the bundled pty plugin kills its tmux session here)
+    void import("../plugins/load.ts").then((m) => m.fireSessionEnd(state.sessionId, "switch")).catch(() => {});
     unpinSession(state.sessionId);
     state.sessionId = id;
     pinSession(id);
@@ -660,7 +695,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   }
 
   function currentSessionRows(): PickerRow[] {
-    return sessionRows(sessionList({ currentId: state.sessionId }), relTime);
+    return sessionRows(sessionList({ currentId: state.sessionId, limit: state.config?.sessionListLimit }), relTime);
   }
 
   /**
@@ -1936,6 +1971,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       if (applyConfig) {
         try {
           const r = applyConfig();
+          setTuiCaps(state.config?.tuiCollapsedChars ?? 240, state.config?.tuiKeptChars ?? 4_000);
           for (const w of r.warnings) push("info", `⚠ ${w}`);
         } catch (e) {
           // a broken config was always a one-line exit; keep it that way
@@ -1944,23 +1980,8 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           process.exit(1);
         }
       }
-      // The startup block comes AFTER refresh() — replay replaces the item
-      // list, so anything pushed before it never existed (the banner vanished
-      // that way once).
-      push("info", `fox-agent v${VERSION} — ${BANNERS[Math.floor(Math.random() * BANNERS.length)]}`);
-      push("toolbody", `session ${state.sessionId} · ${state.cwd}`);
-      if (!state.provider.apiKey)
-        push("error", "no API key configured — /login opens the setup wizard (saved to ~/.config/fox-agent/config.toml)");
-      const info = lookupModel(state.provider.model);
-      push(
-        "toolbody",
-        `model ${state.provider.model} (${Math.round(info.contextWindow / 1000)}k ctx) · ${state.provider.provider ?? "openai-compatible"}` +
-          `${state.provider.baseUrl && !/api\.openai\.com/.test(state.provider.baseUrl) ? ` · ${state.provider.baseUrl}` : ""}`,
-      );
-      push("toolbody", "enter send · \\ newline · ! shell · / commands · esc interrupt · ctrl+t thinking · drag/dbl-click select");
-      push("toolbody", "/login setup · /model switch · /sessions resume · /usage tokens · /prune context · /upgrade update · /help all");
-      statsRev++;
-      markDirty();
+      // The startup block comes AFTER refresh() (see welcomeBlock's comment).
+      welcomeBlock();
 
       const frameTimer = setInterval(() => {
         tickSpinner();

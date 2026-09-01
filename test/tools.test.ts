@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as F from "../src/tools/files.ts";
 import { execRun } from "../src/tools/exec.ts";
-import { baseRegistry, buildRegistry } from "../src/tools/index.ts";
+import { baseRegistry, buildRegistry, defaultRegistry } from "../src/tools/index.ts";
 import { childEnv } from "../src/core/childenv.ts";
 import type { ToolContext } from "../src/tools/types.ts";
 
@@ -223,7 +223,7 @@ describe("ctx_edit", () => {
 
 describe("registry", () => {
   test("base registry exposes the built-in tools", () => {
-    const reg = baseRegistry();
+    const reg = defaultRegistry();
     for (const name of ["read", "write", "edit", "glob", "grep", "exec", "pty", "ctx_edit", "todowrite", "task", "fetch"]) {
       expect(reg.has(name)).toBe(true);
     }
@@ -260,7 +260,7 @@ describe("registry", () => {
     // it survives only as a facility for an embedder that wants a reduced set.
     const { tools } = await buildRegistry({ mcpServers: {} } as any);
     for (const name of ["task", "ctx_edit", "pty"]) expect(tools.has(name)).toBe(true);
-    expect([...tools.keys()].sort()).toEqual([...baseRegistry().keys()].sort());
+    expect([...tools.keys()].sort()).toEqual([...defaultRegistry().keys()].sort());
   });
 });
 

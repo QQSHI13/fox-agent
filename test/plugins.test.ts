@@ -231,7 +231,7 @@ describe("plugin tools in the registry", () => {
     const { tools, warnings, plugins } = await buildRegistry(await cfgWith([FIX_OK]));
 
     expect(warnings).toEqual([]);
-    expect(plugins.map((p) => p.name)).toEqual(["fixture"]);
+    expect(plugins.map((p) => p.name)).toEqual(["bundled:pty", "bundled:todo", "bundled:fetch", "fixture"]);
     expect(tools.has("ping")).toBe(true);
     expect(tools.has("read")).toBe(true); // built-ins unaffected
 

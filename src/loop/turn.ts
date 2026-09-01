@@ -4,7 +4,7 @@ import { resolveChat } from "../providers/index.ts";
 import { classifyProviderError, FoxError, isTimeout } from "../core/errors.ts";
 import type { AgentEvent } from "../core/events.ts";
 import type { Tool, ToolContext, ToolResult, PtyState } from "../tools/types.ts";
-import { OUT_CAP } from "../tools/files.ts";
+import { outCap } from "../tools/files.ts";
 import { buildRegistry } from "../tools/index.ts";
 import type { Config } from "../core/config.ts";
 import type { FoxPlugin } from "../plugins/types.ts";
@@ -183,7 +183,7 @@ async function execToolCall(call: ToolCall, tools: Map<string, Tool>, tctx: Tool
   try {
     const r = await tool.run(args, tctx);
     const result = typeof r === "string" ? { ok: true, output: r } : r;
-    const output = result.output.length > OUT_CAP * 2 ? result.output.slice(-OUT_CAP * 2) : result.output; // tail-cap
+    const output = result.output.length > outCap() * 2 ? result.output.slice(-outCap() * 2) : result.output; // tail-cap
     return { ok: result.ok, output, media: result.media };
   } catch (e) {
     return { ok: false, output: `error: ${(e as Error).message}` };
@@ -204,6 +204,10 @@ function fallbackConfig(cfg: ProviderConfig, opts: TurnOptions): Config {
     agents: {},
     lsp: {},
     diagnostics: true,
+    toolOutputCap: 30_000,
+    sessionListLimit: 50,
+    tuiCollapsedChars: 240,
+    tuiKeptChars: 4_000,
     // a caller that passed only a ProviderConfig has no config file in play, so
     // there is nothing to load plugins from — an override is the way in
     plugins: [],
@@ -301,6 +305,21 @@ export async function* runTurnCore(
   // surface MCP, plugin and config warnings once, at the top of the turn
   if (!quiet) for (const w of setupWarnings) yield { type: "warn", message: w };
 
+  /** Fire onTurnEnd everywhere the loop ends; the done event goes out after. */
+  const endTurn = async (reason: string, steps: number) => {
+    for (const p of hooked) {
+      if (!p.hooks?.onTurnEnd) continue;
+      await runHook(p, "onTurnEnd", () => p.hooks!.onTurnEnd!({ sessionId, reason, steps }), hookWarn);
+    }
+    return { type: "done" as const, reason };
+  };
+
+  for (const p of hooked) {
+    if (!p.hooks?.onTurnStart) continue;
+    await runHook(p, "onTurnStart", () => p.hooks!.onTurnStart!({ sessionId, cwd: session.cwd, model: cfg.model, userText }), hookWarn);
+  }
+  if (!quiet) for (const w of pendingWarnings.splice(0)) yield { type: "warn", message: w };
+
   // `onSessionStart` fires when this turn's user message is the session's first,
   // which is exactly `seq === 1` — no extra state to keep, and it stays correct
   // for a session resumed in a new process.
@@ -318,7 +337,7 @@ export async function* runTurnCore(
 
   for (let step = 1; ; step++) {
     if (signal?.aborted) {
-      yield { type: "done", reason: "aborted" };
+      yield await endTurn("aborted", step);
       return;
     }
 
@@ -333,7 +352,7 @@ export async function* runTurnCore(
     if (maxSteps > 0 && step > maxSteps) {
       appendMessage(sessionId, { parent_id: null, role: "system", content: `fox-agent: step limit (${maxSteps}) reached mid-turn`, tokens: 16 });
       yield { type: "warn", message: `step limit ${maxSteps} reached` };
-      yield { type: "done", reason: "max_steps" };
+      yield await endTurn("max_steps", step);
       return;
     }
 
@@ -384,13 +403,13 @@ export async function* runTurnCore(
         tokens: 24,
         error: pe.detail ?? pe.message,
       });
-      yield { type: "done", reason: `error ${pe.message}` };
+      yield await endTurn(`error ${pe.message}`, step);
       return;
     }
 
     if (outcome.finish === "aborted") {
       if (outcome.text) appendMessage(sessionId, { parent_id: stepParentId, role: "assistant", content: outcome.text, tokens: estTok(outcome.text) });
-      yield { type: "done", reason: "aborted" };
+      yield await endTurn("aborted", step);
       return;
     }
 
@@ -411,7 +430,7 @@ export async function* runTurnCore(
     if (outcome.usage && !quiet) yield { type: "usage", ...outcome.usage };
 
     if (!outcome.calls.length) {
-      yield { type: "done", reason: outcome.finish.startsWith("error") ? outcome.finish : outcome.finish || "stop" };
+      yield await endTurn(outcome.finish.startsWith("error") ? outcome.finish : outcome.finish || "stop", step);
       return;
     }
 
@@ -425,7 +444,22 @@ export async function* runTurnCore(
     const liveEvents = new EventQueue();
     const settled = Promise.all(
       outcome.calls.map(async (call) => {
-        const res = await execToolCall(call, tools, {
+        // `beforeTool` may rewrite the args, or answer for the tool outright
+        // (a guard plugin's veto) — the skipped run still lands in the
+        // transcript so tool_call/tool_result pairing holds.
+        let res: ToolResult | undefined;
+        for (const p of hooked) {
+          if (!p.hooks?.beforeTool) continue;
+          const patch = await runHook(
+            p,
+            "beforeTool",
+            () => p.hooks!.beforeTool!({ sessionId, name: call.name, args: safeParseArgs(call.arguments).args }),
+            (message) => liveEvents.push({ type: "warn", message }),
+          );
+          if (patch?.args !== undefined) call = { ...call, arguments: JSON.stringify(patch.args) };
+          if (typeof patch?.output === "string") res = { ok: true, output: patch.output };
+        }
+        res ??= await execToolCall(call, tools, {
           sessionId,
           cwd: session.cwd,
           readFiles: turnReads,
@@ -496,7 +530,7 @@ export async function* runTurnCore(
     stepParentId = results[results.length - 1]?.node.id ?? asstNode.id;
 
     if (signal?.aborted) {
-      yield { type: "done", reason: "aborted" };
+      yield await endTurn("aborted", step);
       return;
     }
   }

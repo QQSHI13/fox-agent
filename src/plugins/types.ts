@@ -74,6 +74,54 @@ export interface PluginHooks {
   onSessionStart?(c: SessionStartContext): void | Promise<void>;
   beforeLLMCall?(c: BeforeLLMCallContext): BeforeLLMCallPatch | void | Promise<BeforeLLMCallPatch | void>;
   afterTool?(c: AfterToolContext): AfterToolPatch | void | Promise<AfterToolPatch | void>;
+  /** once per turn, after the user message is stored, before the first request */
+  onTurnStart?(c: TurnStartContext): void | Promise<void>;
+  /** once per turn, after the loop ends — any reason, including errors and aborts */
+  onTurnEnd?(c: TurnEndContext): void | Promise<void>;
+  /**
+   * The session is going away: fox-agent exiting, the user switching sessions,
+   * or the session being deleted. Where a plugin releases what it holds — the
+   * bundled pty plugin kills its tmux session here.
+   */
+  onSessionEnd?(c: SessionEndContext): void | Promise<void>;
+  /**
+   * Before a tool runs. The patch may replace the args, or supply `output` to
+   * skip the run entirely (a guard plugin's veto). Additive-only like the rest:
+   * it cannot touch the transcript.
+   */
+  beforeTool?(c: BeforeToolContext): BeforeToolPatch | void | Promise<BeforeToolPatch | void>;
+}
+
+export interface TurnStartContext {
+  sessionId: string;
+  cwd: string;
+  model: string;
+  userText: string;
+}
+
+export interface TurnEndContext {
+  sessionId: string;
+  /** the loop's done reason: "stop", "aborted", "max-steps", an error, … */
+  reason: string;
+  steps: number;
+}
+
+export interface SessionEndContext {
+  sessionId: string;
+  reason: "exit" | "switch" | "delete";
+}
+
+export interface BeforeToolContext {
+  sessionId: string;
+  name: string;
+  args: unknown;
+}
+
+export interface BeforeToolPatch {
+  /** replaces the args the tool runs with */
+  args?: unknown;
+  /** skip the run and record this as the tool's output instead */
+  output?: string;
 }
 
 export interface FoxPlugin {

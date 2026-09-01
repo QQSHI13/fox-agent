@@ -4,13 +4,13 @@ import type { ToolContext, ToolResult } from "./types.ts";
 import type { Tool } from "./types.ts";
 import * as F from "./files.ts";
 import { execDef, execRun } from "./exec.ts";
-import { ptyDef, drivePty, cleanupPty, ptySessionName } from "./pty.ts";
+import { cleanupPty, ptySessionName } from "./pty.ts";
+import { setOutputCap } from "./files.ts";
 import { ctxEditDef, ctxEditRun } from "./ctxedit.ts";
-import { todoDef, todoRun } from "./todo.ts";
 import { taskDef, taskRun } from "./task.ts";
-import { fetchDef, fetchRun } from "./fetch.ts";
 import { mcpTools, closeMcp } from "./mcp.ts";
-import { loadPlugins } from "../plugins/load.ts";
+import { loadPlugins, setActivePlugins } from "../plugins/load.ts";
+import { bundledPlugins, bundledDisabled } from "../plugins/bundled.ts";
 import type { FoxPlugin } from "../plugins/types.ts";
 import { setCustomProviders } from "../providers/index.ts";
 import type { ChatFn } from "../providers/types.ts";
@@ -18,6 +18,11 @@ import { shutdownLsp } from "../lsp/client.ts";
 
 export type { Tool, ToolContext, ToolResult } from "./types.ts";
 
+/**
+ * The core tool set — the ones that are the harness itself (files, exec,
+ * context editing, delegation). pty, todo and fetch ship as bundled plugins
+ * instead (see src/plugins/bundled.ts), so they can be shadowed or disabled.
+ */
 export function baseRegistry(): Map<string, Tool> {
   const map = new Map<string, Tool>();
   const add = (def: ToolDef, run: (args: any, ctx: ToolContext) => Promise<ToolResult | string>) => map.set(def.name, { def, run });
@@ -27,11 +32,19 @@ export function baseRegistry(): Map<string, Tool> {
   add(F.globDef, F.globRun);
   add(F.grepDef, F.grepRun);
   add(execDef, execRun);
-  add(ptyDef, drivePty);
   add(ctxEditDef, ctxEditRun);
-  add(todoDef, todoRun);
   add(taskDef, taskRun);
-  add(fetchDef, fetchRun);
+  return map;
+}
+
+/**
+ * base + bundled plugin tools — the full built-in set with no config in play.
+ * Tests and embedders that want "everything fox-agent ships" without a config
+ * file use this; `buildRegistry` is the real path.
+ */
+export function defaultRegistry(): Map<string, Tool> {
+  const map = baseRegistry();
+  for (const p of bundledPlugins()) for (const t of p.tools ?? []) map.set(t.def.name, t);
   return map;
 }
 
@@ -52,6 +65,7 @@ export async function buildRegistry(
   exclude?: Set<string>,
 ): Promise<{ tools: Map<string, Tool>; warnings: string[]; plugins: FoxPlugin[] }> {
   const map = baseRegistry();
+  setOutputCap(cfg.toolOutputCap ?? 30_000);
   // `?? []` on both: `Config` is public surface an embedder (or a test) may build
   // by hand, and a config written before these fields existed must degrade to
   // "no warnings, no plugins" rather than crash the registry build.
@@ -62,12 +76,17 @@ export async function buildRegistry(
     for (const [name, tool] of res.tools) map.set(name, tool);
   }
 
-  let plugins: FoxPlugin[] = [];
+  // Bundled plugins first, through the exact merge path user plugins take —
+  // they are how pty/todo/fetch ship, and disabledPlugins applies to them too.
+  const disabled = cfg.disabledPlugins ?? [];
+  const plugins: FoxPlugin[] = bundledPlugins().filter((p) => !bundledDisabled(p.name, disabled));
+  for (const p of plugins) for (const tool of p.tools ?? []) map.set(tool.def.name, tool);
+
   if (cfg.plugins?.length) {
-    const res = await loadPlugins(cfg.plugins, process.cwd(), cfg.disabledPlugins ?? []);
+    const res = await loadPlugins(cfg.plugins, process.cwd(), disabled);
     warnings.push(...res.warnings);
-    plugins = res.plugins;
-    for (const p of plugins) {
+    plugins.push(...res.plugins);
+    for (const p of res.plugins) {
       for (const tool of p.tools ?? []) {
         // Later registration wins, so a plugin can deliberately shadow a built-in
         // or an MCP tool. Reported either way: overriding `write` is a legitimate
@@ -78,15 +97,17 @@ export async function buildRegistry(
         map.set(tool.def.name, tool);
       }
     }
-    // providers are registered even when a plugin contributes no tools
-    const providers = new Map<string, ChatFn>();
-    for (const p of plugins) {
-      for (const [name, fn] of Object.entries(p.providers ?? {})) {
-        if (typeof fn === "function") providers.set(name, fn);
-      }
-    }
-    setCustomProviders(providers);
   }
+  // providers are registered even when a plugin contributes no tools
+  const customProviders = new Map<string, ChatFn>();
+  for (const p of plugins) {
+    for (const [name, fn] of Object.entries(p.providers ?? {})) {
+      if (typeof fn === "function") customProviders.set(name, fn);
+    }
+  }
+  setCustomProviders(customProviders);
+  // lifecycle events outside the turn loop (session switch/exit) fire on this set
+  setActivePlugins(plugins);
 
   if (exclude) for (const name of exclude) map.delete(name);
   return { tools: map, warnings, plugins };
@@ -94,7 +115,11 @@ export async function buildRegistry(
 
 /** Cleanup live pty + MCP children + language servers when a session ends. */
 export async function shutdownTools(sessionId: string): Promise<void> {
-  await cleanupPty(ptySessionName(sessionId));
+  const { fireSessionEnd } = await import("../plugins/load.ts");
+  // plugin cleanup hooks first (the bundled pty plugin kills its tmux session
+  // here), then the harness's own children
+  await fireSessionEnd(sessionId, "exit");
+  await cleanupPty(ptySessionName(sessionId)); // belt and braces when no registry was ever built
   await closeMcp();
   // an idle tsserver holds a project's worth of memory; leaving one per fox-agent run
   // behind would accumulate across a day of sessions in the same shell

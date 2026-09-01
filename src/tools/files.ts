@@ -11,8 +11,22 @@ import { diagnose } from "../lsp/client.ts";
 
 const execFileP = promisify(execFile);
 export const READ_CAP = 50_000; // chars
-export const OUT_CAP = 30_000;
 export const MAX_READ_BYTES = 10_000_000;
+
+/**
+ * Tool output cap. Configurable (`toolOutputCap` in config, applied by
+ * `buildRegistry`); module-level because every tool reads it and threading a
+ * number through ToolContext would touch a dozen signatures for a constant
+ * nobody changes mid-turn.
+ */
+let OUT_CAP = 30_000;
+/** The cap tools should apply to one result's text. */
+export function outCap(): number {
+  return OUT_CAP;
+}
+export function setOutputCap(n: number): void {
+  if (Number.isFinite(n) && n >= 1000) OUT_CAP = Math.floor(n);
+}
 
 /**
  * What to append to an edit/write result about the state of the file afterwards.
@@ -35,7 +49,6 @@ async function afterWrite(path: string, absPath: string, content: string, ctx: T
 function cap(s: string, note = "… (truncated)"): string {
   return s.length > OUT_CAP ? s.slice(0, OUT_CAP) + note : s;
 }
-
 function sniffBinary(buf: Buffer): boolean {
   const n = Math.min(buf.length, 8000);
   for (let i = 0; i < n; i++) if (buf[i] === 0) return true;

@@ -75,6 +75,8 @@ export interface CommandResult {
    * command layer itself stays synchronous.
    */
   task?: () => Promise<string>;
+  /** the host should show its welcome block (a fresh session via /new) */
+  welcome?: boolean;
 }
 
 /**
@@ -653,7 +655,7 @@ export function runSlashCommand(input: string, state: HarnessState): CommandResu
 
     case "/new": {
       const s = createSession(state.cwd, state.provider.model);
-      return { handled: true, newSessionId: s.id, output: `new session ${s.id}` };
+      return { handled: true, newSessionId: s.id, output: `new session ${s.id}`, welcome: true };
     }
 
     case "/sessions": {
@@ -673,7 +675,7 @@ export function runSlashCommand(input: string, state: HarnessState): CommandResu
         return { handled: true, newSessionId: id, output: `switched to ${id}` };
       }
       if (state.interactive) return { handled: true, picker: { kind: "sessions" } };
-      return { handled: true, output: formatSessionList(sessionList({ currentId: state.sessionId })) };
+      return { handled: true, output: formatSessionList(sessionList({ currentId: state.sessionId, limit: state.config?.sessionListLimit })) };
     }
 
     case "/fork": {
@@ -728,6 +730,8 @@ export function runSlashCommand(input: string, state: HarnessState): CommandResu
         return { handled: true, output: `${id} is the current session — /new or /sessions <other> first` };
       if (confirm !== "yes")
         return { handled: true, output: `would delete ${id} and its history for good — repeat as "/delete ${target} yes"` };
+      // plugins holding session resources (a tmux shell) release them here
+      void import("./plugins/load.ts").then((m) => m.fireSessionEnd(id, "delete")).catch(() => {});
       return { handled: true, output: deleteSession(id) ? `deleted ${id}` : `unknown session ${id}` };
     }
 

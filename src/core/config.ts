@@ -121,6 +121,14 @@ export interface Config {
   lsp: Record<string, LspConfig>;
   /** consult language servers after edit/write at all (built-ins are PATH-detected) */
   diagnostics: boolean;
+  /** cap on one tool result's text (default 30000, min 1000) */
+  toolOutputCap: number;
+  /** how many sessions /sessions, `fox ls` and the picker list (default 50) */
+  sessionListLimit: number;
+  /** TUI: collapsed tool output preview length (default 240) */
+  tuiCollapsedChars: number;
+  /** TUI: chars kept when a tool result is folded inline (default 4000) */
+  tuiKeptChars: number;
   /**
    * Plugin modules to load, **from the global config only**.
    *
@@ -165,6 +173,10 @@ const DEFAULTS: Omit<Config, "projectInstructions"> = {
   agents: {},
   lsp: {},
   diagnostics: true,
+  toolOutputCap: 30_000,
+  sessionListLimit: 50,
+  tuiCollapsedChars: 240,
+  tuiKeptChars: 4_000,
   plugins: [],
   disabledPlugins: [],
   providers: {},
@@ -282,6 +294,8 @@ function applyEnv(cfg: Config, env: Record<string, string | undefined>) {
   // an escape hatch for a machine with a pathological language server: any of
   // 0/false/no turns post-edit diagnostics off without touching a config file
   if (env.FOX_AGENT_DIAGNOSTICS !== undefined) cfg.diagnostics = !/^(0|false|no)$/i.test(env.FOX_AGENT_DIAGNOSTICS.trim());
+  const outCap = Number(env.FOX_AGENT_TOOL_OUTPUT_CAP);
+  if (Number.isFinite(outCap) && outCap >= 1000) cfg.toolOutputCap = Math.floor(outCap);
 }
 
 /**
@@ -296,7 +310,8 @@ function applyEnv(cfg: Config, env: Record<string, string | undefined>) {
 const KNOWN_KEYS = new Set([
   "model", "baseUrl", "apiKey", "provider", "maxSteps", "retryLimit", "compactAt",
   "requestTimeoutMs", "diagnostics", "mcpServers", "agents", "lsp", "plugins",
-  "providers", "disabledPlugins",
+  "providers", "disabledPlugins", "toolOutputCap", "sessionListLimit",
+  "tuiCollapsedChars", "tuiKeptChars",
 ]);
 
 /** Parse one `[[providers.x.models]]` entry; junk fields degrade to absent. */
@@ -362,6 +377,10 @@ function applyTable(cfg: Config, t: Record<string, unknown> | null, scope: "glob
   if (typeof t.compactAt === "number" && t.compactAt > 0 && t.compactAt <= 1) cfg.compactAt = t.compactAt;
   if (typeof t.requestTimeoutMs === "number" && t.requestTimeoutMs >= 0) cfg.requestTimeoutMs = Math.floor(t.requestTimeoutMs);
   if (typeof t.diagnostics === "boolean") cfg.diagnostics = t.diagnostics;
+  if (typeof t.toolOutputCap === "number" && t.toolOutputCap >= 1000) cfg.toolOutputCap = Math.floor(t.toolOutputCap);
+  if (typeof t.sessionListLimit === "number" && t.sessionListLimit >= 1) cfg.sessionListLimit = Math.floor(t.sessionListLimit);
+  if (typeof t.tuiCollapsedChars === "number" && t.tuiCollapsedChars >= 40) cfg.tuiCollapsedChars = Math.floor(t.tuiCollapsedChars);
+  if (typeof t.tuiKeptChars === "number" && t.tuiKeptChars >= 200) cfg.tuiKeptChars = Math.floor(t.tuiKeptChars);
   if (t.mcpServers && typeof t.mcpServers === "object") {
     for (const [name, v] of Object.entries(t.mcpServers as Record<string, unknown>)) {
       const s = v as { command?: string; args?: string[]; env?: Record<string, string> };

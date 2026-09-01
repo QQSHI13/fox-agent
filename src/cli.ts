@@ -100,7 +100,7 @@ async function main() {
     // same renderer the TUI and `/sessions` use, so a session that looks stale
     // here looks stale there too — this used to be its own loop over
     // `created_at` and disagreed with every other listing about ordering
-    console.log(formatSessionList(sessionList()));
+    console.log(formatSessionList(sessionList({ limit: loadConfig({ cwd: process.cwd() }).sessionListLimit })));
     return;
   }
   if (parsed.rest[0] === "upgrade") {
@@ -417,7 +417,12 @@ async function plainLoop(state: HarnessState) {
             console.error(`fox-agent error: ${errMsg(e)}`);
           }
         }
-        if (res?.newSessionId) state.sessionId = res.newSessionId;
+        if (res?.newSessionId) {
+          // the old session's resources go with it, same as a TUI switch
+          const { fireSessionEnd } = await import("./plugins/load.ts");
+          await fireSessionEnd(state.sessionId, "switch").catch(() => {});
+          state.sessionId = res.newSessionId;
+        }
         if (res?.exit) return;
       }
       process.stdout.write("\n❯ ");

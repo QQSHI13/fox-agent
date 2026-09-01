@@ -52,6 +52,10 @@ const cfg = (): Config => ({
   plugins: [],
   disabledPlugins: [],
   providers: {},
+  toolOutputCap: 30_000,
+  sessionListLimit: 50,
+  tuiCollapsedChars: 240,
+  tuiKeptChars: 4_000,
   warnings: [],
   projectInstructions: "",
 });

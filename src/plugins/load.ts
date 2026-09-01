@@ -123,3 +123,31 @@ export async function loadPlugins(
 export function resetPlugins(): void {
   cache = null;
 }
+
+/**
+ * The plugins of the most recent `buildRegistry` — bundled ones included.
+ * Module-level because lifecycle events (session end on exit/switch/delete)
+ * happen far from the turn loop that built the registry.
+ */
+let active: FoxPlugin[] = [];
+export function setActivePlugins(plugins: FoxPlugin[]): void {
+  active = plugins;
+}
+export function activePlugins(): FoxPlugin[] {
+  return active;
+}
+
+/**
+ * Fire `onSessionEnd` on every active plugin. Failures are logged, never
+ * thrown — cleanup is no place to take the harness down with a plugin.
+ */
+export async function fireSessionEnd(sessionId: string, reason: "exit" | "switch" | "delete"): Promise<void> {
+  for (const p of active) {
+    if (!p.hooks?.onSessionEnd) continue;
+    try {
+      await p.hooks.onSessionEnd({ sessionId, reason });
+    } catch (e) {
+      console.error(`fox-agent: plugin '${p.name}' onSessionEnd failed: ${(e as Error).message}`);
+    }
+  }
+}

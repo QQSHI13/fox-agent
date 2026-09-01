@@ -16,7 +16,7 @@ import type { ToolContext, ToolResult, PtyState } from "./types.ts";
 import { fail, ok } from "./types.ts";
 import { childEnv } from "../core/childenv.ts";
 import { ptyDir } from "../core/paths.ts";
-import { OUT_CAP } from "./files.ts";
+import { outCap } from "./files.ts";
 
 export const ptyDef: ToolDef = {
   name: "pty",
@@ -226,7 +226,7 @@ export function readRange(path: string, from: number): { text: string; end: numb
   try {
     const size = fstatSync(fd).size;
     if (size <= from) return { text: "", end: size };
-    const len = Math.min(size - from, OUT_CAP * 4);
+    const len = Math.min(size - from, outCap() * 4);
     const buf = Buffer.alloc(len);
     readSync(fd, buf, 0, len, from);
     // Stop short of a character split across this range's end (see
@@ -284,7 +284,7 @@ export async function drivePty(args: { keys?: string; quiet_ms?: number }, ctx: 
   const { text, end } = readRange(pty.logPath, pty.cursor);
   pty.cursor = end;
   const fresh = text.replace(/\r/g, "").trimEnd();
-  const body = fresh.length > OUT_CAP ? `…\n${fresh.slice(-OUT_CAP)}` : fresh || "(no new output)";
+  const body = fresh.length > outCap() ? `…\n${fresh.slice(-outCap())}` : fresh || "(no new output)";
   // tell the model plainly that its shell is not the one it was using, rather
   // than handing back a pristine prompt that looks like nothing happened
   let note = lost

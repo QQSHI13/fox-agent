@@ -32,8 +32,8 @@ async function build(
   } = {},
 ) {
   const { buildSystemPrompt } = await import("../src/loop/prompt.ts");
-  const { baseRegistry } = await import("../src/tools/index.ts");
-  const tools = opts.tools ?? [...baseRegistry().values()].map((t) => t.def);
+  const { defaultRegistry } = await import("../src/tools/index.ts");
+  const tools = opts.tools ?? [...defaultRegistry().values()].map((t) => t.def);
   return buildSystemPrompt({
     sessionId: opts.sessionId ?? "s-prompt",
     cwd: opts.cwd ?? "/work",
