@@ -152,6 +152,24 @@ describe("session recency", () => {
     expect(latestSessionFor("/w")!.id).toBe(old.id);
   });
 
+  test("a session whose .db file was deleted vanishes from listings and the index", async () => {
+    const { createSession, appendMessage, listSessions, latestSessionFor, getSession } = await import("../src/store/db.ts");
+    const { sessionDbPath } = await import("../src/core/paths.ts");
+    const { rmSync } = await import("node:fs");
+    const live = createSession("/w", "m1");
+    const ghost = createSession("/w", "m1");
+    appendMessage(ghost.id, { parent_id: null, role: "user", content: "remember me", tokens: 1 });
+    appendMessage(live.id, { parent_id: null, role: "user", content: "still here", tokens: 1 });
+
+    // user deletes the file by hand — the index row used to list it forever
+    rmSync(sessionDbPath(ghost.id));
+    const list = listSessions();
+    expect(list.map((r) => r.id)).toEqual([live.id]);
+    expect(latestSessionFor("/w")!.id).toBe(live.id);
+    // reaped, not just filtered: the row itself is gone from the index
+    expect(getSession(ghost.id)).toBeNull();
+  });
+
   test("the order is total, so -c cannot flip between runs", async () => {
     const { createSession, listSessions } = await import("../src/store/db.ts");
     // several sessions created inside the same millisecond tie on updated_at;

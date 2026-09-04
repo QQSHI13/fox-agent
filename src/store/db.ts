@@ -399,15 +399,33 @@ export function deleteSession(id: string): boolean {
 }
 
 /**
+ * Drop index rows whose session file is gone. The index is a cache of what
+ * lives in sessions/ — a user `rm`-ing the .db files directly used to leave
+ * ghosts that listed (with previews!) forever. Reaping here keeps every list
+ * and `fox -c` honest without a separate GC pass.
+ */
+function reapMissing(rows: SessionRow[]): SessionRow[] {
+  const gone = rows.filter((r) => !existsSync(sessionDbPath(r.id)));
+  if (!gone.length) return rows;
+  const del = indexDb().prepare("DELETE FROM sessions WHERE id = ?");
+  for (const r of gone) del.run(r.id);
+  return rows.filter((r) => !gone.includes(r));
+}
+
+/**
  * The session a `fox -c` in this directory should land in: most recently
  * *worked in*, not most recently created. `updated_at` comes from `touch()`,
  * which is strictly increasing per process, so ties only survive across
  * processes touching in the same ms; `id DESC` settles those.
  */
 export function latestSessionFor(cwd: string): SessionRow | null {
-  return indexDb()
-    .prepare(`SELECT ${SESSION_COLS} FROM sessions WHERE cwd = ? ORDER BY updated_at DESC, id DESC LIMIT 1`)
-    .get(cwd) as SessionRow | null;
+  for (let i = 0; i < 2; i++) {
+    const row = indexDb()
+      .prepare(`SELECT ${SESSION_COLS} FROM sessions WHERE cwd = ? ORDER BY updated_at DESC, id DESC LIMIT 1`)
+      .get(cwd) as SessionRow | null;
+    if (!row || reapMissing([row]).length) return row; // live row, or nothing left
+  }
+  return null;
 }
 
 /**
@@ -416,13 +434,18 @@ export function latestSessionFor(cwd: string): SessionRow | null {
  * SQLite answer from `idx_sessions_cwd_recent` instead of sorting every row.
  */
 export function listSessions(limit = 20, cwd?: string): SessionRow[] {
-  return indexDb()
-    .prepare(
-      cwd
-        ? `SELECT ${SESSION_COLS} FROM sessions WHERE cwd = ? ORDER BY updated_at DESC, id DESC LIMIT ?`
-        : `SELECT ${SESSION_COLS} FROM sessions ORDER BY updated_at DESC, id DESC LIMIT ?`,
-    )
-    .all(...(cwd ? [cwd, limit] : [limit])) as SessionRow[];
+  // over-fetch past the ghosts so reaping can't shrink a full page to nothing
+  for (let fetch = limit; ; fetch *= 2) {
+    const rows = indexDb()
+      .prepare(
+        cwd
+          ? `SELECT ${SESSION_COLS} FROM sessions WHERE cwd = ? ORDER BY updated_at DESC, id DESC LIMIT ?`
+          : `SELECT ${SESSION_COLS} FROM sessions ORDER BY updated_at DESC, id DESC LIMIT ?`,
+      )
+      .all(...(cwd ? [cwd, fetch] : [fetch])) as SessionRow[];
+    const live = reapMissing(rows);
+    if (live.length === rows.length || rows.length < fetch || fetch > 10_000) return live.slice(0, limit);
+  }
 }
 
 export function setRefTitle(sessionId: string, title: string) {
