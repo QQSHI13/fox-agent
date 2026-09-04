@@ -80,6 +80,8 @@ export interface CommandResult {
   welcome?: boolean;
   /** the host should re-read config files and re-apply them (/reload) */
   reload?: boolean;
+  /** transient output (like /help): the TUI drops it on the next keypress/click */
+  ephemeral?: boolean;
 }
 
 /**
@@ -135,7 +137,7 @@ export const COMMANDS: CommandSpec[] = [
   },
   { name: "/ops", desc: "show context surgery ops" },
   { name: "/view", desc: "preview visible nodes ([mN] role preview)" },
-  { name: "/todos", desc: "show agent todo list" },
+  { name: "/todo", aliases: ["/todos"], desc: "show agent todo list (vanishes on next keypress)" },
   { name: "/usage", desc: "token totals + budget" },
   { name: "/model", desc: "show or switch model — picker lists every configured profile and catalog model", usage: "[profile/][name]", arg: true },
   { name: "/theme", desc: "show or switch the color theme", usage: "[name]", arg: true, help: "bare: searchable chooser in the TUI; with a name, switches and saves to the global config" },
@@ -802,9 +804,10 @@ export function runSlashCommand(input: string, state: HarnessState): CommandResu
       };
     }
 
-    case "/todos": {
+    case "/todo": {
       const todos = getTodos(state.sessionId);
-      return { handled: true, output: todos?.length ? renderTodos(todos) : "(no todos)" };
+      // a glance, not a transcript entry: the TUI drops it on the next keypress
+      return { handled: true, ephemeral: true, output: todos?.length ? renderTodos(todos) : "(no todos)" };
     }
 
     case "/usage": {

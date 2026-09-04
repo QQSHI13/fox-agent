@@ -377,7 +377,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   /** Apply a command result's effects — shared by runSlash and wizard `run`s. */
   function applyResult(res: CommandResultLike | null) {
     if (!res) return;
-    if (res.output) push("info", res.output);
+    if (res.output) push("info", res.output, res.ephemeral ? { ephemeral: true } : undefined);
     if (res.newSessionId) switchSession(res.newSessionId);
     if (res.welcome) {
       // /new is a fresh `fox` launch: reload config (model/theme/caps) and
