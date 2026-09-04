@@ -23,7 +23,7 @@ import { sessionRows } from "./pickerui.ts";
 import { runTurn, VERSION } from "../loop/agent.ts";
 import { projectView } from "../context/view.ts";
 import { lookupModel } from "../providers/models.ts";
-import { getSession, lastPromptTokens as storedPromptTokens, pinSession, unpinSession } from "../store/db.ts";
+import { createSession, getSession, lastPromptTokens as storedPromptTokens, pinSession, unpinSession } from "../store/db.ts";
 import {
   runSlashCommand,
   COMMANDS,
@@ -309,6 +309,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
 
   function loadItems(): Item[] {
     const out: Item[] = [];
+    if (!state.sessionId) return out; // pending session: nothing stored yet
     const nodes = projectView(state.sessionId).filter((n) => !n.deleted);
     const callName = new Map<string, string>();
     for (const n of nodes) {
@@ -668,7 +669,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
    */
   function welcomeBlock() {
     push("info", `fox-agent v${VERSION} — ${BANNERS[Math.floor(Math.random() * BANNERS.length)]}`);
-    push("toolbody", `session ${state.sessionId} · ${state.cwd}`);
+    push("toolbody", `session ${state.sessionId || "new — created on first message"} · ${state.cwd}`);
     if (!state.provider.apiKey)
       push("error", "no API key configured — /login opens the setup wizard (saved to ~/.config/fox-agent/config.toml)");
     const info = lookupModel(state.provider.model);
@@ -694,12 +695,15 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
    */
   function switchSession(id: string) {
     if (id === state.sessionId) return;
-    // the old session's resources belong to it — onSessionEnd lets every plugin
-    // release what it holds (the bundled pty plugin kills its tmux session here),
-    // and exec jobs die with the session that started them
-    void import("../plugins/load.ts").then((m) => m.fireSessionEnd(state.sessionId, "switch")).catch(() => {});
-    void import("../tools/exec.ts").then((m) => m.killExecJobs(state.sessionId)).catch(() => {});
-    unpinSession(state.sessionId);
+    if (state.sessionId) {
+      // the old session's resources belong to it — onSessionEnd lets every plugin
+      // release what it holds (the bundled pty plugin kills its tmux session here),
+      // and exec jobs die with the session that started them
+      void import("../plugins/load.ts").then((m) => m.fireSessionEnd(state.sessionId, "switch")).catch(() => {});
+      void import("../tools/exec.ts").then((m) => m.killExecJobs(state.sessionId)).catch(() => {});
+      unpinSession(state.sessionId);
+    }
+    state.pendingSession = false;
     state.sessionId = id;
     pinSession(id);
     expandedRefs.clear(); // refs are per-session seqs; carrying them over expands unrelated nodes
@@ -789,6 +793,14 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   }
 
   async function runAgent(raw: string) {
+    // the pending session becomes real exactly here — first message, not before
+    if (!state.sessionId) {
+      const s = createSession(state.cwd, state.provider.model);
+      state.sessionId = s.id;
+      state.pendingSession = false;
+      pinSession(s.id);
+      push("toolbody", `session ${s.id} · ${state.cwd}`);
+    }
     setBusy(true);
     push("user", `❯ ${raw}`);
     ac = new AbortController();
@@ -955,7 +967,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       ac?.abort();
     } catch {}
     try {
-      unpinSession(state.sessionId);
+      if (state.sessionId) unpinSession(state.sessionId);
     } catch {}
     try {
       term.end();
@@ -1667,7 +1679,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       // Context % comes from the provider's own last report (live this turn,
       // else the persisted one) — never a chars/4 estimate. Before the first
       // report there is simply nothing honest to show.
-      const reported = lastPromptTokens || storedPromptTokens(state.sessionId);
+      const reported = lastPromptTokens || (state.sessionId ? storedPromptTokens(state.sessionId) : 0);
       const info = lookupModel(state.provider.model);
       const k = (n: number) => `${Math.round(n / 1000)}k`;
       const ctx = reported
@@ -2016,11 +2028,11 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         drainQueue();
       });
 
-      getSession(state.sessionId);
+      if (state.sessionId) getSession(state.sessionId);
       // the TUI can open a picker, and holds the one session whose handle must
       // survive the picker reading every other session's usage
       state.interactive = true;
-      pinSession(state.sessionId);
+      if (state.sessionId) pinSession(state.sessionId);
 
       const dec = createDecoder(onKey);
       term.onKey((data) => dec.feed(data));
@@ -2033,8 +2045,10 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       dirty = false;
       refresh();
       applyRuntimeConfig();
-      // The startup block comes AFTER refresh() (see welcomeBlock's comment).
-      welcomeBlock();
+      // The startup block comes AFTER refresh() (see welcomeBlock's comment),
+      // and only for a genuinely fresh launch — a resumed session has its
+      // transcript on screen; a banner on top of it is noise.
+      if (state.pendingSession) welcomeBlock();
 
       const frameTimer = setInterval(() => {
         tickSpinner();

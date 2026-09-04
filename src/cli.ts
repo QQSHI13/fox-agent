@@ -212,16 +212,16 @@ async function main() {
       sessionId = picked;
     }
   } else if (tuiMode) {
-    // model is a placeholder until the deferred config lands; startTui's
-    // applyConfig fixes the record up before the user can possibly submit
-    sessionId = createSession(cwd, provider.model).id;
+    // no row until the user submits something: starting and closing the TUI
+    // must not litter the session list with empties
+    sessionId = "";
   } else {
     sessionId = createSession(cwd, provider.model).id;
     note(`new session ${sessionId} (${provider.model})`);
   }
-  getSession(sessionId); // warm
+  if (sessionId) getSession(sessionId); // warm
 
-  const state = { sessionId, cwd, provider, config, configPath: (parsed.flags.get("config") as string) || undefined };
+  const state = { sessionId, cwd, provider, config, configPath: (parsed.flags.get("config") as string) || undefined, pendingSession: tuiMode && !sessionId };
 
   // ---- TUI ----
   if (tuiMode) {

@@ -38,6 +38,12 @@ export interface HarnessState {
    * `-p`, neither of which can block on a keypress (see `/prune`).
    */
   interactive?: boolean;
+  /**
+   * TUI fresh launch: no session row exists yet — one is created when the user
+   * actually submits a message, so opening and closing the TUI never leaves an
+   * empty session behind. `sessionId` is "" until then.
+   */
+  pendingSession?: boolean;
 }
 
 /** A front end that set `interactive` is asked to open one of these. */
@@ -655,6 +661,16 @@ export function runSlashCommand(input: string, state: HarnessState): CommandResu
   const [word, ...rest] = input.trim().split(/\s+/);
   const spec = findCommand(word.toLowerCase());
   const arg = rest.join(" ").trim();
+
+  // A pending TUI session has no row yet; commands that read or mutate the
+  // current session's data have nothing to work on until the first message.
+  if (!state.sessionId && spec) {
+    const needsSession = ["/undo", "/prune", "/ops", "/view", "/todo", "/usage"].includes(spec.name);
+    const forkNeedsSession = spec.name === "/fork" && (!arg || /^m?\d+$/.test(arg)); // /fork <id> works sessionless
+    if (needsSession || forkNeedsSession) {
+      return { handled: true, output: "no session yet — send a message first" };
+    }
+  }
 
   switch (spec?.name) {
     case "/help":
