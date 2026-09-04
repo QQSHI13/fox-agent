@@ -193,8 +193,7 @@ describe("render roles", () => {
     expect(notes[0].content).toContain("second recap");
   });
 
-  test("an echoed [mN] at the top of an assistant reply never renders doubled", async () => {
-    const { createSession, appendMessage } = await import("../src/store/db.ts");
+  test("stripEchoedMarkers removes only a leading echo", async () => {
     const { renderContext, stripEchoedMarkers } = await import("../src/context/render.ts");
 
     expect(stripEchoedMarkers("[m12] sure, doing that")).toBe("sure, doing that");
@@ -203,13 +202,14 @@ describe("render roles", () => {
     // mid-text mentions survive — only the leading echo is stripped
     expect(stripEchoedMarkers("hiding [m3] now")).toBe("hiding [m3] now");
 
+    // rendering is verbatim: stripping happens at store time (turn.ts), so
+    // stored text — even a pre-fix poisoned row — is shown as stored
+    const { createSession, appendMessage } = await import("../src/store/db.ts");
     const s = createSession("/tmp", "m1");
     appendMessage(s.id, { parent_id: null, role: "user", content: "hi", tokens: 1 });
     const a = appendMessage(s.id, { parent_id: null, role: "assistant", content: "[m1] hello there", tokens: 2 });
-    const msgs = renderContext(s.id, "SYS");
-    const rendered = msgs.find((m) => m.role === "assistant")!;
-    expect(rendered.content).toBe(`[m${a.seq}] hello there`);
-    expect(rendered.content).not.toContain("[m1] hello");
+    const rendered = renderContext(s.id, "SYS").find((m) => m.role === "assistant")!;
+    expect(rendered.content).toBe(`[m${a.seq}] [m1] hello there`);
   });
 
   test("markers: false renders no [mN] anywhere, summaries included", async () => {

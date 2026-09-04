@@ -9,10 +9,9 @@ function marker(seq: number): string {
 /**
  * Marker echo stripper. Weak models see `[mN]` on every message and start
  * "predicting" one at the top of their own reply; stored verbatim, the next
- * render shows `[m13] [m12] …` and the echo compounds. Stripped both at store
- * time (turn.ts) and here at render time, so sessions poisoned before the
- * store-side fix render clean too. Applied to assistant text only — a user
- * typing `[m5]` by hand is talking about markers, not echoing them.
+ * render shows `[m13] [m12] …` and the echo compounds. Applied at store time
+ * only (turn.ts) — rendering stays verbatim, so the transcript is the truth
+ * and a pre-fix poisoned session is the agent's to ctx_edit away.
  */
 export function stripEchoedMarkers(text: string): string {
   return text.replace(/^\s*(?:\[m\d+\][ \t]*)+/, "");
@@ -64,7 +63,9 @@ function renderNode(n: ViewNode, callsKey: string, visibleToolIds: Set<string>, 
       const kept = parseToolCalls(m).filter((c) => visibleToolIds.has(c.id));
       if (kept.length) calls = kept;
     }
-    const text = n.content ? `${tag}${stripEchoedMarkers(n.content)}` : "";
+    // stored content renders verbatim (markers were already stripped at store
+    // time); a session poisoned before that fix is the agent's to ctx_edit away
+    const text = n.content ? `${tag}${n.content}` : "";
     if (!text && !calls) return base; // renders to nothing
     const msg: ChatMessage = { role: "assistant", content: text };
     if (calls) msg.tool_calls = calls;
