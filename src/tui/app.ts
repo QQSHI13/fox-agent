@@ -379,7 +379,16 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     if (!res) return;
     if (res.output) push("info", res.output);
     if (res.newSessionId) switchSession(res.newSessionId);
-    if (res.welcome) welcomeBlock();
+    if (res.welcome) {
+      // /new is a fresh `fox` launch: reload config (model/theme/caps) and
+      // re-point the new session at the configured model before the banner prints
+      applyRuntimeConfig();
+      welcomeBlock();
+    }
+    if (res.reload) {
+      applyRuntimeConfig();
+      push("info", `reloaded config — model ${state.provider.model} · theme ${themeName()}`);
+    }
     if (res.picker) openPicker(res.picker);
     // a wizard's run may itself answer with another wizard — chain it
     if (res.prompt) startPrompt(res.prompt);
@@ -626,6 +635,29 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       return true; // everything else would be typing into a menu
     }
     return false; // text step: normal editing keys fall through
+  }
+
+  /**
+   * (Re)load config and apply everything it controls — caps, theme, warnings.
+   * Boot, /new and /reload all run this; a fresh `fox` launch and a /new
+   * mid-session see the same world.
+   */
+  function applyRuntimeConfig() {
+    if (!applyConfig) return;
+    try {
+      const r = applyConfig();
+      setTuiCaps(state.config?.tuiCollapsedChars ?? 240, state.config?.tuiKeptChars ?? 4_000);
+      const wantTheme = state.config?.theme ?? "default";
+      // plugin themes register on first buildRegistry, so an unknown name here
+      // may just be a plugin theme that has not loaded yet — fall back silently
+      if (wantTheme !== themeName()) setTheme(wantTheme);
+      for (const w of r.warnings) push("info", `⚠ ${w}`);
+    } catch (e) {
+      // a broken config was always a one-line exit; keep it that way
+      term.end();
+      console.error(`fox-agent: ${(e as Error)?.message ?? e}`);
+      process.exit(1);
+    }
   }
 
   /**
@@ -1676,7 +1708,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     S.hintSel = screen.sgr({ fg: C.hintSel, bg: C.barBg });
     S.inputBgRow = screen.sgr({ fg: C.fg, bg: C.inputBg });
     S.barBgRow = screen.sgr({ fg: C.fg, bg: C.barBg });
-    S.sbThumb = screen.sgr({ bg: "#6e7681" }); // neutral gray, distinct from chrome blue
+    S.sbThumb = screen.sgr({ bg: C.hint }); // theme's muted tone: visible on both bar and transcript
     S.overlayRow = screen.sgr({ fg: C.fg, bg: C.inputBg });
     S.overlaySel = screen.sgr({ fg: C.hintSel, bg: C.selBg });
   }
@@ -1905,6 +1937,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
 
   // ---- loop ----
   let resizing = false;
+  let paintedTheme = ""; // themeName() the current styles were built from
   function doResize(w: number, h: number) {
     if (w < 5 || h < 3) return;
     if (w === W && h === H) return;
@@ -1912,12 +1945,23 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     H = Math.max(8, h);
     screen.resize(W, H);
     initStyles();
+    paintedTheme = themeName();
+    lineCache.clear();
+    dirty = true;
+  }
+
+  /** A /theme switch must rebuild every cached style id, not just the next row. */
+  function rethemeIfNeeded() {
+    if (themeName() === paintedTheme) return;
+    initStyles();
+    paintedTheme = themeName();
     lineCache.clear();
     dirty = true;
   }
 
   let lastSpinAt = 0;
   function tickSpinner() {
+    rethemeIfNeeded();
     if (!busy) return;
     const now = Date.now();
     if (now - lastSpinAt < 140) return;
@@ -1957,23 +2001,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       term.flush();
       dirty = false;
       refresh();
-      if (applyConfig) {
-        try {
-          const r = applyConfig();
-          setTuiCaps(state.config?.tuiCollapsedChars ?? 240, state.config?.tuiKeptChars ?? 4_000);
-          const wantTheme = state.config?.theme ?? "default";
-          // plugin themes register on first buildRegistry, so an unknown name
-          // here may just be a plugin theme that has not loaded yet — fall
-          // back to the preset without a warning
-          if (wantTheme !== themeName()) setTheme(wantTheme);
-          for (const w of r.warnings) push("info", `⚠ ${w}`);
-        } catch (e) {
-          // a broken config was always a one-line exit; keep it that way
-          term.end();
-          console.error(`fox-agent: ${(e as Error)?.message ?? e}`);
-          process.exit(1);
-        }
-      }
+      applyRuntimeConfig();
       // The startup block comes AFTER refresh() (see welcomeBlock's comment).
       welcomeBlock();
 

@@ -11,7 +11,7 @@ import type { FoxPlugin } from "../plugins/types.ts";
 import { loadPlugins } from "../plugins/load.ts";
 import type { UiBridge } from "../core/ui.ts";
 import { buildSystemPrompt } from "./prompt.ts";
-import { renderContext } from "../context/render.ts";
+import { renderContext, stripEchoedMarkers } from "../context/render.ts";
 import { compactIfNeeded } from "../context/compact.ts";
 import { checkBudget } from "../context/budget.ts";
 
@@ -209,6 +209,7 @@ function fallbackConfig(cfg: ProviderConfig, opts: TurnOptions): Config {
     tuiCollapsedChars: 240,
     tuiKeptChars: 4_000,
     theme: "default",
+    contextMarkers: true,
     // a caller that passed only a ProviderConfig has no config file in play, so
     // there is nothing to load plugins from — an override is the way in
     plugins: [],
@@ -278,6 +279,9 @@ export async function* runTurnCore(
     setupWarnings = built.warnings;
     if (!opts.pluginsOverride) plugins = built.plugins;
   }
+  // markers off = ctx_edit has no addresses to edit; the prompt gates itself on
+  // the live registry, so removing the tool here removes the doctrine too
+  if (effCfg.contextMarkers === false) tools.delete("ctx_edit");
   const toolDefs = [...tools.values()].map((t) => t.def);
   const hooked = plugins.filter((p) => p.hooks);
 
@@ -367,7 +371,7 @@ export async function* runTurnCore(
       // bar shows: the provider's own report, never an estimate
       budget: checkBudget(sessionId, cfg.model, 0, opts.compactAt ?? 0.85),
     });
-    const messages = renderContext(sessionId, sysPrompt);
+    const messages = renderContext(sessionId, sysPrompt, { markers: effCfg.contextMarkers !== false });
 
     // `beforeLLMCall`: additive only. The patch appends to the system message
     // rather than replacing the array, so `renderContext`'s invariant — every
@@ -407,6 +411,10 @@ export async function* runTurnCore(
       yield await endTurn(`error ${pe.message}`, step);
       return;
     }
+
+    // weak models open their reply by echoing the [mN] marker they saw on every
+    // message; storing it would render "[m13] [m12] …" next step and feed the loop
+    if (outcome.text) outcome.text = stripEchoedMarkers(outcome.text);
 
     if (outcome.finish === "aborted") {
       if (outcome.text) appendMessage(sessionId, { parent_id: stepParentId, role: "assistant", content: outcome.text, tokens: estTok(outcome.text) });

@@ -132,6 +132,12 @@ export interface Config {
   /** TUI color theme: a preset name or a plugin-registered one (default "default") */
   theme: string;
   /**
+   * Render [mN] markers on messages and give the agent ctx_edit (default true).
+   * Weak models echo the markers instead of acting on them — set false for
+   * them; the render and store paths strip echoed markers regardless.
+   */
+  contextMarkers: boolean;
+  /**
    * Plugin modules to load, **from the global config only**.
    *
    * Every other extension point here — `[mcpServers.*]`, `[agents.*]`, `[lsp.*]`
@@ -180,6 +186,7 @@ const DEFAULTS: Omit<Config, "projectInstructions"> = {
   tuiCollapsedChars: 240,
   tuiKeptChars: 4_000,
   theme: "default",
+  contextMarkers: true,
   plugins: [],
   disabledPlugins: [],
   providers: {},
@@ -315,7 +322,7 @@ const KNOWN_KEYS = new Set([
   "model", "baseUrl", "apiKey", "provider", "maxSteps", "retryLimit", "compactAt",
   "requestTimeoutMs", "diagnostics", "mcpServers", "agents", "lsp", "plugins",
   "providers", "disabledPlugins", "toolOutputCap", "sessionListLimit",
-  "tuiCollapsedChars", "tuiKeptChars", "theme",
+  "tuiCollapsedChars", "tuiKeptChars", "theme", "contextMarkers",
 ]);
 
 /** Parse one `[[providers.x.models]]` entry; junk fields degrade to absent. */
@@ -386,6 +393,7 @@ function applyTable(cfg: Config, t: Record<string, unknown> | null, scope: "glob
   if (typeof t.tuiCollapsedChars === "number" && t.tuiCollapsedChars >= 40) cfg.tuiCollapsedChars = Math.floor(t.tuiCollapsedChars);
   if (typeof t.tuiKeptChars === "number" && t.tuiKeptChars >= 200) cfg.tuiKeptChars = Math.floor(t.tuiKeptChars);
   if (typeof t.theme === "string" && t.theme.trim()) cfg.theme = t.theme.trim();
+  if (typeof t.contextMarkers === "boolean") cfg.contextMarkers = t.contextMarkers;
   if (t.mcpServers && typeof t.mcpServers === "object") {
     for (const [name, v] of Object.entries(t.mcpServers as Record<string, unknown>)) {
       const s = v as { command?: string; args?: string[]; env?: Record<string, string> };

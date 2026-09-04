@@ -78,6 +78,8 @@ export interface CommandResult {
   task?: () => Promise<string>;
   /** the host should show its welcome block (a fresh session via /new) */
   welcome?: boolean;
+  /** the host should re-read config files and re-apply them (/reload) */
+  reload?: boolean;
 }
 
 /**
@@ -137,6 +139,7 @@ export const COMMANDS: CommandSpec[] = [
   { name: "/usage", desc: "token totals + budget" },
   { name: "/model", desc: "show or switch model — picker lists every configured profile and catalog model", usage: "[profile/][name]", arg: true },
   { name: "/theme", desc: "show or switch the color theme", usage: "[name]", arg: true, help: "bare: searchable chooser in the TUI; with a name, switches and saves to the global config" },
+  { name: "/reload", desc: "re-read config files and re-apply model, theme, caps and plugins" },
   {
     name: "/upgrade",
     desc: "upgrade fox-agent to the latest release",
@@ -411,7 +414,7 @@ function applyModelSwitch(t: ModelTarget, state: HarnessState, keyOverride?: str
   );
   return {
     handled: true,
-    output: `model: ${t.model}${t.profileName ? ` · profile ${t.profileName}` : ""} (${format}) — saved to session + ${saved}`,
+    output: `model: ${t.model}${t.profileName ? ` · profile ${t.profileName}` : ""} (${format}) — saved to session + ${saved} (/reload re-reads it)`,
   };
 }
 
@@ -537,7 +540,7 @@ function applyLogin(fields: LoginFields, state: HarnessState): CommandResult {
     if (fields.baseUrl) state.config.baseUrl = fields.baseUrl;
     if (fields.model) state.config.model = fields.model;
   }
-  return { handled: true, output: `saved to ${path} — active immediately` };
+  return { handled: true, output: `saved to ${path} — active immediately (/reload re-reads the file)` };
 }
 
 /**
@@ -910,7 +913,7 @@ export function runSlashCommand(input: string, state: HarnessState): CommandResu
           return { handled: true, output: `unknown theme '${name}' — available: ${themeNames().join(", ")}` };
         }
         saveGlobalConfig({ theme: name }, state.configPath);
-        return { handled: true, output: `theme: ${name} (saved to global config — repaints live)` };
+        return { handled: true, output: `theme: ${name} (saved to global config — repaints live; /reload re-reads the file)` };
       };
       // bare in the TUI: a searchable chooser; repainting is instant, so the
       // user can flip through and watch
@@ -935,6 +938,12 @@ export function runSlashCommand(input: string, state: HarnessState): CommandResu
       if (!arg) return { handled: true, output: `theme: ${themeName()}\navailable: ${themeNames().join(", ")}` };
       return apply(arg);
     }
+
+    case "/reload":
+      // the host owns the files: the TUI re-runs its boot config path, other
+      // hosts just say where the config lives
+      if (state.interactive) return { handled: true, reload: true };
+      return { handled: true, output: `config reloads in the TUI (and on /new); file: ${state.configPath ?? "global config"}` };
 
     case "/exit":
       return { handled: true, exit: true };

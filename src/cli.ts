@@ -93,6 +93,8 @@ const note = (msg: string) => console.error(process.stderr.isTTY ? `\x1b[90m${ms
 
 async function main() {
   const parsed = parseArgv(process.argv.slice(2));
+  // installed-binary housekeeping: keep a fox-agent alias beside `fox`
+  void import("./core/upgrade.ts").then((m) => m.ensureAlias()).catch(() => {});
 
   if (parsed.flags.get("version")) return console.log(VERSION);
   if (parsed.flags.get("help") || parsed.rest[0] === "help") return console.log(usage());
@@ -227,12 +229,12 @@ async function main() {
       // lazy: headless/-p/--acp runs should not pay for the renderer's modules
       const { startTui } = await import("./tui/app.ts");
       await startTui(state, () => {
-        // first frame is out; now the config can load and take over
-        if (!config) applyLoadedConfig(loadConfig(configOverrides));
+        // called at boot, on /new and on /reload — always re-read the files
+        applyLoadedConfig(loadConfig(configOverrides));
         state.provider = provider;
         state.config = config;
-        const s = getSession(sessionId);
-        if (s && s.model !== provider.model) setSessionModel(sessionId, provider.model);
+        const s = getSession(state.sessionId);
+        if (s && s.model !== provider.model) setSessionModel(state.sessionId, provider.model);
         return { warnings: config?.warnings ?? [] };
       });
     } finally {

@@ -192,6 +192,43 @@ describe("render roles", () => {
     expect(notes[0].content).toContain("first recap");
     expect(notes[0].content).toContain("second recap");
   });
+
+  test("an echoed [mN] at the top of an assistant reply never renders doubled", async () => {
+    const { createSession, appendMessage } = await import("../src/store/db.ts");
+    const { renderContext, stripEchoedMarkers } = await import("../src/context/render.ts");
+
+    expect(stripEchoedMarkers("[m12] sure, doing that")).toBe("sure, doing that");
+    expect(stripEchoedMarkers("  [m3] [m4] ok")).toBe("ok");
+    expect(stripEchoedMarkers("plain reply")).toBe("plain reply");
+    // mid-text mentions survive — only the leading echo is stripped
+    expect(stripEchoedMarkers("hiding [m3] now")).toBe("hiding [m3] now");
+
+    const s = createSession("/tmp", "m1");
+    appendMessage(s.id, { parent_id: null, role: "user", content: "hi", tokens: 1 });
+    const a = appendMessage(s.id, { parent_id: null, role: "assistant", content: "[m1] hello there", tokens: 2 });
+    const msgs = renderContext(s.id, "SYS");
+    const rendered = msgs.find((m) => m.role === "assistant")!;
+    expect(rendered.content).toBe(`[m${a.seq}] hello there`);
+    expect(rendered.content).not.toContain("[m1] hello");
+  });
+
+  test("markers: false renders no [mN] anywhere, summaries included", async () => {
+    const { createSession, appendMessage, appendOps } = await import("../src/store/db.ts");
+    const { renderContext } = await import("../src/context/render.ts");
+
+    const s = createSession("/tmp", "m1");
+    const old = appendMessage(s.id, { parent_id: null, role: "user", content: "old", tokens: 1 });
+    appendMessage(s.id, { parent_id: null, role: "assistant", content: "answer", tokens: 1 });
+    appendOps(s.id, [{ kind: "delete", ids: [old.seq], summary: "recap" }]);
+
+    const msgs = renderContext(s.id, "SYS", { markers: false });
+    for (const m of msgs.slice(1)) expect(m.content).not.toMatch(/\[m\d+\]/);
+    expect(msgs.find((m) => m.role === "assistant" && m.content === "answer")).toBeTruthy();
+    expect(msgs.some((m) => m.content.includes("(ctx: summarized away) recap"))).toBe(true);
+    // flipping the flag re-renders (the memo key includes it), no stale cache
+    const withMarkers = renderContext(s.id, "SYS", { markers: true });
+    expect(withMarkers.find((m) => m.role === "assistant" && !m.content.includes("recap"))!.content).toMatch(/^\[m\d+\] answer$/);
+  });
 });
 
 describe("renderContext node memo", () => {

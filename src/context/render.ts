@@ -7,6 +7,18 @@ function marker(seq: number): string {
 }
 
 /**
+ * Marker echo stripper. Weak models see `[mN]` on every message and start
+ * "predicting" one at the top of their own reply; stored verbatim, the next
+ * render shows `[m13] [m12] …` and the echo compounds. Stripped both at store
+ * time (turn.ts) and here at render time, so sessions poisoned before the
+ * store-side fix render clean too. Applied to assistant text only — a user
+ * typing `[m5]` by hand is talking about markers, not echoing them.
+ */
+export function stripEchoedMarkers(text: string): string {
+  return text.replace(/^\s*(?:\[m\d+\][ \t]*)+/, "");
+}
+
+/**
  * Per-node render memo.
  *
  * `renderContext` runs on every step of every turn, and within a turn the view
@@ -24,6 +36,8 @@ interface RenderedNode {
   summary?: string;
   /** kept tool_call ids joined — the only part of an assistant entry that depends on other nodes */
   callsKey: string;
+  /** whether [mN] prefixes were rendered — part of the memo key, /reload can flip it */
+  markers: boolean;
   /** the message to emit, or undefined when the node renders to nothing */
   msg?: ChatMessage;
   /** deleted-with-summary note, queued into the pending summaries */
@@ -32,15 +46,16 @@ interface RenderedNode {
 const renderedNodes = new Map<string, RenderedNode>();
 const RENDER_CACHE_MAX = 50_000;
 
-function renderNode(n: ViewNode, callsKey: string, visibleToolIds: Set<string>): RenderedNode {
+function renderNode(n: ViewNode, callsKey: string, visibleToolIds: Set<string>, markers: boolean): RenderedNode {
   const m = n.msg;
-  const base = { content: n.content, deleted: n.deleted, summary: n.summary, callsKey };
+  const tag = markers ? `${marker(m.seq)} ` : "";
+  const base = { content: n.content, deleted: n.deleted, summary: n.summary, callsKey, markers };
 
   if (n.deleted) {
-    return { ...base, note: n.summary ? `(ctx: ${marker(m.seq)} summarized away) ${n.summary}` : undefined };
+    return { ...base, note: n.summary ? `(ctx: ${markers ? `${marker(m.seq)} ` : ""}summarized away) ${n.summary}` : undefined };
   }
   if (m.role === "user") {
-    return { ...base, msg: { role: "user", content: `${marker(m.seq)} ${n.content}` } };
+    return { ...base, msg: { role: "user", content: `${tag}${n.content}` } };
   }
   if (m.role === "assistant") {
     let calls: { id: string; name: string; arguments: string }[] | undefined;
@@ -49,14 +64,14 @@ function renderNode(n: ViewNode, callsKey: string, visibleToolIds: Set<string>):
       const kept = parseToolCalls(m).filter((c) => visibleToolIds.has(c.id));
       if (kept.length) calls = kept;
     }
-    const text = n.content ? `${marker(m.seq)} ${n.content}` : "";
+    const text = n.content ? `${tag}${stripEchoedMarkers(n.content)}` : "";
     if (!text && !calls) return base; // renders to nothing
     const msg: ChatMessage = { role: "assistant", content: text };
     if (calls) msg.tool_calls = calls;
     return { ...base, msg };
   }
   if (m.role === "tool") {
-    const msg: ChatMessage = { role: "tool", tool_call_id: m.tool_call_id!, content: `${marker(m.seq)} ${n.content}` };
+    const msg: ChatMessage = { role: "tool", tool_call_id: m.tool_call_id!, content: `${tag}${n.content}` };
     if (m.media) {
       try {
         msg.media = JSON.parse(m.media);
@@ -67,7 +82,8 @@ function renderNode(n: ViewNode, callsKey: string, visibleToolIds: Set<string>):
   return base; // think + system: storage-only
 }
 
-export function renderContext(sessionId: string, systemPrompt: string): ChatMessage[] {
+export function renderContext(sessionId: string, systemPrompt: string, opts: { markers?: boolean } = {}): ChatMessage[] {
+  const markers = opts.markers ?? true;
   const out: ChatMessage[] = [{ role: "system", content: systemPrompt }];
   const view = projectView(sessionId);
   const visibleToolIds = new Set(
@@ -113,8 +129,8 @@ export function renderContext(sessionId: string, systemPrompt: string): ChatMess
             .join(",")
         : "";
     let r = renderedNodes.get(m.id);
-    if (!r || r.content !== n.content || r.deleted !== n.deleted || r.summary !== n.summary || r.callsKey !== callsKey) {
-      r = renderNode(n, callsKey, visibleToolIds);
+    if (!r || r.content !== n.content || r.deleted !== n.deleted || r.summary !== n.summary || r.callsKey !== callsKey || r.markers !== markers) {
+      r = renderNode(n, callsKey, visibleToolIds, markers);
       renderedNodes.set(m.id, r);
       // ids are never reused, so this only bounds memory across long sessions
       if (renderedNodes.size > RENDER_CACHE_MAX) renderedNodes.clear();

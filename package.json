@@ -4,7 +4,8 @@
   "description": "fox-agent - a light coding harness with agent-controlled context",
   "type": "module",
   "bin": {
-    "fox": "./src/cli.ts"
+    "fox": "./src/cli.ts",
+    "fox-agent": "./src/cli.ts"
   },
   "exports": {
     ".": "./src/sdk.ts",

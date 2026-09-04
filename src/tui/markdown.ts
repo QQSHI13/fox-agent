@@ -1,11 +1,15 @@
 // lightweight markdown -> styled segments (streaming-safe: re-parses whole buffer cheaply)
 import type { Seg } from "./wrap.ts";
+import { liveTheme } from "./themes.ts";
 
-const ACCENT = "#bb9af7";
-const CODE_FG = "#9ece6a";
-const HEAD = "#7aa2f7";
-const DIM = "#565f89";
-const LINK = "#89ddff";
+// live theme lookups: a /theme switch recolors markdown on the next frame
+const MD = liveTheme<"ACCENT" | "CODE_FG" | "HEAD" | "DIM" | "LINK">({
+  ACCENT: "accent",
+  CODE_FG: "ok",
+  HEAD: "user",
+  DIM: "hint",
+  LINK: "info",
+});
 
 /**
  * Parser state that can cross a call boundary. The streaming path in the TUI
@@ -36,10 +40,10 @@ export function renderMarkdown(src: string, state?: MdState): Seg[][] {
       if (m.index > last) segs.push({ t: text.slice(last, m.index), ...base });
       if (m[2] || m[3]) segs.push({ t: m[2] ?? m[3]!, bold: true, ...base });
       else if (m[4]) segs.push({ t: m[4], italic: true, ...base });
-      else if (m[5]) segs.push({ t: m[5], fg: CODE_FG, ...base });
+      else if (m[5]) segs.push({ t: m[5], fg: MD.CODE_FG, ...base });
       else if (m[6]) {
-        segs.push({ t: m[6], fg: LINK, ...base });
-        segs.push({ t: ` (${m[7]})`, fg: DIM, ...base });
+        segs.push({ t: m[6], fg: MD.LINK, ...base });
+        segs.push({ t: ` (${m[7]})`, fg: MD.DIM, ...base });
       }
       last = re.lastIndex;
     }
@@ -58,11 +62,11 @@ export function renderMarkdown(src: string, state?: MdState): Seg[][] {
           state.inFence = false;
           state.hadCode = false;
         }
-        if (!hadCode) out.push([{ t: "│", fg: CODE_FG }]);
+        if (!hadCode) out.push([{ t: "│", fg: MD.CODE_FG }]);
       } else {
         hadCode = true;
         if (state) state.hadCode = true;
-        out.push([{ t: "│ " + line, fg: CODE_FG }]);
+        out.push([{ t: "│ " + line, fg: MD.CODE_FG }]);
       }
       i++;
       continue;
@@ -81,35 +85,35 @@ export function renderMarkdown(src: string, state?: MdState): Seg[][] {
 
     const h = /^(#{1,6})\s+(.*)/.exec(line);
     if (h) {
-      const styled: Seg[] = inline(h[2]).map((seg) => ({ ...seg, bold: true, fg: HEAD }));
+      const styled: Seg[] = inline(h[2]).map((seg) => ({ ...seg, bold: true, fg: MD.HEAD }));
       out.push(styled);
       i++;
       continue;
     }
 
     if (/^\s*([-*_])\1{2,}\s*$/.test(line)) {
-      out.push([{ t: "─".repeat(24), fg: DIM }]);
+      out.push([{ t: "─".repeat(24), fg: MD.DIM }]);
       i++;
       continue;
     }
 
     const quote = /^>\s?(.*)/.exec(line);
     if (quote) {
-      out.push(inline(quote[1], { italic: true, fg: DIM }));
+      out.push(inline(quote[1], { italic: true, fg: MD.DIM }));
       i++;
       continue;
     }
 
     const ul = /^(\s*)[-*+]\s+(.*)/.exec(line);
     if (ul) {
-      out.push([{ t: `${ul[1]}• `, fg: ACCENT }, ...inline(ul[2])]);
+      out.push([{ t: `${ul[1]}• `, fg: MD.ACCENT }, ...inline(ul[2])]);
       i++;
       continue;
     }
 
     const ol = /^(\s*)(\d+)[.)]\s+(.*)/.exec(line);
     if (ol) {
-      out.push([{ t: `${ol[1]}${ol[2]}. `, fg: ACCENT }, ...inline(ol[3])]);
+      out.push([{ t: `${ol[1]}${ol[2]}. `, fg: MD.ACCENT }, ...inline(ol[3])]);
       i++;
       continue;
     }

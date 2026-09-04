@@ -5,7 +5,7 @@
  * bun, not a compiled `fox` binary) are refused — there `git pull` is the
  * upgrade path, and overwriting a source tree's bin/ would lie about it.
  */
-import { chmodSync, existsSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { VERSION } from "./version.ts";
 
@@ -53,6 +53,24 @@ export async function fetchReleases(limit = 10): Promise<ReleaseInfo[]> {
     publishedAt: r.published_at.slice(0, 10),
     assets: r.assets.map((a) => ({ name: a.name, url: a.browser_download_url })),
   }));
+}
+
+/**
+ * The project's real name deserves a real command: keep a `fox-agent` symlink
+ * next to the installed binary. Runs at startup and after every upgrade; any
+ * failure (read-only dir, existing file) is none of the user's business.
+ */
+export function ensureAlias(): void {
+  try {
+    if (!isCompiledBinary()) return;
+    const target = process.execPath;
+    if (basename(target) === "fox-agent") return; // invoked via the alias itself
+    const alias = join(dirname(target), "fox-agent");
+    if (existsSync(alias)) return;
+    symlinkSync(basename(target), alias);
+  } catch {
+    /* cosmetic — never worth an error */
+  }
 }
 
 /** Ordering-safe semver compare: positive when a > b. Prereleases rank below their release. */
@@ -172,6 +190,7 @@ export async function upgrade(
   }
   renameSync(target, backup);
   renameSync(tmp, target);
+  ensureAlias();
   onLog(`installed ${rel.tag} → ${target} (previous kept as .fox-previous)`);
   return { changed: true, version: rel.version };
 }

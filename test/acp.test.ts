@@ -57,6 +57,7 @@ const cfg = (): Config => ({
   tuiCollapsedChars: 240,
   tuiKeptChars: 4_000,
   theme: "default",
+  contextMarkers: true,
   warnings: [],
   projectInstructions: "",
 });
