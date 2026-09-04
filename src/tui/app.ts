@@ -287,6 +287,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     items.push(it);
     touch(it.k);
     markDirty();
+    return it;
   }
   function appendToLastThink(delta: string) {
     const last = items[items.length - 1];
@@ -694,8 +695,10 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   function switchSession(id: string) {
     if (id === state.sessionId) return;
     // the old session's resources belong to it — onSessionEnd lets every plugin
-    // release what it holds (the bundled pty plugin kills its tmux session here)
+    // release what it holds (the bundled pty plugin kills its tmux session here),
+    // and exec jobs die with the session that started them
     void import("../plugins/load.ts").then((m) => m.fireSessionEnd(state.sessionId, "switch")).catch(() => {});
+    void import("../tools/exec.ts").then((m) => m.killExecJobs(state.sessionId)).catch(() => {});
     unpinSession(state.sessionId);
     state.sessionId = id;
     pinSession(id);
@@ -790,6 +793,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     push("user", `❯ ${raw}`);
     ac = new AbortController();
     let md = "";
+    const liveTools = new Map<string, { head: Item; body: Item; text: string }>();
     try {
       for await (const ev of runTurn(state.sessionId, state.provider, raw, ac.signal, state.config, uiBridge)) {        if (ev.type === "reasoning") {
           appendToLastThink(ev.delta);
@@ -802,7 +806,34 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         } else if (ev.type === "usage") {
           lastPromptTokens = ev.prompt_tokens; // provider-reported context size
           statsRev++;
+        } else if (ev.type === "tool_output") {
+          // Live output of an in-flight call (exec streaming). Shown as a pair
+          // of items the deltas mutate; tool_end swaps them for the final result.
+          if (md) {
+            push("md", md);
+            md = "";
+            streamText = null;
+          }
+          let live = liveTools.get(ev.id);
+          if (!live) {
+            live = {
+              head: push("toolhead", "⚙ exec — running"),
+              body: push("toolbody", "  ↳ …"),
+              text: "",
+            };
+            liveTools.set(ev.id, live);
+          }
+          live.text = (live.text + ev.delta).slice(-KEPT_TOOL_CHARS);
+          live.body.text = `  ↳ ${live.text.replace(/\s+\n/g, "\n").replace(/\n/g, " ⏎ ")}`;
+          touch(live.body.k);
+          markDirty();
         } else if (ev.type === "tool_end") {
+          // swap the live pair for the settled result
+          const live = liveTools.get(ev.id);
+          if (live) {
+            items = items.filter((i) => i !== live.head && i !== live.body);
+            liveTools.delete(ev.id);
+          }
           if (md) {
             push("md", md);
             md = "";

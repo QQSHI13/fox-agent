@@ -478,6 +478,7 @@ export async function* runTurnCore(
           lsp: effCfg.lsp,
           diagnostics: effCfg.diagnostics,
           emit: quiet ? undefined : liveEvents.push,
+          callId: call.id,
           ui: opts.ui,
           get pty() {
             return ptyState;

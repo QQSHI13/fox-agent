@@ -42,6 +42,8 @@ export interface ToolContext {
    * SDK) stays valid.
    */
   emit?: (ev: AgentEvent) => void;
+  /** id of the tool call being executed — pairs `tool_output` deltas with the in-flight call */
+  callId?: string;
   /**
    * Ask the user questions mid-run — select menus, text input, wizards (see
    * core/ui.ts). Present only when the host is interactive (today: the TUI);

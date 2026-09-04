@@ -83,6 +83,9 @@ export function toSessionUpdate(ev: AgentEvent, opts: MapOptions): SessionUpdate
         content: [{ type: "content", content: { type: "text", text: ev.output } }],
         rawOutput: ev.output,
       };
+    case "tool_output":
+      // live exec output is a TUI affordance; ACP clients get the final result
+      return null;
     case "usage":
       return {
         sessionUpdate: "usage_update",

@@ -17,5 +17,8 @@ export type AgentEvent =
   /** a delegated agent's tool activity, forwarded live from its ACP session so
    *  the parent's UI shows work in progress instead of a silent wait */
   | { type: "child_tool"; session: string; name: string; done: boolean; ok: boolean }
+  /** live output of a running tool (exec), paired to its call by `id`; UI-only —
+   *  the model still receives just the final tool result */
+  | { type: "tool_output"; id: string; delta: string }
   | { type: "warn"; message: string }
   | { type: "done"; reason: string };

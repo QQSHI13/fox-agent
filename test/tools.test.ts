@@ -195,6 +195,47 @@ describe("exec", () => {
     const r = await execRun({ cmd: "ls" }, ctx);
     expect(r.output).toContain("marker.txt");
   });
+
+  test("background job: starts instantly, polls incrementally, reaps on exit", async () => {
+    const bg = await execRun({ cmd: "echo first; sleep 0.3; echo second", background: true }, { ...ctx, sessionId: "bg-test" });
+    expect(bg.ok).toBe(true);
+    const id = /job (j\d+)/.exec(bg.output)![1];
+
+    // first poll: may already hold "first", must not hold "second" yet
+    const p1 = await execRun({ job: id }, { ...ctx, sessionId: "bg-test" });
+    expect(p1.output).toContain("running");
+    expect(p1.output).not.toContain("second");
+
+    // wait out the sleep; the final poll reports the exit and reaps the job
+    await new Promise((r) => setTimeout(r, 700));
+    const p2 = await execRun({ job: id }, { ...ctx, sessionId: "bg-test" });
+    expect(p2.output).toContain("exited 0");
+    expect(p2.output).toContain("second");
+    const p3 = await execRun({ job: id }, { ...ctx, sessionId: "bg-test" });
+    expect(p3.ok).toBe(false); // reaped — no such job anymore
+  });
+
+  test("background job: kill terminates and drops the job", async () => {
+    const c = { ...ctx, sessionId: "bg-kill" };
+    const bg = await execRun({ cmd: "sleep 60", background: true }, c);
+    const id = /job (j\d+)/.exec(bg.output)![1];
+    const killed = await execRun({ job: id, signal: "kill" }, c);
+    expect(killed.output).toContain("killed");
+    const after = await execRun({ job: id }, c);
+    expect(after.ok).toBe(false);
+  });
+
+  test("foreground output streams to the UI via tool_output, not to the model", async () => {
+    const events: { type: string; delta?: string }[] = [];
+    const c = { ...ctx, callId: "c1", emit: (ev: any) => events.push(ev) };
+    const r = await execRun({ cmd: "echo a; echo b" }, c);
+    expect(r.ok).toBe(true);
+    const streamed = events.filter((e) => e.type === "tool_output").map((e) => e.delta).join("");
+    expect(streamed).toContain("a");
+    expect(streamed).toContain("b");
+    // ...while the tool result is still the single merged payload
+    expect(r.output).toContain("a");
+  });
 });
 
 describe("ctx_edit", () => {
