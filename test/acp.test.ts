@@ -609,12 +609,12 @@ describe("event mapping", () => {
       status: "pending",
       rawInput: { cmd: "ls" },
     });
-    expect(map({ type: "tool_end", id: "t", seq: 3, name: "exec", output: "out", ok: true })).toMatchObject({
+    expect(map({ type: "tool_end", id: "t", seq: 3, name: "exec", args: "{}", output: "out", ok: true })).toMatchObject({
       sessionUpdate: "tool_call_update",
       toolCallId: "t",
       status: "completed",
     });
-    expect(map({ type: "tool_end", id: "t", seq: 3, name: "exec", output: "boom", ok: false })).toMatchObject({
+    expect(map({ type: "tool_end", id: "t", seq: 3, name: "exec", args: "{}", output: "boom", ok: false })).toMatchObject({
       status: "failed",
     });
     expect(map({ type: "usage", prompt_tokens: 100, completion_tokens: 20 })).toMatchObject({

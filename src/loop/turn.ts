@@ -533,7 +533,7 @@ export async function* runTurnCore(
     const results = await finished;
 
     for (const { call, node, res } of results) {
-      yield { type: "tool_end", id: call.id, seq: node.seq, name: call.name, output: res.output, ok: res.ok };
+      yield { type: "tool_end", id: call.id, seq: node.seq, name: call.name, args: call.arguments.slice(0, 200), output: res.output, ok: res.ok };
     }
 
     // next step's assistant hangs off the last tool result of this step

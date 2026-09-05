@@ -99,6 +99,21 @@ const OVERLAY_MAX_ROWS = 14;
 let keySeq = 0;
 const nk = () => ++keySeq;
 
+/**
+ * One-line "what actually ran" for a tool head: the meaningful field when the
+ * args have an obvious one (cmd, path, pattern, url), else compacted JSON.
+ */
+export function argsSummary(args: string): string {
+  const t = (args ?? "").trim();
+  if (!t || t === "{}") return "";
+  try {
+    const a = JSON.parse(t);
+    const v = a?.cmd ?? a?.path ?? a?.pattern ?? a?.file ?? a?.url ?? a?.command ?? a?.job ?? null;
+    if (typeof v === "string" && v.trim()) return ` ${v.replace(/\s+/g, " ").slice(0, 60)}`;
+  } catch {}
+  return ` ${t.replace(/\s+/g, " ").slice(0, 60)}`;
+}
+
 async function clipRead(): Promise<string> {
   const cmds = [
     // Windows from WSL: force UTF-8 on the pipe. Without it powershell writes
@@ -311,11 +326,12 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     const out: Item[] = [];
     if (!state.sessionId) return out; // pending session: nothing stored yet
     const nodes = projectView(state.sessionId).filter((n) => !n.deleted);
-    const callName = new Map<string, string>();
+    const callLabel = new Map<string, string>();
     for (const n of nodes) {
       if (n.msg.role === "assistant" && n.msg.tool_calls) {
         try {
-          for (const c of JSON.parse(n.msg.tool_calls) as { id: string; name: string }[]) callName.set(c.id, c.name);
+          for (const c of JSON.parse(n.msg.tool_calls) as { id: string; name: string; arguments: string }[])
+            callLabel.set(c.id, `${c.name}${argsSummary(c.arguments ?? "")}`);
         } catch {}
       }
     }
@@ -323,12 +339,12 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       const m = n.msg;
       if (m.role === "user") out.push({ k: nk(), kind: "user", text: `[m${m.seq}] ❯ ${n.content}` });
       else if (m.role === "tool") {
-        const oneLine = n.content.replace(/\s+\n/g, "\n").replace(/\n/g, " ⏎ ").slice(0, KEPT_TOOL_CHARS);
-        out.push({ k: nk(), kind: "toolhead", text: `[m${m.seq}] ⚙ ${callName.get(m.tool_call_id ?? "") ?? "tool"}` });
+        out.push({ k: nk(), kind: "toolhead", text: `[m${m.seq}] ⚙ ${callLabel.get(m.tool_call_id ?? "") ?? "tool"}` });
+        // raw text — collapsed/expanded rendering lives in itemRows
         out.push({
           k: nk(),
           kind: "toolbody",
-          text: `  ↳ ${oneLine}`,
+          text: n.content.slice(0, KEPT_TOOL_CHARS * 4),
           ref: m.seq,
           // collapsed by default, but an explicit expand survives refresh()
           expanded: expandedRefs.has(m.seq),
@@ -678,7 +694,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       `model ${state.provider.model} (${Math.round(info.contextWindow / 1000)}k ctx) · ${state.provider.provider ?? "openai-compatible"}` +
         `${state.provider.baseUrl && !/api\.openai\.com/.test(state.provider.baseUrl) ? ` · ${state.provider.baseUrl}` : ""}`,
     );
-    push("toolbody", "enter send · \\ newline · ! shell · / commands · esc interrupt · ctrl+t thinking · drag/dbl-click select");
+    push("toolbody", "enter send · \\ newline · ! shell · / commands · esc interrupt · ctrl+t expand all · drag/dbl-click select");
     push("toolbody", "/login setup · /model switch · /sessions resume · /usage tokens · /prune context · /upgrade update · /help all");
     statsRev++;
     markDirty();
@@ -806,6 +822,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     ac = new AbortController();
     let md = "";
     const liveTools = new Map<string, { head: Item; body: Item; text: string }>();
+    // id → one-line label ("exec echo hi"), so in-flight and settled heads both
+    // say what actually ran, not just the tool's name
+    const callLabels = new Map<string, string>();
     try {
       for await (const ev of runTurn(state.sessionId, state.provider, raw, ac.signal, state.config, uiBridge)) {        if (ev.type === "reasoning") {
           appendToLastThink(ev.delta);
@@ -818,6 +837,8 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         } else if (ev.type === "usage") {
           lastPromptTokens = ev.prompt_tokens; // provider-reported context size
           statsRev++;
+        } else if (ev.type === "tool_start") {
+          callLabels.set(ev.id, `${ev.name}${argsSummary(ev.args)}`);
         } else if (ev.type === "tool_output") {
           // Live output of an in-flight call (exec streaming). Shown as a pair
           // of items the deltas mutate; tool_end swaps them for the final result.
@@ -829,7 +850,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           let live = liveTools.get(ev.id);
           if (!live) {
             live = {
-              head: push("toolhead", "⚙ exec — running"),
+              head: push("toolhead", `⚙ ${callLabels.get(ev.id) ?? "exec"} — running`),
               body: push("toolbody", "  ↳ …"),
               text: "",
             };
@@ -851,9 +872,10 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
             md = "";
             streamText = null;
           }
-          const oneLine = ev.output.replace(/\s+\n/g, "\n").replace(/\n/g, " ⏎ ").slice(0, KEPT_TOOL_CHARS);
-          push("toolhead", `[m${ev.seq}] ⚙ ${ev.name}${ev.ok ? "" : " ✗"}`);
-          push("toolbody", `  ↳ ${oneLine}`, { ref: ev.seq, expanded: expandedRefs.has(ev.seq) });
+          // raw text, newlines intact: collapsed rendering one-lines it, the
+          // expanded view gets the real lines (see itemRows)
+          push("toolhead", `[m${ev.seq}] ⚙ ${callLabels.get(ev.id) ?? `${ev.name}${argsSummary(ev.args)}`}${ev.ok ? "" : " ✗"}`);
+          push("toolbody", ev.output.slice(0, KEPT_TOOL_CHARS * 4), { ref: ev.seq, expanded: expandedRefs.has(ev.seq) });
           statsRev++;
         } else if (ev.type === "child_tool") {
           // A subagent's own tool calls. Only the completions are shown: a
@@ -947,6 +969,10 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     }
 
     if (busy) {
+      // slash commands don't need the agent idle — /todo, /sessions, the prompt
+      // wizards all work mid-turn. Only agent-bound text (and !shell, which
+      // shares the busy guard) waits in line.
+      if (!lit && t.startsWith("/")) return void runSlash(t);
       queued.push({ raw, lit });
       markDirty();
       return;
@@ -1093,14 +1119,15 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     }
     if (name === "d" && ctrl) return gracefulExit(0);
     if (name === "t" && ctrl) {
-      // unfold/fold every thinking block
-      const anyFolded = items.some((it) => it.kind === "think" && !isExpanded(it));
+      // unfold/fold everything expandable — thinking blocks and tool outputs alike
+      const expandable = (it: Item) => it.kind === "think" || it.kind === "toolbody";
+      const anyFolded = items.some((it) => expandable(it) && !isExpanded(it));
       for (const it of items) {
-        if (it.kind !== "think") continue;
+        if (!expandable(it)) continue;
         const want = anyFolded;
         if (isExpanded(it) !== want) toggleExpand(it);
       }
-      flash(anyFolded ? "thinking unfolded" : "thinking folded");
+      flash(anyFolded ? "all unfolded" : "all folded");
       return;
     }
     if (name === "v" && ctrl) {
@@ -1431,10 +1458,23 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         : [{ segs: [{ t: `▸ thinking (${words} words) · click or ctrl+t`, fg: C.chrome }] }];
       rows.push({ segs: [] });
     } else if (it.kind === "toolbody") {
-      const body = it.expanded || it.text.length <= COLLAPSED_TOOL_CHARS + 4
-        ? it.text
-        : `${it.text.slice(0, COLLAPSED_TOOL_CHARS)} … ⋯ more · click`;
-      rows = wrapSegs([{ t: body, ...itemStyle(it.kind) }], w).map((segs) => ({ segs }));
+      if (it.expanded) {
+        // full output: real lines, no ⏎ one-lining
+        rows = [];
+        for (const line of it.text.split("\n")) {
+          rows.push(...wrapSegs([{ t: `  ↳ ${line}`, ...itemStyle(it.kind) }], w).map((segs) => ({ segs })));
+        }
+      } else {
+        const oneLine = `  ↳ ${it.text.replace(/\s+\n/g, "\n").replace(/\n/g, " ⏎ ")}`;
+        if (oneLine.length <= COLLAPSED_TOOL_CHARS + 4) {
+          rows = wrapSegs([{ t: oneLine, ...itemStyle(it.kind) }], w).map((segs) => ({ segs }));
+        } else {
+          rows = wrapSegs([{ t: oneLine.slice(0, COLLAPSED_TOOL_CHARS), ...itemStyle(it.kind) }], w).map((segs) => ({ segs }));
+          // the affordance gets its own row: appended mid-text it wrapped
+          // arbitrarily and "⋯ more" could split across a line end
+          rows.push({ segs: [{ t: "  ⋯ more · click or ctrl+t", fg: C.accent }] });
+        }
+      }
     } else {
       rows = wrapSegs([{ t: it.text, ...itemStyle(it.kind) }], w).map((segs) => ({ segs }));
     }
@@ -1687,8 +1727,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         : "ctx —";
       const home = process.env.HOME ?? "";
       const cwdShort = home && state.cwd.startsWith(home) ? "~" + state.cwd.slice(home.length) : state.cwd;
-      const q = queued.length ? ` · ⏸ ${queued.length}` : "";
-      return `${cwdShort} · ${state.provider.model} · ${ctx}${q}`;
+      return `${cwdShort} · ${state.provider.model} · ${ctx}`;
     } catch {
       return state.cwd;
     }
@@ -1909,7 +1948,12 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     screen.fillRow(barY, 0, W, S.barBgRow);
     let lx = 1;
     if (busy) {
-      lx = screen.text(lx, barY, `${SPIN[frameIdx]} ${streamText !== null ? "responding" : "thinking"} ${elapsed()}${queued.length ? ` · ⏸ ${queued.length}` : ""}`, S.accent);
+      // the queue's contents, not just a count — "what did I line up?" should
+      // be answerable from the bar, without an emoji badge
+      const qd = queued.length
+        ? ` · queued(${queued.length}): ${queued.map((q) => q.raw.replace(/\s+/g, " ").trim().slice(0, 40)).join("  |  ")}`
+        : "";
+      lx = screen.text(lx, barY, clipW(`${SPIN[frameIdx]} ${streamText !== null ? "responding" : "thinking"} ${elapsed()}${qd}`, W - 2), S.accent);
     } else if (Date.now() < flashUntil && flashMsg) {
       lx = screen.text(lx, barY, `✓ ${flashMsg}`, S.ok);
     } else {
