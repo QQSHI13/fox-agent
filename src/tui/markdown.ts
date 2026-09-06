@@ -1,6 +1,7 @@
 // lightweight markdown -> styled segments (streaming-safe: re-parses whole buffer cheaply)
 import type { Seg } from "./wrap.ts";
 import { liveTheme } from "./themes.ts";
+import { charWidth } from "./screen.ts";
 
 // live theme lookups: a /theme switch recolors markdown on the next frame
 const MD = liveTheme<"ACCENT" | "CODE_FG" | "HEAD" | "DIM" | "LINK">({
@@ -118,6 +119,37 @@ export function renderMarkdown(src: string, state?: MdState): Seg[][] {
       continue;
     }
 
+    // GFM table: a header row, a |---| separator, then body rows. Rendered as
+    // aligned plain columns — borders would double the width cost.
+    const isTableLine = (l: string) => /^\s*\|.*\|\s*$/.test(l);
+    const isSep = (l: string) => /^\s*\|[\s:|-]+\|\s*$/.test(l);
+    if (isTableLine(line) && i + 1 < lines.length && isSep(lines[i + 1])) {
+      const rows: string[][] = [];
+      while (i < lines.length && isTableLine(lines[i])) {
+        if (!isSep(lines[i]))
+          rows.push(lines[i].trim().replace(/^\||\|$/g, "").split("|").map((c) => c.trim()));
+        i++;
+      }
+      const width = (s: string) => [...s].reduce((w, c) => w + charWidth(c.codePointAt(0)!), 0);
+      const cols = Math.max(...rows.map((r) => r.length));
+      const widths = Array.from({ length: cols }, () => 1);
+      for (const r of rows) for (let c = 0; c < r.length; c++) widths[c] = Math.max(widths[c], width(r[c]));
+      rows.forEach((r, ri) => {
+        const segs: Seg[] = [];
+        for (let c = 0; c < cols; c++) {
+          const cell = r[c] ?? "";
+          const cellSegs = inline(cell, ri === 0 ? { bold: true } : undefined);
+          const pad = c < cols - 1 ? widths[c] - width(cell) : 0; // no trailing pad on the last column
+          if (pad > 0) cellSegs.push({ t: " ".repeat(pad) });
+          segs.push(...cellSegs);
+          if (c < cols - 1) segs.push({ t: "  ", fg: MD.DIM });
+        }
+        out.push(segs);
+        if (ri === 0) out.push([{ t: widths.map((w) => "─".repeat(w)).join("──"), fg: MD.DIM }]);
+      });
+      continue;
+    }
+
     if (!line.trim()) {
       out.push([]);
       i++;
@@ -130,7 +162,8 @@ export function renderMarkdown(src: string, state?: MdState): Seg[][] {
     while (
       i < lines.length &&
       lines[i].trim() &&
-      !/^(#{1,6}\s|```|>)/.test(lines[i])
+      !/^(#{1,6}\s|```|>)/.test(lines[i]) &&
+      !/^\s*\|.*\|\s*$/.test(lines[i]) // a table row is not a paragraph line
     )
       para.push(lines[i++]);
     for (const pl of para) out.push(inline(pl));
