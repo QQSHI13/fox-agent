@@ -27,7 +27,7 @@ export interface CatalogModel {
 }
 
 export interface CatalogProvider {
-  /** models.dev id, or a fox-agent-local id like "tokenguard" */
+  /** models.dev id */
   id: string;
   /** human name for pickers */
   name: string;
@@ -39,18 +39,6 @@ export interface CatalogProvider {
   format: "openai-compatible" | "openai-responses" | "anthropic" | "google";
   models: CatalogModel[];
 }
-
-/** Local presets that models.dev does not (or cannot) know about. */
-const LOCAL_PRESETS: CatalogProvider[] = [
-  {
-    id: "tokenguard",
-    name: "Token Guard — local gateway",
-    api: "http://127.0.0.1:3742/v1",
-    env: [],
-    format: "openai-compatible",
-    models: [],
-  },
-];
 
 /** Static fallback when no cache exists yet; models.dev data replaces it. */
 const STATIC_PRESETS: CatalogProvider[] = [
@@ -169,13 +157,11 @@ export function ensureFreshCatalog(): void {
 }
 
 /**
- * The provider presets `/login` offers: local entries (tokenguard), the
- * models.dev catalog when cached, and static fallbacks for anything the
- * catalog missed — deduped by id, locals first.
+ * The provider presets `/login` offers: the models.dev catalog when cached,
+ * and static fallbacks for anything the catalog missed — deduped by id.
  */
 export function providerPresets(): CatalogProvider[] {
   const out = new Map<string, CatalogProvider>();
-  for (const p of LOCAL_PRESETS) out.set(p.id, p);
   const cat = loadCatalog();
   if (cat) {
     // the well-known names first, then everything else alphabetically

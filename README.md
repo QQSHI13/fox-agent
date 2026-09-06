@@ -7,7 +7,7 @@ A light coding harness with **agent-controlled context** — the agent edits its
 - Full machine control, zero permission prompts (pi-style)
 - Production turn loop: step caps, retry/backoff on 429/5xx, parallel tool execution, abort-safe partial persistence, **auto-compaction** near the context limit
 - SQLite event-sourced sessions, one database per session: append-only log + view ops + refs (reverts/forks are queries, not rewrites)
-- OpenAI-compatible gateway first (tokenguard etc.) + native Anthropic (prompt caching) and Google/Gemini providers
+- OpenAI-compatible gateway first + native Anthropic (prompt caching) and Google/Gemini providers
 - Tools: read/write/edit (whitespace-tolerant patch engine)/glob/grep (ripgrep when present)/exec (process-group kill)/pty (tmux pipe-pane, resize-proof)/ctx_edit/todowrite/task (delegation over ACP or A2A)/fetch/MCP client. `read` attaches images, audio and video as media when the active model accepts them (gemini: all three; gpt/claude families: images)
 - **ACP both ways**: `fox --acp` serves the Agent Client Protocol to Zed/acpx, and fox drives other ACP agents as a client (that is what `task` is built on); agents configured with a `url` are reached over **A2A** (HTTP/JSON-RPC, SSE streaming when offered)
 - **Plugins**: one module adds tools, lifecycle hooks (`onSessionStart`/`beforeLLMCall`/`afterTool`) and custom providers; global config only, and a broken one costs a warning rather than the run
@@ -72,7 +72,7 @@ a restart. Provider choices come from the models.dev catalog (cached 24h at `$FO
 with static fallbacks offline), so picking e.g. OpenRouter or Token Guard prefills the endpoint, names the env
 var an empty key falls back to, and lists that provider's real models with their context windows — those exact
 figures also feed the ctx meter and budget checks. Headless clients use kv pairs instead:
-`/login provider=<p> key=<k> [baseUrl=<u>] [model=<m>]`, where `<p>` may also be a preset id like `tokenguard`.
+`/login provider=<p> key=<k> [baseUrl=<u>] [model=<m>]`, where `<p>` may also be a preset id like `deepseek`.
 
 `FOX_AGENT_REQUEST_TIMEOUT_MS` (default `120000`, `0` disables) bounds **time without progress**, not total
 request duration: the clock is rearmed on every streamed chunk, so a model that reasons or writes for

@@ -1,4 +1,4 @@
-// OpenAI-compatible streaming provider (tokenguard / any gateway / OpenAI).
+// OpenAI-compatible streaming provider (any gateway / OpenAI).
 // Contract: throws ProviderError (classified, retriable flag set) on
 // transport/API failure and AbortError-shaped errors on interrupt; yields
 // StreamEvents otherwise. Never reports errors via `done` reason strings.

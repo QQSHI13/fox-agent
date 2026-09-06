@@ -1,6 +1,5 @@
 // models.dev catalog: cache parsing, merged lookup (a sparse reseller record
-// must not beat the source provider's), and the login presets (tokenguard
-// always present, network or not).
+// must not beat the source provider's), and the login presets.
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -24,12 +23,11 @@ const cache = (providers: unknown) =>
   writeFileSync(join(dir, "models.dev.json"), JSON.stringify({ at: Date.now(), providers }));
 
 describe("models.dev catalog", () => {
-  test("no cache means static presets, and tokenguard is always offered", async () => {
+  test("no cache means static presets", async () => {
     const { providerPresets, loadCatalog } = await import("../src/providers/modelsdev.ts");
     expect(loadCatalog()).toBeNull();
     const ids = providerPresets().map((p) => p.id);
-    expect(ids[0]).toBe("tokenguard");
-    expect(ids).toContain("openai");
+    expect(ids[0]).toBe("openai");
     expect(ids).toContain("openai-responses");
     expect(ids).toContain("anthropic");
   });

@@ -524,7 +524,7 @@ function modelPrompt(state: HarnessState): PromptRequest {
  * cannot drift apart on what "save and apply" means.
  */
 function applyLogin(fields: LoginFields, state: HarnessState): CommandResult {
-  // A preset id (tokenguard, openrouter, …) expands to its provider format,
+  // A preset id (openrouter, deepseek, …) expands to its provider format,
   // default endpoint and conventional env key before validation.
   if (fields.provider && !availableProviders().includes(fields.provider)) {
     const preset = presetById(fields.provider);
@@ -569,7 +569,7 @@ function applyLogin(fields: LoginFields, state: HarnessState): CommandResult {
  * still lands in the wizard with that choice already made.
  *
  * Provider choices come from the models.dev catalog (cached, refreshed in the
- * background) plus local presets like tokenguard; picking one prefills the
+ * background) plus static fallbacks; picking one prefills the
  * endpoint, names the env var an empty key falls back to, and turns the model
  * step into a list of what that provider actually serves.
  */
@@ -578,7 +578,7 @@ function loginPrompt(state: HarnessState, pre: LoginFields = {}): PromptRequest 
   ensureFreshCatalog();
   const presets = providerPresets();
   // which preset does the current config most look like? An exact endpoint
-  // match first (tokenguard's local URL, openrouter, …), then the canonical
+  // match first (openrouter, a gateway's fixed URL, …), then the canonical
   // preset for the configured format — but only when the endpoint is also the
   // default one, else the honest answer is "custom".
   const format = p.provider ?? "openai-compatible";

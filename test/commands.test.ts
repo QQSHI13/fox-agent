@@ -232,19 +232,19 @@ describe("/login", () => {
     expect(text).toContain('apiKey = "gk-1"');
   });
 
-  test("a preset id expands to its format and endpoint — tokenguard needs no key", async () => {
+  test("a preset id expands to its format and endpoint", async () => {
     const t = await setup();
     const cfgPath = join(dir, "config.toml");
     const s = t.createSession("/w", "m1");
     const state = { sessionId: s.id, cwd: "/w", provider: { baseUrl: "http://x", apiKey: "", model: "m" } as any, configPath: cfgPath };
 
-    const done = t.runSlashCommand("/login provider=tokenguard model=qwen3-max", state)!;
+    const done = t.runSlashCommand("/login provider=deepseek key=sk-ds model=deepseek-chat", state)!;
     expect(done.output).toContain("saved");
     expect(state.provider.provider).toBe("openai-compatible");
-    expect(state.provider.baseUrl).toBe("http://127.0.0.1:3742/v1");
-    expect(state.provider.model).toBe("qwen3-max");
+    expect(state.provider.baseUrl).toBe("https://api.deepseek.com/v1");
+    expect(state.provider.model).toBe("deepseek-chat");
     const text = readFileSync(cfgPath, "utf8");
-    expect(text).toContain('baseUrl = "http://127.0.0.1:3742/v1"');
+    expect(text).toContain('baseUrl = "https://api.deepseek.com/v1"');
   });
 });
 
