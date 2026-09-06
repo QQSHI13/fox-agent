@@ -157,6 +157,12 @@ export interface Config {
   disabledPlugins: string[];
   /** named provider profiles (`[providers.*]`), keyed by profile name */
   providers: Record<string, ProviderProfile>;
+  /**
+   * How much of a stored transcript `session/load` replays to an ACP client:
+   * "full" (default), "last" (the latest exchange), or a number of trailing
+   * nodes. Clients that only display the tail don't need the whole history.
+   */
+  acpHistory: "full" | "last" | number;
   /** every AGENTS.md / CLAUDE.md on the path from root to cwd, each labeled with its source path ("" if none) */
   projectInstructions: string;
   /**
@@ -190,6 +196,7 @@ const DEFAULTS: Omit<Config, "projectInstructions"> = {
   plugins: [],
   disabledPlugins: [],
   providers: {},
+  acpHistory: "full",
   warnings: [],
 };
 
@@ -322,7 +329,7 @@ const KNOWN_KEYS = new Set([
   "model", "baseUrl", "apiKey", "provider", "maxSteps", "retryLimit", "compactAt",
   "requestTimeoutMs", "diagnostics", "mcpServers", "agents", "lsp", "plugins",
   "providers", "disabledPlugins", "toolOutputCap", "sessionListLimit",
-  "tuiCollapsedChars", "tuiKeptChars", "theme", "contextMarkers",
+  "tuiCollapsedChars", "tuiKeptChars", "theme", "contextMarkers", "acpHistory",
 ]);
 
 /** Parse one `[[providers.x.models]]` entry; junk fields degrade to absent. */
@@ -394,6 +401,8 @@ function applyTable(cfg: Config, t: Record<string, unknown> | null, scope: "glob
   if (typeof t.tuiKeptChars === "number" && t.tuiKeptChars >= 200) cfg.tuiKeptChars = Math.floor(t.tuiKeptChars);
   if (typeof t.theme === "string" && t.theme.trim()) cfg.theme = t.theme.trim();
   if (typeof t.contextMarkers === "boolean") cfg.contextMarkers = t.contextMarkers;
+  if (t.acpHistory === "full" || t.acpHistory === "last") cfg.acpHistory = t.acpHistory;
+  else if (typeof t.acpHistory === "number" && t.acpHistory >= 1) cfg.acpHistory = Math.floor(t.acpHistory);
   if (t.mcpServers && typeof t.mcpServers === "object") {
     for (const [name, v] of Object.entries(t.mcpServers as Record<string, unknown>)) {
       const s = v as { command?: string; args?: string[]; env?: Record<string, string> };

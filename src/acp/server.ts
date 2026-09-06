@@ -69,9 +69,28 @@ function promptText(blocks: acp.ContentBlock[]): string {
  * replay as already-`completed` — they ran in a previous process, so there is no
  * in-flight state to report.
  */
-async function replay(sessionId: string, notify: (u: acp.SessionUpdate) => Promise<void>): Promise<void> {
-  for (const node of projectView(sessionId)) {
-    if (node.deleted) continue;
+/**
+ * Which replayed nodes a loading client gets, per `config.acpHistory`.
+ * "last" keeps the final user message and everything after it — the exchange
+ * the user came back to — without shipping the whole transcript.
+ */
+export function selectHistory<T extends { msg: MessageRow; deleted?: boolean }>(
+  nodes: T[],
+  scope: Config["acpHistory"],
+): T[] {
+  const visible = nodes.filter((n) => !n.deleted);
+  if (scope === "full") return visible;
+  if (typeof scope === "number") return visible.slice(-scope);
+  const lastUser = visible.map((n, i) => (n.msg.role === "user" ? i : -1)).filter((i) => i >= 0).pop();
+  return lastUser === undefined ? visible : visible.slice(lastUser);
+}
+
+async function replay(
+  sessionId: string,
+  scope: Config["acpHistory"],
+  notify: (u: acp.SessionUpdate) => Promise<void>,
+): Promise<void> {
+  for (const node of selectHistory(projectView(sessionId), scope)) {
     const msg: MessageRow = node.msg;
     const text = node.content;
     if (msg.role === "user") await notify({ sessionUpdate: "user_message_chunk", content: { type: "text", text } });
@@ -153,7 +172,7 @@ export function buildAgent(opts: AcpServerOptions): acp.AgentApp {
     .onRequest(acp.methods.agent.session.load, async ({ params, client }) => {
       if (!getSession(params.sessionId)) throw RequestError.resourceNotFound(params.sessionId);
       acquireLock(params.sessionId, "acp");
-      await replay(params.sessionId, (update) =>
+      await replay(params.sessionId, config.acpHistory, (update) =>
         client.notify(acp.methods.client.session.update, { sessionId: params.sessionId, update }),
       );
       return {};

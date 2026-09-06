@@ -215,6 +215,7 @@ function fallbackConfig(cfg: ProviderConfig, opts: TurnOptions): Config {
     plugins: [],
     disabledPlugins: [],
     providers: {},
+    acpHistory: "full",
     warnings: [],
     projectInstructions: "",
   };

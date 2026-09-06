@@ -58,6 +58,7 @@ const cfg = (): Config => ({
   tuiKeptChars: 4_000,
   theme: "default",
   contextMarkers: true,
+  acpHistory: "full",
   warnings: [],
   projectInstructions: "",
 });
@@ -720,5 +721,25 @@ describe("delegation targets", () => {
       if (prev === undefined) delete process.env.FOX_AGENT_DELEGATION_DEPTH;
       else process.env.FOX_AGENT_DELEGATION_DEPTH = prev;
     }
+  });
+});
+
+describe("selectHistory", () => {
+  const node = (role: string, deleted = false) => ({ msg: { role } as never, deleted, content: role });
+  test("full keeps every visible node; deleted stay hidden", async () => {
+    const { selectHistory } = await import("../src/acp/server.ts");
+    const ns = [node("user"), node("assistant"), node("user", true), node("user")];
+    expect(selectHistory(ns, "full").length).toBe(3);
+  });
+  test("last keeps the final exchange only", async () => {
+    const { selectHistory } = await import("../src/acp/server.ts");
+    const ns = [node("user"), node("assistant"), node("user"), node("assistant")];
+    expect(selectHistory(ns, "last").length).toBe(2);
+    expect(selectHistory(ns, "last")[0].content).toBe("user");
+  });
+  test("a number keeps that many trailing nodes", async () => {
+    const { selectHistory } = await import("../src/acp/server.ts");
+    const ns = [node("user"), node("assistant"), node("user"), node("assistant")];
+    expect(selectHistory(ns, 3).length).toBe(3);
   });
 });
