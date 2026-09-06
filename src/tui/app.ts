@@ -267,6 +267,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
    * deliberate: opening the list mid-turn must not interrupt the turn.
    */
   let overlay: Picker | null = null;
+  let overlayMode: "sessions" | "queue" = "sessions";
 
   /**
    * The active question wizard, or null.
@@ -734,6 +735,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   /** Build and show the session overlay. */
   function openPicker(req: PickerRequest) {
     if (req.kind !== "sessions") return;
+    overlayMode = "sessions";
     overlay = new Picker(currentSessionRows(), {
       title: "sessions — most recently used first",
       allowNew: true,
@@ -741,6 +743,24 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       allowFork: true,
     });
     markDirty();
+  }
+
+  /** ctrl+up: review what's waiting behind the running turn. */
+  function openQueue() {
+    if (!queued.length) return flash("queue is empty");
+    overlayMode = "queue";
+    overlay = new Picker(queueRows(), {
+      title: "queued messages — enter pulls one back into the editor, d drops it",
+      allowDelete: true,
+    });
+    markDirty();
+  }
+
+  function queueRows(): PickerRow[] {
+    return queued.map((q, i) => {
+      const preview = q.raw.replace(/\s+/g, " ").trim() || "(whitespace)";
+      return { id: String(i), cells: [`${i + 1}.`, preview.slice(0, 100)], search: preview.toLowerCase(), label: preview.slice(0, 60) };
+    });
   }
 
   function currentSessionRows(): PickerRow[] {
@@ -764,6 +784,29 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     const action = k.type === "char" ? overlay.key({ ch: k.ch }) : overlay.key({ name: k.name, ctrl: k.ctrl });
     markDirty();
     if (!action) return true;
+    if (overlayMode === "queue") {
+      switch (action.kind) {
+        case "cancel":
+          overlay = null;
+          break;
+        case "choose": {
+          // pull the message back into the editor for changes before it runs
+          const [m] = queued.splice(Number(action.id), 1);
+          overlay = null;
+          if (m) chsSet(m.raw);
+          break;
+        }
+        case "delete": {
+          queued.splice(Number(action.id), 1);
+          if (!queued.length) overlay = null;
+          else overlay.setRows(queueRows());
+          break;
+        }
+        default:
+          break; // new/fork are not queue concepts
+      }
+      return true;
+    }
     switch (action.kind) {
       case "cancel":
         overlay = null;
@@ -1132,6 +1175,10 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       return;
     }
     if (name === "d" && ctrl) return gracefulExit(0);
+    if (name === "up" && ctrl) {
+      openQueue(); // review/edit what's waiting behind the running turn
+      return;
+    }
     if (name === "t" && ctrl) {
       // unfold/fold everything expandable — thinking blocks and tool outputs alike
       const expandable = (it: Item) => it.kind === "think" || it.kind === "toolbody";
@@ -1947,10 +1994,28 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       }
     }
 
-    // hints popup floats directly above the input box
+    // queued messages stack directly above the input box, latest at the bottom —
+    // the line you're about to send next sits closest to your hands. ctrl+up
+    // opens the chooser.
+    let queueRowsH = 0;
+    if (queued.length) {
+      const shown = queued.slice(0, 4);
+      queueRowsH = shown.length + (queued.length > 4 ? 1 : 0);
+      const qTop = inputTop - queueRowsH;
+      for (let i = 0; i < shown.length; i++) {
+        screen.fillRow(qTop + i, 0, W, S.barBgRow);
+        screen.text(1, qTop + i, clipW(`queued ${i + 1}/${queued.length}: ${shown[i].raw.replace(/\s+/g, " ").trim() || "(whitespace)"}`, W - 2), S.hintDim);
+      }
+      if (queued.length > 4) {
+        screen.fillRow(qTop + 4, 0, W, S.barBgRow);
+        screen.text(1, qTop + 4, clipW(`… ${queued.length - 4} more — ctrl+up to review`, W - 2), S.hintDim);
+      }
+    }
+
+    // hints popup floats directly above the input box (and any queue rows)
     const hints = hintText();
     if (hints.active && hints.rows.length) {
-      const hTop = inputTop - hints.rows.length;
+      const hTop = inputTop - queueRowsH - hints.rows.length;
       for (let i = 0; i < hints.rows.length; i++) {
         screen.fillRow(hTop + i, 0, W, S.barBgRow);
         screen.text(1, hTop + i, hints.rows[i].text, hints.rows[i].sel ? S.hintSel : S.hintDim);
@@ -1967,12 +2032,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     screen.fillRow(barY, 0, W, S.barBgRow);
     let lx = 1;
     if (busy) {
-      // the queue's contents, not just a count — "what did I line up?" should
-      // be answerable from the bar, without an emoji badge
-      const qd = queued.length
-        ? ` · queued(${queued.length}): ${queued.map((q) => q.raw.replace(/\s+/g, " ").trim().slice(0, 40)).join("  |  ")}`
-        : "";
-      lx = screen.text(lx, barY, clipW(`${SPIN[frameIdx]} ${streamText !== null ? "responding" : "thinking"} ${elapsed()}${qd}`, W - 2), S.accent);
+      // flash rides along while busy, so a mid-turn copy still confirms
+      const fl = Date.now() < flashUntil && flashMsg ? ` · ${flashMsg}` : "";
+      lx = screen.text(lx, barY, clipW(`${SPIN[frameIdx]} ${streamText !== null ? "responding" : "thinking"} ${elapsed()}${fl}`, W - 2), S.accent);
     } else if (Date.now() < flashUntil && flashMsg) {
       lx = screen.text(lx, barY, `${flashMsg}`, S.ok);
     } else {
