@@ -85,7 +85,7 @@ describe("code bugs are not disguised as provider faults", () => {
     const e = new TypeError("weird upstream");
     (e as { status?: number }).status = 500;
     const pe = classifyProviderError(e);
-    expect(pe.message).toBe("weird upstream");
+    expect(pe.message).toBe("HTTP 500: weird upstream");
     expect(pe.retriable).toBe(true);
   });
 });
@@ -169,5 +169,16 @@ describe("ProviderTimeoutError", () => {
     const pe = classifyProviderError(e);
     expect(pe).toBe(e);
     expect(isTimeout(pe)).toBe(true);
+  });
+});
+
+describe("status prefix", () => {
+  test("an HTTP status is rendered into the message", () => {
+    const e = Object.assign(new Error("预扣费额度失败"), { status: 403 });
+    expect(classifyProviderError(e).message).toBe("HTTP 403: 预扣费额度失败");
+  });
+  test("not doubled when the message already carries it", () => {
+    const e = Object.assign(new Error("429 too many requests"), { status: 429 });
+    expect(classifyProviderError(e).message).toBe("429 too many requests");
   });
 });

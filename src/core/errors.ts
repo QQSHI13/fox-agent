@@ -120,7 +120,13 @@ export function classifyProviderError(e: unknown): ProviderError {
   }
 
   // never render an empty marker: fall back to the error's own name
-  const finalMsg = msg || name || "unknown provider error";
+  let finalMsg = msg || name || "unknown provider error";
+  // The HTTP status is the first thing a provider error needs to say — a bare
+  // "预扣费额度失败" or "Unauthorized" hides whether it's auth, quota, or rate
+  // limiting. Prefix it unless the message already carries it.
+  if (typeof status === "number" && !new RegExp(`\\b${status}\\b`).test(finalMsg)) {
+    finalMsg = `HTTP ${status}: ${finalMsg}`;
+  }
   const retriable =
     src?.isRetryable === true || (typeof status === "number" ? status === 429 || status >= 500 : networkish);
   return new ProviderError(finalMsg, status, retriable, rawMsg.length > finalMsg.length ? clean(rawMsg) : undefined);
