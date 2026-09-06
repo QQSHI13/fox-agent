@@ -325,9 +325,13 @@ async function pickSession(cwd: string, opts: { interactive: boolean; model: str
     return s.id;
   }
 
-  // Scoped to cwd, like `-c` always was: a session carries its directory, and
-  // silently reopening one rooted somewhere else would point every relative
-  // path in the transcript at the wrong tree.
+  // Scoped to cwd by default, like `-c` always was: a session carries its
+  // directory, and silently reopening one rooted somewhere else would point
+  // every relative path in the transcript at the wrong tree. The `a` key
+  // toggles to every directory's sessions for when the user knows the one they
+  // want lives elsewhere.
+  let allDirs = false;
+  const rows = () => sessionRows(sessionList(allDirs ? {} : { cwd }), relTime);
   const items = sessionList({ cwd });
   if (!items.length) {
     const id = createSession(cwd, opts.model).id;
@@ -340,9 +344,15 @@ async function pickSession(cwd: string, opts: { interactive: boolean; model: str
   const { runPicker, sessionRows } = await import("./tui/pickerui.ts");
   const { deleteSession, forkSession } = await import("./store/db.ts");
   const action = await runPicker(
-    sessionRows(items, relTime),
-    { title: `fox-agent — sessions in ${cwd}`, allowNew: true, allowDelete: true, allowFork: true },
-    { onDelete: (id) => (deleteSession(id) ? sessionRows(sessionList({ cwd }), relTime) : null) },
+    rows(),
+    { title: `fox-agent — sessions in ${cwd}`, allowNew: true, allowDelete: true, allowFork: true, allowAll: true },
+    {
+      onDelete: (id) => (deleteSession(id) ? rows() : null),
+      onAll: () => {
+        allDirs = !allDirs;
+        return { rows: rows(), title: allDirs ? "fox-agent — sessions in all directories" : `fox-agent — sessions in ${cwd}` };
+      },
+    },
   );
 
   switch (action.kind) {

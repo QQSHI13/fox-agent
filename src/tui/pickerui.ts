@@ -28,6 +28,8 @@ const C = liveTheme<"fg" | "dim" | "sel" | "selBg" | "accent" | "warn" | "barBg"
 export interface PickerHandlers {
   /** delete the row and return the new row set, or null to leave it unchanged */
   onDelete?(id: string): PickerRow[] | null;
+  /** scope toggle: return the new rows (and optionally a new title), or null */
+  onAll?(): { rows: PickerRow[]; title?: string } | null;
 }
 
 /**
@@ -37,7 +39,7 @@ export interface PickerHandlers {
  */
 export async function runPicker(
   rows: PickerRow[],
-  opts: { title: string; allowNew?: boolean; allowDelete?: boolean; allowFork?: boolean; headers?: string[] },
+  opts: { title: string; allowNew?: boolean; allowDelete?: boolean; allowFork?: boolean; allowAll?: boolean; headers?: string[] },
   handlers: PickerHandlers = {},
 ): Promise<PickerAction> {
   const term: Term = openTerm();
@@ -121,6 +123,14 @@ export async function runPicker(
     if (action.kind === "delete") {
       const next = handlers.onDelete?.(action.id);
       if (next) picker.setRows(next);
+      return;
+    }
+    if (action.kind === "all") {
+      const next = handlers.onAll?.();
+      if (next) {
+        picker.setRows(next.rows);
+        if (next.title) opts.title = next.title;
+      }
       return;
     }
     done?.(action);

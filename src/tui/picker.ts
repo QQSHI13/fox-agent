@@ -41,6 +41,7 @@ export type PickerAction =
   | { kind: "fork"; id: string }
   | { kind: "delete"; id: string }
   | { kind: "new" }
+  | { kind: "all" }
   | { kind: "cancel" };
 
 export interface PickerKey {
@@ -72,7 +73,7 @@ export class Picker {
 
   constructor(
     rows: PickerRow[],
-    readonly opts: { title: string; allowNew?: boolean; allowDelete?: boolean; allowFork?: boolean } = { title: "" },
+    readonly opts: { title: string; allowNew?: boolean; allowDelete?: boolean; allowFork?: boolean; allowAll?: boolean } = { title: "" },
   ) {
     this.rows = rows;
   }
@@ -205,6 +206,9 @@ export class Picker {
       return row ? { kind: "fork", id: row.id } : null;
     }
     if (this.opts.allowNew && k.ch === "n") return { kind: "new" };
+    // scope toggle — the caller owns what "all" means (every directory's
+    // sessions vs this one's) and answers with a fresh row set
+    if (this.opts.allowAll && k.ch === "a") return { kind: "all" };
 
     this.query += k.ch;
     return null;
@@ -234,6 +238,7 @@ export class Picker {
     if (this.opts.allowFork) keys.push("f fork");
     if (this.opts.allowDelete) keys.push("x delete");
     if (this.opts.allowNew) keys.push("n new");
+    if (this.opts.allowAll) keys.push("a all dirs");
     keys.push("type to filter", "esc cancel");
     return keys.join(" · ");
   }

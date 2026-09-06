@@ -268,6 +268,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
    */
   let overlay: Picker | null = null;
   let overlayMode: "sessions" | "queue" = "sessions";
+  let sessAllDirs = false; // session overlay scope: this directory vs everywhere
 
   /**
    * The active question wizard, or null.
@@ -736,11 +737,13 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   function openPicker(req: PickerRequest) {
     if (req.kind !== "sessions") return;
     overlayMode = "sessions";
+    sessAllDirs = false;
     overlay = new Picker(currentSessionRows(), {
       title: "sessions — most recently used first",
       allowNew: true,
       allowDelete: true,
       allowFork: true,
+      allowAll: true,
     });
     markDirty();
   }
@@ -764,7 +767,8 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   }
 
   function currentSessionRows(): PickerRow[] {
-    return sessionRows(sessionList({ currentId: state.sessionId, limit: state.config?.sessionListLimit }), relTime);
+    const scope = sessAllDirs ? {} : { cwd: process.cwd() };
+    return sessionRows(sessionList({ currentId: state.sessionId, limit: state.config?.sessionListLimit, ...scope }), relTime);
   }
 
   /**
@@ -838,6 +842,11 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         overlay.setRows(currentSessionRows());
         break;
       }
+      case "all":
+        sessAllDirs = !sessAllDirs;
+        overlay.opts.title = sessAllDirs ? "sessions — all directories" : "sessions — most recently used first";
+        overlay.setRows(currentSessionRows());
+        break;
     }
     return true;
   }
