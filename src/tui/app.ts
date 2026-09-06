@@ -53,6 +53,9 @@ interface Item {
   expanded?: boolean;
   /** transient (/help): removed on the next keypress or click */
   ephemeral?: boolean;
+  /** a real tool result body — gets the ↳ prefix; plain info lines in the
+   *  toolbody style (welcome, hints) don't */
+  toolResult?: boolean;
 }
 
 /**
@@ -297,8 +300,8 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   }
 
   // ---- item mutations ----
-  function push(kind: ItemKind, text: string, opts?: { ref?: number; expanded?: boolean; ephemeral?: boolean }) {
-    const it: Item = { k: nk(), kind, text, ref: opts?.ref, expanded: opts?.expanded, ephemeral: opts?.ephemeral };
+  function push(kind: ItemKind, text: string, opts?: { ref?: number; expanded?: boolean; ephemeral?: boolean; toolResult?: boolean }) {
+    const it: Item = { k: nk(), kind, text, ref: opts?.ref, expanded: opts?.expanded, ephemeral: opts?.ephemeral, toolResult: opts?.toolResult };
     items.push(it);
     touch(it.k);
     markDirty();
@@ -339,13 +342,14 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       const m = n.msg;
       if (m.role === "user") out.push({ k: nk(), kind: "user", text: `[m${m.seq}] ❯ ${n.content}` });
       else if (m.role === "tool") {
-        out.push({ k: nk(), kind: "toolhead", text: `[m${m.seq}] ⚙ ${callLabel.get(m.tool_call_id ?? "") ?? "tool"}` });
+        out.push({ k: nk(), kind: "toolhead", text: `[m${m.seq}] » ${callLabel.get(m.tool_call_id ?? "") ?? "tool"}` });
         // raw text — collapsed/expanded rendering lives in itemRows
         out.push({
           k: nk(),
           kind: "toolbody",
           text: n.content.slice(0, KEPT_TOOL_CHARS * 4),
           ref: m.seq,
+          toolResult: true,
           // collapsed by default, but an explicit expand survives refresh()
           expanded: expandedRefs.has(m.seq),
         });
@@ -383,7 +387,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       const merged = (out + (err ? (out ? "\n[stderr]\n" : "") + err : "")).trimEnd() || "(no output)";
       push("info", `${merged}\nexit ${code}`);
     } catch (e) {
-      push("error", `✗ shell error: ${(e as Error).message}`);
+      push("error", `shell error: ${(e as Error).message}`);
     } finally {
       // must be in a finally: a throw before this left busy=true forever, so
       // the spinner span and every later submit queued instead of running
@@ -420,7 +424,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         try {
           push("info", await task());
         } catch (e) {
-          push("error", `✗ ${(e as Error).message ?? e}`);
+          push("error", `error: ${(e as Error).message ?? e}`);
         }
       })();
     }
@@ -669,7 +673,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       // plugin themes register on first buildRegistry, so an unknown name here
       // may just be a plugin theme that has not loaded yet — fall back silently
       if (wantTheme !== themeName()) setTheme(wantTheme);
-      for (const w of r.warnings) push("info", `⚠ ${w}`);
+      for (const w of r.warnings) push("info", `! ${w}`);
     } catch (e) {
       // a broken config was always a one-line exit; keep it that way
       term.end();
@@ -805,7 +809,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   function reportError(summary: string, detail?: unknown) {
     debugLog(summary, detail);
     const short = summary.replace(/\s+/g, " ").slice(0, 160);
-    push("error", `✗ ${short} · log: ${debugLogPath()}`);
+    push("error", `error: ${short} · log: ${debugLogPath()}`);
   }
 
   async function runAgent(raw: string) {
@@ -825,6 +829,8 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     // id → one-line label ("exec echo hi"), so in-flight and settled heads both
     // say what actually ran, not just the tool's name
     const callLabels = new Map<string, string>();
+    // session label → its one live progress line (child_tool dedupe)
+    const childItems = new Map<string, { item: Item; count: number; last: string }>();
     try {
       for await (const ev of runTurn(state.sessionId, state.provider, raw, ac.signal, state.config, uiBridge)) {        if (ev.type === "reasoning") {
           appendToLastThink(ev.delta);
@@ -850,14 +856,14 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           let live = liveTools.get(ev.id);
           if (!live) {
             live = {
-              head: push("toolhead", `⚙ ${callLabels.get(ev.id) ?? "exec"} — running`),
-              body: push("toolbody", "  ↳ …"),
+              head: push("toolhead", `» ${callLabels.get(ev.id) ?? "exec"} — running`),
+              body: push("toolbody", "", { toolResult: true, expanded: true }), // live output streams in full
               text: "",
             };
             liveTools.set(ev.id, live);
           }
           live.text = (live.text + ev.delta).slice(-KEPT_TOOL_CHARS);
-          live.body.text = `  ↳ ${live.text.replace(/\s+\n/g, "\n").replace(/\n/g, " ⏎ ")}`;
+          live.body.text = live.text;
           touch(live.body.k);
           markDirty();
         } else if (ev.type === "tool_end") {
@@ -872,23 +878,30 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
             md = "";
             streamText = null;
           }
-          // raw text, newlines intact: collapsed rendering one-lines it, the
-          // expanded view gets the real lines (see itemRows)
-          push("toolhead", `[m${ev.seq}] ⚙ ${callLabels.get(ev.id) ?? `${ev.name}${argsSummary(ev.args)}`}${ev.ok ? "" : " ✗"}`);
-          push("toolbody", ev.output.slice(0, KEPT_TOOL_CHARS * 4), { ref: ev.seq, expanded: expandedRefs.has(ev.seq) });
+          // raw text, newlines intact: collapsed rendering shows an arrow line,
+          // the expanded view gets the real lines (see itemRows)
+          push("toolhead", `[m${ev.seq}] » ${callLabels.get(ev.id) ?? `${ev.name}${argsSummary(ev.args)}`}${ev.ok ? "" : " — failed"}`);
+          push("toolbody", ev.output.slice(0, KEPT_TOOL_CHARS * 4), { ref: ev.seq, expanded: expandedRefs.has(ev.seq), toolResult: true });
           statsRev++;
         } else if (ev.type === "child_tool") {
-          // A subagent's own tool calls. Only the completions are shown: a
-          // delegated run can be dozens of calls deep, and pairing every start
-          // with its end would bury the parent's own transcript.
-          if (ev.done) {
-            if (md) {
-              push("md", md);
-              md = "";
-              streamText = null;
-            }
-            push("toolbody", `  ↳ ${ev.session} · ${ev.name}${ev.ok ? "" : " ✗"}`);
+          // A subagent's progress: ONE line per delegated session, updated in
+          // place with a running count — a 40-call subagent used to print 40
+          // identical "session · exec" lines down the transcript.
+          if (md) {
+            push("md", md);
+            md = "";
+            streamText = null;
           }
+          let child = childItems.get(ev.session);
+          if (!child) {
+            child = { item: push("toolbody", ""), count: 0, last: "" };
+            childItems.set(ev.session, child);
+          }
+          if (ev.done) child.count++;
+          child.last = ev.name;
+          child.item.text = `  ↳ ${ev.session} · ${ev.name}${ev.done ? "" : " (running)"}${ev.ok ? "" : " x"}${child.count > 1 ? ` · ${child.count} calls` : ""}`;
+          touch(child.item.k);
+          markDirty();
         } else if (ev.type === "done") {
           // turn.ts already persisted the full error to the session log; the
           // transcript gets one line, the debug log gets the whole reason
@@ -1458,22 +1471,27 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         : [{ segs: [{ t: `▸ thinking (${words} words) · click or ctrl+t`, fg: C.chrome }] }];
       rows.push({ segs: [] });
     } else if (it.kind === "toolbody") {
-      if (it.expanded) {
+      if (!it.toolResult) {
+        // info lines that borrow the muted style (welcome, hints) — no arrow, no ↳
+        rows = wrapSegs([{ t: it.text, ...itemStyle(it.kind) }], w).map((segs) => ({ segs }));
+      } else if (it.expanded) {
         // full output: real lines, no ⏎ one-lining
         rows = [];
-        for (const line of it.text.split("\n")) {
-          rows.push(...wrapSegs([{ t: `  ↳ ${line}`, ...itemStyle(it.kind) }], w).map((segs) => ({ segs })));
+        const lines = it.text.split("\n");
+        for (let li = 0; li < lines.length; li++) {
+          rows.push(...wrapSegs([{ t: `${li === 0 ? "  ↳ " : "    "}${lines[li]}`, ...itemStyle(it.kind) }], w).map((segs) => ({ segs })));
         }
       } else {
-        const oneLine = `  ↳ ${it.text.replace(/\s+\n/g, "\n").replace(/\n/g, " ⏎ ")}`;
-        if (oneLine.length <= COLLAPSED_TOOL_CHARS + 4) {
-          rows = wrapSegs([{ t: oneLine, ...itemStyle(it.kind) }], w).map((segs) => ({ segs }));
-        } else {
-          rows = wrapSegs([{ t: oneLine.slice(0, COLLAPSED_TOOL_CHARS), ...itemStyle(it.kind) }], w).map((segs) => ({ segs }));
-          // the affordance gets its own row: appended mid-text it wrapped
-          // arbitrarily and "⋯ more" could split across a line end
-          rows.push({ segs: [{ t: "  ⋯ more · click or ctrl+t", fg: C.accent }] });
-        }
+        // collapsed: one arrow line, like thinking — no partial preview
+        const chars = it.text.length;
+        const lines = it.text.split("\n").length;
+        rows = [
+          {
+            segs: [
+              { t: `  ▸ output (${lines > 1 ? `${lines} lines` : `${chars} chars`}) · click or ctrl+t`, fg: C.chrome },
+            ],
+          },
+        ];
       }
     } else {
       rows = wrapSegs([{ t: it.text, ...itemStyle(it.kind) }], w).map((segs) => ({ segs }));
@@ -1955,9 +1973,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         : "";
       lx = screen.text(lx, barY, clipW(`${SPIN[frameIdx]} ${streamText !== null ? "responding" : "thinking"} ${elapsed()}${qd}`, W - 2), S.accent);
     } else if (Date.now() < flashUntil && flashMsg) {
-      lx = screen.text(lx, barY, `✓ ${flashMsg}`, S.ok);
+      lx = screen.text(lx, barY, `${flashMsg}`, S.ok);
     } else {
-      lx = screen.text(lx, barY, `✓ ready`, S.ok);
+      lx = screen.text(lx, barY, `ready`, S.ok);
     }
     const stats = cachedStats();
     const statsW = Math.min(segWidth(stats), W - lx - 2);
@@ -2119,7 +2137,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           // the log gets it, the transcript gets one line, and the UI exits
           debugLog("tui frame error", e);
           try {
-            push("error", `✗ internal tui error — log: ${debugLogPath()}`);
+            push("error", `internal tui error — log: ${debugLogPath()}`);
           } catch {}
           gracefulExit(1);
         }

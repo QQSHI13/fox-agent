@@ -376,13 +376,13 @@ function emitHuman(ev: import("./core/events.ts").AgentEvent) {
     case "reasoning":
       break;
     case "tool_end":
-      process.stdout.write(`\n  [m${ev.seq}] ⚙ ${ev.name}${ev.ok ? "" : " ✗"} → ${ev.output.replace(/\n/g, " ").slice(0, 160)}\n`);
+      process.stdout.write(`\n  [m${ev.seq}] » ${ev.name}${ev.ok ? "" : " — failed"} → ${ev.output.replace(/\n/g, " ").slice(0, 160)}\n`);
       break;
     case "retry":
       console.error(`\nfox-agent: retry ${ev.attempt}: ${ev.error}`);
       break;
     case "child_tool":
-      if (ev.done) console.error(`  ↳ ${ev.session} · ${ev.name}${ev.ok ? "" : " ✗"}`);
+      if (ev.done) console.error(`  ↳ ${ev.session} · ${ev.name}${ev.ok ? "" : " x"}`);
       break;
     case "compacted":
       console.error(`\nfox-agent: auto-compacted ${ev.removed.length} messages (${ev.tokens_before} → ${ev.tokens_after} est tok)`);
