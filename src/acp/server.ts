@@ -31,6 +31,7 @@ import {
   type MessageRow,
 } from "../store/db.ts";
 import { projectView } from "../context/view.ts";
+import { acquireLock, releaseLock } from "../store/lock.ts";
 import type { Config } from "../core/config.ts";
 import type { ProviderConfig, ChatFn } from "../providers/types.ts";
 import { resolveChat } from "../providers/index.ts";
@@ -138,6 +139,7 @@ export function buildAgent(opts: AcpServerOptions): acp.AgentApp {
     }))
     .onRequest(acp.methods.agent.session.new, async ({ params }) => {
       const s = createSession(params.cwd, provider.model);
+      acquireLock(s.id, "acp");
       return { sessionId: s.id };
     })
     .onRequest(acp.methods.agent.session.list, async () => ({
@@ -150,6 +152,7 @@ export function buildAgent(opts: AcpServerOptions): acp.AgentApp {
     }))
     .onRequest(acp.methods.agent.session.load, async ({ params, client }) => {
       if (!getSession(params.sessionId)) throw RequestError.resourceNotFound(params.sessionId);
+      acquireLock(params.sessionId, "acp");
       await replay(params.sessionId, (update) =>
         client.notify(acp.methods.client.session.update, { sessionId: params.sessionId, update }),
       );
@@ -157,6 +160,7 @@ export function buildAgent(opts: AcpServerOptions): acp.AgentApp {
     })
     .onRequest(acp.methods.agent.session.resume, async ({ params }) => {
       if (!getSession(params.sessionId)) throw RequestError.resourceNotFound(params.sessionId);
+      acquireLock(params.sessionId, "acp");
       return {};
     })
     .onRequest(acp.methods.agent.session.fork, async ({ params }) => {
@@ -172,6 +176,7 @@ export function buildAgent(opts: AcpServerOptions): acp.AgentApp {
       running.get(params.sessionId)?.abort();
       running.delete(params.sessionId);
       await shutdownTools(params.sessionId);
+      releaseLock(params.sessionId);
       return {};
     })
     .onNotification(acp.methods.agent.session.cancel, async ({ params }) => {

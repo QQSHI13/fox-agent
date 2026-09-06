@@ -44,7 +44,19 @@ export interface HarnessState {
    * empty session behind. `sessionId` is "" until then.
    */
   pendingSession?: boolean;
+  /**
+   * This process opened a session another live process (TUI, ACP, A2A) already
+   * holds — see src/store/lock.ts. The viewer may draft and run read-only
+   * commands, but nothing may be sent and nothing may mutate the session.
+   */
+  readOnly?: boolean;
 }
+
+/**
+ * What a read-only viewer may run. Everything else either sends to the agent
+ * or writes to the session/config, both owned by the process holding the lock.
+ */
+export const READONLY_COMMANDS = new Set(["/help", "/?", "/todo", "/todos", "/sessions", "/usage", "/exit", "/quit"]);
 
 /** A front end that set `interactive` is asked to open one of these. */
 export type PickerRequest = { kind: "sessions"; cwd?: string };
@@ -661,6 +673,11 @@ export function runSlashCommand(input: string, state: HarnessState): CommandResu
   const [word, ...rest] = input.trim().split(/\s+/);
   const spec = findCommand(word.toLowerCase());
   const arg = rest.join(" ").trim();
+
+  // A read-only viewer keeps the harmless commands and nothing else.
+  if (state.readOnly && spec && !READONLY_COMMANDS.has(spec.name)) {
+    return { handled: true, output: `${spec.name} is disabled — this session is open elsewhere (read-only view)` };
+  }
 
   // A pending TUI session has no row yet; commands that read or mutate the
   // current session's data have nothing to work on until the first message.

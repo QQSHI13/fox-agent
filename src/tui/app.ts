@@ -24,6 +24,7 @@ import { runTurn, VERSION } from "../loop/agent.ts";
 import { projectView } from "../context/view.ts";
 import { lookupModel } from "../providers/models.ts";
 import { createSession, getSession, lastPromptTokens as storedPromptTokens, pinSession, unpinSession } from "../store/db.ts";
+import { acquireLock, releaseLock } from "../store/lock.ts";
 import {
   runSlashCommand,
   COMMANDS,
@@ -715,6 +716,24 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
    * `refresh` keeps the invariant simple: exactly one session is pinned, and it
    * is always the one `state.sessionId` names.
    */
+  /**
+   * Take the session lock, or degrade to a read-only viewer when another live
+   * process (tui/acp/a2a) already holds it — see src/store/lock.ts. Called after
+   * `refresh()`, so the note lands on top of the replayed transcript.
+   */
+  function attachLock(id: string) {
+    const holder = acquireLock(id, "tui");
+    state.readOnly = !!holder;
+    if (holder) {
+      statsRev++;
+      push(
+        "info",
+        `session ${id} is open in ${holder.kind} (pid ${holder.pid}) — read-only view: ` +
+          `drafting works, /todo /sessions /usage /help work, but nothing sends or writes`,
+      );
+    }
+  }
+
   function switchSession(id: string) {
     if (id === state.sessionId) return;
     if (state.sessionId) {
@@ -725,12 +744,15 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       void import("../tools/exec.ts").then((m) => m.killExecJobs(state.sessionId)).catch(() => {});
       void import("../tools/task.ts").then((m) => m.killTasks(state.sessionId)).catch(() => {});
       unpinSession(state.sessionId);
+      releaseLock(state.sessionId);
     }
     state.pendingSession = false;
+    state.readOnly = false;
     state.sessionId = id;
     pinSession(id);
     expandedRefs.clear(); // refs are per-session seqs; carrying them over expands unrelated nodes
     refresh();
+    attachLock(id);
   }
 
   /** Build and show the session overlay. */
@@ -740,9 +762,11 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     sessAllDirs = false;
     overlay = new Picker(currentSessionRows(), {
       title: "sessions — most recently used first",
-      allowNew: true,
-      allowDelete: true,
-      allowFork: true,
+      // a read-only viewer may leave for another session, but may not create,
+      // fork or delete — those write
+      allowNew: !state.readOnly,
+      allowDelete: !state.readOnly,
+      allowFork: !state.readOnly,
       allowAll: true,
     });
     markDirty();
@@ -1006,14 +1030,20 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
 
   function submit() {
     const raw = display();
+    // raw length, not trim: pure whitespace is sendable on purpose
+    if (!raw) return;
     const lit = firstCharLit();
+    const t0 = raw.trim();
+    // Read-only viewer: slash commands flow through (runSlashCommand keeps the
+    // allowlist), everything else stays in the editor as a draft.
+    if (state.readOnly && (lit || !t0.startsWith("/"))) {
+      return flash("read-only — this session is open elsewhere; drafting is fine, sending is not");
+    }
     buf = [];
     cur = 0; // a stale index past the new (empty) buffer crashes graphemeBack on the next backspace
     inputRev++; // the layout cache is keyed on this — without it a multi-line message leaves a multi-line input box
     markDirty();
-    // raw length, not trim: pure whitespace is sendable on purpose
-    if (!raw) return;
-    const t = raw.trim();
+    const t = t0;
 
     // A partial command name resolves to the highlighted hint. Only when there
     // is no argument yet: `/de foo` must not be silently rewritten, since the
@@ -1060,6 +1090,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     } catch {}
     try {
       if (state.sessionId) unpinSession(state.sessionId);
+    } catch {}
+    try {
+      if (state.sessionId) releaseLock(state.sessionId);
     } catch {}
     try {
       term.end();
@@ -1802,7 +1835,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         : "ctx —";
       const home = process.env.HOME ?? "";
       const cwdShort = home && state.cwd.startsWith(home) ? "~" + state.cwd.slice(home.length) : state.cwd;
-      return `${cwdShort} · ${state.provider.model} · ${ctx}`;
+      return `${cwdShort} · ${state.provider.model} · ${ctx}${state.readOnly ? " · read-only" : ""}`;
     } catch {
       return state.cwd;
     }
@@ -2183,6 +2216,8 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       // and only for a genuinely fresh launch — a resumed session has its
       // transcript on screen; a banner on top of it is noise.
       if (state.pendingSession) welcomeBlock();
+      // Second opener of the same session becomes the read-only viewer.
+      if (state.sessionId && !state.pendingSession) attachLock(state.sessionId);
 
       const frameTimer = setInterval(() => {
         tickSpinner();
