@@ -38,7 +38,7 @@ const DEPTH_ENV = "FOX_AGENT_DELEGATION_DEPTH";
 export const taskDef: ToolDef = {
   name: "task",
   description:
-    "Delegate a self-contained subtask to a subagent: a separate agent with its own context window and session — a spawned child process spoken to over ACP, or a remote agent at a configured url spoken to over A2A. It has the same full tool access you do and cannot see this conversation, so give it complete standalone instructions. Returns its final report.",
+    "Delegate a self-contained subtask to a subagent: a separate agent with its own context window and session — a spawned child process spoken to over ACP, or a remote agent at a configured url spoken to over A2A. It has the same full tool access you do and cannot see this conversation, so give it complete standalone instructions. Returns its final report. With background:true the task starts detached and you get a job id back immediately — poll with task({job}) for status/result.",
   parameters: {
     type: "object",
     properties: {
@@ -48,8 +48,10 @@ export const taskDef: ToolDef = {
         type: "string",
         description: 'Which agent to delegate to: "default" (another fox-agent) or a name configured in fox-agent.toml [agents.*] (an ACP command or an A2A url)',
       },
+      background: { type: "boolean", description: "Start detached; returns a job id immediately. Poll with task({job})." },
+      job: { type: "string", description: "Poll a background task: status while running, final report when done" },
     },
-    required: ["description", "prompt"],
+    required: [],
   },
 };
 
@@ -76,12 +78,85 @@ function resolveAgent(name: string | undefined, agents: Record<string, ExternalA
   return `error: unknown agent "${name}" — configure it in fox-agent.toml under [agents.${name}], or use one of: ${known}`;
 }
 
+// ---- background tasks ------------------------------------------------------
+
+interface TaskJob {
+  id: string;
+  label: string;
+  startedAt: number;
+  done: boolean;
+  ok: boolean;
+  result: string;
+  ac: AbortController;
+}
+
+const taskJobs = new Map<string, Map<string, TaskJob>>(); // sessionId -> id -> job
+let taskSeq = 0;
+
+function sessionTasks(sessionId: string): Map<string, TaskJob> {
+  let m = taskJobs.get(sessionId);
+  if (!m) taskJobs.set(sessionId, (m = new Map()));
+  return m;
+}
+
+function pollTask(args: { job: string }, ctx: ToolContext): ToolResult {
+  const job = sessionTasks(ctx.sessionId).get(args.job);
+  if (!job) return fail(`error: no task ${args.job} in this session`);
+  const secs = Math.floor((Date.now() - job.startedAt) / 1000);
+  if (!job.done) return ok(`task ${job.id} (${job.label}) still running (${secs}s) — poll again with task({job:"${job.id}"})`);
+  sessionTasks(ctx.sessionId).delete(args.job); // a settled task reaps on first read
+  const head = `task ${job.id} (${job.label}) ${job.ok ? "finished" : "failed"} after ${secs}s`;
+  return job.ok ? ok(`${head}\n${job.result}`) : fail(`${head}\n${job.result}`);
+}
+
+/** Session end: abort every detached subagent it started. */
+export function killTasks(sessionId: string): void {
+  const m = taskJobs.get(sessionId);
+  if (!m) return;
+  for (const j of m.values()) if (!j.done) j.ac.abort();
+  taskJobs.delete(sessionId);
+}
+
 export async function taskRun(
+  args: { description?: string; prompt?: string; agent?: string; background?: boolean; job?: string },
+  ctx: ToolContext,
+): Promise<ToolResult> {
+  if (args.job) return pollTask({ job: args.job }, ctx);
+  if (!args.prompt?.trim()) return fail("error: task needs prompt");
+  if (!args.description?.trim()) return fail("error: task needs description");
+
+  if (args.background) {
+    const id = `t${++taskSeq}`;
+    const ac = new AbortController();
+    const job: TaskJob = { id, label: args.description.trim(), startedAt: Date.now(), done: false, ok: false, result: "", ac };
+    sessionTasks(ctx.sessionId).set(id, job);
+    // an aborted-by-session-end run rejects or cancels; both land in result
+    const sub = ac.signal.aborted ? ac.signal : (() => {
+      // link the caller's abort to the job's own controller
+      ctx.signal?.addEventListener("abort", () => ac.abort(), { once: true });
+      return ac.signal;
+    })();
+    void executeTask(args, { ...ctx, signal: sub })
+      .then((r) => {
+        job.done = true;
+        job.ok = r.ok;
+        job.result = r.output;
+      })
+      .catch((e) => {
+        job.done = true;
+        job.ok = false;
+        job.result = `error: ${(e as Error).message ?? e}`;
+      });
+    return ok(`task ${id} started in background (${job.label}) — poll with task({job:"${id}"})`);
+  }
+
+  return executeTask(args, ctx);
+}
+
+async function executeTask(
   args: { description?: string; prompt?: string; agent?: string },
   ctx: ToolContext,
 ): Promise<ToolResult> {
-  if (!args.prompt?.trim()) return fail("error: task needs prompt");
-  if (!args.description?.trim()) return fail("error: task needs description");
 
   const depth = Number(process.env[DEPTH_ENV] ?? 0) || 0;
   if (depth >= MAX_DEPTH) return fail(`error: delegation depth limit (${MAX_DEPTH}) reached — do this subtask yourself`);
@@ -90,7 +165,7 @@ export async function taskRun(
   if (typeof spec === "string") return fail(spec);
 
   const children = kvGet<string[]>(ctx.sessionId, "children") ?? [];
-  const label = args.description.trim();
+  const label = args.description!.trim();
   try {
     // A2A: the entry points at a running agent over HTTP. Streams when the
     // server speaks message/stream (SSE), polls otherwise.
@@ -98,7 +173,7 @@ export async function taskRun(
       const { runA2aAgent } = await import("../a2a/client.ts");
       const TERMINAL = new Set(["completed", "failed", "canceled", "rejected", "input-required"]);
       const text = (
-        await runA2aAgent(spec.url, args.prompt, {
+        await runA2aAgent(spec.url, args.prompt!, {
           signal: ctx.signal,
           headers: spec.headers,
           // forward remote state transitions the way an ACP child's tool calls
@@ -126,7 +201,7 @@ export async function taskRun(
       command: spec.command,
       args: spec.args,
       cwd: ctx.cwd,
-      prompt: args.prompt,
+      prompt: args.prompt!,
       signal: ctx.signal,
       env: { ...spec.env, [DEPTH_ENV]: String(depth + 1) },
       // Forward the child's tool activity into the parent's stream so its work is

@@ -125,6 +125,8 @@ export async function shutdownTools(sessionId: string): Promise<void> {
   await cleanupPty(ptySessionName(sessionId)); // belt and braces when no registry was ever built
   const { killExecJobs } = await import("./exec.ts");
   killExecJobs(sessionId);
+  const { killTasks } = await import("./task.ts");
+  killTasks(sessionId);
   await closeMcp();
   // an idle tsserver holds a project's worth of memory; leaving one per fox-agent run
   // behind would accumulate across a day of sessions in the same shell

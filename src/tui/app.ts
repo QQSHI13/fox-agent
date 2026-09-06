@@ -721,6 +721,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       // and exec jobs die with the session that started them
       void import("../plugins/load.ts").then((m) => m.fireSessionEnd(state.sessionId, "switch")).catch(() => {});
       void import("../tools/exec.ts").then((m) => m.killExecJobs(state.sessionId)).catch(() => {});
+      void import("../tools/task.ts").then((m) => m.killTasks(state.sessionId)).catch(() => {});
       unpinSession(state.sessionId);
     }
     state.pendingSession = false;

@@ -238,6 +238,18 @@ describe("exec", () => {
   });
 });
 
+describe("task background mode", () => {
+  test("polling an unknown task fails cleanly; background still validates input", async () => {
+    const { taskRun } = await import("../src/tools/task.ts");
+    const nope = await taskRun({ job: "t99" }, ctx);
+    expect(nope.ok).toBe(false);
+    expect(nope.output).toContain("no task t99");
+    const bad = await taskRun({ background: true, description: "x" }, ctx);
+    expect(bad.ok).toBe(false);
+    expect(bad.output).toContain("needs prompt");
+  });
+});
+
 describe("ctx_edit", () => {
   test("nodes from the current turn are editable too", async () => {
     // regression: the old guard refused any seq >= the turn's first node, so a
