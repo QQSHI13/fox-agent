@@ -22,6 +22,7 @@ import { saveGlobalConfig, resolveValue, type Config } from "./core/config.ts";
 import { setTheme, themeName, themeNames } from "./tui/themes.ts";
 import { availableProviders } from "./providers/index.ts";
 import { ensureFreshCatalog, presetById, providerPresets } from "./providers/modelsdev.ts";
+import { endpointModels, ensureEndpointModels } from "./providers/endpointmodels.ts";
 import type { UiStep } from "./core/ui.ts";
 
 export interface HarnessState {
@@ -467,25 +468,48 @@ function promptSelectionToTarget(a: Record<string, string>, state: HarnessState)
 }
 
 /**
- * The interactive `/model`: a searchable select over every configured profile's
- * models and the whole models.dev catalog — each labeled with its provider so a
- * cross-provider switch is one pick, not a /login. Custom entries cover models
- * the endpoint does not advertise.
+ * The interactive `/model`: a searchable select over providers you can actually
+ * call — a provider with no credentials anywhere (profile key, matching env
+ * var, live state, or a localhost endpoint) is hidden, not offered: picking it
+ * could only end in a 401. Model lists come from the endpoint's own /models
+ * when reachable (cached, refreshed in the background), falling back to the
+ * configured profile models and then the models.dev catalog. Custom entries
+ * cover models the endpoint does not advertise.
  */
 function modelPrompt(state: HarnessState): PromptRequest {
   ensureFreshCatalog();
   const cur = state.provider.model;
+  const isLocal = (u?: string) => !!u && /^https?:\/\/(localhost|127\.|\[::1\])/.test(u);
+
+  // The key a listing request would use, or null when this provider is logged
+  // out everywhere. "" means "needs no key" (localhost).
+  const creds = (baseUrl: string | undefined, keys: (string | undefined)[]): string | null => {
+    if (baseUrl && isLocal(baseUrl)) return "";
+    for (const k of keys) if (k) return k;
+    if (baseUrl && baseUrl === state.provider.baseUrl && state.provider.apiKey) return state.provider.apiKey;
+    return null;
+  };
+
   const options: { value: string; label: string }[] = [{ value: `m:${cur}`, label: `${cur} (current)` }];
   for (const [name, p] of Object.entries(state.config?.providers ?? {})) {
-    for (const m of p.models) {
-      if (m.disabled) continue;
-      const ctx = m.contextWindow ? ` — ${Math.round(m.contextWindow / 1000)}k` : "";
+    const baseUrl = p.baseUrl ?? state.provider.baseUrl;
+    const key = creds(baseUrl, [p.apiKey]);
+    if (key === null) continue; // logged out — hidden, not offered
+    ensureEndpointModels(baseUrl, key, p.format);
+    const live = endpointModels(baseUrl);
+    const listed = live ?? p.models.filter((m) => !m.disabled).map((m) => ({ id: m.id, name: m.name, context: m.contextWindow }));
+    for (const m of listed) {
+      const ctx = m.context ? ` — ${Math.round(m.context / 1000)}k` : "";
       options.push({ value: `p:${name}:${m.id}`, label: `${name} · ${m.name ?? m.id}${m.name && m.name !== m.id ? ` (${m.id})` : ""}${ctx}` });
     }
     options.push({ value: `c:p:${name}`, label: `＋ ${name} · custom model…` });
   }
   for (const preset of providerPresets()) {
-    for (const m of preset.models) {
+    const key = creds(preset.api, preset.env.map((e) => process.env[e]));
+    if (key === null) continue; // logged out — hidden, not offered
+    if (preset.api) ensureEndpointModels(preset.api, key, preset.format);
+    const listed = (preset.api ? endpointModels(preset.api) : null) ?? preset.models;
+    for (const m of listed) {
       const ctx = m.context ? ` — ${Math.round(m.context / 1000)}k` : "";
       options.push({ value: `x:${preset.id}:${m.id}`, label: `${preset.name} · ${m.id}${ctx}` });
     }
