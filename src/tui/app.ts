@@ -42,6 +42,7 @@ import { resolveField, type UiBridge, type UiStep } from "../core/ui.ts";
 import { childEnv } from "../core/childenv.ts";
 import { killTree } from "../tools/exec.ts";
 import { debugLog, debugLogPath } from "../core/debuglog.ts";
+import { droppedPath, expandMentions } from "../core/mentions.ts";
 import { liveTheme, setTheme, themeName, type Theme } from "./themes.ts";
 
 type ItemKind = "user" | "toolhead" | "toolbody" | "info" | "error" | "md" | "think";
@@ -1034,7 +1035,8 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     const t = raw.trim();
     if (!lit && t.startsWith("!")) return void runShell(t.slice(1).trim());
     if (!lit && t.startsWith("/")) return runSlash(t);
-    await runAgent(raw);
+    // @path mentions inline the file's text so the model reads it directly
+    await runAgent(expandMentions(raw, state.cwd).text);
   }
 
   const display = () => buf.map((c) => c.c).join("");
@@ -1186,7 +1188,14 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     if (overlayKey(k)) return;
     // an open question wizard owns the input dock next (see promptKey)
     if (promptKey(k)) return;
-    if (k.type === "paste") return insertText(k.text, true);
+    if (k.type === "paste") {
+      // a drag-and-drop arrives as pasted path text — quote/file:// forms both.
+      // When every token names a real file, insert mentions, not raw text.
+      const toks = k.text.trim().split(/\s+/).filter(Boolean);
+      const paths = toks.map((t) => droppedPath(t, state.cwd));
+      if (toks.length && paths.every(Boolean)) return insertText(paths.map((p) => `@${p}`).join(" ") + " ");
+      return insertText(k.text, true);
+    }
     if (k.type === "mouse") return onMouse(k.action, k.x, k.y);
     if (k.type === "char") {
       deleteInSel(); // typing over a selection replaces it, as in any editor
@@ -2419,15 +2428,20 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       // Second opener of the same session becomes the read-only viewer.
       if (state.sessionId && !state.pendingSession) attachLock(state.sessionId);
 
+      let lastCaretKey: string | null = null;
       const frameTimer = setInterval(() => {
         tickSpinner();
         if (!dirty) return;
         dirty = false;
         try {
-          // cursor hidden for the whole repaint burst — if it stays visible it
-          // hops through every dirty row and Windows Terminal burns ghost
-          // blocks where the row-diff never repaints again
-          term.hideCursor();
+          // Cursor churn flickers: only hide/reposition it when the caret actually
+          // moved (typing, scrolling the dock). While streaming, the caret sits
+          // still and the grid diff paints underneath it without a single
+          // hide/show round-trip.
+          const caret = nextCaret ?? { x: 3, y: H - 2 };
+          const caretKey = `${caret.x},${caret.y}`;
+          const moved = caretKey !== lastCaretKey;
+          if (moved) term.hideCursor(); // see the old comment: visible cursor mid-repaint ghosts on Windows Terminal
           paint();
           screen.flush();
           if (process.env.FOX_AGENT_TRACE && screen.lastDirty()) {
@@ -2437,8 +2451,10 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           }
           term.flush();
           // the terminal's own caret is our input caret
-          if (nextCaret) term.setCursor(nextCaret.x, nextCaret.y);
-          else term.setCursor(3, H - 2);
+          if (moved) {
+            term.setCursor(caret.x, caret.y);
+            lastCaretKey = caretKey;
+          }
         } catch (e) {
           // painting over the grid with a stack trace is how raw errors leak;
           // the log gets it, the transcript gets one line, and the UI exits
