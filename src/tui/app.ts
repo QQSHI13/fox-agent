@@ -54,7 +54,7 @@ interface Item {
   expanded?: boolean;
   /** transient (/help): removed on the next keypress or click */
   ephemeral?: boolean;
-  /** a real tool result body — gets the ↳ prefix; plain info lines in the
+  /** a real tool result body — collapses to an arrow line; plain info lines in the
    *  toolbody style (welcome, hints) don't */
   toolResult?: boolean;
 }
@@ -966,20 +966,22 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         } else if (ev.type === "child_tool") {
           // A subagent's progress: ONE line per delegated session, updated in
           // place with a running count — a 40-call subagent used to print 40
-          // identical "session · exec" lines down the transcript.
+          // identical "session · exec" lines down the transcript. The key drops
+          // any "(retry N)" suffix so a retried delegation keeps its one line.
           if (md) {
             push("md", md);
             md = "";
             streamText = null;
           }
-          let child = childItems.get(ev.session);
+          const ckey = ev.session.replace(/ \(retry \d+\)$/, "");
+          let child = childItems.get(ckey);
           if (!child) {
             child = { item: push("toolbody", ""), count: 0, last: "" };
-            childItems.set(ev.session, child);
+            childItems.set(ckey, child);
           }
           if (ev.done) child.count++;
           child.last = ev.name;
-          child.item.text = `  ↳ ${ev.session} · ${ev.name}${ev.done ? "" : " (running)"}${ev.ok ? "" : " x"}${child.count > 1 ? ` · ${child.count} calls` : ""}`;
+          child.item.text = `  ${ev.session} · ${ev.name}${ev.done ? "" : " (running)"}${ev.ok ? "" : " — failed"}${child.count > 1 ? ` · ${child.count} calls` : ""}`;
           touch(child.item.k);
           markDirty();
         } else if (ev.type === "done") {
@@ -1568,11 +1570,11 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         // info lines that borrow the muted style (welcome, hints) — no arrow, no ↳
         rows = wrapSegs([{ t: it.text, ...itemStyle(it.kind) }], w).map((segs) => ({ segs }));
       } else if (it.expanded) {
-        // full output: real lines, no ⏎ one-lining
+        // full output: real lines, no ⏎ one-lining, no ↳ prefix
         rows = [];
         const lines = it.text.split("\n");
         for (let li = 0; li < lines.length; li++) {
-          rows.push(...wrapSegs([{ t: `${li === 0 ? "  ↳ " : "    "}${lines[li]}`, ...itemStyle(it.kind) }], w).map((segs) => ({ segs })));
+          rows.push(...wrapSegs([{ t: `  ${lines[li]}`, ...itemStyle(it.kind) }], w).map((segs) => ({ segs })));
         }
       } else {
         // collapsed: one arrow line, like thinking — no partial preview

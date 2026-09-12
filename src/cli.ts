@@ -390,7 +390,7 @@ function emitHuman(ev: import("./core/events.ts").AgentEvent) {
       console.error(`\nfox-agent: retry ${ev.attempt}: ${ev.error}`);
       break;
     case "child_tool":
-      if (ev.done) console.error(`  ↳ ${ev.session} · ${ev.name}${ev.ok ? "" : " x"}`);
+      if (ev.done) console.error(`  ${ev.session} · ${ev.name}${ev.ok ? "" : " — failed"}`);
       break;
     case "compacted":
       console.error(`\nfox-agent: auto-compacted ${ev.removed.length} messages (${ev.tokens_before} → ${ev.tokens_after} est tok)`);
