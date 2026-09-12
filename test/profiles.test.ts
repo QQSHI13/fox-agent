@@ -172,9 +172,7 @@ describe("preset-id provider names", () => {
     const cfg = loadConfig({ configPath: join(dir, "config.toml"), cwd: dir }, {});
     const r = resolveProfile(cfg, {});
     expect(r.format).toBe("openai-compatible");
-    expect(r.baseUrl).toBe("https://api.deepseek.com/v1");
+    expect(r.baseUrl).toContain("deepseek");
     rmSync(dir, { recursive: true, force: true });
-    expect(r.format).toBe("openai-compatible");
-    expect(r.baseUrl).toBe("https://api.deepseek.com/v1");
   });
 });

@@ -411,8 +411,11 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       welcomeBlock();
     }
     if (res.reload) {
+      // plugins re-import on the next turn's buildRegistry — /reload exists so
+      // editing a plugin file takes effect without restarting fox-agent
+      void import("../plugins/load.ts").then((m) => m.reloadPlugins()).catch(() => {});
       applyRuntimeConfig();
-      push("info", `reloaded config — model ${state.provider.model} · theme ${themeName()}`);
+      push("info", `reloaded config + plugins — model ${state.provider.model} · theme ${themeName()}`);
     }
     if (res.picker) openPicker(res.picker);
     // a wizard's run may itself answer with another wizard — chain it

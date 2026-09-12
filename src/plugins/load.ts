@@ -59,20 +59,30 @@ function validate(mod: unknown, path: string): { plugin: FoxPlugin } | { error: 
  * Import each path and collect the valid plugins. Cached on the path list, so the
  * repeated `buildRegistry` calls a long session makes do not re-import — and, more
  * importantly, so `onSessionStart` state a plugin holds in module scope survives
- * the way an author would expect.
+ * the way an author would expect. `reloadPlugins()` breaks both caches on purpose:
+ * /reload exists so editing a plugin file takes effect without a restart.
  *
  * `disabled` entries never reach `import()` at all: matched against the path as
  * written, its basename, and the basename without extension, so
  * `disabledPlugins = ["experimental"]` kills `./experimental.ts` without its
  * code ever running.
  */
+let forceFresh = false;
+/** /reload: the next loadPlugins re-imports every module, ignoring both caches. */
+export function reloadPlugins(): void {
+  cache = null;
+  forceFresh = true;
+}
+
 export async function loadPlugins(
   paths: string[],
   cwd = process.cwd(),
   disabled: string[] = [],
 ): Promise<{ plugins: FoxPlugin[]; warnings: string[] }> {
+  const fresh = forceFresh;
+  forceFresh = false;
   const key = JSON.stringify([paths, cwd, disabled]);
-  if (cache?.key === key) return { plugins: cache.plugins, warnings: cache.warnings };
+  if (!fresh && cache?.key === key) return { plugins: cache.plugins, warnings: cache.warnings };
 
   const plugins: FoxPlugin[] = [];
   const warnings: string[] = [];
@@ -89,8 +99,10 @@ export async function loadPlugins(
     let mod: unknown;
     try {
       // a file URL, not a bare path: an absolute POSIX path happens to work as a
-      // specifier but a Windows one does not, and the URL form is correct on both
-      mod = await import(pathToFileURL(path).href);
+      // specifier but a Windows one does not, and the URL form is correct on both.
+      // A /reload import gets a cache-busting query so edited plugin code lands.
+      const href = pathToFileURL(path).href;
+      mod = await import(fresh ? `${href}?foxreload=${Date.now()}` : href);
     } catch (e) {
       const w = `plugin '${raw}' failed to load: ${(e as Error).message.slice(0, 200)}`;
       warnings.push(w);
