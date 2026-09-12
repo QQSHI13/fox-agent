@@ -290,10 +290,11 @@ describe("interactive wizards", () => {
     const state = { sessionId: s.id, cwd: "/w", provider: { baseUrl: "http://x", apiKey: "k", model: "m" }, interactive: true, configPath: join(dir, "config.toml") };
 
     const model = t.runSlashCommand("/model", state)!;
-    // a searchable select now: current model first, then profiles and catalog
+    // provider-first wizard: step 1 picks the provider, step 2 the model on it
     expect(model.prompt!.steps[0].kind).toBe("select");
-    expect(model.prompt!.steps[0].initial).toBe("m:m");
-    const applied = model.prompt!.run({ model: "m:m2" }, state);
+    expect(model.prompt!.steps[0].initial).toBe("m:");
+    expect(model.prompt!.steps[1].kind).toBe("select");
+    const applied = model.prompt!.run({ provider: "m:", model: "m:m2" }, state);
     expect(applied.output).toContain("m2");
     expect(state.provider.model).toBe("m2");
 

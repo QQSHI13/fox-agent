@@ -468,13 +468,13 @@ function promptSelectionToTarget(a: Record<string, string>, state: HarnessState)
 }
 
 /**
- * The interactive `/model`: a searchable select over providers you can actually
- * call — a provider with no credentials anywhere (profile key, matching env
- * var, live state, or a localhost endpoint) is hidden, not offered: picking it
- * could only end in a 401. Model lists come from the endpoint's own /models
- * when reachable (cached, refreshed in the background), falling back to the
- * configured profile models and then the models.dev catalog. Custom entries
- * cover models the endpoint does not advertise.
+ * The interactive `/model`: pick a provider, then a model. Providers without
+ * credentials anywhere (profile key, matching env var, live state, or a
+ * localhost endpoint) are hidden, not offered: picking one could only end in a
+ * 401. Model lists come from the endpoint's own /models when reachable
+ * (cached, refreshed in the background), falling back to configured profile
+ * models and then the models.dev catalog. A custom entry covers models the
+ * endpoint does not advertise.
  */
 function modelPrompt(state: HarnessState): PromptRequest {
   ensureFreshCatalog();
@@ -490,36 +490,73 @@ function modelPrompt(state: HarnessState): PromptRequest {
     return null;
   };
 
-  const options: { value: string; label: string }[] = [{ value: `m:${cur}`, label: `${cur} (current)` }];
+  // Step 1 choices: the current provider, then every callable profile/preset.
+  const providers: { value: string; label: string }[] = [
+    { value: "m:", label: `${state.provider.provider ?? "openai-compatible"} — ${state.provider.baseUrl} (current)` },
+  ];
+  const profileNames: string[] = [];
   for (const [name, p] of Object.entries(state.config?.providers ?? {})) {
     const baseUrl = p.baseUrl ?? state.provider.baseUrl;
-    const key = creds(baseUrl, [p.apiKey]);
-    if (key === null) continue; // logged out — hidden, not offered
-    ensureEndpointModels(baseUrl, key, p.format);
-    const live = endpointModels(baseUrl);
-    const listed = live ?? p.models.filter((m) => !m.disabled).map((m) => ({ id: m.id, name: m.name, context: m.contextWindow }));
-    for (const m of listed) {
-      const ctx = m.context ? ` — ${Math.round(m.context / 1000)}k` : "";
-      options.push({ value: `p:${name}:${m.id}`, label: `${name} · ${m.name ?? m.id}${m.name && m.name !== m.id ? ` (${m.id})` : ""}${ctx}` });
-    }
-    options.push({ value: `c:p:${name}`, label: `＋ ${name} · custom model…` });
+    if (creds(baseUrl, [p.apiKey]) === null) continue; // logged out — hidden
+    profileNames.push(name);
+    providers.push({ value: `p:${name}`, label: `${name} — ${p.format ?? "openai-compatible"} · ${baseUrl}` });
   }
+  const presetIds: string[] = [];
   for (const preset of providerPresets()) {
-    const key = creds(preset.api, preset.env.map((e) => process.env[e]));
-    if (key === null) continue; // logged out — hidden, not offered
+    if (creds(preset.api, preset.env.map((e) => process.env[e])) === null) continue;
+    presetIds.push(preset.id);
+    providers.push({ value: `x:${preset.id}`, label: `${preset.name} — ${preset.api ?? preset.format}` });
+  }
+
+  // Step 2 choices, from the provider picked in step 1.
+  const modelOptions = (a: Record<string, string>) => {
+    const sel = a.provider ?? "m:";
+    const out: { value: string; label: string }[] = [];
+    if (sel === "m:") {
+      ensureEndpointModels(state.provider.baseUrl, state.provider.apiKey, state.provider.provider);
+      out.push({ value: `m:${cur}`, label: `${cur} (current)` });
+      for (const m of endpointModels(state.provider.baseUrl) ?? []) {
+        if (m.id === cur) continue;
+        const ctx = m.context ? ` — ${Math.round(m.context / 1000)}k` : "";
+        out.push({ value: `m:${m.id}`, label: `${m.id}${ctx}` });
+      }
+      out.push({ value: "c:", label: "＋ custom model on this provider…" });
+      return out;
+    }
+    if (sel.startsWith("p:")) {
+      const name = sel.slice(2);
+      const p = state.config?.providers[name];
+      if (!p) return out;
+      const baseUrl = p.baseUrl ?? state.provider.baseUrl;
+      const key = creds(baseUrl, [p.apiKey]) ?? "";
+      ensureEndpointModels(baseUrl, key, p.format);
+      const listed = endpointModels(baseUrl) ?? p.models.filter((m) => !m.disabled).map((m) => ({ id: m.id, name: m.name, context: m.contextWindow }));
+      for (const m of listed) {
+        const ctx = m.context ? ` — ${Math.round(m.context / 1000)}k` : "";
+        out.push({ value: `p:${name}:${m.id}`, label: `${m.name ?? m.id}${m.name && m.name !== m.id ? ` (${m.id})` : ""}${ctx}` });
+      }
+      out.push({ value: `c:p:${name}`, label: "＋ custom model…" });
+      return out;
+    }
+    const id = sel.slice(2);
+    const preset = providerPresets().find((x) => x.id === id);
+    if (!preset) return out;
+    const key = creds(preset.api, preset.env.map((e) => process.env[e])) ?? "";
     if (preset.api) ensureEndpointModels(preset.api, key, preset.format);
     const listed = (preset.api ? endpointModels(preset.api) : null) ?? preset.models;
     for (const m of listed) {
       const ctx = m.context ? ` — ${Math.round(m.context / 1000)}k` : "";
-      options.push({ value: `x:${preset.id}:${m.id}`, label: `${preset.name} · ${m.id}${ctx}` });
+      out.push({ value: `x:${id}:${m.id}`, label: `${m.id}${ctx}` });
     }
-    options.push({ value: `c:x:${preset.id}`, label: `＋ ${preset.name} · custom model…` });
-  }
-  options.push({ value: "c:", label: "＋ custom model on the current provider…" });
+    out.push({ value: `c:x:${id}`, label: "＋ custom model…" });
+    return out;
+  };
+
   return {
     title: "switch model (persists to session + global config)",
     steps: [
-      { key: "model", label: "model — type to search", kind: "select", options, initial: `m:${cur}` },
+      { key: "provider", label: "provider — type to search", kind: "select", options: providers, initial: "m:" },
+      { key: "model", label: "model — type to search", kind: "select", options: modelOptions },
       {
         key: "custom",
         label: "model id",
