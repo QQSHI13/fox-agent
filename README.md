@@ -1,6 +1,11 @@
 # fox-agent 🦊
 
-npm: `fox-agent` · command: `fox`
+[![CI](https://github.com/QQSHI13/fox-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/QQSHI13/fox-agent/actions/workflows/ci.yml)
+[![release](https://img.shields.io/github/v/release/QQSHI13/fox-agent?include_prereleases)](https://github.com/QQSHI13/fox-agent/releases)
+[![license](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+[![built with bun](https://img.shields.io/badge/built%20with-bun-black)](https://bun.sh)
+
+npm: `fox-agent` · command: `fox` · [releases](https://github.com/QQSHI13/fox-agent/releases) (linux/mac, x64/arm64, self-updating)
 
 A light coding harness with **agent-controlled context** — the agent edits its own context window natively (`ctx_edit`), no host hacks.
 
