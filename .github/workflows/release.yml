@@ -70,7 +70,7 @@ jobs:
       - run: bun install --frozen-lockfile
       - name: build ${{ matrix.target }}
         run: bun build --compile --bytecode --minify --target=${{ matrix.target }} ./src/cli.ts --outfile "out/${{ matrix.name }}"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: binaries-${{ matrix.target }}
           path: out/
