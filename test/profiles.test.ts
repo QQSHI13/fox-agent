@@ -161,3 +161,20 @@ describe("disabledPlugins", () => {
     }
   });
 });
+
+describe("preset-id provider names", () => {
+  test("a models.dev preset id saved as `provider` resolves to its format and endpoint", async () => {
+    // /model persists `provider = "opencode"` (a catalog id, no [providers.*]
+    // table). Before this, resolveProfile leaked it to resolveChat as an API
+    // format and every turn failed with "unknown provider".
+    const { dir } = withConfig('provider = "deepseek"\nmodel = "deepseek-chat"\n');
+    const { loadConfig, resolveProfile } = await import("../src/core/config.ts");
+    const cfg = loadConfig({ configPath: join(dir, "config.toml"), cwd: dir }, {});
+    const r = resolveProfile(cfg, {});
+    expect(r.format).toBe("openai-compatible");
+    expect(r.baseUrl).toBe("https://api.deepseek.com/v1");
+    rmSync(dir, { recursive: true, force: true });
+    expect(r.format).toBe("openai-compatible");
+    expect(r.baseUrl).toBe("https://api.deepseek.com/v1");
+  });
+});

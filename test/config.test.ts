@@ -10,9 +10,12 @@ beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "fox-cfg-"));
   projectDir = join(dir, "proj");
   mkdirSync(projectDir, { recursive: true });
+  // hermetic: never read the developer's real global config
+  process.env.FOX_AGENT_CONFIG = join(dir, "no-global-config.toml");
 });
 
 afterEach(() => {
+  delete process.env.FOX_AGENT_CONFIG;
   rmSync(dir, { recursive: true, force: true });
 });
 

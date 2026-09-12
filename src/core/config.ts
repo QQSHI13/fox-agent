@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { execSync } from "node:child_process";
 import { ConfigError } from "./errors.ts";
 import { setConfiguredModels } from "../providers/models.ts";
+import { presetById } from "../providers/modelsdev.ts";
 
 export interface McpServerConfig {
   command: string;
@@ -528,7 +529,9 @@ export function loadConfig(
   env: Record<string, string | undefined> = process.env,
 ): Config {
   const cwd = overrides.cwd ?? process.cwd();
-  const globalPath = overrides.configPath ?? join(homedir(), ".config", GLOBAL_CONFIG_NAME);
+  // FOX_AGENT_CONFIG overrides the global path — tests and sandboxed runs must
+  // never read the real ~/.config/fox-agent/config.toml.
+  const globalPath = overrides.configPath ?? process.env.FOX_AGENT_CONFIG ?? join(homedir(), ".config", GLOBAL_CONFIG_NAME);
   const projectPath = findUp(cwd, [PROJECT_CONFIG_NAME]);
 
   // A leftover .fox.json is refused rather than ignored: fox-agent used to read it, so
@@ -628,7 +631,22 @@ export interface ResolvedProfile {
  */
 export function resolveProfile(cfg: Config, env: Record<string, string | undefined> = process.env): ResolvedProfile {
   const p = cfg.providers[cfg.provider];
-  if (!p) return { format: cfg.provider, baseUrl: cfg.baseUrl, apiKey: cfg.apiKey, headers: {} };
+  if (!p) {
+    // /model saves a catalog preset id (opencode, deepseek, …) as `provider` —
+    // it has no [providers.*] table, so expand it here or the name would leak
+    // to resolveChat as if it were an API format ("unknown provider 'opencode'").
+    const preset = presetById(cfg.provider);
+    if (preset) {
+      const envKey = preset.env.map((n) => env[n]).find((v) => !!v);
+      return {
+        format: preset.format,
+        baseUrl: preset.api ?? cfg.baseUrl,
+        apiKey: envKey || cfg.apiKey,
+        headers: {},
+      };
+    }
+    return { format: cfg.provider, baseUrl: cfg.baseUrl, apiKey: cfg.apiKey, headers: {} };
+  }
   const headers: Record<string, string> = {};
   for (const [k, v] of Object.entries(p.headers ?? {})) {
     const r = resolveValue(v, env);

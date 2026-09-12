@@ -332,25 +332,23 @@ async function pickSession(cwd: string, opts: { interactive: boolean; model: str
   // want lives elsewhere.
   let allDirs = false;
   const rows = () => sessionRows(sessionList(allDirs ? {} : { cwd }), relTime);
-  const items = sessionList({ cwd });
-  if (!items.length) {
-    const id = createSession(cwd, opts.model).id;
-    note(`no previous session here — new session ${id} (${opts.model})`);
-    return id;
-  }
+  // No sessions in this directory: fall open on the all-directories view rather
+  // than minting an empty session the user never asked for. `n` still makes one.
+  if (!sessionList({ cwd }).length) allDirs = true;
 
   const { setTheme } = await import("./tui/themes.ts");
   if (opts.theme) setTheme(opts.theme);
   const { runPicker, sessionRows } = await import("./tui/pickerui.ts");
   const { deleteSession, forkSession } = await import("./store/db.ts");
+  const title = () => (allDirs ? "fox-agent — sessions in all directories" : `fox-agent — sessions in ${cwd}`);
   const action = await runPicker(
     rows(),
-    { title: `fox-agent — sessions in ${cwd}`, allowNew: true, allowDelete: true, allowFork: true, allowAll: true },
+    { title: title(), allowNew: true, allowDelete: true, allowFork: true, allowAll: true },
     {
       onDelete: (id) => (deleteSession(id) ? rows() : null),
       onAll: () => {
         allDirs = !allDirs;
-        return { rows: rows(), title: allDirs ? "fox-agent — sessions in all directories" : `fox-agent — sessions in ${cwd}` };
+        return { rows: rows(), title: title() };
       },
     },
   );
