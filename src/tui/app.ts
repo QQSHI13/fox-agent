@@ -1481,6 +1481,16 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   function onMouse(action: "down" | "drag" | "up", x: number, y: number) {
     const g = gestureFor(action, press, x, y);
     if (action === "down") {
+      // Scrollbar strip at the right edge: press jumps, drag scrubs.
+      const vh = viewportH();
+      if (x >= W - 2 && y < vh && rowBuf.length > vh) {
+        press = { x, y, moved: false, scrollbar: true };
+        stick = false;
+        scrollTop = Math.round((y / Math.max(1, vh - 1)) * Math.max(0, rowBuf.length - vh));
+        clampScroll();
+        markDirty();
+        return;
+      }
       // Press inside the input dock: position the caret there; a following drag
       // extends an input selection instead of a transcript one.
       const ii = inputIndexAt(x, y);
@@ -1503,6 +1513,15 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       return;
     }
     if (action === "drag") {
+      if (press?.scrollbar) {
+        const vh = viewportH();
+        stick = false;
+        scrollTop = Math.round((Math.max(0, Math.min(vh - 1, y)) / Math.max(1, vh - 1)) * Math.max(0, rowBuf.length - vh));
+        clampScroll();
+        press.moved = true;
+        markDirty();
+        return;
+      }
       if (press?.input) {
         const ii = inputIndexAt(x, y);
         if (ii !== null && ii !== cur) {
@@ -1528,7 +1547,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       return;
     }
     const wasInput = press?.input;
+    const wasScrollbar = press?.scrollbar;
     press = null;
+    if (wasScrollbar) return; // a scrub is not a click
     // An input-dock gesture: a drag leaves its selection for shift/ctrl+c; a tap
     // just moved the caret, so drop the zero-width anchor.
     if (wasInput) {

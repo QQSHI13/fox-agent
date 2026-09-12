@@ -146,6 +146,8 @@ export interface PressState {
   moved: boolean;
   /** the press landed in the input dock: drags select input text, not transcript */
   input?: boolean;
+  /** the press landed on the scrollbar strip: drags scrub the scroll position */
+  scrollbar?: boolean;
 }
 
 /**
