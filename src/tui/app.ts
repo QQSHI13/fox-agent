@@ -21,6 +21,7 @@ import { charWidth } from "./screen.ts";
 import { Picker, type PickerRow } from "./picker.ts";
 import { sessionRows } from "./pickerui.ts";
 import { runTurn, VERSION } from "../loop/agent.ts";
+import { steer } from "../loop/steer.ts";
 import { projectView } from "../context/view.ts";
 import { lookupModel } from "../providers/models.ts";
 import { createSession, getSession, lastPromptTokens as storedPromptTokens, pinSession, unpinSession } from "../store/db.ts";
@@ -984,6 +985,13 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           child.item.text = `  ${ev.session} · ${ev.name}${ev.done ? "" : " (running)"}${ev.ok ? "" : " — failed"}${child.count > 1 ? ` · ${child.count} calls` : ""}`;
           touch(child.item.k);
           markDirty();
+        } else if (ev.type === "steered") {
+          if (md) {
+            push("md", md);
+            md = "";
+            streamText = null;
+          }
+          push("user", `❯ ${ev.text}`);
         } else if (ev.type === "done") {
           // turn.ts already persisted the full error to the session log; the
           // transcript gets one line, the debug log gets the whole reason
@@ -1222,6 +1230,30 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       return;
     }
     if (name === "d" && ctrl) return gracefulExit(0);
+    if (name === "s" && ctrl) {
+      // Steer: agent-bound text joins the RUNNING turn at the next step
+      // boundary instead of waiting behind it. Slash and !shell keep their
+      // usual meaning; with an empty box the oldest queued message goes.
+      if (busy && state.sessionId && !state.readOnly) {
+        const raw = display();
+        const lit = firstCharLit();
+        const t = raw.trim();
+        if (raw && (lit || !(t.startsWith("/") || t.startsWith("!")))) {
+          buf = [];
+          cur = 0;
+          inputRev++;
+          steer(state.sessionId, raw);
+          return flash("steering — delivered after the current tool");
+        }
+        if (!raw && queued.length) {
+          const [m] = queued.splice(0, 1);
+          steer(state.sessionId, m.raw);
+          markDirty();
+          return flash("steering queued message — delivered after the current tool");
+        }
+      }
+      return submit();
+    }
     if (name === "up" && ctrl) {
       openQueue(); // review/edit what's waiting behind the running turn
       return;

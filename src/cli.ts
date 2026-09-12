@@ -398,6 +398,9 @@ function emitHuman(ev: import("./core/events.ts").AgentEvent) {
     case "warn":
       console.error(`\nfox-agent: ${ev.message}`);
       break;
+    case "steered":
+      console.error(`\n❯ ${ev.text.replace(/\n/g, " ").slice(0, 120)}`);
+      break;
     case "done":
       // headless mode must not exit 0 on a provider/turn failure
       if (ev.reason.startsWith("error") || ev.reason === "aborted") {

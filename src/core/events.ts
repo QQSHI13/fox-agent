@@ -21,4 +21,6 @@ export type AgentEvent =
    *  the model still receives just the final tool result */
   | { type: "tool_output"; id: string; delta: string }
   | { type: "warn"; message: string }
+  /** user text injected mid-turn (ctrl+s), delivered at a step boundary */
+  | { type: "steered"; text: string }
   | { type: "done"; reason: string };

@@ -6,6 +6,7 @@ import type { AgentEvent } from "../core/events.ts";
 import type { Tool, ToolContext, ToolResult, PtyState } from "../tools/types.ts";
 import { outCap } from "../tools/files.ts";
 import { buildRegistry } from "../tools/index.ts";
+import { drainSteer } from "./steer.ts";
 import type { Config } from "../core/config.ts";
 import type { FoxPlugin } from "../plugins/types.ts";
 import { loadPlugins } from "../plugins/load.ts";
@@ -344,6 +345,15 @@ export async function* runTurnCore(
     if (signal?.aborted) {
       yield await endTurn("aborted", step);
       return;
+    }
+
+    // Mid-turn steering (ctrl+s in the TUI): parked user text becomes a real
+    // user message here, at a step boundary — never mid-tool-call, where it
+    // would split a call/result pair.
+    for (const text of drainSteer(sessionId)) {
+      const node = appendMessage(sessionId, { parent_id: stepParentId, role: "user", content: text, tokens: estTok(text) });
+      stepParentId = node.id;
+      if (!quiet) yield { type: "steered", text };
     }
 
     // compaction is not chatter — subagents need it too or they hard-fail on

@@ -307,3 +307,22 @@ function echoTool(): [string, any] {
     },
   ];
 }
+
+describe("steering", () => {
+  test("steered text lands as a user message at the next step boundary", async () => {
+    const t = await setup();
+    const s = t.createSession("/w", "m1");
+    const { steer } = await import("../src/loop/steer.ts");
+    // queued before the first step: delivered at the top of the turn
+    steer(s.id, "also do this");
+    const mock = mockChat([textDone("ok")]);
+    const events = await collect(t.runTurnCore(s.id, cfg(), "hi", undefined, { chat: mock.fn as any }));
+    expect(events.some((e) => e.type === "steered")).toBe(true);
+    const msgs = t.allMessages(s.id);
+    expect(msgs.map((m: any) => m.role)).toEqual(["user", "user", "assistant"]);
+    expect(msgs[1].content).toBe("also do this");
+    // and the model saw it in this turn's request
+    const sent = JSON.stringify(mock.calls[0].messages);
+    expect(sent).toContain("also do this");
+  });
+});

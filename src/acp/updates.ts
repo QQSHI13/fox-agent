@@ -107,6 +107,7 @@ export function toSessionUpdate(ev: AgentEvent, opts: MapOptions): SessionUpdate
     case "step":
     case "retry":
     case "warn":
+    case "steered": // the client sent it; echoing it back would double-render
     case "done":
       return null;
     case "child_tool":
