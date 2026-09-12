@@ -138,9 +138,12 @@ async function* drainStep(
       const err = e as Error;
       // ORDER MATTERS: an idle timeout is not a user interrupt. It must fall
       // through to the retry path below, so test it before the abort checks.
-      if (!isTimeout(e)) {
+      // And only OUR abort counts: an HTTP client that throws AbortError for
+      // its own reasons (internal timeout, connection reuse) must not end the
+      // turn "aborted" — so the check gates on the signal, not the name.
+      if (!isTimeout(e) && signal?.aborted) {
         // keep whatever streamed before the interrupt; caller persists it
-        if (err.name === "AbortError" || signal?.aborted) return { ...acc, finish: "aborted" };
+        return { ...acc, finish: "aborted" };
       }
       const pe = classifyProviderError(e);
       const emitted = acc.text.length > 0 || acc.calls.length > 0;
@@ -151,7 +154,17 @@ async function* drainStep(
       // compute the backoff first so the event reports the real wait
       const delay = Math.min(8_000, 500 * 2 ** n) + Math.floor(Math.random() * 250);
       yield { type: "retry", attempt: n + 1, delay_ms: delay, error: pe.message };
-      await sleep(delay);
+      // abort-aware sleep: ESC during a 4-8s backoff must not wait out the
+      // whole delay before the interrupt is honored
+      if (signal) {
+        await new Promise<void>((resolve) => {
+          const t = setTimeout(resolve, delay);
+          signal.addEventListener("abort", () => {
+            clearTimeout(t);
+            resolve();
+          }, { once: true });
+        });
+      } else await sleep(delay);
     }
   }
 }
@@ -360,6 +373,17 @@ export async function* runTurnCore(
       return;
     }
 
+    // the cap gates BEFORE steering and compaction: a steered message drained
+    // here would be persisted as a user node and then left unanswered when
+    // the turn ends on the cap, and a compaction would spend a billable
+    // summarization call on a turn that is about to stop anyway
+    if (maxSteps > 0 && step > maxSteps) {
+      appendMessage(sessionId, { parent_id: null, role: "system", content: `fox-agent: step limit (${maxSteps}) reached mid-turn`, tokens: 16 });
+      yield { type: "warn", message: `step limit ${maxSteps} reached` };
+      yield await endTurn("max_steps", step);
+      return;
+    }
+
     // Mid-turn steering (ctrl+s in the TUI): parked user text becomes a real
     // user message here, at a step boundary — never mid-tool-call, where it
     // would split a call/result pair.
@@ -375,13 +399,6 @@ export async function* runTurnCore(
     if (!quiet) {
       if (cEv && cEv.type === "compacted" && cEv.removed.length) yield cEv;
       yield { type: "step", n: step };
-    }
-
-    if (maxSteps > 0 && step > maxSteps) {
-      appendMessage(sessionId, { parent_id: null, role: "system", content: `fox-agent: step limit (${maxSteps}) reached mid-turn`, tokens: 16 });
-      yield { type: "warn", message: `step limit ${maxSteps} reached` };
-      yield await endTurn("max_steps", step);
-      return;
     }
 
     const sysPrompt = buildSystemPrompt({

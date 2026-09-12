@@ -5,6 +5,7 @@ import type { ToolContext, ToolResult } from "./types.ts";
 import { fail, ok } from "./types.ts";
 import { childEnv } from "../core/childenv.ts";
 import { outCap } from "./files.ts";
+import { partialTailBytes } from "./pty.ts";
 import { agentHome } from "../core/paths.ts";
 
 export const execDef: ToolDef = {
@@ -114,8 +115,12 @@ function pollJob(args: { job: string; signal?: string }, ctx: ToolContext): Tool
   let data = "";
   try {
     const buf = readFileSync(job.logPath);
-    data = buf.subarray(job.cursor).toString("utf8");
-    job.cursor = buf.length;
+    // The pump appends while we read: a multi-byte char straddling `cursor`
+    // would decode as U+FFFD and be lost for good. Hold the partial sequence
+    // back — same treatment as pty's readRange.
+    const tail = partialTailBytes(buf);
+    data = buf.subarray(job.cursor, buf.length - tail).toString("utf8");
+    job.cursor = buf.length - tail;
   } catch {}
   const secs = Math.floor((Date.now() - job.startedAt) / 1000);
   const status =

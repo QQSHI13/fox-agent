@@ -35,13 +35,10 @@ export function rowCells(segs: Seg[]): RowCells {
   for (const seg of segs) {
     for (const ch of seg.t) {
       const cw = charWidth(ch.codePointAt(0)!);
-      // Zero-width (combining marks, variation selectors) occupy no column;
-      // they ride along in `text` and stay attached to the char before them.
-      if (cw === 0) {
-        text += ch;
-        if (end.length) end[end.length - 1] = text.length;
-        continue;
-      }
+      // Zero-width (combining marks, variation selectors) are DROPPED by the
+      // painter (screen.text skips them), so they must drop here too —
+      // keeping them would make the copied text disagree with the visible text
+      if (cw === 0) continue;
       const from = text.length;
       text += ch;
       for (let i = 0; i < cw; i++) {

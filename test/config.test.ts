@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -17,6 +17,34 @@ beforeEach(() => {
 afterEach(() => {
   delete process.env.FOX_AGENT_CONFIG;
   rmSync(dir, { recursive: true, force: true });
+});
+
+describe("saveGlobalConfig", () => {
+  test("keys the caller does not pass survive — /theme alone must not erase the key", async () => {
+    const { saveGlobalConfig } = await import("../src/core/config.ts");
+    const path = join(dir, "global.toml");
+    writeFileSync(path, `provider = "openai-compatible"\napiKey = "sk-live"\nbaseUrl = "https://api.example.com/v1"\nmodel = "m1"\n\ntheme = "default"\n\n[providers.x]\nformat = "anthropic"\n`);
+    saveGlobalConfig({ theme: "dracula" }, path);
+    const out = readFileSync(path, "utf8");
+    expect(out).toContain('theme = "dracula"');
+    expect(out).toContain('apiKey = "sk-live"');
+    expect(out).toContain('provider = "openai-compatible"');
+    expect(out).toContain('baseUrl = "https://api.example.com/v1"');
+    expect(out).toContain('model = "m1"');
+    expect(out).toContain("[providers.x]"); // tables untouched
+  });
+
+  test("a set key replaces the old value; a fresh file starts clean", async () => {
+    const { saveGlobalConfig } = await import("../src/core/config.ts");
+    const path = join(dir, "global2.toml");
+    writeFileSync(path, `model = "m1"\n`);
+    saveGlobalConfig({ model: "m2" }, path);
+    const out = readFileSync(path, "utf8");
+    expect(out).toContain('model = "m2"');
+    expect(out).not.toContain('model = "m1"');
+    saveGlobalConfig({ theme: "nord" }, join(dir, "global3.toml"));
+    expect(readFileSync(join(dir, "global3.toml"), "utf8")).toContain('theme = "nord"');
+  });
 });
 
 describe("config cascade", () => {

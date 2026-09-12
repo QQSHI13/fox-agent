@@ -33,7 +33,12 @@ const memo = new Map<string, Entry | null>();
 /** Cached models for an endpoint, or null when never fetched (or unreadable). */
 export function endpointModels(baseUrl: string): CatalogModel[] | null {
   const path = cachePath(baseUrl);
-  if (memo.has(path)) return memo.get(path)?.models ?? null;
+  return entryFor(path)?.models ?? null;
+}
+
+/** Cache entry for a path — memoized; null when missing or unreadable. */
+function entryFor(path: string): Entry | null {
+  if (memo.has(path)) return memo.get(path) ?? null;
   let entry: Entry | null = null;
   try {
     if (existsSync(path)) entry = JSON.parse(readFileSync(path, "utf8"));
@@ -41,7 +46,7 @@ export function endpointModels(baseUrl: string): CatalogModel[] | null {
     entry = null;
   }
   memo.set(path, entry);
-  return entry?.models ?? null;
+  return entry;
 }
 
 /** Common context-window field names across openai-style, anthropic and google model listings. */
@@ -107,7 +112,9 @@ export async function refreshEndpointModels(baseUrl: string, apiKey: string, for
 export function ensureEndpointModels(baseUrl: string, apiKey: string, format?: string): void {
   if (!/^https?:\/\//.test(baseUrl)) return;
   const path = cachePath(baseUrl);
-  const entry = memo.get(path);
+  // a fresh process has an empty memo but possibly a fresh on-disk cache —
+  // don't refetch what the last run already wrote
+  const entry = entryFor(path);
   if (entry && Date.now() - entry.at < TTL_MS) return;
   void refreshEndpointModels(baseUrl, apiKey, format);
 }

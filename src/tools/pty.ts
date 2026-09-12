@@ -258,7 +258,25 @@ async function waitForQuiet(logPath: string, quietMs: number): Promise<void> {
   }
 }
 
-export async function drivePty(args: { keys?: string; quiet_ms?: number }, ctx: ToolContext): Promise<ToolResult> {
+/**
+ * pty calls in one step run in parallel (tools in a step are Promise.all'd),
+ * but they share ONE shell per session — two concurrent ensurePty calls both
+ * see no session and both spawn, colliding on the deterministic tmux name.
+ * Chain every call behind the previous one; the shell's own semantics
+ * (sequential keystrokes, ordered drains) are preserved, not weakened.
+ */
+let ptyChain: Promise<unknown> = Promise.resolve();
+
+export function drivePty(args: { keys?: string; quiet_ms?: number }, ctx: ToolContext): Promise<ToolResult> {
+  const run = ptyChain.then(() => drivePtyInner(args, ctx));
+  ptyChain = run.then(
+    () => {},
+    () => {},
+  );
+  return run;
+}
+
+async function drivePtyInner(args: { keys?: string; quiet_ms?: number }, ctx: ToolContext): Promise<ToolResult> {
   let pty: PtyState;
   let lost: boolean;
   try {

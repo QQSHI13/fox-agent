@@ -414,7 +414,7 @@ function emitHuman(ev: import("./core/events.ts").AgentEvent) {
 }
 
 async function plainLoop(state: HarnessState) {
-  const { sessionId, provider, config } = state;
+  const { config } = state;
   console.log("plain mode · type a prompt · ctrl+d exits · /help for commands");
   process.stdout.write("❯ ");
   for await (const line of console) {
@@ -447,7 +447,9 @@ async function plainLoop(state: HarnessState) {
       continue;
     }
     try {
-      for await (const ev of runTurnCore(state.sessionId, provider, prompt, undefined, {
+      // state.provider is read live — /model and /login REPLACE it, and a
+      // captured copy would keep calling the old model/endpoint/key forever
+      for await (const ev of runTurnCore(state.sessionId, state.provider, prompt, undefined, {
         maxSteps: config?.maxSteps,
         retryLimit: config?.retryLimit,
         compactAt: config?.compactAt,

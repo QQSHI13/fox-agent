@@ -119,7 +119,18 @@ async function tryStream(base: string, message: unknown, deadline: number, opts:
   try {
     for (;;) {
       if (Date.now() > deadline) throw new Error("A2A stream did not finish within the timeout");
-      const { done, value } = await reader.read();
+      // Idle watchdog: `read()` pends forever on a server that accepts the
+      // connection and then goes silent — the caller's abort signal never
+      // fires on its own and even the deadline can't interrupt a pending
+      // read. Race each read against a no-bytes-for-60s timer.
+      let idle: ReturnType<typeof setTimeout> | undefined;
+      const chunk = await Promise.race([
+        reader.read(),
+        new Promise<never>((_, reject) => {
+          idle = setTimeout(() => reject(new Error("A2A stream idle: no data for 60s")), 60_000);
+        }),
+      ]).finally(() => clearTimeout(idle));
+      const { done, value } = chunk;
       if (done) break;
       buf += dec.decode(value, { stream: true });
       let cut: number;

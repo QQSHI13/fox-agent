@@ -50,12 +50,12 @@ describe("rowCells: screen columns are not string indices", () => {
     expect(c.start).toEqual([0, 1, 2, 3]);
   });
 
-  test("zero-width marks ride along with the character they modify", () => {
-    // a combining accent occupies no column, so it must not shift every later
-    // cell's mapping by one
-    const c = rowCells(row("éx"));
-    expect(c.start.length).toBe(2); // "é" and "x"
-    expect(c.text.slice(c.start[0], c.end[0])).toBe("é"); // mark included
+  test("zero-width marks are dropped, exactly as the painter drops them", () => {
+    // screen.text skips combining marks/variation selectors, so selection and
+    // copy must skip them too — visible text and copied text stay identical
+    const c = rowCells(row("e\u0301x"));
+    expect(c.start.length).toBe(2);
+    expect(c.text).toBe("ex");
     expect(c.text.slice(c.start[1], c.end[1])).toBe("x");
   });
 });

@@ -493,25 +493,34 @@ export function saveGlobalConfig(
 ): string {
   const KEYS = new Set(["provider", "apiKey", "baseUrl", "model", "theme"]);
   let rest = "";
+  /** existing top-level values for keys this call does NOT set — dropping them
+   *  would gut the config (e.g. /theme alone erasing the saved provider+key) */
+  const kept: Record<string, string> = {};
   try {
     const lines = readFileSync(path, "utf8").split("\n");
     let inTables = false;
-    const kept: string[] = [];
+    const keptLines: string[] = [];
     for (const line of lines) {
       if (/^\s*\[/.test(line)) inTables = true;
-      if (!inTables && new RegExp(`^\\s*(${[...KEYS].join("|")})\\s*=`).test(line)) continue;
-      kept.push(line);
+      if (!inTables) {
+        const m = line.match(/^\s*(provider|apiKey|baseUrl|model|theme)\s*=\s*(.*)$/);
+        if (m) {
+          if (!(m[1] in fields)) kept[m[1]] = m[2].trim();
+          continue; // stale copy of a managed key — the head re-emits it
+        }
+      }
+      keptLines.push(line);
     }
-    rest = kept.join("\n").replace(/^\n+/, "");
+    rest = keptLines.join("\n").replace(/^\n+/, "");
   } catch {
     // no existing file — start fresh
   }
   const head = [
-    fields.provider !== undefined ? `provider = ${JSON.stringify(fields.provider)}` : null,
-    fields.apiKey !== undefined ? `apiKey = ${JSON.stringify(fields.apiKey)}` : null,
-    fields.baseUrl !== undefined ? `baseUrl = ${JSON.stringify(fields.baseUrl)}` : null,
-    fields.model !== undefined ? `model = ${JSON.stringify(fields.model)}` : null,
-    fields.theme !== undefined ? `theme = ${JSON.stringify(fields.theme)}` : null,
+    fields.provider !== undefined ? `provider = ${JSON.stringify(fields.provider)}` : kept.provider ? `provider = ${kept.provider}` : null,
+    fields.apiKey !== undefined ? `apiKey = ${JSON.stringify(fields.apiKey)}` : kept.apiKey ? `apiKey = ${kept.apiKey}` : null,
+    fields.baseUrl !== undefined ? `baseUrl = ${JSON.stringify(fields.baseUrl)}` : kept.baseUrl ? `baseUrl = ${kept.baseUrl}` : null,
+    fields.model !== undefined ? `model = ${JSON.stringify(fields.model)}` : kept.model ? `model = ${kept.model}` : null,
+    fields.theme !== undefined ? `theme = ${JSON.stringify(fields.theme)}` : kept.theme ? `theme = ${kept.theme}` : null,
   ].filter(Boolean);
   mkdirSync(dirname(path), { recursive: true });
   // a wrong write loses the user's key with no undo — keep one backup

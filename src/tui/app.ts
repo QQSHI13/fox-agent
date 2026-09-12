@@ -1429,6 +1429,15 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       return;
     }
     if (name === "up" || name === "down") {
+      // With the command roster showing, arrows walk the list (a bare command
+      // word has no multi-line caret to move anyway); elsewhere they move the
+      // caret through the wrapped input.
+      const n = hintMatches().length;
+      if (n > 1) {
+        hintSel = Math.max(0, Math.min(n - 1, hintSel + (name === "up" ? -1 : 1)));
+        markDirty();
+        return;
+      }
       moveCaretVertical(name === "up" ? -1 : 1, !!k.shift);
       return;
     }
@@ -1443,14 +1452,6 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       } else {
         // no completion in play — tab is just whitespace the user wants to send
         insertText("\t");
-      }
-      return;
-    }
-    if (name === "up" || name === "down") {
-      const n = hintMatches().length;
-      if (n > 1) {
-        hintSel = Math.max(0, Math.min(n - 1, hintSel + (name === "up" ? -1 : 1)));
-        markDirty();
       }
       return;
     }
