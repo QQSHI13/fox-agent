@@ -423,7 +423,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   /** Apply a command result's effects — shared by runSlash and wizard `run`s. */
   function applyResult(res: CommandResultLike | null) {
     if (!res) return;
-    if (res.output) push("info", res.output, res.ephemeral ? { ephemeral: true } : undefined);
+    // short command output floats above the dock and dies on the next key —
+    // it never pushes the transcript up (/todo, /usage, switch confirmations)
+    if (res.output) setCmdOut(res.output);
     if (res.newSessionId) switchSession(res.newSessionId);
     if (res.welcome) {
       // /new is a fresh `fox` launch: reload config (model/theme/caps) and
@@ -449,7 +451,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       const task = res.task;
       void (async () => {
         try {
-          push("info", await task());
+          setCmdOut(await task());
         } catch (e) {
           push("error", `error: ${(e as Error).message ?? e}`);
         }
@@ -461,7 +463,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   type CommandResultLike = ReturnType<typeof runSlashCommand>;
 
   function runSlash(t: string) {
-    if (t === "/help" || t === "/?") return push("info", helpText(), { ephemeral: true });
+    if (t === "/help" || t === "/?") return setCmdOut(helpText());
     applyResult(runSlashCommand(t, state));
   }
 
@@ -1201,9 +1203,21 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   }
 
   // ---- keyboard ----
+  /** Floating command output (/help, /todo, /usage…): painted above the dock
+   *  like the slash hints, never pushed into the transcript. Dismissed by any
+   *  keypress or click. Slash hints outrank it while a "/" command is typed. */
+  let cmdOut: string[] | null = null;
+  function setCmdOut(text: string) {
+    cmdOut = text.split("\n");
+    markDirty();
+  }
   function onKey(k: Key) {
-    // any real input dismisses transient help output first — /help is a
-    // glance, not something to scroll past forever
+    // any real input dismisses transient help/command output first — a glance,
+    // not something to scroll past forever
+    if (cmdOut) {
+      cmdOut = null;
+      markDirty();
+    }
     if (items.some((i) => i.ephemeral)) {
       items = items.filter((i) => !i.ephemeral);
       clampScroll();
@@ -1631,6 +1645,11 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   function onClick(x: number, y: number) {
     const vh = viewportH();
     const { inputTop } = dockGeom();
+    // a click dismisses floating command output, same as a keypress
+    if (cmdOut) {
+      cmdOut = null;
+      markDirty();
+    }
 
     // hint popup rows float above the input box (and any queue rows) — same
     // row budget paint() uses, or the hit-test disagrees with the pixels
@@ -2338,11 +2357,30 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       }
     }
 
-    // hints popup floats directly above the input box (and any queue rows),
-    // clamped to the rows actually free above the queue — never a fixed count
-    const hints = hintText(Math.max(1, inputTop - queueRowsH - 1));
+    // floating command output (/help, /todo, /usage…) — directly above the
+    // queue, below the slash hints. It can't coexist with the hints anyway:
+    // typing "/" is a keypress, and any keypress dismisses this overlay.
+    let cmdRowsH = 0;
+    if (cmdOut?.length) {
+      const avail = Math.max(1, inputTop - queueRowsH - 1);
+      const shown = cmdOut.slice(0, avail);
+      cmdRowsH = shown.length + (cmdOut.length > avail ? 1 : 0);
+      const cTop = inputTop - queueRowsH - cmdRowsH;
+      for (let i = 0; i < shown.length; i++) {
+        screen.fillRow(cTop + i, 0, W, S.barBgRow);
+        screen.text(1, cTop + i, clipW(shown[i], W - 2), S.hintDim);
+      }
+      if (cmdOut.length > avail) {
+        screen.fillRow(cTop + shown.length, 0, W, S.barBgRow);
+        screen.text(1, cTop + shown.length, clipW(`… ${cmdOut.length - avail} more lines`, W - 2), S.hintDim);
+      }
+    }
+
+    // hints popup floats directly above the input box (and any queue rows and
+    // command output), clamped to the rows actually free above the queue
+    const hints = hintText(Math.max(1, inputTop - queueRowsH - cmdRowsH - 1));
     if (hints.active && hints.rows.length) {
-      const hTop = inputTop - queueRowsH - hints.rows.length;
+      const hTop = inputTop - queueRowsH - cmdRowsH - hints.rows.length;
       for (let i = 0; i < hints.rows.length; i++) {
         screen.fillRow(hTop + i, 0, W, S.barBgRow);
         screen.text(1, hTop + i, hints.rows[i].text, hints.rows[i].sel ? S.hintSel : S.hintDim);
