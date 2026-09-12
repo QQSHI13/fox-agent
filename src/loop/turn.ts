@@ -7,6 +7,7 @@ import type { Tool, ToolContext, ToolResult, PtyState } from "../tools/types.ts"
 import { outCap } from "../tools/files.ts";
 import { buildRegistry } from "../tools/index.ts";
 import { drainSteer } from "./steer.ts";
+import { VERSION } from "../core/version.ts";
 import type { Config } from "../core/config.ts";
 import type { FoxPlugin } from "../plugins/types.ts";
 import { loadPlugins } from "../plugins/load.ts";
@@ -300,6 +301,18 @@ export async function* runTurnCore(
   const maxSteps = opts.maxSteps ?? 0;
   const quiet = opts.quiet ?? false;
 
+  // Every provider request identifies itself and its conversation: gateways
+  // (opencode's among them) route and cache on these. The user's own
+  // [providers.*] headers win over both.
+  const reqCfg: ProviderConfig = {
+    ...cfg,
+    headers: {
+      "user-agent": `fox-agent/${VERSION}`,
+      "x-opencode-session": sessionId,
+      ...cfg.headers,
+    },
+  };
+
   // Warnings a hook raises after the turn's first yield cannot be yielded from
   // where they happen (`afterTool` runs inside a Promise.all), so they queue here
   // and drain at the next point the loop is yielding anyway.
@@ -358,7 +371,7 @@ export async function* runTurnCore(
 
     // compaction is not chatter — subagents need it too or they hard-fail on
     // a full window. Only the *event* is suppressed when quiet.
-    const cEv = await compactIfNeeded(sessionId, cfg, chat, { compactAt: opts.compactAt, signal }).catch(() => null);
+    const cEv = await compactIfNeeded(sessionId, reqCfg, chat, { compactAt: opts.compactAt, signal }).catch(() => null);
     if (!quiet) {
       if (cEv && cEv.type === "compacted" && cEv.removed.length) yield cEv;
       yield { type: "step", n: step };
@@ -406,7 +419,7 @@ export async function* runTurnCore(
 
     let outcome: StepOutcome;
     try {
-      outcome = yield* drainStep(chat, cfg, messages, toolDefs, signal, opts.retryLimit ?? 3);
+      outcome = yield* drainStep(chat, reqCfg, messages, toolDefs, signal, opts.retryLimit ?? 3);
     } catch (e) {
       const pe = classifyProviderError(e);
       // the transcript gets the short line; the full text/stack goes to

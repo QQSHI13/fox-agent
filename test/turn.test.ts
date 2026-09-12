@@ -326,3 +326,19 @@ describe("steering", () => {
     expect(sent).toContain("also do this");
   });
 });
+
+describe("request identity", () => {
+  test("provider requests carry fox-agent UA and a stable session header", async () => {
+    const t = await setup();
+    const s = t.createSession("/w", "m1");
+    let seen: any;
+    const chat = async function* (c: any): AsyncGenerator<import("../src/providers/types.ts").StreamEvent> {
+      seen = c;
+      yield { type: "text", delta: "hi" };
+      yield { type: "done", reason: "stop" };
+    };
+    await collect(t.runTurnCore(s.id, cfg(), "hi", undefined, { chat: chat as any, quiet: true }));
+    expect(seen.headers["user-agent"]).toMatch(/^fox-agent\//);
+    expect(seen.headers["x-opencode-session"]).toBe(s.id);
+  });
+});
