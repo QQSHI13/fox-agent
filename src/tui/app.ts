@@ -2479,6 +2479,12 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       paint();
       screen.flush();
       term.flush();
+      // show the input caret from the very first frame, not only after the
+      // first keypress — the frame loop's moved-check starts from null and
+      // would otherwise leave the cursor hidden until something dirties it
+      const caret0 = nextCaret ?? { x: 3, y: H - 2 };
+      term.setCursor(caret0.x, caret0.y);
+      term.flush();
       dirty = false;
       refresh();
       applyRuntimeConfig();
@@ -2498,12 +2504,14 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           // Cursor churn flickers: only hide/reposition it when the caret actually
           // moved (typing, scrolling the dock). While streaming, the caret sits
           // still and the grid diff paints underneath it without a single
-          // hide/show round-trip.
+          // hide/show round-trip. paint() runs BEFORE the caret is read: nextCaret
+          // is computed inside paint, so reading it first would place the cursor
+          // one frame (one keystroke) behind the text.
+          paint();
           const caret = nextCaret ?? { x: 3, y: H - 2 };
           const caretKey = `${caret.x},${caret.y}`;
           const moved = caretKey !== lastCaretKey;
           if (moved) term.hideCursor(); // see the old comment: visible cursor mid-repaint ghosts on Windows Terminal
-          paint();
           screen.flush();
           if (process.env.FOX_AGENT_TRACE && screen.lastDirty()) {
             try {
