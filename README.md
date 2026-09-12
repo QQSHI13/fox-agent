@@ -11,7 +11,11 @@ A light coding harness with **agent-controlled context** — the agent edits its
 - Tools: read/write/edit (whitespace-tolerant patch engine)/glob/grep (ripgrep when present)/exec (process-group kill)/pty (tmux pipe-pane, resize-proof)/ctx_edit/todowrite/task (delegation over ACP or A2A)/fetch/MCP client. `read` attaches images, audio and video as media when the active model accepts them (gemini: all three; gpt/claude families: images)
 - **ACP both ways**: `fox --acp` serves the Agent Client Protocol to Zed/acpx, and fox drives other ACP agents as a client (that is what `task` is built on); agents configured with a `url` are reached over **A2A** (HTTP/JSON-RPC, SSE streaming when offered)
 - **Plugins**: one module adds tools, lifecycle hooks (`onSessionStart`/`beforeLLMCall`/`afterTool`) and custom providers; global config only, and a broken one costs a warning rather than the run
-- TUI on custom ANSI renderer: streaming markdown, inline `[mN]` markers, slash commands, `!` shell mode, esc interrupt
+- **200+ providers** via the models.dev catalog — `/login` presets prefill endpoint, env var and real model lists; any OpenAI-compatible/Responses, Anthropic or Gemini endpoint works too
+- Provider-first `/model` wizard that lists each logged-in provider's own `/models` (cached), plus config-described and catalog models; switch mid-session, saved globally
+- Steering mid-turn: queue messages (stacked above the input, ctrl+up to pick one) or ctrl+s to inject after the current tool finishes
+- `@path` mentions and drag-and-drop: paste or drop file paths and their contents are inlined at dispatch (binary-sniffed, size-capped)
+- TUI on custom ANSI renderer: streaming markdown, inline `[mN]` markers, slash commands, `!` shell mode, esc interrupt, mouse selection, themes
 - Headless: `-p "prompt"` one-shot, `--json` NDJSON event stream, stdin piping — plus a library API (`createAgent`)
 
 ## Run
@@ -68,8 +72,8 @@ Env vars: `FOX_AGENT_MODEL`, `FOX_AGENT_BASE_URL`, `FOX_AGENT_API_KEY`, `FOX_AGE
 
 No key at all? The TUI opens anyway and `/login` walks you through provider, key, base URL and model as an
 interactive wizard (the key is typed masked), writes `~/.config/fox-agent/config.toml` and takes effect without
-a restart. Provider choices come from the models.dev catalog (cached 24h at `$FOX_AGENT_HOME/models.dev.json`,
-with static fallbacks offline), so picking e.g. OpenRouter or Token Guard prefills the endpoint, names the env
+a restart. Provider choices come from the models.dev catalog (200+ providers, cached 24h at
+`$FOX_AGENT_HOME/models.dev.json`, with static fallbacks offline), so picking e.g. OpenRouter prefills the endpoint, names the env
 var an empty key falls back to, and lists that provider's real models with their context windows — those exact
 figures also feed the ctx meter and budget checks. Headless clients use kv pairs instead:
 `/login provider=<p> key=<k> [baseUrl=<u>] [model=<m>]`, where `<p>` may also be a preset id like `deepseek`.
@@ -313,6 +317,7 @@ other. `index.db` only holds the session list and is rebuildable from `sessions/
 $FOX_AGENT_HOME (default ~/.local/share/fox-agent)
   index.db              session list (id, cwd, model, title, timestamps)
   sessions/<id>.db      messages + view ops + refs + usage + kv for one session
+  locks/<id>.json       open-session markers (read-only mode for a second opener)
   pty/                  tmux pipe-pane output logs
 ```
 
