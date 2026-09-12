@@ -131,7 +131,6 @@ export async function readRun(args: { path: string; offset?: number; limit?: num
         `error: ${args.path} is ${kind} (${mimeType}, ${buf.length} bytes) and the current model (${info ?? "unknown"}) does not accept ${kind} input`,
       );
     }
-    ctx.readFiles.add(p);
     return {
       ok: true,
       output: `${args.path}: ${mimeType}, ${(buf.length / 1024).toFixed(1)} KB — attached as ${kind} content below`,
@@ -140,7 +139,6 @@ export async function readRun(args: { path: string; offset?: number; limit?: num
   }
   if (sniffBinary(buf)) return fail(`error: ${args.path} is binary (${buf.length} bytes)`);
 
-  ctx.readFiles.add(p);
   const raw = buf.toString("utf8");
   let lines = raw.split("\n");
   const total = lines.length;
@@ -163,7 +161,7 @@ export async function readRun(args: { path: string; offset?: number; limit?: num
 
 export const writeDef: ToolDef = {
   name: "write",
-  description: "Write a file (creates parent dirs). Overwriting an existing file requires reading it first. The result reports any type errors the new contents cause.",
+  description: "Write a file (creates parent dirs; overwrites in place). The result reports any type errors the new contents cause.",
   parameters: {
     type: "object",
     properties: { path: { type: "string" }, content: { type: "string" } },
@@ -173,17 +171,8 @@ export const writeDef: ToolDef = {
 
 export async function writeRun(args: { path: string; content: string }, ctx: ToolContext): Promise<ToolResult> {
   const p = resolve(ctx.cwd, args.path);
-  let exists = false;
-  try {
-    statSync(p);
-    exists = true;
-  } catch {}
-  if (exists && !ctx.readFiles.has(p)) {
-    return fail(`error: ${args.path} exists and was not read this turn — read it before overwriting`);
-  }
   mkdirSync(dirname(p), { recursive: true });
   writeFileSync(p, args.content);
-  ctx.readFiles.add(p);
   // write used to report nothing about what it produced, so a newly created file
   // with a type error looked identical to a clean one
   return ok(`wrote ${args.path} (${Buffer.byteLength(args.content)} bytes)${await afterWrite(args.path, p, args.content, ctx)}`);
@@ -225,7 +214,6 @@ export async function editRun(
   ctx: ToolContext,
 ): Promise<ToolResult> {
   const p = resolve(ctx.cwd, args.path);
-  if (!ctx.readFiles.has(p)) return fail(`error: read ${args.path} before editing`);
 
   const ops: EditOp[] =
     args.edits && args.edits.length

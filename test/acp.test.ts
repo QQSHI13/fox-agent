@@ -693,7 +693,7 @@ describe("delegation targets", () => {
       {
         sessionId: "s",
         cwd: work,
-        readFiles: new Set(),
+        
         agents: { helper: { command: "true" } },
         pty: undefined,
       },
@@ -713,7 +713,7 @@ describe("delegation targets", () => {
     try {
       const res = await taskRun(
         { description: "d", prompt: "p" },
-        { sessionId: "s", cwd: work, readFiles: new Set(), pty: undefined },
+        { sessionId: "s", cwd: work,  pty: undefined },
       );
       expect(res.ok).toBe(false);
       expect(res.output).toContain("depth limit");

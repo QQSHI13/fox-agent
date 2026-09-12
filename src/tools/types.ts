@@ -21,7 +21,6 @@ export interface PtyState {
 export interface ToolContext {
   sessionId: string;
   cwd: string;
-  readFiles: Set<string>;
   signal?: AbortSignal;
   /** provider config for tools that need to know the active model */
   providerCfg?: ProviderConfig;

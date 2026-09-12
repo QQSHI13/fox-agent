@@ -18,7 +18,7 @@ beforeEach(() => {
   ctx = {
     sessionId: "s1",
     cwd: dir,
-    readFiles: new Set<string>(),
+    
     get pty() {
       return pty;
     },
@@ -82,16 +82,8 @@ describe("write", () => {
     expect(await Bun.file(join(dir, "deep/nested/x.txt")).text()).toBe("hi");
   });
 
-  test("overwriting an unread existing file is refused", async () => {
+  test("overwriting an existing file works without a prior read", async () => {
     write("o.txt", "old");
-    const r = await F.writeRun({ path: "o.txt", content: "new" }, ctx);
-    expect(r.ok).toBe(false);
-    expect(await Bun.file(join(dir, "o.txt")).text()).toBe("old");
-  });
-
-  test("overwrites once the file has been read", async () => {
-    write("o.txt", "old");
-    await F.readRun({ path: "o.txt" }, ctx);
     const r = await F.writeRun({ path: "o.txt", content: "new" }, ctx);
     expect(r.ok).toBe(true);
     expect(await Bun.file(join(dir, "o.txt")).text()).toBe("new");
@@ -101,7 +93,6 @@ describe("write", () => {
 describe("edit", () => {
   test("replaces a unique string", async () => {
     write("c.ts", "const a = 1;\nconst b = 2;\n");
-    await F.readRun({ path: "c.ts" }, ctx); // read-before-edit is enforced
     const r = await F.editRun({ path: "c.ts", oldString: "const a = 1;", newString: "const a = 99;" }, ctx);
     expect(r.ok).toBe(true);
     expect(await Bun.file(join(dir, "c.ts")).text()).toContain("const a = 99;");
@@ -109,7 +100,6 @@ describe("edit", () => {
 
   test("ambiguous match is rejected without touching the file", async () => {
     write("d.ts", "aa\naa\n");
-    await F.readRun({ path: "d.ts" }, ctx);
     const before = await Bun.file(join(dir, "d.ts")).text();
     const r = await F.editRun({ path: "d.ts", edits: [{ oldString: "aa", newString: "y" }] }, ctx);
     expect(r.ok).toBe(false);
@@ -119,18 +109,9 @@ describe("edit", () => {
 
   test("missing match is rejected", async () => {
     write("e.ts", "hello\n");
-    await F.readRun({ path: "e.ts" }, ctx);
     const r = await F.editRun({ path: "e.ts", oldString: "absent", newString: "z" }, ctx);
     expect(r.ok).toBe(false);
     expect(r.output).toMatch(/not found/);
-  });
-
-  test("editing a file that was never read is refused", async () => {
-    write("f.ts", "hello\n");
-    const r = await F.editRun({ path: "f.ts", oldString: "hello", newString: "bye" }, ctx);
-    expect(r.ok).toBe(false);
-    expect(r.output).toMatch(/read f\.ts before editing/);
-    expect(await Bun.file(join(dir, "f.ts")).text()).toBe("hello\n");
   });
 });
 

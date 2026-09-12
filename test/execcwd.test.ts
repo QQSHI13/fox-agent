@@ -23,7 +23,7 @@ afterEach(() => {
 });
 
 function ctx(): ToolContext {
-  return { sessionId: "execcwd", cwd: session, readFiles: new Set<string>() } as ToolContext;
+  return { sessionId: "execcwd", cwd: session,  } as ToolContext;
 }
 
 describe("exec never drifts", () => {

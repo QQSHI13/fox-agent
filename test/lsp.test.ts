@@ -361,7 +361,7 @@ describe.skipIf(!CAN_RUN)("diagnose: end to end against typescript-language-serv
     writeFileSync(join(dir, rel), "export const n: number = 1;\n");
     let pty: unknown;
     const ctx = {
-      sessionId: "s", cwd: dir, readFiles: new Set([join(dir, rel)]),
+      sessionId: "s", cwd: dir, 
       get pty() { return pty; }, set pty(v: unknown) { pty = v; },
     } as any;
 
@@ -383,7 +383,7 @@ describe.skipIf(!CAN_RUN)("diagnose: end to end against typescript-language-serv
     const rel = "off.ts";
     let pty: unknown;
     const ctx = {
-      sessionId: "s", cwd: dir, readFiles: new Set<string>(), diagnostics: false,
+      sessionId: "s", cwd: dir,  diagnostics: false,
       get pty() { return pty; }, set pty(v: unknown) { pty = v; },
     } as any;
     const r = await F.writeRun({ path: rel, content: "export const s: string = 42;\n" }, ctx);

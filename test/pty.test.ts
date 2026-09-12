@@ -38,7 +38,7 @@ function ctx(sessionId: string, cwd: string): ToolContext {
   return {
     sessionId,
     cwd,
-    readFiles: new Set<string>(),
+    
     get pty() {
       return pty;
     },

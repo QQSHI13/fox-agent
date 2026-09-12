@@ -146,7 +146,7 @@ describe("a2a client", () => {
 describe("task tool: a2a routing", () => {
   const ctx = (agents: unknown): ToolContext => {
     let pty: unknown;
-    return { sessionId: "s1", cwd: dir, agents, readFiles: new Set<string>(), get pty() { return pty; }, set pty(v: unknown) { pty = v; } } as unknown as ToolContext;
+    return { sessionId: "s1", cwd: dir, agents,  get pty() { return pty; }, set pty(v: unknown) { pty = v; } } as unknown as ToolContext;
   };
 
   test("an agent with a url delegates over A2A and returns the report", async () => {

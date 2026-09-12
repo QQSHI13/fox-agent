@@ -294,7 +294,6 @@ export async function* runTurnCore(
   });
 
   let ptyState: PtyState | undefined;
-  const turnReads = new Set<string>();
   // 0 means no cap — a turn ends when the model stops calling tools, not when
   // a counter runs out. The guard below only fires for a positive limit.
   const maxSteps = opts.maxSteps ?? 0;
@@ -472,7 +471,6 @@ export async function* runTurnCore(
         res ??= await execToolCall(call, tools, {
           sessionId,
           cwd: session.cwd,
-          readFiles: turnReads,
           signal,
           providerCfg: cfg,
           agents: effCfg.agents,

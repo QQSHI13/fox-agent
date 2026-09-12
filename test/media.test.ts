@@ -16,7 +16,7 @@ beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "fox-media-"));
   process.env.FOX_AGENT_HOME = join(dir, ".fox");
   let pty: unknown;
-  base = { sessionId: "s1", cwd: dir, readFiles: new Set<string>(), get pty() { return pty; }, set pty(v: unknown) { pty = v; } } as unknown as ToolContext;
+  base = { sessionId: "s1", cwd: dir,  get pty() { return pty; }, set pty(v: unknown) { pty = v; } } as unknown as ToolContext;
 });
 
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
