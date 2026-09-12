@@ -4,7 +4,8 @@
  * families; unknown models fall back to conservative defaults so budget
  * checks stay safe.
  */
-import { lookupCatalogModel } from "./modelsdev.ts";
+import { lookupCatalogModel, type CatalogModel } from "./modelsdev.ts";
+import { endpointModels } from "./endpointmodels.ts";
 
 export interface ModelInfo {
   contextWindow: number;
@@ -39,6 +40,19 @@ let configured: {
 
 export function setConfiguredModels(models: typeof configured): void {
   configured = models;
+}
+
+/**
+ * The base URL the active provider points at, set on config load and on
+ * /model//login switches. The endpoint's own /models listing outranks the
+ * catalog for THIS endpoint: the catalog lags real upgrades (it still says
+ * 262k for kimi-for-coding, which the endpoint now serves as a 1M-context
+ * model). Module-level for the same reason as `configured` — lookupModel is
+ * called from render paths with just an id.
+ */
+let activeEndpoint: string | null = null;
+export function setActiveEndpoint(baseUrl: string | null | undefined): void {
+  activeEndpoint = baseUrl ? baseUrl.replace(/\/$/, "") : null;
 }
 
 const TABLE: [RegExp, ModelInfo][] = [
@@ -76,6 +90,21 @@ export function lookupModel(id: string): ModelInfo {
       video: c.input?.includes("video"),
       reasoning: c.reasoning,
     };
+  }
+  // The active endpoint's own /models listing outranks the catalog: endpoints
+  // know what they serve TODAY (model swaps, gated variants), the catalog
+  // lags. An unknown id here just falls through to the catalog merge.
+  if (activeEndpoint) {
+    const fromCatalog = (cat: CatalogModel): ModelInfo => ({
+      contextWindow: cat.context ?? UNKNOWN.contextWindow,
+      maxOutput: cat.output ?? UNKNOWN.maxOutput,
+      vision: cat.inputs?.includes("image"),
+      audio: cat.inputs?.includes("audio"),
+      video: cat.inputs?.includes("video"),
+      reasoning: cat.reasoning,
+    });
+    const ep = endpointModels(activeEndpoint)?.find((m) => m.id === id);
+    if (ep?.context) return fromCatalog(ep);
   }
   // Exact figures from the cached models.dev catalog beat substring guesses —
   // it knows models this static table has never heard of.

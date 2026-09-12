@@ -96,11 +96,12 @@ export function openTerm(): Term {
     },
     setCursor(x: number, y: number) {
       // position + DECTCEM show; called every frame after content flush so
-      // the native blinking caret IS the input caret (no fake block glyph)
+      // the native blinking caret IS the input caret (no fake block glyph).
+      // BUFFERED on purpose: flushing here splits one frame into several
+      // writes, and on slow PTYs (WSL2!) the hardware cursor visibly marches
+      // through the grid diff before landing — the "cursor flies" bug. The
+      // caller flushes once at end of frame.
       out.write(`\x1b[${Math.min(999, Math.max(1, y + 1))};${Math.min(999, Math.max(1, x + 1))}H\x1b[?25h`);
-      try {
-        out.flush();
-      } catch {}
     },
     hideCursor() {
       out.write("\x1b[?25l");

@@ -59,6 +59,8 @@ interface Item {
   /** a real tool result body — collapses to an arrow line; plain info lines in the
    *  toolbody style (welcome, hints) don't */
   toolResult?: boolean;
+  /** full untruncated tool input — the head line is clickable to reveal it */
+  detail?: string;
 }
 
 /**
@@ -96,9 +98,6 @@ const BANNERS = [
   "selection, sessions, and sqlite",
   "scriptable to the bone",
 ];
-const HINT_WINDOW = 5;
-/** rows the session overlay may occupy, excluding its title and footer */
-const OVERLAY_MAX_ROWS = 14;
 
 
 
@@ -115,9 +114,26 @@ export function argsSummary(args: string): string {
   try {
     const a = JSON.parse(t);
     const v = a?.cmd ?? a?.path ?? a?.pattern ?? a?.file ?? a?.url ?? a?.command ?? a?.job ?? null;
-    if (typeof v === "string" && v.trim()) return ` ${v.replace(/\s+/g, " ").slice(0, 60)}`;
+    if (typeof v === "string" && v.trim()) return ` ${v.replace(/\s+/g, " ").slice(0, 200)}`;
   } catch {}
-  return ` ${t.replace(/\s+/g, " ").slice(0, 60)}`;
+  return ` ${t.replace(/\s+/g, " ").slice(0, 200)}`;
+}
+
+/**
+ * The full "what actually ran", whitespace-flattened and capped but NOT
+ * truncated to the head-line width — the tool head is expandable, and the
+ * expanded view may use the whole screen width. Nothing when there is no
+ * meaningful single field and the raw JSON is huge beyond usefulness.
+ */
+export function argsFull(args: string): string {
+  const t = (args ?? "").trim();
+  if (!t || t === "{}") return "";
+  try {
+    const a = JSON.parse(t);
+    const v = a?.cmd ?? a?.path ?? a?.pattern ?? a?.file ?? a?.url ?? a?.command ?? a?.job ?? null;
+    if (typeof v === "string" && v.trim()) return v.replace(/\s+/g, " ").slice(0, 4_000);
+  } catch {}
+  return t.replace(/\s+/g, " ").slice(0, 4_000);
 }
 
 async function clipRead(): Promise<string> {
@@ -305,8 +321,8 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   }
 
   // ---- item mutations ----
-  function push(kind: ItemKind, text: string, opts?: { ref?: number; expanded?: boolean; ephemeral?: boolean; toolResult?: boolean }) {
-    const it: Item = { k: nk(), kind, text, ref: opts?.ref, expanded: opts?.expanded, ephemeral: opts?.ephemeral, toolResult: opts?.toolResult };
+  function push(kind: ItemKind, text: string, opts?: { ref?: number; expanded?: boolean; ephemeral?: boolean; toolResult?: boolean; detail?: string }) {
+    const it: Item = { k: nk(), kind, text, ref: opts?.ref, expanded: opts?.expanded, ephemeral: opts?.ephemeral, toolResult: opts?.toolResult, detail: opts?.detail };
     items.push(it);
     touch(it.k);
     markDirty();
@@ -335,11 +351,14 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     if (!state.sessionId) return out; // pending session: nothing stored yet
     const nodes = projectView(state.sessionId).filter((n) => !n.deleted);
     const callLabel = new Map<string, string>();
+    const callDetail = new Map<string, string>();
     for (const n of nodes) {
       if (n.msg.role === "assistant" && n.msg.tool_calls) {
         try {
-          for (const c of JSON.parse(n.msg.tool_calls) as { id: string; name: string; arguments: string }[])
+          for (const c of JSON.parse(n.msg.tool_calls) as { id: string; name: string; arguments: string }[]) {
             callLabel.set(c.id, `${c.name}${argsSummary(c.arguments ?? "")}`);
+            callDetail.set(c.id, argsFull(c.arguments ?? ""));
+          }
         } catch {}
       }
     }
@@ -347,7 +366,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       const m = n.msg;
       if (m.role === "user") out.push({ k: nk(), kind: "user", text: `[m${m.seq}] ❯ ${n.content}` });
       else if (m.role === "tool") {
-        out.push({ k: nk(), kind: "toolhead", text: `[m${m.seq}] » ${callLabel.get(m.tool_call_id ?? "") ?? "tool"}` });
+        out.push({ k: nk(), kind: "toolhead", text: `[m${m.seq}] » ${callLabel.get(m.tool_call_id ?? "") ?? "tool"}`, detail: callDetail.get(m.tool_call_id ?? "") });
         // raw text — collapsed/expanded rendering lives in itemRows
         out.push({
           k: nk(),
@@ -971,7 +990,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           }
           // raw text, newlines intact: collapsed rendering shows an arrow line,
           // the expanded view gets the real lines (see itemRows)
-          push("toolhead", `[m${ev.seq}] » ${callLabels.get(ev.id) ?? `${ev.name}${argsSummary(ev.args)}`}${ev.ok ? "" : " — failed"}`);
+          push("toolhead", `[m${ev.seq}] » ${callLabels.get(ev.id) ?? `${ev.name}${argsSummary(ev.args)}`}${ev.ok ? "" : " — failed"}`, { detail: argsFull(ev.args) });
           push("toolbody", ev.output.slice(0, KEPT_TOOL_CHARS * 4), { ref: ev.seq, expanded: expandedRefs.has(ev.seq), toolResult: true });
           statsRev++;
         } else if (ev.type === "child_tool") {
@@ -1293,8 +1312,8 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       return;
     }
     if (name === "t" && ctrl) {
-      // unfold/fold everything expandable — thinking blocks and tool outputs alike
-      const expandable = (it: Item) => it.kind === "think" || it.kind === "toolbody";
+      // unfold/fold everything expandable — thinking blocks, tool outputs, long tool heads
+      const expandable = (it: Item) => it.kind === "think" || it.kind === "toolbody" || (it.kind === "toolhead" && !!it.detail);
       const anyFolded = items.some((it) => expandable(it) && !isExpanded(it));
       for (const it of items) {
         if (!expandable(it)) continue;
@@ -1612,10 +1631,13 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     const vh = viewportH();
     const { inputTop } = dockGeom();
 
-    // hint popup rows float above the input box
-    const hints = hintText();
+    // hint popup rows float above the input box (and any queue rows) — same
+    // row budget paint() uses, or the hit-test disagrees with the pixels
+    const qShown = queued.length ? Math.min(queued.length, Math.max(1, inputTop - 1)) : 0;
+    const qRows = qShown + (queued.length > qShown ? 1 : 0);
+    const hints = hintText(Math.max(1, inputTop - qRows - 1));
     if (hints.active && hints.rows.length) {
-      const hTop = inputTop - hints.rows.length;
+      const hTop = inputTop - qRows - hints.rows.length;
       if (y >= hTop && y < inputTop) {
         const idx = (hints.start ?? 0) + (y - hTop);
         const target = hints.matches?.[idx];
@@ -1698,6 +1720,23 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         ? wrapSegs([{ t: `▾ thinking\n${it.text}`, fg: C.chrome }], w).map((segs) => ({ segs }))
         : [{ segs: [{ t: `▸ thinking (${words} words) · click or ctrl+t`, fg: C.chrome }] }];
       rows.push({ segs: [] });
+    } else if (it.kind === "toolhead" && it.detail) {
+      // a tool call whose input overflowed the head line: collapsed shows the
+      // truncated one-liner with a hint, expanded wraps the FULL input across
+      // the whole screen width instead of stopping at 60 chars
+      if (it.expanded) {
+        rows = wrapSegs([{ t: `▾ ${it.text}`, fg: C.tool }], w).map((segs) => ({ segs }));
+        rows.push(...wrapSegs([{ t: `  ${it.detail}`, fg: C.chrome }], w).map((segs) => ({ segs })));
+      } else {
+        rows = [
+          {
+            segs: [
+              { t: it.text, fg: C.tool },
+              { t: "  ▸ input — click or ctrl+t", fg: C.chrome },
+            ],
+          },
+        ];
+      }
     } else if (it.kind === "toolbody") {
       if (!it.toolResult) {
         // info lines that borrow the muted style (welcome, hints) — no arrow, no ↳
@@ -2006,7 +2045,12 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     }
   }
 
-  function hintText(): {
+  /**
+   * Slash-command hints. `maxRows` is the vertical space actually available
+   * above the dock — the window into the match list is sized by the hardware,
+   * not by a fixed preset.
+   */
+  function hintText(maxRows = H - 3): {
     rows: { text: string; sel: boolean }[];
     active: boolean;
     matches?: CommandSpec[];
@@ -2029,10 +2073,11 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         start: 0,
       };
     }
+    const win = Math.max(1, maxRows);
     const sel = Math.max(0, Math.min(matches.length - 1, hintSel));
-    const start = Math.max(0, Math.min(sel - HINT_WINDOW + 1, matches.length - HINT_WINDOW));
+    const start = Math.max(0, Math.min(sel - win + 1, matches.length - win));
     return {
-      rows: matches.slice(start, start + HINT_WINDOW).map((c, i) => ({
+      rows: matches.slice(start, start + win).map((c, i) => ({
         text: `${(c.usage ? `${c.name} ${c.usage}` : c.name).padEnd(20)} ${c.desc}`,
         sel: start + i === sel,
       })),
@@ -2253,9 +2298,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         if (!opts.length) {
           rows.push({ text: "  no matches — backspace to widen", sel: false });
         } else {
-          // a models.dev-fed list can run to hundreds of entries — show a window
-          // around the selection instead of swallowing the whole scrollback
-          const MAX = 12;
+          // a models.dev-fed list can run to hundreds of entries — window it by
+          // the space actually available above the dock, not a fixed row count
+          const MAX = Math.max(3, inputTop - 1);
           const start = opts.length <= MAX ? 0 : Math.max(0, Math.min(prompt.sel - Math.floor(MAX / 2), opts.length - MAX));
           const end = Math.min(opts.length, start + MAX);
           if (start > 0) rows.push({ text: `  … ${start} more above`, sel: false });
@@ -2277,21 +2322,24 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     // opens the chooser.
     let queueRowsH = 0;
     if (queued.length) {
-      const shown = queued.slice(0, 4);
-      queueRowsH = shown.length + (queued.length > 4 ? 1 : 0);
+      // the stack may use every row above the dock except one — the slash-hint
+      // overlay floats above it and needs at least a sliver of room
+      const shown = queued.slice(0, Math.max(1, inputTop - 1));
+      queueRowsH = shown.length + (queued.length > shown.length ? 1 : 0);
       const qTop = inputTop - queueRowsH;
       for (let i = 0; i < shown.length; i++) {
         screen.fillRow(qTop + i, 0, W, S.barBgRow);
         screen.text(1, qTop + i, clipW(`queued ${i + 1}/${queued.length}: ${shown[i].raw.replace(/\s+/g, " ").trim() || "(whitespace)"}`, W - 2), S.hintDim);
       }
-      if (queued.length > 4) {
-        screen.fillRow(qTop + 4, 0, W, S.barBgRow);
-        screen.text(1, qTop + 4, clipW(`… ${queued.length - 4} more — ctrl+up to review`, W - 2), S.hintDim);
+      if (queued.length > shown.length) {
+        screen.fillRow(qTop + shown.length, 0, W, S.barBgRow);
+        screen.text(1, qTop + shown.length, clipW(`… ${queued.length - shown.length} more — ctrl+up to review`, W - 2), S.hintDim);
       }
     }
 
-    // hints popup floats directly above the input box (and any queue rows)
-    const hints = hintText();
+    // hints popup floats directly above the input box (and any queue rows),
+    // clamped to the rows actually free above the queue — never a fixed count
+    const hints = hintText(Math.max(1, inputTop - queueRowsH - 1));
     if (hints.active && hints.rows.length) {
       const hTop = inputTop - queueRowsH - hints.rows.length;
       for (let i = 0; i < hints.rows.length; i++) {
@@ -2344,7 +2392,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
    */
   function paintOverlay(inputTop: number) {
     const p = overlay!;
-    const bodyH = Math.max(1, Math.min(OVERLAY_MAX_ROWS, inputTop - 3));
+    const bodyH = Math.max(1, inputTop - 3); // every row the hardware leaves free
     const top = Math.max(0, inputTop - bodyH - 2);
     const win = p.window(bodyH);
     const q = p.filter();
@@ -2519,11 +2567,13 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
             } catch {}
           }
           term.flush();
-          // the terminal's own caret is our input caret
-          if (moved) {
-            term.setCursor(caret.x, caret.y);
-            lastCaretKey = caretKey;
-          }
+          // The grid diff leaves the hardware cursor at the end of whatever row
+          // it last wrote — a status-bar tick or transcript scroll would strand
+          // it there, visibly jumping the input caret. Reposition every frame;
+          // hide only when it actually moved (hide/show churn flickers).
+          term.setCursor(caret.x, caret.y);
+          term.flush();
+          if (moved) lastCaretKey = caretKey;
         } catch (e) {
           // painting over the grid with a stack trace is how raw errors leak;
           // the log gets it, the transcript gets one line, and the UI exits

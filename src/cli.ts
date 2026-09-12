@@ -5,6 +5,7 @@ import type { ProviderConfig } from "./providers/types.ts";
 import { ConfigError, errMsg } from "./core/errors.ts";
 import { runTurnCore } from "./loop/turn.ts";
 import { resolveChat } from "./providers/index.ts";
+import { setActiveEndpoint } from "./providers/models.ts";
 import {
   formatSessionList,
   helpText,
@@ -163,6 +164,7 @@ async function main() {
       sampling: p.sampling,
       requestTimeoutMs: c.requestTimeoutMs,
     };
+    setActiveEndpoint(p.baseUrl);
   }
   const needsConfigNow = !!parsed.flags.get("acp") || parsed.flags.has("print") || !process.stdout.isTTY || !!parsed.flags.get("no-tui");
   if (needsConfigNow) applyLoadedConfig(loadConfig(configOverrides));

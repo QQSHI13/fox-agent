@@ -23,6 +23,7 @@ import { setTheme, themeName, themeNames } from "./tui/themes.ts";
 import { availableProviders } from "./providers/index.ts";
 import { ensureFreshCatalog, presetById, providerPresets } from "./providers/modelsdev.ts";
 import { endpointModels, ensureEndpointModels } from "./providers/endpointmodels.ts";
+import { setActiveEndpoint } from "./providers/models.ts";
 import type { UiStep } from "./core/ui.ts";
 
 export interface HarnessState {
@@ -416,6 +417,7 @@ function applyModelSwitch(t: ModelTarget, state: HarnessState, keyOverride?: str
     headers: t.headers ?? (sameEndpoint ? state.provider.headers : undefined),
     sampling: t.sampling,
   };
+  setActiveEndpoint(baseUrl);
   setSessionModel(state.sessionId, t.model);
   if (state.config) {
     state.config.provider = t.profileName ?? format;
@@ -451,7 +453,15 @@ function targetNeedsKey(t: ModelTarget, state: HarnessState): boolean {
 /** Turn a wizard answers map into a ModelTarget, resolving the custom-model step. */
 function promptSelectionToTarget(a: Record<string, string>, state: HarnessState): ModelTarget {
   const v = a.model ?? "";
+  const customBase = (a.baseUrl ?? "").trim();
   if (v.startsWith("m:")) return { model: v.slice(2) };
+  if (v.startsWith("u:")) {
+    // u:<format>:<id> — a custom endpoint chosen in the provider step
+    const i = v.indexOf(":", 2);
+    if (i < 0) return { model: "", error: "no model selected" };
+    if (!customBase) return { model: "", error: "no base url entered" };
+    return { model: v.slice(i + 1), format: v.slice(2, i), baseUrl: customBase };
+  }
   if (v.startsWith("p:") || v.startsWith("x:")) {
     const i = v.indexOf(":", 2);
     return parseModelArg(`${v.slice(2, i)}/${v.slice(i + 1)}`, state);
@@ -461,6 +471,10 @@ function promptSelectionToTarget(a: Record<string, string>, state: HarnessState)
     if (!custom) return { model: "", error: "no model id entered" };
     const rest = v.slice(2);
     if (!rest) return { model: custom };
+    if (rest.startsWith("u:")) {
+      if (!customBase) return { model: "", error: "no base url entered" };
+      return { model: custom, format: rest.slice(2), baseUrl: customBase };
+    }
     if (rest.startsWith("p:")) return { ...parseModelArg(`${rest.slice(2)}/${custom}`, state) };
     if (rest.startsWith("x:")) return { ...parseModelArg(`${rest.slice(2)}/${custom}`, state) };
   }
@@ -507,6 +521,10 @@ function modelPrompt(state: HarnessState): PromptRequest {
     presetIds.push(preset.id);
     providers.push({ value: `x:${preset.id}`, label: `${preset.name} — ${preset.api ?? preset.format}` });
   }
+  // Custom endpoints are always offered, one entry per API format — each is a
+  // real provider choice with its own base-url step, not a hidden fallback.
+  const customFormats = ["openai-compatible", "openai-responses", "anthropic", "google"];
+  for (const f of customFormats) providers.push({ value: `u:${f}`, label: `custom — ${f} endpoint` });
 
   // Step 2 choices, from the provider picked in step 1.
   const modelOptions = (a: Record<string, string>) => {
@@ -521,6 +539,19 @@ function modelPrompt(state: HarnessState): PromptRequest {
         out.push({ value: `m:${m.id}`, label: `${m.id}${ctx}` });
       }
       out.push({ value: "c:", label: "＋ custom model on this provider…" });
+      return out;
+    }
+    if (sel.startsWith("u:")) {
+      const format = sel.slice(2);
+      const baseUrl = (a.baseUrl ?? "").trim();
+      if (baseUrl) ensureEndpointModels(baseUrl, "");
+      out.push({ value: `u:${format}:${cur}`, label: `${cur} (current)` });
+      for (const m of endpointModels(baseUrl) ?? []) {
+        if (m.id === cur) continue;
+        const ctx = m.context ? ` — ${Math.round(m.context / 1000)}k` : "";
+        out.push({ value: `u:${format}:${m.id}`, label: `${m.id}${ctx}` });
+      }
+      out.push({ value: "c:u:" + format, label: "＋ custom model…" });
       return out;
     }
     if (sel.startsWith("p:")) {
@@ -556,6 +587,14 @@ function modelPrompt(state: HarnessState): PromptRequest {
     title: "switch model (persists to session + global config)",
     steps: [
       { key: "provider", label: "provider — type to search", kind: "select", options: providers, initial: "m:" },
+      {
+        key: "baseUrl",
+        label: "base url",
+        kind: "text",
+        allowEmpty: false,
+        hint: "https://… — the endpoint this provider serves",
+        skipIf: (a) => !(a.provider ?? "").startsWith("u:"),
+      },
       { key: "model", label: "model — type to search", kind: "select", options: modelOptions },
       {
         key: "custom",
@@ -611,6 +650,7 @@ function applyLogin(fields: LoginFields, state: HarnessState): CommandResult {
   if (fields.provider) state.provider.provider = fields.provider;
   if (fields.apiKey) state.provider.apiKey = fields.apiKey;
   if (fields.baseUrl) state.provider.baseUrl = fields.baseUrl;
+  if (fields.baseUrl || fields.provider) setActiveEndpoint(state.provider.baseUrl);
   if (fields.model) {
     state.provider.model = fields.model;
     setSessionModel(state.sessionId, fields.model);

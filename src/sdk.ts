@@ -6,6 +6,7 @@ import { errMsg } from "./core/errors.ts";
 import type { AgentEvent } from "./core/events.ts";
 import type { ProviderConfig } from "./providers/types.ts";
 import { resolveChat } from "./providers/index.ts";
+import { setActiveEndpoint } from "./providers/models.ts";
 import { runTurnCore, type TurnOptions } from "./loop/turn.ts";
 import { shutdownTools } from "./tools/index.ts";
 
@@ -55,6 +56,7 @@ export async function createAgent(opts: {
   if (!config.apiKey) throw new Error("fox-agent: no API key (set FOX_AGENT_API_KEY / OPENAI_API_KEY / ANTHROPIC_API_KEY)");
 
   const resolved = resolveProfile(config);
+  setActiveEndpoint(resolved.baseUrl);
   const provider: ProviderConfig = {
     baseUrl: resolved.baseUrl,
     apiKey: resolved.apiKey,
