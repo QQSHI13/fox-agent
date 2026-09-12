@@ -654,6 +654,10 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       if (name === "up" || name === "down") {
         p.sel = (p.sel + (name === "up" ? -1 : 1) + n) % Math.max(1, n);
         markDirty();
+      } else if (name === "wheelup" || name === "wheeldown") {
+        // the wheel scrolls the open menu — modal, so no transcript scroll lost
+        p.sel = Math.max(0, Math.min(Math.max(0, n - 1), p.sel + (name === "wheelup" ? -3 : 3)));
+        markDirty();
       } else if (name === "backspace") {
         if (p.filter) {
           p.filter = p.filter.slice(0, -1);
@@ -813,7 +817,12 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       markDirty();
       return true;
     }
-    const action = k.type === "char" ? overlay.key({ ch: k.ch }) : overlay.key({ name: k.name, ctrl: k.ctrl });
+    const action =
+      k.type === "named" && (k.name === "wheelup" || k.name === "wheeldown")
+        ? (overlay.key({ name: k.name === "wheelup" ? "up" : "down" }), null)
+        : k.type === "char"
+          ? overlay.key({ ch: k.ch })
+          : overlay.key({ name: k.name, ctrl: k.ctrl });
     markDirty();
     if (!action) return true;
     if (overlayMode === "queue") {
@@ -1035,6 +1044,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     // iterate code points, not UTF-16 units: `split("")` would tear an emoji
     // into surrogate halves, and every later width/delete calculation inherits
     // the damage
+    inSelAnchor = null;
     buf = [...text].map((x) => ({ c: x, lit: false }));
     cur = buf.length;
     inputRev++;
@@ -1052,6 +1062,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     if (state.readOnly && (lit || !t0.startsWith("/"))) {
       return flash("read-only — this session is open elsewhere; drafting is fine, sending is not");
     }
+    inSelAnchor = null;
     buf = [];
     cur = 0; // a stale index past the new (empty) buffer crashes graphemeBack on the next backspace
     inputRev++; // the layout cache is keyed on this — without it a multi-line message leaves a multi-line input box
@@ -1130,6 +1141,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
 
   // ---- input helpers (cursor-aware) ----
   function insertText(text: string, lit = false) {
+    deleteInSel(); // pasting over a selection replaces it
     const chars: Ch[] = [];
     for (const ch of text) chars.push({ c: ch === "\t" ? " " : ch, lit });
     buf.splice(cur, 0, ...chars);
@@ -1177,6 +1189,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     if (k.type === "paste") return insertText(k.text, true);
     if (k.type === "mouse") return onMouse(k.action, k.x, k.y);
     if (k.type === "char") {
+      deleteInSel(); // typing over a selection replaces it, as in any editor
       const prev = buf[cur - 1];
       if (prev && prev.c === "\\" && !prev.lit) {
         buf.splice(cur - 1, 1, { c: k.ch, lit: true }); // \x -> literal char
@@ -1204,6 +1217,12 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       return;
     }
     if (name === "c" && ctrl) {
+      // A live input selection copies its text, as it does everywhere else.
+      const ir = inSelRange();
+      if (ir) {
+        void clipWrite(buf.slice(ir[0], ir[1]).map((c) => c.c).join(""), term).then((okd) => okd && flash("copied"));
+        return;
+      }
       // A live selection makes ctrl+c mean copy, as it does everywhere else.
       // It is consumed here rather than falling through, so the same keystroke
       // cannot both copy and abort the turn.
@@ -1278,7 +1297,13 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       return;
     }
     if (name === "escape") {
-      // escape sheds one thing at a time: selection, then the turn, then input
+      // escape sheds one thing at a time: input selection, transcript
+      // selection, then the turn, then input
+      if (inSelRange()) {
+        inSelAnchor = null;
+        markDirty();
+        return;
+      }
       if (hasSel()) {
         clearSel();
         return;
@@ -1328,7 +1353,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       return;
     }
     if (name === "backspace") {
-      if (cur > 0) {
+      if (!deleteInSel() && cur > 0) {
         // alt/ctrl+backspace deletes the previous word, as it does in every
         // shell and editor; plain backspace deletes one grapheme, which may be
         // several buffer entries (emoji, combining marks, flags).
@@ -1342,7 +1367,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       return;
     }
     if (name === "delete") {
-      if (cur < buf.length) {
+      if (!deleteInSel() && cur < buf.length) {
         // forward-delete is the same problem mirrored: remove the whole cluster
         // starting here, not its first code point
         const end = cur + graphemeForward(buf, cur);
@@ -1354,10 +1379,23 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     }
     if (name === "left" || name === "right") {
       const dir = name === "left" ? -1 : 1;
-      // ctrl/alt+arrow = word-wise motion (the decoder reports CSI modifiers)
-      if (ctrl || k.meta) cur = wordBoundary(dir);
-      else cur = Math.max(0, Math.min(buf.length, cur + dir));
+      if (k.shift) {
+        // extend the selection; the caret is the moving end
+        if (inSelAnchor === null) inSelAnchor = cur;
+        cur = ctrl || k.meta ? wordBoundary(dir) : Math.max(0, Math.min(buf.length, cur + dir));
+      } else {
+        const r = inSelRange();
+        inSelAnchor = null;
+        if (r) cur = dir < 0 ? r[0] : r[1]; // a plain arrow collapses to an edge
+        // ctrl/alt+arrow = word-wise motion (the decoder reports CSI modifiers)
+        else if (ctrl || k.meta) cur = wordBoundary(dir);
+        else cur = Math.max(0, Math.min(buf.length, cur + dir));
+      }
       markDirty();
+      return;
+    }
+    if (name === "up" || name === "down") {
+      moveCaretVertical(name === "up" ? -1 : 1, !!k.shift);
       return;
     }
     if (name === "tab") {
@@ -1428,6 +1466,16 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   function onMouse(action: "down" | "drag" | "up", x: number, y: number) {
     const g = gestureFor(action, press, x, y);
     if (action === "down") {
+      // Press inside the input dock: position the caret there; a following drag
+      // extends an input selection instead of a transcript one.
+      const ii = inputIndexAt(x, y);
+      if (ii !== null) {
+        cur = ii;
+        inSelAnchor = ii;
+        press = { x, y, moved: false, input: true };
+        markDirty();
+        return;
+      }
       const row = transcriptRow(y);
       press = { x, y, moved: false };
       // Any press drops the previous selection; a new one is staged here but
@@ -1440,6 +1488,15 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       return;
     }
     if (action === "drag") {
+      if (press?.input) {
+        const ii = inputIndexAt(x, y);
+        if (ii !== null && ii !== cur) {
+          cur = ii; // anchor stays where the press landed
+          press.moved = true;
+          markDirty();
+        }
+        return;
+      }
       if (g.kind !== "extend") return;
       press!.moved = true;
       if (!selA) return;
@@ -1455,7 +1512,15 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       markDirty();
       return;
     }
+    const wasInput = press?.input;
     press = null;
+    // An input-dock gesture: a drag leaves its selection for shift/ctrl+c; a tap
+    // just moved the caret, so drop the zero-width anchor.
+    if (wasInput) {
+      if (inSelAnchor === cur) inSelAnchor = null; // a tap, not a drag
+      markDirty();
+      return;
+    }
     // A drag selects and copies; it must never also toggle what it passed over.
     if (g.kind === "copy") {
       if (hasSel()) void copySelection();
@@ -1722,6 +1787,88 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     let visRow = layout.rows.findIndex((r) => r.logical === li && colW >= r.startCol && colW < r.startCol + layout.maxCols);
     if (visRow < 0) visRow = layout.rows.length - 1; // past EOL lands on last row
     return { visRow, colW: colW - layout.rows[Math.max(0, visRow)].startCol };
+  }
+
+  // ---- input selection + vertical motion ----
+
+  /** The anchored end of an input selection; the caret is the moving end. */
+  let inSelAnchor: number | null = null;
+  const inSelRange = (): [number, number] | null =>
+    inSelAnchor !== null && inSelAnchor !== cur ? [Math.min(inSelAnchor, cur), Math.max(inSelAnchor, cur)] : null;
+
+  /** Delete the input selection if there is one; true when it did. */
+  function deleteInSel(): boolean {
+    const r = inSelRange();
+    if (!r) return false;
+    buf.splice(r[0], r[1] - r[0]);
+    cur = r[0];
+    inSelAnchor = null;
+    inputRev++;
+    markDirty();
+    return true;
+  }
+
+  /** buffer-index range one visual row covers (the newline excluded) */
+  function rowBufRange(layout: InputLayout, v: number): [number, number] {
+    const row = layout.rows[v];
+    const chars = [...inputText()];
+    let i = layout.lineStarts[row.logical];
+    let w = 0;
+    while (i < chars.length && chars[i] !== "\n" && w < row.startCol) {
+      w += charWidth(chars[i].codePointAt(0)!);
+      i++;
+    }
+    const start = i;
+    let w2 = 0;
+    while (i < chars.length && chars[i] !== "\n" && w2 < layout.maxCols) {
+      w2 += charWidth(chars[i].codePointAt(0)!);
+      i++;
+    }
+    return [start, i];
+  }
+
+  /** (x, y) in the input dock -> buffer index; null when y is above the dock. */
+  function inputIndexAt(x: number, y: number): number | null {
+    const { layout, firstShown, inputTop, shownCount } = dockGeom();
+    if (y < inputTop || y >= inputTop + shownCount) return null;
+    const v = Math.min(firstShown + (y - inputTop), layout.rows.length - 1);
+    const [s, e] = rowBufRange(layout, v);
+    const chars = [...inputText()];
+    const targetW = Math.max(0, x - 3); // 1 margin + 2 for the "❯ " prefix
+    let i = s;
+    let w = 0;
+    while (i < e) {
+      const cw = charWidth(chars[i].codePointAt(0)!);
+      if (w + cw > targetW) break;
+      w += cw;
+      i++;
+    }
+    return i;
+  }
+
+  /** up/down inside a multi-line input, keeping the display column. */
+  function moveCaretVertical(dir: -1 | 1, extend: boolean) {
+    if (extend && inSelAnchor === null) inSelAnchor = cur;
+    if (!extend) inSelAnchor = null;
+    const layout = inputLayout();
+    const pos = caretPos(layout);
+    const tv = pos.visRow + dir;
+    if (tv < 0) cur = 0;
+    else if (tv >= layout.rows.length) cur = buf.length;
+    else {
+      const [s, e] = rowBufRange(layout, tv);
+      const chars = [...inputText()];
+      let i = s;
+      let w = 0;
+      while (i < e) {
+        const cw = charWidth(chars[i].codePointAt(0)!);
+        if (w + cw > pos.colW) break;
+        w += cw;
+        i++;
+      }
+      cur = i;
+    }
+    markDirty();
   }
 
   function clampScroll() {
@@ -2033,6 +2180,22 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         const prefix = isFirstVisual ? pfx : "  ";
         screen.text(1, yy, prefix, S.accent);
         screen.text(3, yy, vr.text, S.inputFg);
+      }
+      // input selection: same restyle-over-cells trick as the transcript
+      const ir = inSelRange();
+      if (ir) {
+        const chars = [...inputText()];
+        for (let v = firstShown; v < Math.min(totalVis, firstShown + shownCount); v++) {
+          const [rs, re] = rowBufRange(layout, v);
+          const a = Math.max(rs, ir[0]);
+          const b = Math.min(re, ir[1]);
+          if (a >= b) continue;
+          let wa = 0;
+          for (let i = rs; i < a; i++) wa += charWidth(chars[i].codePointAt(0)!);
+          let wb = wa;
+          for (let i = a; i < b; i++) wb += charWidth(chars[i].codePointAt(0)!);
+          screen.restyle(inputTop + (v - firstShown), 3 + wa, 3 + wb, C.selBg);
+        }
       }
       const cy = inputTop + Math.max(0, Math.min(shownCount - 1, caret.visRow - firstShown));
       pendingCaret = { x: 3 + caret.colW, y: cy };

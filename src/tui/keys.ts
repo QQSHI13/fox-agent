@@ -155,7 +155,7 @@ export function createDecoder(emit: (k: Key) => void) {
     if (code === 127 || code === 8) return void emit({ type: "named", name: "backspace" });
     if (code === 9) return void emit({ type: "named", name: "tab" });
     if (code < 27) {
-      const names: Record<number, string> = { 3: "c", 4: "d", 14: "t", 22: "v" };
+      const names: Record<number, string> = { 3: "c", 4: "d", 14: "t", 19: "s", 22: "v" };
       const n = names[code];
       if (n) return void emit({ type: "named", name: n, ctrl: true });
       return void emit({ type: "named", name: `ctrl-${String.fromCharCode(96 + code)}`, ctrl: true });

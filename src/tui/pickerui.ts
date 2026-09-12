@@ -117,7 +117,11 @@ export async function runPicker(
     }
     if (k.type === "mouse") return;
     const action =
-      k.type === "char" ? picker.key({ ch: k.ch }) : picker.key({ name: k.name, ctrl: k.ctrl });
+      k.type === "named" && (k.name === "wheelup" || k.name === "wheeldown")
+        ? picker.key({ name: k.name === "wheelup" ? "up" : "down" })
+        : k.type === "char"
+          ? picker.key({ ch: k.ch })
+          : picker.key({ name: k.name, ctrl: k.ctrl });
     dirty = true;
     if (!action) return;
     if (action.kind === "delete") {

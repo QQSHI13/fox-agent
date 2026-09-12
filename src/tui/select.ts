@@ -144,6 +144,8 @@ export interface PressState {
   x: number;
   y: number;
   moved: boolean;
+  /** the press landed in the input dock: drags select input text, not transcript */
+  input?: boolean;
 }
 
 /**
