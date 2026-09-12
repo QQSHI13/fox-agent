@@ -1102,6 +1102,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     void dispatch(raw, lit);
   }
 
+  /** set by run() once the quarantine is installed; gracefulExit replays it */
+  let restoreOutputRef: (() => void) | null = null;
+
   /**
    * Tear down the terminal and let startTui() return, so the caller's
    * `finally { shutdownTools() }` actually runs. Calling process.exit() here
@@ -1122,6 +1125,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     } catch {}
     try {
       term.end();
+    } catch {}
+    try {
+      restoreOutputRef?.(); // replay anything captured while the grid was up
     } catch {}
     finish?.();
   }
@@ -2395,6 +2401,40 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       term.onResize(doResize);
       doResize(term.size().width, term.size().height);
 
+      // Stray-output quarantine. Plugins, MCP children and library code that
+      // write to stdout/stderr directly would shred the grid mid-frame. While
+      // the TUI owns the terminal those writes go to the debug log and a buffer,
+      // replayed to stderr after exit — "the output you see after you exit the
+      // TUI". The TUI's own painting goes through Bun.stdout.writer() (term.ts),
+      // which none of this touches.
+      const stray: string[] = [];
+      const origOut = process.stdout.write.bind(process.stdout);
+      const origErr = process.stderr.write.bind(process.stderr);
+      const origConsole = { log: console.log, info: console.info, warn: console.warn, error: console.error };
+      const capStray = (chunk: unknown) => {
+        const s = String(chunk);
+        stray.push(s.endsWith("\n") ? s : s + "\n");
+        debugLog("stray output", s.trimEnd());
+      };
+      const swallow = (chunk: unknown, ...rest: unknown[]) => {
+        capStray(chunk);
+        (rest.find((x) => typeof x === "function") as (() => void) | undefined)?.();
+        return true;
+      };
+      (process.stdout as { write: unknown }).write = swallow;
+      (process.stderr as { write: unknown }).write = swallow;
+      console.log = console.info = (...a: unknown[]) => capStray(a.map(String).join(" "));
+      console.warn = console.error = (...a: unknown[]) => capStray(a.map(String).join(" "));
+      const restoreOutput = () => {
+        (process.stdout as { write: unknown }).write = origOut;
+        (process.stderr as { write: unknown }).write = origErr;
+        Object.assign(console, origConsole);
+        if (stray.length) {
+          origErr(`\n--- output captured while the TUI was up ---\n${stray.join("")}--- end captured output ---\n`);
+        }
+      };
+      restoreOutputRef = restoreOutput;
+
       // Last-resort net: a floating promise that rejects must never leave the
       // spinner running forever with no way to submit. console.error would
       // corrupt the grid, so surface it as a transcript item instead.
@@ -2477,6 +2517,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       if (exitCode) process.exitCode = exitCode;
     } catch (e) {
       debugLog("tui fatal", e);
+      try {
+        restoreOutputRef?.();
+      } catch {}
       console.error("[fox-agent] fatal:", (e as Error)?.message ?? e);
       try {
         term.end();
