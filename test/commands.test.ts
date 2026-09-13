@@ -282,6 +282,38 @@ describe("interactive wizards", () => {
     expect(readFileSync(cfgPath, "utf8")).toContain('provider = "google"');
   });
 
+  test("/login model steps appear and disappear with the answers (skipIf)", async () => {
+    const t = await setup();
+    // seed a cached models.dev catalog: without it the static fallback presets
+    // list no models and the model select would be skipped for every provider
+    const { mkdirSync, writeFileSync } = await import("node:fs");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, "models.dev.json"),
+      JSON.stringify({
+        at: Date.now(),
+        providers: [{ id: "google", name: "Google Gemini", api: "https://generativelanguage.googleapis.com", env: ["GEMINI_API_KEY"], format: "google", models: [{ id: "gemini-2.5-pro", name: "Gemini 2.5 Pro", context: 1_048_576 }] }],
+      }),
+    );
+    const s = t.createSession("/w", "m1");
+    const state = { sessionId: s.id, cwd: "/w", provider: { baseUrl: "http://x", apiKey: "k", model: "m" } as any, interactive: true, configPath: join(dir, "config.toml") };
+
+    // a provider with catalog models: picking a listed model skips the text step
+    const wiz = t.runSlashCommand("/login provider=google", state)!.prompt!;
+    const custom = wiz.steps.find((st) => st.key === "modelCustom")!;
+    const model = wiz.steps.find((st) => st.key === "model")!;
+    expect(typeof custom.skipIf === "function" && custom.skipIf({ provider: "google", model: "gemini-2.5-pro" })).toBe(true); // listed pick: no re-ask
+    expect(typeof custom.skipIf === "function" && custom.skipIf({ provider: "google", model: "__custom" })).toBe(false); // typed pick: ask
+    // the select itself disappears when the provider lists nothing (custom)
+    expect(typeof model.skipIf === "function" && model.skipIf({ provider: "custom" })).toBe(true);
+    expect(typeof model.skipIf === "function" && model.skipIf({ provider: "google" })).toBe(false);
+
+    // end to end: a listed pick lands without any modelCustom round-trip
+    const res = wiz.run({ provider: "google", apiKey: "", baseUrl: "", model: "gemini-2.5-pro" }, state);
+    expect(res.output).toContain("saved");
+    expect(state.provider.model).toBe("gemini-2.5-pro");
+  });
+
   test("bare /model, /prune and /fork ask; bare /delete opens the session picker", async () => {
     const t = await setup();
     const s = t.createSession("/w", "m1");

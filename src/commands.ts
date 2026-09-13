@@ -742,14 +742,22 @@ function loginPrompt(state: HarnessState, pre: LoginFields = {}): PromptRequest 
           const models = presetOf(a)?.models ?? [];
           return models.some((m) => m.id === cur) ? cur : "__custom";
         },
+        // no catalog table for this provider (custom, or a preset that lists
+        // nothing) — the select would be a one-row menu, so go straight to text
+        skipIf: (a) => (presetOf(a)?.models ?? []).length === 0,
       },
       {
         key: "modelCustom",
         label: "model id",
         kind: "text",
         allowEmpty: true,
-        initial: pre.model ?? p.model,
-        hint: "only if you picked “type a model id”",
+        initial: (a) => pre.model ?? p.model,
+        hint: (a) =>
+          (a.model ?? "") === "__custom" ? "type the id the endpoint accepts" : "empty = keep the picked/current model",
+        // asked only when the select was skipped (nothing listed) or the user
+        // explicitly chose "type a model id…" — picking a listed model no
+        // longer re-asks for an id it just confirmed
+        skipIf: (a) => (presetOf(a)?.models ?? []).length > 0 && (a.model ?? "") !== "__custom",
       },
     ],
     run: (answers, s) => {
