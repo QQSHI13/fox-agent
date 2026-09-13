@@ -135,8 +135,7 @@ VERSION="${VERSION#v}"
 
 # --- progress bar engine ---
 
-# Parallelogram glyph — full width, no gaps. Green filled, dark grey empty.
-BAR_GLYPH='▱'
+BAR_GLYPH=$'\u25B1'
 BAR_CELLS=32
 
 # Spinner frames
@@ -150,7 +149,6 @@ draw_bar() {
   local filled=$(( pct * BAR_CELLS / 100 ))
   local empty=$(( BAR_CELLS - filled ))
 
-  # filled green, empty dark grey — same glyph, no width mismatch
   local bar="${G}"
   local i
   for (( i=0; i<filled; i++ )); do bar="${bar}${BAR_GLYPH}"; done

@@ -15,7 +15,7 @@ const REPO = "QQSHI13/fox-agent";
 // ── progress bar ──────────────────────────────────────────────────────────
 
 // Parallelogram glyph — full width, no gaps. Green filled, dark grey empty.
-const BAR_GLYPH = "▱";
+const BAR_GLYPH = "\u25B1";
 const BAR_CELLS = 32;
 const GREEN = "\x1b[32m";
 const DIM = "\x1b[2m";
