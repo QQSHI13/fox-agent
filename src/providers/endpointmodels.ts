@@ -24,7 +24,10 @@ interface Entry {
 }
 
 function cachePath(baseUrl: string): string {
-  const h = createHash("sha1").update(baseUrl).digest("hex").slice(0, 12);
+  // sha256, not sha1: the hash only names a cache file, but CodeQL flags MD5/
+  // SHA-1 outright and the swap costs nothing. 12 hex chars is plenty of
+  // collision room for the handful of endpoints a user configures.
+  const h = createHash("sha256").update(baseUrl).digest("hex").slice(0, 12);
   return join(agentHome(), "endpoint-models", `${h}.json`);
 }
 
