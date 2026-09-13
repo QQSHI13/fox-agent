@@ -17,39 +17,69 @@ export const fetchDef: ToolDef = {
 
 const CAP = 20_000;
 
+/** Block-level tags: an opening one becomes a newline; every tag is dropped. */
+const BLOCK_OPEN = new Set([
+  "br", "p", "div", "li", "tr", "td", "th", "section", "article", "header", "footer",
+  "blockquote", "pre", "ul", "ol", "table", "h1", "h2", "h3", "h4", "h5", "h6",
+]);
+/** Contents are never text: skipped whole, from open tag to close tag. */
+const SKIP_TAGS = new Set(["script", "style", "noscript", "template", "svg", "canvas"]);
+
 function htmlToText(html: string): string {
-  // strip executable / non-content blocks; loop until stable so nested or
-  // adjacent tags cannot survive a single pass (a one-shot lazy regex is the
-  // "incomplete sanitization" class) — the output is plain text for the
-  // model, never re-rendered as HTML, so entity decoding here is safe
-  let s = html;
-  let prev = "";
-  while (prev !== s) {
-    prev = s;
-    s = s
-      .replace(/<script\b[^>]*>[\s\S]*?<\/script\s*>/gi, " ")
-      .replace(/<style\b[^>]*>[\s\S]*?<\/style\s*>/gi, " ")
-      .replace(/<!--[\s\S]*?-->/g, " ");
+  // A small state machine instead of regexes over tag structure — regex
+  // stripping is the "bad HTML filtering regexp" / "incomplete multi-character
+  // sanitization" class. The output is plain text for the model, never
+  // re-rendered as HTML, so nothing here has to survive an attacker crafting
+  // hostile markup; it just has to read well.
+  let out = "";
+  let i = 0;
+  const n = html.length;
+  while (i < n) {
+    if (html[i] !== "<") {
+      out += html[i];
+      i++;
+      continue;
+    }
+    if (html.startsWith("<!--", i)) {
+      const end = html.indexOf("-->", i + 4);
+      i = end < 0 ? n : end + 3;
+      continue;
+    }
+    const m = /^<\s*\/?\s*([a-zA-Z][a-zA-Z0-9-]*)/.exec(html.slice(i, i + 64));
+    if (!m) {
+      out += "<"; // a stray "<" in text
+      i++;
+      continue;
+    }
+    const name = m[1].toLowerCase();
+    const gt = html.indexOf(">", i);
+    if (gt < 0) break; // unterminated tag: drop the rest
+    const isClosing = /<\s*\//.test(html.slice(i, i + 8));
+    if (SKIP_TAGS.has(name) && !isClosing) {
+      // skip the whole block up to its close tag (or the end)
+      const close = html.slice(gt + 1).toLowerCase().indexOf(`</${name}`);
+      i = close < 0 ? n : gt + 1 + close;
+      continue;
+    }
+    if (!isClosing && BLOCK_OPEN.has(name)) out += "\n";
+    i = gt + 1;
   }
-  s = s
-    .replace(/<(br|p|div|li|tr|h[1-6])[^>]*>/gi, "\n")
-    .replace(/<[^>]+>/g, "");
-  // one decoding pass through a callback — named entities plus numeric
-  // (decimal/hex) references, unknown names left untouched (no double
+  // decode entities in one pass through a callback — named entities plus
+  // numeric (decimal/hex) references, unknown names left untouched (no double
   // unescaping: "&amp;lt;" stays "&lt;")
   const NAMED: Record<string, string> = {
     amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " ",
     mdash: "—", ndash: "–", hellip: "…", copy: "©", reg: "®", trade: "™",
   };
-  s = s.replace(/&(#x?[0-9a-f]+|[a-z]+);/gi, (whole, ent: string) => {
+  out = out.replace(/&(#x?[0-9a-f]+|[a-z]+);/gi, (whole, ent: string) => {
     const e = ent.toLowerCase();
     if (e.startsWith("#")) {
-      const n = e[1] === "x" ? parseInt(e.slice(2), 16) : parseInt(e.slice(1), 10);
-      return Number.isFinite(n) && n > 0 && n <= 0x10ffff ? String.fromCodePoint(n) : whole;
+      const num = e[1] === "x" ? parseInt(e.slice(2), 16) : parseInt(e.slice(1), 10);
+      return Number.isFinite(num) && num > 0 && num <= 0x10ffff ? String.fromCodePoint(num) : whole;
     }
     return NAMED[e] ?? whole;
   });
-  return s
+  return out
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 }

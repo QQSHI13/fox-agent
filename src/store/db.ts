@@ -320,12 +320,10 @@ export function estTokens(s: string): number {
 }
 
 function rid(): string {
-  // sortable id: timestamp + 6 random base36 chars from the CSPRNG. The id is
-  // a local db/file identifier, not a credential — but predictable ids make
-  // session-guessing trivial, and there is no reason to train bad habits.
-  const b = crypto.getRandomValues(new Uint8Array(6));
-  const rand = [...b].map((x) => (x % 36).toString(36)).join("");
-  return `${Date.now().toString(36)}${rand}`;
+  // sortable id: timestamp + unbiased random suffix (randomUUID hex — a modulo
+  // over raw bytes would bias the distribution, which code scanning flags).
+  // The id is a local db/file identifier, not a credential.
+  return `${Date.now().toString(36)}${crypto.randomUUID().replaceAll("-", "").slice(0, 8)}`;
 }
 
 /**
