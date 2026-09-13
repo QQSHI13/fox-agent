@@ -135,9 +135,9 @@ VERSION="${VERSION#v}"
 
 # --- progress bar engine ---
 
-# Sub-cell precision: ▏▎▍▌▋▊▉ give 8 levels per cell, same width as █
-BAR_CHARS=('▏' '▎' '▍' '▌' '▋' '▊' '▉' '█')
-BAR_WIDTH=32
+# Parallelogram glyph — full width, no gaps. Green filled, dark grey empty.
+BAR_GLYPH='▱'
+BAR_CELLS=32
 
 # Spinner frames
 SPINNER=(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏)
@@ -145,46 +145,23 @@ SPINNER=(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏)
 draw_bar() {
   local pct="$1"       # integer 0-100
   local downloaded="$2" # bytes string
-  local speed="$3"      # bytes/sec string
-  local eta="$4"        # seconds string or "—"
+  local eta="$3"        # seconds string or "—"
 
-  # sub-cell precision: 8 sub-cells per character
-  local total_cells=$(( BAR_WIDTH * 8 ))
-  local filled_cells=$(( pct * total_cells / 100 ))
-  local full_cells=$(( filled_cells / 8 ))
-  local sub_cell=$(( filled_cells % 8 ))
+  local filled=$(( pct * BAR_CELLS / 100 ))
+  local empty=$(( BAR_CELLS - filled ))
 
-  # build the bar — green filled, dim empty, same-width chars everywhere
-  local bar=""
+  # filled green, empty dark grey — same glyph, no width mismatch
+  local bar="${G}"
   local i
-  # full green cells
-  for (( i=0; i<full_cells; i++ )); do
-    bar="${bar}${G}█${R}"
-  done
-  # partial cell: sub-char fills part, dim █ fills the rest of that cell
-  if (( full_cells < BAR_WIDTH )); then
-    if (( sub_cell > 0 )); then
-      bar="${bar}${G}${BAR_CHARS[$sub_cell]}${R}"
-      local pad=$(( 8 - sub_cell ))
-      for (( i=0; i<pad; i++ )); do
-        bar="${bar}${D}█${R}"
-      done
-    else
-      bar="${bar}${D}█${R}"
-    fi
-    # remaining empty cells
-    local remaining=$(( BAR_WIDTH - full_cells - 1 ))
-    for (( i=0; i<remaining; i++ )); do
-      bar="${bar}${D}█${R}"
-    done
-  fi
+  for (( i=0; i<filled; i++ )); do bar="${bar}${BAR_GLYPH}"; done
+  bar="${bar}${D}"
+  for (( i=0; i<empty; i++ )); do bar="${bar}${BAR_GLYPH}"; done
+  bar="${bar}${R}"
 
-  # format percentage with padding
   local pct_str
   pct_str=$(printf "%3d%%" "$pct")
 
-  # clear line and draw
-  printf "\r\033[2K  %s%s %s%s%s  %s%s%s  eta %s %s" \
+  printf "\r\033[2K  %s%s %s%s%s  eta %s %s" \
     "$bar" \
     "$D" "$pct_str" "$R" \
     "$D" "$downloaded" "$R" \
@@ -306,7 +283,7 @@ while kill -0 "$DL_PID" 2>/dev/null; do
   ETA_FMT=$(format_eta "$ETA_SECS")
 
   if (( TOTAL_BYTES > 0 )); then
-    draw_bar "$PCT" "$DOWNLOADED_FMT" "$SPEED_FMT" "$ETA_FMT" "$ELAPSED"
+    draw_bar "$PCT" "$DOWNLOADED_FMT" "$ETA_FMT"
   else
     draw_spinner "downloading ${DOWNLOADED_FMT}"
   fi
@@ -331,7 +308,7 @@ if (( DL_EXIT != 0 )); then
 fi
 
 if (( TOTAL_BYTES > 0 )); then
-  draw_bar 100 "$FINAL_FMT" "$(format_bytes $(( FINAL_SIZE / (TOTAL_TIME > 0 ? TOTAL_TIME : 1) )))/s" "0s" "$TOTAL_TIME"
+  draw_bar 100 "$FINAL_FMT" "0s"
 else
   printf "\r\033[2K  ${G}✓${R} downloaded ${FINAL_FMT}"
 fi

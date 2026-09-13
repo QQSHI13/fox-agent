@@ -14,9 +14,9 @@ const REPO = "QQSHI13/fox-agent";
 
 // ── progress bar ──────────────────────────────────────────────────────────
 
-const BAR_WIDTH = 32;
-// Sub-cell characters — same width as █, give 8-level precision
-const BAR_CHARS = ["▏", "▎", "▍", "▌", "▋", "▊", "▉", "█"];
+// Parallelogram glyph — full width, no gaps. Green filled, dark grey empty.
+const BAR_GLYPH = "▱";
+const BAR_CELLS = 32;
 const GREEN = "\x1b[32m";
 const DIM = "\x1b[2m";
 const RESET = "\x1b[0m";
@@ -29,28 +29,11 @@ function formatBytes(n: number): string {
 }
 
 function drawBar(pct: number, downloaded: string, eta: string): string {
-  // sub-cell precision
-  const totalCells = BAR_WIDTH * 8;
-  const filledCells = Math.round((pct / 100) * totalCells);
-  const fullCells = Math.floor(filledCells / 8);
-  const subCell = filledCells % 8;
+  const filled = Math.round((pct / 100) * BAR_CELLS);
+  const empty = BAR_CELLS - filled;
 
-  let bar = "";
-  // full green cells
-  for (let i = 0; i < fullCells; i++) bar += `${GREEN}█${RESET}`;
-  // partial cell: sub-char + dim █ to pad remainder of cell
-  if (fullCells < BAR_WIDTH) {
-    if (subCell > 0) {
-      bar += `${GREEN}${BAR_CHARS[subCell]}${RESET}`;
-      const pad = 8 - subCell;
-      for (let i = 0; i < pad; i++) bar += `${DIM}█${RESET}`;
-    } else {
-      bar += `${DIM}█${RESET}`;
-    }
-    // remaining empty cells
-    const remaining = BAR_WIDTH - fullCells - 1;
-    for (let i = 0; i < remaining; i++) bar += `${DIM}█${RESET}`;
-  }
+  // filled cells green, empty cells dim — all same glyph
+  let bar = GREEN + BAR_GLYPH.repeat(filled) + RESET + DIM + BAR_GLYPH.repeat(empty) + RESET;
 
   const pctStr = `${String(pct).padStart(3)}%`;
   return `\r\x1b[2K  ${bar} ${pctStr}  ${downloaded}  eta ${eta}`;
