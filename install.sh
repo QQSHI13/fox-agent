@@ -17,28 +17,18 @@ INSTALL_DIR="${INSTALL_DIR:-${XDG_BIN_HOME:-${HOME}/.local/bin}}"
 # --- colors & symbols ---
 
 setup_colors() {
-  if [[ -t 1 ]] && [[ -n "${TERM:-}" && "${TERM:-}" != "dumb" ]]; then
-    R=$'\033[0m'
-    B=$'\033[1m'
-    D=$'\033[2m'
-    G=$'\033[32m'
-    C=$'\033[36m'
-    Y=$'\033[33m'
-    RED=$'\033[31m'
-    DIMRED=$'\033[2;31m'
-    CHECK="${G}✓${R}"
-    CROSS="${RED}✗${R}"
-    ARROW="${C}▸${R}"
-    BULLET="${D}·${R}"
-    HAS_COLOR=1
-  else
-    R='' B='' D='' G='' C='' Y='' RED='' DIMRED=''
-    CHECK="[ok]"
-    CROSS="[!!]"
-    ARROW=">"
-    BULLET="-"
-    HAS_COLOR=0
-  fi
+  R=$'\033[0m'
+  B=$'\033[1m'
+  D=$'\033[2m'
+  G=$'\033[32m'
+  C=$'\033[36m'
+  Y=$'\033[33m'
+  RED=$'\033[31m'
+  DIMRED=$'\033[2;31m'
+  CHECK="${G}✓${R}"
+  CROSS="${RED}✗${R}"
+  ARROW="${C}▸${R}"
+  BULLET="${D}·${R}"
 }
 
 setup_colors
