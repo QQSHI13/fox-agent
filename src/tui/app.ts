@@ -2350,7 +2350,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         } else {
           // a models.dev-fed list can run to hundreds of entries — window it by
           // the space actually available above the dock, not a fixed row count
-          const MAX = Math.max(3, inputTop - 1);
+          const MAX = Math.max(1, Math.min(5, inputTop - 1));
           const start = opts.length <= MAX ? 0 : Math.max(0, Math.min(prompt.sel - Math.floor(MAX / 2), opts.length - MAX));
           const end = Math.min(opts.length, start + MAX);
           if (start > 0) rows.push({ text: `  … ${start} more above`, sel: false });
