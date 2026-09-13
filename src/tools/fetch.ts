@@ -16,6 +16,78 @@ export const fetchDef: ToolDef = {
 };
 
 const CAP = 20_000;
+// Hard cap on what we ever buffer: text keeps a bounded head for truncation,
+// media keeps up to MAX_READ_BYTES. Anything larger is refused mid-stream so a
+// chunked evil body cannot OOM the process before the cap check.
+const MAX_TEXT_BUFFER = CAP * 4;
+const MAX_MEDIA_BUFFER = 15_000_000;
+const MAX_REDIRECTS = 5;
+
+function privateHostname(host: string): boolean {
+  const h = host.toLowerCase().replace(/\.$/, "");
+  if (h === "localhost" || h.endsWith(".localhost")) return true;
+  // Literal IPs: loopback, RFC1918, link-local/metadata, IPv6 loopback/link-local.
+  if (/^127\./.test(h)) return true;
+  if (h === "::1" || h === "::ffff:127.0.0.1") return true;
+  if (/^fe80:/i.test(h) || /^fec0:/i.test(h)) return true;
+  const m4 = /^(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(h);
+  if (m4) {
+    const [a, b] = [+m4[1], +m4[2]];
+    if (a === 10) return true;
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    if (a === 192 && b === 168) return true;
+    if (a === 169 && b === 254) return true;
+    if (a === 0) return true;
+  }
+  return false;
+}
+
+/** SSRF gate: only http(s), no loopback/private/metadata unless explicitly allowed. */
+function checkUrl(u: URL): string | null {
+  if (!/^https?:$/.test(u.protocol)) return "error: only http(s) URLs are supported";
+  if (privateHostname(u.hostname) && process.env.FOX_AGENT_ALLOW_PRIVATE_FETCH !== "1") {
+    return `error: refusing private/local URL ${u.hostname} (set FOX_AGENT_ALLOW_PRIVATE_FETCH=1 to allow)`;
+  }
+  return null;
+}
+
+/** Read a body stream with a byte cap; returns { bytes, truncated }. */
+async function readCapped(body: ReadableStream<Uint8Array> | null, maxBytes: number, signal: AbortSignal): Promise<{ bytes: Uint8Array; truncated: boolean }> {
+  if (!body) return { bytes: new Uint8Array(0), truncated: false };
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  let truncated = false;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (signal.aborted) throw new Error("aborted");
+      if (done) break;
+      if (!value) continue;
+      total += value.length;
+      if (total > maxBytes) {
+        // keep a bounded head for truncation messaging
+        const keep = maxBytes - chunks.reduce((a, c) => a + c.length, 0);
+        if (keep > 0) chunks.push(value.subarray(0, keep));
+        truncated = true;
+        try {
+          await reader.cancel();
+        } catch {}
+        break;
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const out = new Uint8Array(chunks.reduce((a, c) => a + c.length, 0));
+  let off = 0;
+  for (const c of chunks) {
+    out.set(c, off);
+    off += c.length;
+  }
+  return { bytes: out, truncated };
+}
 
 /** Block-level tags: an opening one becomes a newline; every tag is dropped. */
 const BLOCK_OPEN = new Set([
@@ -91,23 +163,58 @@ export async function fetchRun(args: { url?: string }, ctx: ToolContext): Promis
   } catch {
     return fail("error: fetch needs a valid absolute http(s) URL");
   }
-  if (!/^https?:$/.test(url.protocol)) return fail("error: only http(s) URLs are supported");
+  {
+    const blocked = checkUrl(url);
+    if (blocked) return fail(blocked);
+  }
 
   try {
-    const res = await fetch(url, {
-      redirect: "follow",
-      signal: AbortSignal.any([AbortSignal.timeout(20_000), ...(ctx.signal ? [ctx.signal] : [])]),
-      headers: { "user-agent": `fox-agent/${VERSION} (+https://github.com/QQSHI13/fox-agent)` },
-    });
+    // Manual redirects so every hop is re-validated (a public URL 302 to
+    // 169.254.169.254 must not bypass the SSRF gate).
+    let res: Response | null = null;
+    let current = url;
+    for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
+      const r = await fetch(current, {
+        redirect: "manual",
+        signal: AbortSignal.any([AbortSignal.timeout(20_000), ...(ctx.signal ? [ctx.signal] : [])]),
+        headers: { "user-agent": `fox-agent/${VERSION} (+https://github.com/QQSHI13/fox-agent)` },
+      });
+      if (r.status >= 300 && r.status < 400 && r.headers.get("location")) {
+        const next = new URL(r.headers.get("location")!, current);
+        try {
+          await r.body?.cancel();
+        } catch {}
+        const blocked = checkUrl(next);
+        if (blocked) return fail(blocked);
+        current = next;
+        continue;
+      }
+      res = r;
+      break;
+    }
+    if (!res) return fail(`error: too many redirects for ${url}`);
+    url = current;
     if (!res.ok) return fail(`error: HTTP ${res.status} ${res.statusText} for ${url}`);
     const ctype = (res.headers.get("content-type") ?? "").split(";")[0].trim().toLowerCase();
+    const lenHeader = Number(res.headers.get("content-length") ?? "");
     // Binary media: attach for a capable model rather than dumping bytes as text
     const mediaKind = /^(image|audio|video)$/.exec(ctype.split("/")[0] ?? "")?.[0] as "image" | "audio" | "video" | undefined;
     if (mediaKind) {
       if (!modelAcceptsMedia(mediaKind, ctx)) {
+        try {
+          await res.body?.cancel();
+        } catch {}
         return fail(`error: ${url} is ${mediaKind} (${ctype}) and the current model (${ctx.providerCfg?.model ?? "unknown"}) does not accept ${mediaKind} input`);
       }
-      const buf = Buffer.from(await res.arrayBuffer());
+      if (Number.isFinite(lenHeader) && lenHeader > MAX_READ_BYTES) {
+        try {
+          await res.body?.cancel();
+        } catch {}
+        return fail(`error: ${url} is ${(lenHeader / 1e6).toFixed(1)}MB — too large to attach (cap ${MAX_READ_BYTES / 1e6}MB)`);
+      }
+      const signal = AbortSignal.any([AbortSignal.timeout(20_000), ...(ctx.signal ? [ctx.signal] : [])]);
+      const { bytes } = await readCapped(res.body, Math.min(MAX_READ_BYTES + 1, MAX_MEDIA_BUFFER), signal);
+      const buf = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
       if (buf.length > MAX_READ_BYTES) return fail(`error: ${url} is ${(buf.length / 1e6).toFixed(1)}MB — too large to attach (cap ${MAX_READ_BYTES / 1e6}MB)`);
       return {
         ok: true,
@@ -115,8 +222,13 @@ export async function fetchRun(args: { url?: string }, ctx: ToolContext): Promis
         media: [{ mimeType: ctype, data: buf.toString("base64"), filename: url.pathname.split("/").pop() || undefined }],
       };
     }
-    let body = await res.text();
-    if (body.length > CAP * 2) body = body.slice(0, CAP * 4);
+    if (Number.isFinite(lenHeader) && lenHeader > MAX_TEXT_BUFFER) {
+      // Still fetch a bounded head rather than refusing outright: the model gets
+      // the start of the page with a truncation note.
+    }
+    const signal = AbortSignal.any([AbortSignal.timeout(20_000), ...(ctx.signal ? [ctx.signal] : [])]);
+    const { bytes } = await readCapped(res.body, MAX_TEXT_BUFFER, signal);
+    let body = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("utf8");
     if (ctype.includes("html")) body = htmlToText(body);
     return ok(body.length > CAP ? `${body.slice(0, CAP)}\n… (truncated)` : body || "(empty response)");
   } catch (e) {

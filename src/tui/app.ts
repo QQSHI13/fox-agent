@@ -736,6 +736,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
    */
   function welcomeBlock() {
     push("info", `fox-agent v${VERSION} — ${BANNERS[Math.floor(Math.random() * BANNERS.length)]}`);
+    push("toolbody", `working directory: ${state.cwd}`);
     push("toolbody", `session ${state.sessionId || "new — created on first message"} · ${state.cwd}`);
     if (!state.provider.apiKey)
       push("error", "no API key configured — /login opens the setup wizard (saved to ~/.config/fox-agent/config.toml)");

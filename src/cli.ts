@@ -39,6 +39,8 @@ usage: fox [options] [-p "prompt"]
   --compact-at <f>       auto-compact at this fraction of the context window (default 0.85)
   --request-timeout-ms <n>  abort a provider request silent this long (default 120000, 0 = never)
   --config <path>  config file override
+  --trust          mark this directory trusted and skip the TUI trust prompt
+                   (trust = project fox-agent.toml / AGENTS.md may run code as you)
   ls               list sessions
   upgrade [--beta|<version>]  self-update from GitHub releases
   help             show this
@@ -77,6 +79,7 @@ function parseArgv(argv: string[]): Parsed {
     else if (a === "--no-tui") flags.set("no-tui", true);
     else if (a === "--json") flags.set("json", true);
     else if (a === "--acp") flags.set("acp", true);
+    else if (a === "--trust") flags.set("trust", true);
     else if (a === "-h" || a === "--help") flags.set("help", true);
     else if (a === "--version" || a === "-v") flags.set("version", true);
     else if (VALUED.has(a)) flags.set(a === "-p" ? "print" : a.slice(2), argv[++i] ?? "");
@@ -129,9 +132,22 @@ async function main() {
     process.exit(1);
   }
 
-  const cwd = process.cwd();
-  const configOverrides = {
+  let cwd = process.cwd();
+  const autoTrust = !!parsed.flags.get("trust");
+  const trustMod = await import("./core/trust.ts");
+  // Trust is the malware boundary: trusted dirs get full agent control
+  // (project commands, MCP, LSP, !cmd), untrusted dirs get safe keys only.
+  // FOX_AGENT_NO_TRUST_CHECK=1 treats everything as trusted (tests/sandboxes).
+  let trustedDir = trustMod.shouldSkipTrustCheck() || autoTrust || trustMod.isTrusted(cwd);
+  if (autoTrust) {
+    try {
+      trustMod.markTrusted(cwd);
+    } catch {}
+    trustedDir = true;
+  }
+  const configOverrides: Parameters<typeof loadConfig>[0] & { cwd: string } = {
     cwd,
+    trusted: trustedDir,
     configPath: (parsed.flags.get("config") as string) || undefined,
     model: (parsed.flags.get("model") as string) || undefined,
     baseUrl: (parsed.flags.get("base-url") as string) || undefined,
@@ -189,6 +205,45 @@ async function main() {
   const cont = parsed.flags.get("continue");
   const printMode = parsed.flags.has("print") || (!process.stdin.isTTY && !process.stdout.isTTY);
   const tuiMode = !printMode && !parsed.flags.get("no-tui") && !!process.stdout.isTTY;
+
+  // ---- trust gate ----
+  // Trusted dirs are saved to $FOX_AGENT_HOME/trusted_dirs so the question is
+  // asked once per directory. --trust marks + skips the prompt.
+  // TUI interactive prompts (and may chdir); every other mode never blocks —
+  // untrusted headless/ACP/plain runs restricted (project commands ignored).
+  if (tuiMode && !!process.stdin.isTTY && !trustedDir) {
+    const trusted = await trustMod.resolveTrustedCwd(cwd, { autoTrust: false });
+    if (!trusted) {
+      console.error(`fox-agent: untrusted directory — refusing to start in ${cwd}`);
+      process.exit(1);
+    }
+    if (trusted !== cwd) {
+      try {
+        process.chdir(trusted);
+      } catch (e) {
+        console.error(`fox-agent: cannot chdir to ${trusted}: ${(e as Error).message}`);
+        process.exit(1);
+      }
+      cwd = trusted;
+      configOverrides.cwd = trusted;
+      note(`working directory: ${cwd}`);
+    }
+    trustedDir = true;
+    configOverrides.trusted = true;
+    note(`working directory (trusted): ${cwd}`);
+  } else if (tuiMode && !!process.stdin.isTTY) {
+    note(`working directory (trusted): ${cwd}`);
+  } else if (!trustedDir) {
+    // Non-interactive: fail safe, not silent. Project [mcpServers/agents/lsp/
+    // providers] are ignored by loadConfig(trusted:false); the warnings surface
+    // in the turn/headless output via config.warnings. Only mention it when a
+    // project file actually exists — otherwise it is noise on every scripted run.
+    try {
+      if (trustMod.findProjectConfig(cwd)) {
+        note(`working directory ${cwd} is untrusted — project commands ignored (use --trust or run the TUI to trust)`);
+      }
+    } catch {}
+  }
 
   let sessionId: string;
   if (cont) {

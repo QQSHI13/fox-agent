@@ -21,7 +21,14 @@ export function sessionsDir(): string {
   return join(agentHome(), "sessions");
 }
 
+const SAFE_ID = /^[A-Za-z0-9_-]+$/;
+/** Session ids are local rid() strings — never allow path separators or dot segments (ACP passes client ids). */
+export function assertSafeSessionId(id: string): void {
+  if (!SAFE_ID.test(id)) throw new Error(`invalid session id: ${id}`);
+}
+
 export function sessionDbPath(id: string): string {
+  assertSafeSessionId(id);
   return join(sessionsDir(), `${id}.db`);
 }
 

@@ -48,6 +48,12 @@ export interface AcpServerOptions {
   chat?: ChatFn;
 }
 
+const SAFE_ID = /^[A-Za-z0-9_-]+$/;
+/** Client-controlled ids must never become paths (locks/../../x). */
+function checkId(id: string): void {
+  if (!SAFE_ID.test(id)) throw RequestError.invalidParams(undefined, `invalid session id`);
+}
+
 /** Text content of one ACP prompt request, flattened for fox-agent's single-string turn API. */
 function promptText(blocks: acp.ContentBlock[]): string {
   const parts: string[] = [];
@@ -170,6 +176,7 @@ export function buildAgent(opts: AcpServerOptions): acp.AgentApp {
       })),
     }))
     .onRequest(acp.methods.agent.session.load, async ({ params, client }) => {
+      checkId(params.sessionId);
       if (!getSession(params.sessionId)) throw RequestError.resourceNotFound(params.sessionId);
       acquireLock(params.sessionId, "acp");
       await replay(params.sessionId, config.acpHistory, (update) =>
@@ -178,20 +185,24 @@ export function buildAgent(opts: AcpServerOptions): acp.AgentApp {
       return {};
     })
     .onRequest(acp.methods.agent.session.resume, async ({ params }) => {
+      checkId(params.sessionId);
       if (!getSession(params.sessionId)) throw RequestError.resourceNotFound(params.sessionId);
       acquireLock(params.sessionId, "acp");
       return {};
     })
     .onRequest(acp.methods.agent.session.fork, async ({ params }) => {
+      checkId(params.sessionId);
       const forked = forkSession(params.sessionId);
       if (!forked) throw RequestError.resourceNotFound(params.sessionId);
       return { sessionId: forked.id };
     })
     .onRequest(acp.methods.agent.session.delete, async ({ params }) => {
+      checkId(params.sessionId);
       if (!deleteSession(params.sessionId)) throw RequestError.resourceNotFound(params.sessionId);
       return {};
     })
     .onRequest(acp.methods.agent.session.close, async ({ params }) => {
+      checkId(params.sessionId);
       running.get(params.sessionId)?.abort();
       running.delete(params.sessionId);
       await shutdownTools(params.sessionId);
@@ -201,11 +212,18 @@ export function buildAgent(opts: AcpServerOptions): acp.AgentApp {
     .onNotification(acp.methods.agent.session.cancel, async ({ params }) => {
       // Notification, not a request: cancel does not reply. The prompt it aborts
       // is what reports `stopReason: "cancelled"`.
+      try {
+        checkId(params.sessionId);
+      } catch {
+        return;
+      }
       running.get(params.sessionId)?.abort();
     })
     .onRequest(acp.methods.agent.session.prompt, async ({ params, client, signal }) => {
+      checkId(params.sessionId);
       const session = getSession(params.sessionId);
       if (!session) throw RequestError.resourceNotFound(params.sessionId);
+      if (running.has(params.sessionId)) throw RequestError.invalidParams(undefined, "a prompt is already running for this session");
       // `fox --acp` is launched before the missing-key check (see src/cli.ts), so
       // a keyless install reaches here. Say so in the protocol's own terms — an
       // editor renders `auth_required` as an actionable message, whereas the

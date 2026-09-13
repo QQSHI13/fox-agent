@@ -83,7 +83,9 @@ export async function buildRegistry(
   for (const p of plugins) for (const tool of p.tools ?? []) map.set(tool.def.name, tool);
 
   if (cfg.plugins?.length) {
-    const res = await loadPlugins(cfg.plugins, process.cwd(), disabled);
+    const { globalConfigPath } = await import("../core/config.ts");
+    const { dirname } = await import("node:path");
+    const res = await loadPlugins(cfg.plugins, dirname(globalConfigPath()), disabled);
     warnings.push(...res.warnings);
     plugins.push(...res.plugins);
     for (const p of res.plugins) {

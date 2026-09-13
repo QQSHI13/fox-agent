@@ -299,16 +299,16 @@ describe("registry", () => {
 });
 
 describe("childEnv", () => {
-  test("strips provider credentials but keeps ordinary vars", () => {
+  test("passes provider credentials through (no stripping)", () => {
     process.env.FOX_AGENT_API_KEY = "secret1";
     process.env.ANTHROPIC_API_KEY = "secret2";
     process.env.SOME_OTHER_API_KEY = "secret3";
     process.env.FOX_AGENT_KEEP_ME = "fine";
     try {
       const env = childEnv();
-      expect(env.FOX_AGENT_API_KEY).toBeUndefined();
-      expect(env.ANTHROPIC_API_KEY).toBeUndefined();
-      expect(env.SOME_OTHER_API_KEY).toBeUndefined();
+      expect(env.FOX_AGENT_API_KEY).toBe("secret1");
+      expect(env.ANTHROPIC_API_KEY).toBe("secret2");
+      expect(env.SOME_OTHER_API_KEY).toBe("secret3");
       expect(env.FOX_AGENT_KEEP_ME).toBe("fine");
       expect(env.PATH).toBe(process.env.PATH!);
     } finally {

@@ -1,10 +1,13 @@
 /**
- * fox-agent deliberately runs tools with full machine access (see README), but that
- * is about filesystem and process reach — not about handing our own provider
- * credentials to every subprocess. Strip them so a command the model runs
- * can't read the key that is driving the model.
+ * fox-agent runs tools with full machine access and passes the full
+ * environment to every subprocess. No credentials are stripped: secrets live
+ * in ~/.bashrc / ~/.profile / exported env anyway, and the agent can read
+ * those files directly, so filtering *_API_KEY here was theater that hid the
+ * real threat model without stopping exfiltration.
+ *
+ * Children (exec, pty, MCP, LSP, shell) inherit everything, plus per-server
+ * `extra` additions.
  */
-const SECRET_PATTERNS = [/^FOX_AGENT_API_KEY$/, /^ANTHROPIC_API_KEY$/, /^OPENAI_API_KEY$/, /_API_KEY$/, /^FOX_AGENT_AUTH/];
 
 /**
  * @param extra  per-server / per-call additions; these win over the inherited env.
@@ -21,7 +24,6 @@ export function childEnv(extra?: Record<string, string>, cwd?: string): Record<s
   const out: Record<string, string> = {};
   for (const [k, v] of Object.entries(process.env)) {
     if (v === undefined) continue;
-    if (SECRET_PATTERNS.some((re) => re.test(k))) continue;
     out[k] = v;
   }
   if (cwd) {

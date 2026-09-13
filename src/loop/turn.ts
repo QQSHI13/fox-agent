@@ -287,6 +287,16 @@ export async function* runTurnCore(
       const res = await loadPlugins(effCfg.plugins);
       plugins = res.plugins;
       setupWarnings = [...(effCfg.warnings ?? []), ...res.warnings];
+      // buildRegistry registers plugin providers; the override path must too,
+      // or provider=<plugin> throws unknown-provider here but works in prod.
+      const { setCustomProviders } = await import("../providers/index.ts");
+      const custom = new Map();
+      for (const p of plugins) {
+        for (const [name, fn] of Object.entries(p.providers ?? {})) {
+          if (typeof fn === "function") custom.set(name, fn);
+        }
+      }
+      setCustomProviders(custom);
     } else {
       setupWarnings = [...(effCfg.warnings ?? [])];
     }

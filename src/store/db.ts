@@ -194,6 +194,9 @@ let _home: string | null = null;
 function open(path: string, schema: string): Database {
   const d = new Database(path);
   d.exec("PRAGMA journal_mode = WAL;");
+  // Two writers (TUI + fox --acp on one session) must wait, not fail with
+  // immediate SQLITE_BUSY. Advisory locks in lock.ts are best-effort only.
+  d.exec("PRAGMA busy_timeout = 5000;");
   d.exec("PRAGMA foreign_keys = ON;");
   d.exec(schema);
   d.exec(`PRAGMA user_version = ${USER_VERSION};`);
@@ -528,26 +531,38 @@ export function appendMessage(
   },
 ): MessageRow {
   const d = sessionDb(sessionId);
-  const row = d.query("SELECT COALESCE(MAX(seq),0)+1 AS n FROM messages WHERE session_id = ?").get(sessionId) as { n: number };
-  const m: MessageRow = {
-    id: msg.id ?? rid(),
-    seq: row.n,
-    session_id: sessionId,
-    parent_id: msg.parent_id ?? null,
-    role: msg.role,
-    content: msg.content ?? "",
-    tool_calls: msg.tool_calls ?? null,
-    tool_call_id: msg.tool_call_id ?? null,
-    media: msg.media ?? null,
-    tokens: msg.tokens,
-    error: msg.error ?? null,
-    created_at: Date.now(),
-  };
-  d.prepare(
-    // explicit column list: a db migrated by ALTER has `media` as its LAST
-    // column, so positional VALUES would write media into tokens
-    "INSERT INTO messages (id, seq, session_id, parent_id, role, content, tool_calls, tool_call_id, media, tokens, error, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-  ).run(m.id, m.seq, m.session_id, m.parent_id, m.role, m.content, m.tool_calls, m.tool_call_id, m.media, m.tokens, m.error, m.created_at);
+  // MAX(seq)+1 then INSERT must be atomic: two writers reading the same MAX
+  // would collide on idx_messages_seq or silently reorder the transcript.
+  d.exec("BEGIN IMMEDIATE");
+  let m: MessageRow;
+  try {
+    const row = d.query("SELECT COALESCE(MAX(seq),0)+1 AS n FROM messages WHERE session_id = ?").get(sessionId) as { n: number };
+    m = {
+      id: msg.id ?? rid(),
+      seq: row.n,
+      session_id: sessionId,
+      parent_id: msg.parent_id ?? null,
+      role: msg.role,
+      content: msg.content ?? "",
+      tool_calls: msg.tool_calls ?? null,
+      tool_call_id: msg.tool_call_id ?? null,
+      media: msg.media ?? null,
+      tokens: msg.tokens,
+      error: msg.error ?? null,
+      created_at: Date.now(),
+    };
+    d.prepare(
+      // explicit column list: a db migrated by ALTER has `media` as its LAST
+      // column, so positional VALUES would write media into tokens
+      "INSERT INTO messages (id, seq, session_id, parent_id, role, content, tool_calls, tool_call_id, media, tokens, error, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    ).run(m.id, m.seq, m.session_id, m.parent_id, m.role, m.content, m.tool_calls, m.tool_call_id, m.media, m.tokens, m.error, m.created_at);
+    d.exec("COMMIT");
+  } catch (e) {
+    try {
+      d.exec("ROLLBACK");
+    } catch {}
+    throw e;
+  }
 
   if (m.role === "user") {
     const s = getSession(sessionId);
@@ -598,11 +613,21 @@ export function getRef(sessionId: string, name = "main"): string | null {
 }
 
 export function appendOps(sessionId: string, ops: ViewOp[]): void {
+  if (!ops.length) return;
   const d = sessionDb(sessionId);
-  const row = d.query("SELECT COALESCE(MAX(seq),0)+1 AS n FROM ops WHERE session_id = ?").get(sessionId) as { n: number };
-  let seq = row.n;
-  const ins = d.prepare("INSERT INTO ops VALUES (?, ?, ?, ?, ?)");
-  for (const op of ops) ins.run(seq++, sessionId, op.kind, JSON.stringify(op), Date.now());
+  d.exec("BEGIN IMMEDIATE");
+  try {
+    const row = d.query("SELECT COALESCE(MAX(seq),0)+1 AS n FROM ops WHERE session_id = ?").get(sessionId) as { n: number };
+    let seq = row.n;
+    const ins = d.prepare("INSERT INTO ops (seq, session_id, kind, payload, created_at) VALUES (?, ?, ?, ?, ?)");
+    for (const op of ops) ins.run(seq++, sessionId, op.kind, JSON.stringify(op), Date.now());
+    d.exec("COMMIT");
+  } catch (e) {
+    try {
+      d.exec("ROLLBACK");
+    } catch {}
+    throw e;
+  }
 }
 
 export function allOps(sessionId: string): OpRow[] {

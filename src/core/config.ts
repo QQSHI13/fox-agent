@@ -146,8 +146,8 @@ export interface Config {
    * Plugin modules to load, **from the global config only**.
    *
    * Every other extension point here — `[mcpServers.*]`, `[agents.*]`, `[lsp.*]`
-   * — spawns a child process through `childEnv()`, which strips `*_API_KEY` and
-   * `FOX_AGENT_AUTH*`. A plugin cannot be sandboxed that way: it is imported into fox-agent's
+   * — spawns a child process through `childEnv()`, which passes the full
+   * environment (no credential stripping). A plugin cannot be sandboxed that way: it is imported into fox-agent's
    * own process and gets the whole environment, the API key included. So a
    * project file naming one is skipped with a warning — "clone a repo, cd in, run
    * fox" must not be able to execute that repo's code. `default` in `[agents.*]`
@@ -170,6 +170,14 @@ export interface Config {
   acpHistory: "full" | "last" | number;
   /** every AGENTS.md / CLAUDE.md on the path from root to cwd, each labeled with its source path ("" if none) */
   projectInstructions: string;
+  /**
+   * Whether the cwd was trusted at load time. When false, project-scope
+   * executable sections ([mcpServers.*], [agents.*], [lsp.*], [providers.*])
+   * are skipped with warnings — "clone a repo, cd in, run fox" must not
+   * execute that repo's commands. Safe keys (model, theme, …) still apply.
+   * Undefined (hand-built configs, older callers) means trusted.
+   */
+  trusted?: boolean;
   /**
    * Problems found while loading config that are not fatal — a project file
    * naming a plugin, for instance. Surfaced as `warn` events at the top of a
@@ -199,6 +207,7 @@ const DEFAULTS: Omit<Config, "projectInstructions"> = {
   tuiRich: false,
   theme: "default",
   contextMarkers: true,
+  trusted: true,
   plugins: [],
   disabledPlugins: [],
   providers: {},
@@ -382,8 +391,9 @@ function parseProfile(v: unknown): ProviderProfile | null {
   return out;
 }
 
-function applyTable(cfg: Config, t: Record<string, unknown> | null, scope: "global" | "project") {
+function applyTable(cfg: Config, t: Record<string, unknown> | null, scope: "global" | "project", opts: { trusted?: boolean } = {}) {
   if (!t) return;
+  const untrustedProject = scope === "project" && opts.trusted === false;
   // a typo'd key used to vanish silently, leaving the user on defaults with no
   // idea why — name it the way a project-file plugin entry already is
   for (const k of Object.keys(t)) {
@@ -391,11 +401,19 @@ function applyTable(cfg: Config, t: Record<string, unknown> | null, scope: "glob
   }
   if (typeof t.model === "string") cfg.model = t.model;
   if (typeof t.baseUrl === "string") {
-    const u = t.baseUrl.replace(/\/$/, "");
-    if (/^https?:\/\//.test(u)) cfg.baseUrl = u;
-    else cfg.warnings.push(`${scope} config: baseUrl '${t.baseUrl}' is not an http(s) URL — ignored`);
+    // An untrusted baseUrl would redirect prompts + tool output to an
+    // attacker's endpoint — same exfil class as a malicious MCP server.
+    if (untrustedProject) cfg.warnings.push(`project config: baseUrl ignored in untrusted directory — trust this folder to enable`);
+    else {
+      const u = t.baseUrl.replace(/\/$/, "");
+      if (/^https?:\/\//.test(u)) cfg.baseUrl = u;
+      else cfg.warnings.push(`${scope} config: baseUrl '${t.baseUrl}' is not an http(s) URL — ignored`);
+    }
   }
-  if (typeof t.apiKey === "string") cfg.apiKey = t.apiKey;
+  if (typeof t.apiKey === "string") {
+    if (untrustedProject) cfg.warnings.push(`project config: apiKey ignored in untrusted directory — trust this folder to enable`);
+    else cfg.apiKey = t.apiKey;
+  }
   // any non-empty string: a plugin may register its own provider name, and
   // `resolveChat` reports one it cannot resolve
   if (typeof t.provider === "string" && t.provider.trim()) cfg.provider = t.provider.trim();
@@ -415,14 +433,20 @@ function applyTable(cfg: Config, t: Record<string, unknown> | null, scope: "glob
   if (t.acpHistory === "full" || t.acpHistory === "last") cfg.acpHistory = t.acpHistory;
   else if (typeof t.acpHistory === "number" && t.acpHistory >= 1) cfg.acpHistory = Math.floor(t.acpHistory);
   if (t.mcpServers && typeof t.mcpServers === "object") {
-    for (const [name, v] of Object.entries(t.mcpServers as Record<string, unknown>)) {
+    if (untrustedProject) {
+      const n = Object.keys(t.mcpServers as Record<string, unknown>).length;
+      if (n) cfg.warnings.push(`project config: ${n} [mcpServers.*] entr${n === 1 ? "y" : "ies"} ignored in untrusted directory — trust this folder to enable`);
+    } else for (const [name, v] of Object.entries(t.mcpServers as Record<string, unknown>)) {
       const s = v as { command?: string; args?: string[]; env?: Record<string, string> };
       if (typeof s?.command !== "string") continue;
       cfg.mcpServers[name] = { command: s.command, args: s.args, env: s.env };
     }
   }
   if (t.agents && typeof t.agents === "object") {
-    for (const [name, v] of Object.entries(t.agents as Record<string, unknown>)) {
+    if (untrustedProject) {
+      const n = Object.keys(t.agents as Record<string, unknown>).length;
+      if (n) cfg.warnings.push(`project config: ${n} [agents.*] entr${n === 1 ? "y" : "ies"} ignored in untrusted directory — trust this folder to enable`);
+    } else for (const [name, v] of Object.entries(t.agents as Record<string, unknown>)) {
       const s = v as { command?: string; args?: string[]; env?: Record<string, string>; url?: string; headers?: Record<string, string> };
       // an entry is an ACP spawn (command) or an A2A endpoint (url); neither = junk
       if (typeof s?.command !== "string" && typeof s?.url !== "string") continue;
@@ -434,7 +458,10 @@ function applyTable(cfg: Config, t: Record<string, unknown> | null, scope: "glob
     }
   }
   if (t.lsp && typeof t.lsp === "object") {
-    for (const [name, v] of Object.entries(t.lsp as Record<string, unknown>)) {
+    if (untrustedProject) {
+      const n = Object.keys(t.lsp as Record<string, unknown>).length;
+      if (n) cfg.warnings.push(`project config: ${n} [lsp.*] entr${n === 1 ? "y" : "ies"} ignored in untrusted directory — trust this folder to enable`);
+    } else for (const [name, v] of Object.entries(t.lsp as Record<string, unknown>)) {
       const s = v as { command?: string; args?: string[]; env?: Record<string, string>; extensions?: unknown; rootMarkers?: string[] };
       if (typeof s?.command !== "string") continue;
       // An entry with no extensions could never be selected for any file, so it
@@ -453,7 +480,10 @@ function applyTable(cfg: Config, t: Record<string, unknown> | null, scope: "glob
     }
   }
   if (t.providers && typeof t.providers === "object") {
-    for (const [name, v] of Object.entries(t.providers as Record<string, unknown>)) {
+    if (untrustedProject) {
+      const n = Object.keys(t.providers as Record<string, unknown>).length;
+      if (n) cfg.warnings.push(`project config: ${n} [providers.*] profile${n === 1 ? "" : "s"} ignored in untrusted directory — trust this folder to enable (!cmd would run as you)`);
+    } else for (const [name, v] of Object.entries(t.providers as Record<string, unknown>)) {
       const p = parseProfile(v);
       // a profile that says nothing at all is a typo, not a configuration
       if (p && (p.format || p.baseUrl || p.apiKey || p.models.length || p.defaultModel)) cfg.providers[name] = p;
@@ -552,10 +582,11 @@ export function saveGlobalConfig(
 }
 
 export function loadConfig(
-  overrides: Partial<Config> & { configPath?: string; cwd?: string } = {},
+  overrides: Partial<Config> & { configPath?: string; cwd?: string; trusted?: boolean } = {},
   env: Record<string, string | undefined> = process.env,
 ): Config {
   const cwd = overrides.cwd ?? process.cwd();
+  const trusted = overrides.trusted ?? true;
   // FOX_AGENT_CONFIG overrides the global path — tests and sandboxed runs must
   // never read the real ~/.config/fox-agent/config.toml.
   const globalPath = overrides.configPath ?? process.env.FOX_AGENT_CONFIG ?? join(homedir(), ".config", GLOBAL_CONFIG_NAME);
@@ -578,14 +609,14 @@ export function loadConfig(
   // into them, so reusing the reference would leak one config's entries into
   // every later load in the same process (the ACP server loads config per run,
   // so this is reachable).
-  const merged: Config = { ...DEFAULTS, mcpServers: {}, agents: {}, lsp: {}, plugins: [], disabledPlugins: [], providers: {}, warnings: [], projectInstructions: "" };
+  const merged: Config = { ...DEFAULTS, mcpServers: {}, agents: {}, lsp: {}, plugins: [], disabledPlugins: [], providers: {}, warnings: [], projectInstructions: "", trusted };
   // An explicit --config that does not exist is a mistake worth surfacing; the
   // default global path being absent is normal and stays silent.
   if (overrides.configPath && !existsSync(overrides.configPath)) {
     throw new ConfigError(`config file not found: ${overrides.configPath}`);
   }
-  applyTable(merged, readToml(globalPath), "global");
-  applyTable(merged, readToml(projectPath), "project");
+  applyTable(merged, readToml(globalPath), "global", { trusted });
+  applyTable(merged, readToml(projectPath), "project", { trusted });
   applyEnv(merged, env);
 
   if (overrides.model) merged.model = overrides.model;

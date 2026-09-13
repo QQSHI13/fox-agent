@@ -148,6 +148,8 @@ describe("media through the pipeline", () => {
 
 describe("fetch: media URLs", () => {
   async function serve(bytes: number[], ctype: string): Promise<string> {
+    // fetchRun blocks private/local URLs (SSRF gate); tests serve locally.
+    process.env.FOX_AGENT_ALLOW_PRIVATE_FETCH = "1";
     const server = Bun.serve({
       port: 0,
       fetch: () => new Response(new Uint8Array(bytes), { headers: { "content-type": ctype } }),

@@ -1,5 +1,5 @@
 import { resolve } from "node:path";
-import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
+import { appendFileSync, closeSync, mkdirSync, openSync, readSync, rmSync, statSync } from "node:fs";
 import type { ToolDef } from "../providers/types.ts";
 import type { ToolContext, ToolResult } from "./types.ts";
 import { fail, ok } from "./types.ts";
@@ -59,6 +59,11 @@ interface ExecJob {
 
 const jobs = new Map<string, Map<string, ExecJob>>(); // sessionId -> id -> job
 let jobSeq = 0;
+// Disk/RAM safety, not a capability cut: the agent keeps full shell access,
+// but one session cannot fill $FOX_AGENT_HOME or OOM the harness.
+const MAX_BG_JOBS_PER_SESSION = 16;
+const MAX_FG_BYTES = 5_000_000;
+const MAX_POLL_BYTES = 1_000_000;
 
 function sessionJobs(sessionId: string): Map<string, ExecJob> {
   let m = jobs.get(sessionId);
@@ -78,6 +83,10 @@ function spawnShell(cmd: string, cwd: string) {
 }
 
 function startJob(args: { cmd: string; workdir?: string }, ctx: ToolContext): ToolResult {
+  const live = [...sessionJobs(ctx.sessionId).values()].filter((j) => j.exitCode === null).length;
+  if (live >= MAX_BG_JOBS_PER_SESSION) {
+    return fail(`error: too many background jobs in this session (${live}/${MAX_BG_JOBS_PER_SESSION}) — poll or kill one before starting more`);
+  }
   const cwd = args.workdir ? resolve(ctx.cwd, args.workdir) : ctx.cwd;
   const dir = `${agentHome()}/jobs/${ctx.sessionId}`;
   mkdirSync(dir, { recursive: true });
@@ -107,27 +116,44 @@ function startJob(args: { cmd: string; workdir?: string }, ctx: ToolContext): To
 function pollJob(args: { job: string; signal?: string }, ctx: ToolContext): ToolResult {
   const job = sessionJobs(ctx.sessionId).get(args.job);
   if (!job) return fail(`error: no job ${args.job} in this session`);
+  const reap = () => {
+    sessionJobs(ctx.sessionId).delete(args.job);
+    try {
+      rmSync(job.logPath, { force: true });
+    } catch {}
+  };
   if (args.signal === "kill") {
     if (job.exitCode === null) killTree(job.pid);
-    sessionJobs(ctx.sessionId).delete(args.job);
+    reap();
     return ok(`job ${job.id} killed`);
   }
   let data = "";
   try {
-    const buf = readFileSync(job.logPath);
-    // The pump appends while we read: a multi-byte char straddling `cursor`
-    // would decode as U+FFFD and be lost for good. Hold the partial sequence
-    // back — same treatment as pty's readRange.
-    const tail = partialTailBytes(buf);
-    data = buf.subarray(job.cursor, buf.length - tail).toString("utf8");
-    job.cursor = buf.length - tail;
+    // Tail-read, never whole-file: a chatty `yes` job must not OOM the poll.
+    const st = statSync(job.logPath);
+    const end = st.size;
+    const start = Math.max(job.cursor, end - MAX_POLL_BYTES);
+    const skipped = start - job.cursor;
+    const len = end - start;
+    if (len > 0) {
+      const fd = openSync(job.logPath, "r");
+      try {
+        const buf = Buffer.alloc(len);
+        readSync(fd, buf, 0, len, start);
+        const tail = partialTailBytes(buf);
+        data = (skipped > 0 ? `… (${skipped} bytes skipped, log too chatty)\n` : "") + buf.subarray(0, buf.length - tail).toString("utf8");
+        job.cursor = end - tail;
+      } finally {
+        closeSync(fd);
+      }
+    }
   } catch {}
   const secs = Math.floor((Date.now() - job.startedAt) / 1000);
   const status =
     job.exitCode === null
       ? `job ${job.id} running (${secs}s, pid ${job.pid})`
       : `job ${job.id} exited ${job.exitCode} after ${secs}s`;
-  if (job.exitCode !== null) sessionJobs(ctx.sessionId).delete(args.job); // final poll reaps it
+  if (job.exitCode !== null) reap(); // final poll reaps it + unlinks the log
   const body = data.length > outCap() ? data.slice(-outCap()) + "\n… (head truncated)" : data;
   return ok(`${status}\n${body.trimEnd() || "(no new output)"}`);
 }
@@ -136,7 +162,12 @@ function pollJob(args: { job: string; signal?: string }, ctx: ToolContext): Tool
 export function killExecJobs(sessionId: string): void {
   const m = jobs.get(sessionId);
   if (!m) return;
-  for (const j of m.values()) if (j.exitCode === null) killTree(j.pid);
+  for (const j of m.values()) {
+    if (j.exitCode === null) killTree(j.pid);
+    try {
+      rmSync(j.logPath, { force: true });
+    } catch {}
+  }
   jobs.delete(sessionId);
 }
 
@@ -193,6 +224,14 @@ export async function execRun(
 
   let stdout = "";
   let stderr = "";
+  let dropped = 0;
+  const capAppend = (cur: string, s: string): string => {
+    const next = cur + s;
+    if (next.length <= MAX_FG_BYTES) return next;
+    // keep the tail (most recent output is what the model needs), count the drop
+    dropped += next.length - MAX_FG_BYTES;
+    return next.slice(-MAX_FG_BYTES);
+  };
   const read = async (stream: ReadableStream, sink: (s: string) => void) => {
     try {
       const dec = new TextDecoder();
@@ -204,8 +243,8 @@ export async function execRun(
     } catch {}
   };
   await Promise.all([
-    read(proc.stdout as ReadableStream, (s) => (stdout += s)),
-    read(proc.stderr as ReadableStream, (s) => (stderr += s)),
+    read(proc.stdout as ReadableStream, (s) => (stdout = capAppend(stdout, s))),
+    read(proc.stderr as ReadableStream, (s) => (stderr = capAppend(stderr, s))),
   ]);
   flushStream();
   clearTimeout(timer);
@@ -217,6 +256,7 @@ export async function execRun(
   if (stdout.trim()) s += stdout;
   if (stderr.trim()) s += (s ? "\n[stderr]\n" : "") + stderr;
   s = s.trimEnd();
+  if (dropped > 0) s = `… (${dropped} chars dropped, output too chatty)\n${s}`;
   const truncated = s.length > outCap() ? s.slice(-outCap()) + "\n… (head truncated)" : s;
   let head = `exit ${code}`;
   if (killedBy) head += ` (${killedBy})`;

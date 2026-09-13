@@ -12,9 +12,9 @@
  * been recycled... accepted risk, pid reuse is rare inside a session's life)
  * is treated as stale and its file removed on sight.
  */
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, openSync, readFileSync, rmSync, writeFileSync, closeSync } from "node:fs";
 import { join } from "node:path";
-import { agentHome } from "../core/paths.ts";
+import { agentHome, assertSafeSessionId } from "../core/paths.ts";
 
 export interface SessionLock {
   pid: number;
@@ -24,6 +24,7 @@ export interface SessionLock {
 }
 
 function lockPath(id: string): string {
+  assertSafeSessionId(id);
   return join(agentHome(), "locks", `${id}.json`);
 }
 
@@ -58,14 +59,45 @@ export function lockHolder(id: string): SessionLock | null {
 /**
  * Take the lock for this process. Returns null on success, or the live holder
  * when another process has it — the caller decides what read-only means.
+ * Uses O_EXCL create so two processes racing both see "no holder" cannot both
+ * win: exactly one exclusive create succeeds.
  */
 export function acquireLock(id: string, kind: string): SessionLock | null {
-  const holder = lockHolder(id);
-  if (holder && holder.pid !== process.pid) return holder;
+  assertSafeSessionId(id);
   mkdirSync(join(agentHome(), "locks"), { recursive: true });
   const self: SessionLock = { pid: process.pid, kind, ts: Date.now() };
-  writeFileSync(lockPath(id), JSON.stringify(self));
-  return null;
+  const data = JSON.stringify(self);
+  try {
+    const fd = openSync(lockPath(id), "wx", 0o600);
+    try {
+      writeFileSync(fd, data);
+    } finally {
+      closeSync(fd);
+    }
+    return null;
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+  }
+  const holder = lockHolder(id);
+  // Stale/dead holder was cleaned (or file was corrupt): retry once.
+  if (!holder) {
+    try {
+      const fd = openSync(lockPath(id), "wx", 0o600);
+      try {
+        writeFileSync(fd, data);
+      } finally {
+        closeSync(fd);
+      }
+      return null;
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+      const retry = lockHolder(id);
+      if (retry && retry.pid !== process.pid) return retry;
+      return null;
+    }
+  }
+  if (holder.pid === process.pid) return null;
+  return holder;
 }
 
 /** Drop the lock, but only ours — never another process's. */

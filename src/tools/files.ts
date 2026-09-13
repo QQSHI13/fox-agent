@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, readdirSync, statSync, lstatSync, realpathSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -295,7 +295,9 @@ export async function grepRun(args: { pattern: string; path?: string; include?: 
     const argv = ["--line-number", "--no-heading", "--color", "never", "--max-count", "5", "--glob", "!.git"];
     if (!args.include) argv.push("--glob", "!node_modules");
     if (args.include) argv.push("--glob", args.include);
-    argv.push(args.pattern, p);
+    // `--` so a pattern like `--files` is searched, not parsed as a flag.
+    // `-e` so a pattern starting with `-` is always a pattern.
+    argv.push("-e", args.pattern, "--", p);
     try {
       const { stdout } = await execFileP(rg, argv, { maxBuffer: 64 * 1024 * 1024, timeout: 30_000 });
       return ok(cap(stdout.trimEnd()) || "(no matches)");
@@ -312,9 +314,20 @@ const SKIP_DIRS = new Set([".git", "node_modules", ".venv", "venv", "__pycache__
 function walkGrep(re: RegExp, root: string, include?: string): string {
   const out: string[] = [];
   const includeRe = include ? new Bun.Glob(include) : null;
+  const seen = new Set<string>();
+  const MAX_DEPTH = 20;
 
-  const walk = (dir: string) => {
-    if (out.length >= 300) return;
+  const walk = (dir: string, depth: number) => {
+    if (out.length >= 300 || depth > MAX_DEPTH) return;
+    // resolve the real path so a symlink loop (ln -s . loop) terminates
+    let real = dir;
+    try {
+      real = realpathSync(dir);
+    } catch {
+      return;
+    }
+    if (seen.has(real)) return;
+    seen.add(real);
     let entries: string[];
     try {
       entries = readdirSync(dir);
@@ -326,15 +339,28 @@ function walkGrep(re: RegExp, root: string, include?: string): string {
       const full = join(dir, name);
       let st;
       try {
-        st = statSync(full);
+        // lstat: never follow a symlinked dir into a loop; symlinked files are
+        // still read via readFileSync below (open follows the link once).
+        st = lstatSync(full);
       } catch {
         continue;
       }
-      if (st.isDirectory()) {
-        if (!SKIP_DIRS.has(name) && !name.startsWith(".")) walk(full);
+      if (st.isSymbolicLink()) {
+        // Skip symlinked directories entirely; symlinked files are treated as
+        // files only if they are small (stat follows once for the size check).
+        try {
+          const t = statSync(full);
+          if (t.isDirectory()) continue;
+          if (!t.isFile() || t.size > 2_000_000) continue;
+        } catch {
+          continue;
+        }
+      } else if (st.isDirectory()) {
+        if (!SKIP_DIRS.has(name) && !name.startsWith(".")) walk(full, depth + 1);
+        continue;
+      } else if (!st.isFile() || st.size > 2_000_000) {
         continue;
       }
-      if (!st.isFile() || st.size > 2_000_000) continue;
       if (includeRe && !includeRe.match(name)) continue;
       try {
         const buf = readFileSync(full);
@@ -358,7 +384,7 @@ function walkGrep(re: RegExp, root: string, include?: string): string {
             if (re.test(l) && out.length < 300) out.push(`${root}:${i + 1}: ${l.trim().slice(0, 300)}`);
           });
       }
-    } else walk(root);
+    } else walk(root, 0);
   } catch {}
 
   return out.length ? out.join("\n") : "(no matches)";

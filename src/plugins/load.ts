@@ -10,7 +10,7 @@
  * take out the process.
  */
 import { homedir } from "node:os";
-import { isAbsolute, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { FoxPlugin } from "./types.ts";
 
@@ -76,7 +76,10 @@ export function reloadPlugins(): void {
 
 export async function loadPlugins(
   paths: string[],
-  cwd = process.cwd(),
+  // Relative plugin paths resolve against the GLOBAL config dir, never the
+  // repo cwd: plugins are global-only, and resolving against cwd would let
+  // "cd repo && fox" load that repo's code despite the global-only rule.
+  cwd = join(homedir(), ".config", "fox-agent"),
   disabled: string[] = [],
 ): Promise<{ plugins: FoxPlugin[]; warnings: string[] }> {
   const fresh = forceFresh;

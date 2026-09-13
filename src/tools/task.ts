@@ -34,6 +34,10 @@ import { fail, ok } from "./types.ts";
  */
 const MAX_DEPTH = 3;
 const DEPTH_ENV = "FOX_AGENT_DELEGATION_DEPTH";
+// Malware/loop safety, not a capability cut: the agent keeps full delegation,
+// but one session cannot fork-bomb the machine or pin gigabytes of reports.
+const MAX_BG_TASKS_PER_SESSION = 8;
+const MAX_TASK_RESULT = 50_000;
 
 export const taskDef: ToolDef = {
   name: "task",
@@ -106,7 +110,8 @@ function pollTask(args: { job: string }, ctx: ToolContext): ToolResult {
   if (!job.done) return ok(`task ${job.id} (${job.label}) still running (${secs}s) — poll again with task({job:"${job.id}"})`);
   sessionTasks(ctx.sessionId).delete(args.job); // a settled task reaps on first read
   const head = `task ${job.id} (${job.label}) ${job.ok ? "finished" : "failed"} after ${secs}s`;
-  return job.ok ? ok(`${head}\n${job.result}`) : fail(`${head}\n${job.result}`);
+  const body = job.result.length > MAX_TASK_RESULT ? `${job.result.slice(-MAX_TASK_RESULT)}\n… (head truncated)` : job.result;
+  return job.ok ? ok(`${head}\n${body}`) : fail(`${head}\n${body}`);
 }
 
 /** Session end: abort every detached subagent it started. */
@@ -126,6 +131,10 @@ export async function taskRun(
   if (!args.description?.trim()) return fail("error: task needs description");
 
   if (args.background) {
+    const live = [...sessionTasks(ctx.sessionId).values()].filter((j) => !j.done).length;
+    if (live >= MAX_BG_TASKS_PER_SESSION) {
+      return fail(`error: too many background tasks in this session (${live}/${MAX_BG_TASKS_PER_SESSION}) — poll one with task({job}) before starting more`);
+    }
     const id = `t${++taskSeq}`;
     const ac = new AbortController();
     const job: TaskJob = { id, label: args.description.trim(), startedAt: Date.now(), done: false, ok: false, result: "", ac };
@@ -140,12 +149,12 @@ export async function taskRun(
       .then((r) => {
         job.done = true;
         job.ok = r.ok;
-        job.result = r.output;
+        job.result = r.output.length > MAX_TASK_RESULT ? r.output.slice(-MAX_TASK_RESULT) : r.output;
       })
       .catch((e) => {
         job.done = true;
         job.ok = false;
-        job.result = `error: ${(e as Error).message ?? e}`;
+        job.result = `error: ${(e as Error).message ?? e}`.slice(-MAX_TASK_RESULT);
       });
     return ok(`task ${id} started in background (${job.label}) — poll with task({job:"${id}"})`);
   }

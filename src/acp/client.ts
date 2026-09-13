@@ -111,10 +111,10 @@ export function buildClient(cwd: string): acp.ClientApp {
 /**
  * Environment for a child agent.
  *
- * Note what this does NOT use: `childEnv()`, which strips `*_API_KEY` so a
- * command the *model* invented cannot read the credential driving the model. An
- * ACP agent is a different kind of child — it is a peer harness whose entire job
- * is to call a model, so a stripped env makes it dead on arrival, and today's
+ * Note what this does NOT use: `childEnv()`, which is now a plain passthrough
+ * (no credential stripping — secrets live in bashrc/exported env and the agent
+ * can read those files directly). An ACP agent is a peer harness whose entire
+ * job is to call a model, so it needs the full env by design, and today's
  * in-process subagent already runs with the key by virtue of sharing the process.
  *
  * What keeps that safe is that the model cannot choose the command: the default
