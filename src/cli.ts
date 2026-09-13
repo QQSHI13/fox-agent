@@ -161,7 +161,9 @@ async function main() {
       model: c.model,
       provider: p.format,
       headers: p.headers,
-      sampling: p.sampling,
+      // reasoning effort rides in sampling — providers turn it into the
+      // format-specific providerOptions (reasoningEffort / thinking budget)
+      sampling: { ...p.sampling, ...(c.reasoningEffort ? { reasoningEffort: c.reasoningEffort } : {}) },
       requestTimeoutMs: c.requestTimeoutMs,
     };
     setActiveEndpoint(p.baseUrl);

@@ -132,6 +132,8 @@ export interface Config {
   tuiKeptChars: number;
   /** TUI rich mode: syntax-tinted code fences + diff-colored tool output (default off) */
   tuiRich: boolean;
+  /** reasoning effort: "low" | "medium" | "high" — unset lets the provider default rule */
+  reasoningEffort?: "low" | "medium" | "high";
   /** TUI color theme: a preset name or a plugin-registered one (default "default") */
   theme: string;
   /**
@@ -316,6 +318,8 @@ function applyEnv(cfg: Config, env: Record<string, string | undefined>) {
   // 0/false/no turns post-edit diagnostics off without touching a config file
   if (env.FOX_AGENT_DIAGNOSTICS !== undefined) cfg.diagnostics = !/^(0|false|no)$/i.test(env.FOX_AGENT_DIAGNOSTICS.trim());
   if (env.FOX_AGENT_THEME?.trim()) cfg.theme = env.FOX_AGENT_THEME.trim();
+  const effort = env.FOX_AGENT_REASONING_EFFORT?.trim();
+  if (effort === "low" || effort === "medium" || effort === "high") cfg.reasoningEffort = effort;
   const outCap = Number(env.FOX_AGENT_TOOL_OUTPUT_CAP);
   if (Number.isFinite(outCap) && outCap >= 1000) cfg.toolOutputCap = Math.floor(outCap);
 }
@@ -334,6 +338,7 @@ const KNOWN_KEYS = new Set([
   "requestTimeoutMs", "diagnostics", "mcpServers", "agents", "lsp", "plugins",
   "providers", "disabledPlugins", "toolOutputCap", "sessionListLimit",
   "tuiCollapsedChars", "tuiKeptChars", "tuiRich", "theme", "contextMarkers", "acpHistory",
+  "reasoningEffort",
 ]);
 
 /** Parse one `[[providers.x.models]]` entry; junk fields degrade to absent. */
@@ -404,6 +409,7 @@ function applyTable(cfg: Config, t: Record<string, unknown> | null, scope: "glob
   if (typeof t.tuiCollapsedChars === "number" && t.tuiCollapsedChars >= 40) cfg.tuiCollapsedChars = Math.floor(t.tuiCollapsedChars);
   if (typeof t.tuiKeptChars === "number" && t.tuiKeptChars >= 200) cfg.tuiKeptChars = Math.floor(t.tuiKeptChars);
   if (typeof t.tuiRich === "boolean") cfg.tuiRich = t.tuiRich;
+  if (t.reasoningEffort === "low" || t.reasoningEffort === "medium" || t.reasoningEffort === "high") cfg.reasoningEffort = t.reasoningEffort;
   if (typeof t.theme === "string" && t.theme.trim()) cfg.theme = t.theme.trim();
   if (typeof t.contextMarkers === "boolean") cfg.contextMarkers = t.contextMarkers;
   if (t.acpHistory === "full" || t.acpHistory === "last") cfg.acpHistory = t.acpHistory;
@@ -492,10 +498,9 @@ export function globalConfigPath(): string {
  * string for anything a key/URL/model id can contain.
  */
 export function saveGlobalConfig(
-  fields: { provider?: string; apiKey?: string; baseUrl?: string; model?: string; theme?: string },
+  fields: { provider?: string; apiKey?: string; baseUrl?: string; model?: string; theme?: string; reasoningEffort?: string },
   path = globalConfigPath(),
 ): string {
-  const KEYS = new Set(["provider", "apiKey", "baseUrl", "model", "theme"]);
   let rest = "";
   /** existing top-level values for keys this call does NOT set — dropping them
    *  would gut the config (e.g. /theme alone erasing the saved provider+key) */
@@ -507,9 +512,10 @@ export function saveGlobalConfig(
     for (const line of lines) {
       if (/^\s*\[/.test(line)) inTables = true;
       if (!inTables) {
-        const m = line.match(/^\s*(provider|apiKey|baseUrl|model|theme)\s*=\s*(.*)$/);
+        const m = line.match(/^\s*(provider|apiKey|baseUrl|model|theme|reasoningEffort)\s*=\s*(.*)$/);
         if (m) {
-          if (!(m[1] in fields)) kept[m[1]] = m[2].trim();
+          // reasoningEffort = "" explicitly clears the key; absence keeps it
+          if (!(m[1] in fields) && !(fields.reasoningEffort === "" && m[1] === "reasoningEffort")) kept[m[1]] = m[2].trim();
           continue; // stale copy of a managed key — the head re-emits it
         }
       }
@@ -525,6 +531,14 @@ export function saveGlobalConfig(
     fields.baseUrl !== undefined ? `baseUrl = ${JSON.stringify(fields.baseUrl)}` : kept.baseUrl ? `baseUrl = ${kept.baseUrl}` : null,
     fields.model !== undefined ? `model = ${JSON.stringify(fields.model)}` : kept.model ? `model = ${kept.model}` : null,
     fields.theme !== undefined ? `theme = ${JSON.stringify(fields.theme)}` : kept.theme ? `theme = ${kept.theme}` : null,
+    // "" clears the key (provider default); undefined keeps whatever was saved
+    fields.reasoningEffort !== undefined
+      ? fields.reasoningEffort
+        ? `reasoningEffort = ${JSON.stringify(fields.reasoningEffort)}`
+        : null
+      : kept.reasoningEffort
+        ? `reasoningEffort = ${kept.reasoningEffort}`
+        : null,
   ].filter(Boolean);
   mkdirSync(dirname(path), { recursive: true });
   // a wrong write loses the user's key with no undo — keep one backup

@@ -6,7 +6,7 @@ import { createOpenAI } from "@ai-sdk/openai";
 import type { ChatMessage, ProviderConfig, StreamEvent, ToolDef } from "./types.ts";
 import { classifyProviderError } from "../core/errors.ts";
 import { startWatchdog } from "./watchdog.ts";
-import { samplingOptions } from "./index.ts";
+import { reasoningProviderOptions, samplingOptions } from "./index.ts";
 import { toModelMessages } from "./convert.ts";
 
 export * from "./types.ts";
@@ -42,6 +42,7 @@ export async function* streamChat(
       messages: rest,
       ...(tools.length ? { tools: toolSet } : {}),
       ...samplingOptions(cfg.sampling),
+      ...reasoningProviderOptions(cfg),
       abortSignal: wd.signal,
     });
 

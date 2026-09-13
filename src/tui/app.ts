@@ -2406,8 +2406,8 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     }
 
     // hints popup floats directly above the input box (and any queue rows and
-    // command output), clamped to the rows actually free above the queue
-    const hints = hintText(Math.max(1, inputTop - queueRowsH - cmdRowsH - 1));
+    // command output), capped at 5 rows — more reads as a wall, not a hint
+    const hints = hintText(Math.min(5, Math.max(1, inputTop - queueRowsH - cmdRowsH - 1)));
     if (hints.active && hints.rows.length) {
       const hTop = inputTop - queueRowsH - cmdRowsH - hints.rows.length;
       for (let i = 0; i < hints.rows.length; i++) {

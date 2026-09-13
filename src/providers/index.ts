@@ -79,6 +79,27 @@ export function samplingOptions(s: Record<string, unknown> | undefined): Record<
   return out;
 }
 
+/** Thinking budgets for providers that take a token budget rather than a name. */
+const THINKING_BUDGET: Record<string, number> = { low: 2_048, medium: 8_192, high: 32_768 };
+
+/**
+ * Provider options for reasoning effort, keyed the way each AI SDK expects
+ * them (`reasoningEffort` travels in `sampling` like any sampling override).
+ * Undefined when no effort is set — the provider's native default then rules.
+ */
+export function reasoningProviderOptions(cfg: ProviderConfig): { providerOptions: Record<string, import("@ai-sdk/provider").JSONObject> } | undefined {
+  const effort = cfg.sampling?.reasoningEffort;
+  if (typeof effort !== "string" || !/^(low|medium|high)$/.test(effort)) return undefined;
+  const options: Record<string, import("@ai-sdk/provider").JSONObject> = {};
+  if (cfg.provider === "anthropic") options.anthropic = { thinking: { type: "enabled", budgetTokens: THINKING_BUDGET[effort] } };
+  else if (cfg.provider === "google") options.google = { thinkingConfig: { thinkingBudget: THINKING_BUDGET[effort] } };
+  else if (cfg.provider === "openai-responses") options.openai = { reasoningEffort: effort };
+  // openai-compatible (and anything else speaking the chat-completions shape):
+  // the SDK's option namespace is "openaiCompatible"
+  else options.openaiCompatible = { reasoningEffort: effort };
+  return { providerOptions: options };
+}
+
 /** Resolved default ChatFn honoring cfg.provider. */
 export const resolveChat: ChatFn = async function* (cfg, messages, tools, signal) {
   const name = cfg.provider;

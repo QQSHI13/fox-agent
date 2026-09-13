@@ -161,6 +161,7 @@ export const COMMANDS: CommandSpec[] = [
   { name: "/usage", desc: "token totals + budget" },
   { name: "/model", desc: "show or switch model — picker lists every configured profile and catalog model", usage: "[profile/][name]", arg: true },
   { name: "/theme", desc: "show or switch the color theme", usage: "[name]", arg: true, help: "bare: searchable chooser in the TUI; with a name, switches and saves to the global config" },
+  { name: "/thinking", desc: "reasoning effort for reasoning models", usage: "[low|medium|high|default]", arg: true, help: "bare: chooser in the TUI; sets provider reasoning options (OpenAI reasoningEffort, Anthropic thinking budget, Google thinkingConfig) and saves to the global config" },
   { name: "/reload", desc: "re-read config files and re-apply model, theme, caps and plugins" },
   {
     name: "/upgrade",
@@ -1073,6 +1074,49 @@ export function runSlashCommand(input: string, state: HarnessState): CommandResu
       }
       if (!arg) return { handled: true, output: `theme: ${themeName()}\navailable: ${themeNames().join(", ")}` };
       return apply(arg);
+    }
+
+    case "/thinking": {
+      // reasoning effort rides in provider.sampling — the providers turn it
+      // into the format-specific options (openai reasoningEffort, anthropic
+      // thinking budget, google thinkingConfig)
+      const EFFORTS = ["low", "medium", "high"];
+      const current = () => (state.provider.sampling?.reasoningEffort as string | undefined) ?? state.config?.reasoningEffort ?? "";
+      const apply = (effort: string): CommandResult => {
+        if (effort && !EFFORTS.includes(effort))
+          return { handled: true, output: `unknown effort '${effort}' — use low | medium | high, or 'default' to clear` };
+        state.provider.sampling = { ...state.provider.sampling, ...(effort ? { reasoningEffort: effort } : {}) };
+        if (state.config) {
+          if (effort) state.config.reasoningEffort = effort as "low" | "medium" | "high";
+          else delete state.config.reasoningEffort;
+        }
+        const saved = saveGlobalConfig({ reasoningEffort: effort }, state.configPath);
+        return { handled: true, output: `thinking: ${effort || "provider default"} — saved to ${saved}, live now (/reload re-reads it)` };
+      };
+      if (!arg && state.interactive) {
+        const cur = current();
+        return {
+          handled: true,
+          prompt: {
+            title: `thinking effort — current: ${cur || "provider default"}`,
+            steps: [
+              {
+                key: "effort",
+                label: "effort",
+                kind: "select",
+                options: [
+                  ...EFFORTS.map((e) => ({ value: e, label: e === cur ? `${e} (current)` : e })),
+                  { value: "", label: "provider default (clear)" },
+                ],
+                initial: cur,
+              },
+            ],
+            run: (a) => apply(a.effort ?? ""),
+          },
+        };
+      }
+      if (!arg) return { handled: true, output: `thinking: ${current() || "provider default"} — /thinking low|medium|high to change` };
+      return apply(arg === "default" || arg === "off" ? "" : arg);
     }
 
     case "/reload":
