@@ -8,8 +8,63 @@
 import { chmodSync, existsSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { VERSION } from "./version.ts";
+import { isatty } from "node:tty";
 
 const REPO = "QQSHI13/fox-agent";
+
+// ── progress bar ──────────────────────────────────────────────────────────
+
+const BAR_WIDTH = 32;
+// Sub-cell characters — same width as █, give 8-level precision
+const BAR_CHARS = ["▏", "▎", "▍", "▌", "▋", "▊", "▉", "█"];
+const GREEN = "\x1b[32m";
+const DIM = "\x1b[2m";
+const RESET = "\x1b[0m";
+
+function formatBytes(n: number): string {
+  if (n >= 1_073_741_824) return `${(n / 1_073_741_824).toFixed(1)}GB`;
+  if (n >= 1_048_576) return `${(n / 1_048_576).toFixed(1)}MB`;
+  if (n >= 1024) return `${(n / 1024).toFixed(0)}KB`;
+  return `${n}B`;
+}
+
+function drawBar(pct: number, downloaded: string, eta: string): string {
+  // sub-cell precision
+  const totalCells = BAR_WIDTH * 8;
+  const filledCells = Math.round((pct / 100) * totalCells);
+  const fullCells = Math.floor(filledCells / 8);
+  const subCell = filledCells % 8;
+
+  let bar = "";
+  // full green cells
+  for (let i = 0; i < fullCells; i++) bar += `${GREEN}█${RESET}`;
+  // partial cell: sub-char + dim █ to pad remainder of cell
+  if (fullCells < BAR_WIDTH) {
+    if (subCell > 0) {
+      bar += `${GREEN}${BAR_CHARS[subCell]}${RESET}`;
+      const pad = 8 - subCell;
+      for (let i = 0; i < pad; i++) bar += `${DIM}█${RESET}`;
+    } else {
+      bar += `${DIM}█${RESET}`;
+    }
+    // remaining empty cells
+    const remaining = BAR_WIDTH - fullCells - 1;
+    for (let i = 0; i < remaining; i++) bar += `${DIM}█${RESET}`;
+  }
+
+  const pctStr = `${String(pct).padStart(3)}%`;
+  return `\r\x1b[2K  ${bar} ${pctStr}  ${downloaded}  eta ${eta}`;
+}
+
+function showProgressBar(downloaded: number, total: number, elapsedMs: number): void {
+  if (!isatty(2)) return; // no tty, no bar
+  const pct = total > 0 ? Math.min(100, Math.round((downloaded / total) * 100)) : 0;
+  const speed = elapsedMs > 0 ? downloaded / (elapsedMs / 1000) : 0;
+  const remaining = total - downloaded;
+  const etaSecs = speed > 0 ? Math.round(remaining / speed) : -1;
+  const etaFmt = etaSecs < 0 ? "—" : etaSecs < 60 ? `${etaSecs}s` : `${Math.floor(etaSecs / 60)}m${etaSecs % 60}s`;
+  process.stderr.write(drawBar(pct, formatBytes(downloaded), etaFmt));
+}
 
 export interface ReleaseInfo {
   tag: string;
@@ -160,14 +215,51 @@ export async function upgrade(
   const sums = rel.assets.find((a) => a.name === "SHA256SUMS");
   if (!bin || !sums) throw new Error(`release ${rel.tag} has no ${asset} asset`);
 
-  onLog(`downloading ${asset}…`);
-  const [binRes, sumsRes] = await Promise.all([
-    fetch(bin.url, { signal: AbortSignal.timeout(120_000) }),
-    fetch(sums.url, { signal: AbortSignal.timeout(15_000) }),
-  ]);
-  if (!binRes.ok || !sumsRes.ok) throw new Error("download failed");
-  const bytes = new Uint8Array(await binRes.arrayBuffer());
+  // fetch checksum silently
+  const sumsRes = await fetch(sums.url, { signal: AbortSignal.timeout(15_000) });
+  if (!sumsRes.ok) throw new Error("download failed");
   const sumsText = await sumsRes.text();
+
+  // download binary with progress bar
+  onLog(`downloading ${asset}…`);
+  const binRes = await fetch(bin.url, { signal: AbortSignal.timeout(120_000) });
+  if (!binRes.ok) throw new Error("download failed");
+
+  const totalBytes = Number(binRes.headers.get("content-length")) || 0;
+  if (!isatty(2) && totalBytes > 0) onLog(`  ${formatBytes(totalBytes)}`);
+
+  const reader = binRes.body?.getReader();
+  if (!reader) throw new Error("download failed: no body");
+
+  const chunks: Uint8Array[] = [];
+  let received = 0;
+  const startTime = Date.now();
+  let lastBarTime = 0;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    received += value.length;
+
+    // throttle bar redraws to ~10fps
+    const now = Date.now();
+    if (now - lastBarTime >= 100) {
+      showProgressBar(received, totalBytes, now - startTime);
+      lastBarTime = now;
+    }
+  }
+
+  // final bar state
+  showProgressBar(received, totalBytes, Date.now() - startTime);
+  if (isatty(2)) process.stderr.write("\n");
+
+  const bytes = new Uint8Array(received);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.length;
+  }
 
   const wantLine = sumsText.split("\n").find((l) => l.trim().endsWith(` ${asset}`));
   if (!wantLine) throw new Error(`SHA256SUMS has no entry for ${asset}`);
