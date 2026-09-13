@@ -79,6 +79,9 @@ jobs:
     needs: [tag, build]
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
       - uses: actions/download-artifact@v8
         with:
           path: dist
@@ -87,11 +90,76 @@ jobs:
         run: |
           cd dist
           sha256sum * > SHA256SUMS
+      - name: generate release notes
+        id: notes
+        run: |
+          # Find previous tag (skip the one we just created)
+          PREV_TAG=$(git tag --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+' | sed -n '2p')
+
+          if [ -z "$PREV_TAG" ]; then
+            RANGE="HEAD"
+          else
+            RANGE="${PREV_TAG}..HEAD"
+          fi
+
+          # Collect commits
+          BREAKING=""
+          FEATURES=""
+          FIXES=""
+          OTHER=""
+
+          while IFS= read -r line; do
+            hash=$(echo "$line" | cut -d' ' -f1)
+            msg=$(echo "$line" | cut -d' ' -f2-)
+            
+            # Skip merge commits and release commits
+            if echo "$msg" | grep -qE '^Merge |^release v'; then
+              continue
+            fi
+
+            # Categorize by conventional commit prefix
+            if echo "$msg" | grep -qE '^[a-z]+!:'; then
+              BREAKING="${BREAKING}- ${msg} (\`${hash}\`)\n"
+            elif echo "$msg" | grep -qE '^feat(\(.+\))?:'; then
+              FEATURES="${FEATURES}- ${msg} (\`${hash}\`)\n"
+            elif echo "$msg" | grep -qE '^fix(\(.+\))?:'; then
+              FIXES="${FIXES}- ${msg} (\`${hash}\`)\n"
+            else
+              OTHER="${OTHER}- ${msg} (\`${hash}\`)\n"
+            fi
+          done < <(git log --oneline "$RANGE")
+
+          # Build release body
+          {
+            echo "## What's Changed"
+            echo ""
+            if [ -n "$BREAKING" ]; then
+              echo "### ⚠ BREAKING CHANGES"
+              echo -e "$BREAKING"
+            fi
+            if [ -n "$FEATURES" ]; then
+              echo "### ✨ Features"
+              echo -e "$FEATURES"
+            fi
+            if [ -n "$FIXES" ]; then
+              echo "### 🐛 Bug Fixes"
+              echo -e "$FIXES"
+            fi
+            if [ -n "$OTHER" ]; then
+              echo "### 📦 Other Changes"
+              echo -e "$OTHER"
+            fi
+            echo ""
+            echo "**Full Changelog**: https://github.com/${{ github.repository }}/compare/${PREV_TAG:-$(git rev-list --max-parents=0 HEAD | head -1)}...v${{ needs.tag.outputs.version }}"
+          } > release-notes.md
+
+          # Store body for output
+          cat release-notes.md
       - name: publish release
         uses: softprops/action-gh-release@v3
         with:
           tag_name: v${{ needs.tag.outputs.version }}
           name: v${{ needs.tag.outputs.version }}
           prerelease: ${{ inputs.prerelease }}
-          generate_release_notes: true
+          body_path: release-notes.md
           files: dist/*
