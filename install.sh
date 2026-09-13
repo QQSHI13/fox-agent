@@ -227,31 +227,37 @@ format_eta() {
 DOWNLOAD_URL="https://github.com/${REPO}/releases/download/v${VERSION}/${ASSET}"
 CHECKSUM_URL="https://github.com/${REPO}/releases/download/v${VERSION}/SHA256SUMS"
 
-echo ""
-
-# header
-printf "  ${B}fox-agent${R} ${D}v${VERSION} ${C}${OS}/${ARCH}${R}\n"
-echo ""
-
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
-# get file size first
-printf "  ${D}connecting...${R}"
-TOTAL_BYTES="$(curl -sI -L "${DOWNLOAD_URL}" 2>/dev/null | grep -i 'content-length' | tail -1 | tr -d '\r' | awk '{print $2}')" || true
-printf "\r\033[2K"
+# print header immediately — no waiting
+echo ""
+printf "  %sfox-agent%s %sv%s %s%s/%s%s\n" "$B" "$R" "$D" "$VERSION" "$C" "$OS" "$ARCH" "$R"
+echo ""
 
-if [[ -z "$TOTAL_BYTES" || "$TOTAL_BYTES" == "0" ]]; then
-  TOTAL_BYTES=0
-fi
+# fetch Content-Length in background (don't block startup)
+TOTAL_BYTES_FILE="${TMP_DIR}/.total_bytes"
+curl -sI -L "${DOWNLOAD_URL}" 2>/dev/null | grep -i 'content-length' | tail -1 | tr -d '\r' | awk '{print $2}' > "$TOTAL_BYTES_FILE" &
+CL_PID=$!
 
-# start download in background
+# start download immediately
 curl -fsSL -o "${TMP_DIR}/${ASSET}" "${DOWNLOAD_URL}" 2>/dev/null &
 DL_PID=$!
 
 # fetch checksum in parallel
 curl -fsSL -o "${TMP_DIR}/SHA256SUMS" "${CHECKSUM_URL}" 2>/dev/null &
 CK_PID=$!
+
+# wait for Content-Length (with timeout so we don't block forever)
+TOTAL_BYTES=0
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+  if ! kill -0 "$CL_PID" 2>/dev/null; then
+    TOTAL_BYTES="$(cat "$TOTAL_BYTES_FILE" 2>/dev/null || echo 0)"
+    break
+  fi
+  sleep 0.1
+done
+[[ -z "$TOTAL_BYTES" || "$TOTAL_BYTES" == "0" ]] && TOTAL_BYTES=0
 
 # animate progress bar while download runs
 START_TIME=$(date +%s 2>/dev/null || echo 0)
@@ -264,12 +270,17 @@ while kill -0 "$DL_PID" 2>/dev/null; do
   NOW=$(date +%s 2>/dev/null || echo 0)
   ELAPSED=$(( NOW - START_TIME ))
 
+  # re-read TOTAL_BYTES in case Content-Length arrived late
+  if (( TOTAL_BYTES == 0 )); then
+    TOTAL_BYTES="$(cat "$TOTAL_BYTES_FILE" 2>/dev/null || echo 0)"
+    [[ -z "$TOTAL_BYTES" || "$TOTAL_BYTES" == "0" ]] && TOTAL_BYTES=0
+  fi
+
   # calculate percentage
   if (( TOTAL_BYTES > 0 )); then
     PCT=$(( CURRENT_SIZE * 100 / TOTAL_BYTES ))
     (( PCT > 100 )) && PCT=100
   else
-    # unknown size — show indeterminate spinner
     PCT=0
   fi
 
@@ -297,7 +308,6 @@ while kill -0 "$DL_PID" 2>/dev/null; do
   if (( TOTAL_BYTES > 0 )); then
     draw_bar "$PCT" "$DOWNLOADED_FMT" "$SPEED_FMT" "$ETA_FMT" "$ELAPSED"
   else
-    # indeterminate: show spinner + bytes
     draw_spinner "downloading ${DOWNLOADED_FMT}"
   fi
 
