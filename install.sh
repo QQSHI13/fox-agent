@@ -148,7 +148,6 @@ draw_bar() {
   local downloaded="$2" # bytes string
   local speed="$3"      # bytes/sec string
   local eta="$4"        # seconds string or "—"
-  local elapsed="$5"    # seconds
 
   # fill level (0 to BAR_WIDTH * 8 sub-cells)
   local total_cells=$(( BAR_WIDTH * 8 ))
@@ -184,14 +183,18 @@ draw_bar() {
   pct_str=$(printf "%3d%%" "$pct")
 
   # clear line and draw
-  printf "\r\033[2K"
-  printf "  ${bar_color}%s${R} ${D}${pct_str}${R}  ${D}${downloaded}${R}  ${C}${speed}/s${R}  ${D}eta ${eta}${R}"
+  printf "\r\033[2K  %s%s%s %s%s%s  %s%s%s  %s%s/s%s  %seta %s%s" \
+    "$bar_color" "$bar" "$R" \
+    "$D" "$pct_str" "$R" \
+    "$D" "$downloaded" "$R" \
+    "$C" "$speed" "$R" \
+    "$D" "$eta" "$R"
 }
 
 spinner_tick=0
 draw_spinner() {
   local label="$1"
-  printf "\r\033[2K  ${SPINNER[$spinner_tick]} ${label}"
+  printf "\r\033[2K  %s %s" "${SPINNER[$spinner_tick]}" "$label"
   spinner_tick=$(( (spinner_tick + 1) % ${#SPINNER[@]} ))
 }
 
