@@ -755,7 +755,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     const info = lookupModel(state.provider.model);
     push(
       "toolbody",
-      `model ${state.provider.model} (${Math.round(info.contextWindow / 1000)}k ctx) · ${state.provider.provider ?? "openai-compatible"}` +
+      `model ${state.provider.model} (${Math.round(info.contextWindow / 1000)}k ctx) · ${state.provider.label ?? state.provider.provider ?? "openai-compatible"}` +
         `${state.provider.baseUrl && !/api\.openai\.com/.test(state.provider.baseUrl) ? ` · ${state.provider.baseUrl}` : ""}`,
     );
     push("toolbody", "enter send · \\ newline · ! shell · / commands · esc interrupt · ctrl+t expand all · drag/dbl-click select");

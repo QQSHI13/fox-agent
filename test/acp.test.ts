@@ -338,6 +338,34 @@ describe("acp server: cancellation", () => {
 });
 
 describe("acp server: session lifecycle", () => {
+  test("a prompt on a session another process holds is refused, not interleaved", async () => {
+    // #11: the TUI degrades to a read-only viewer on lock conflict; ACP has no
+    // viewer mode, so its prompt must fail and say who holds the session. pid 1
+    // is alive-but-unsignalable, which lock.ts reads as a live holder.
+    const { writeFileSync, mkdirSync } = await import("node:fs");
+    mkdirSync(join(home, "locks"), { recursive: true });
+    const app = await build([textTurn("should never run")]);
+    const out = await withAgent(app, async (agent) => {
+      const s = await agent.request(acp.methods.agent.session.new, { cwd: work, mcpServers: [] });
+      writeFileSync(join(home, "locks", `${s.sessionId}.json`), JSON.stringify({ pid: 1, kind: "tui", ts: Date.now() }));
+      let refused = "";
+      try {
+        await agent.request(acp.methods.agent.session.prompt, {
+          sessionId: s.sessionId,
+          prompt: [{ type: "text", text: "hello" }],
+        });
+      } catch (e) {
+        refused = (e as Error).message;
+      }
+      return { id: s.sessionId, refused };
+    });
+    expect(out.refused).toContain("open in another fox-agent process");
+    expect(out.refused).toContain("tui");
+    // nothing was written: the session has no user message
+    const db = await import("../src/store/db.ts");
+    expect(db.allMessages(out.id).length).toBe(0);
+  });
+
   test("new/list/fork/resume/delete all run against the real store", async () => {
     const app = await build([textTurn("first answer")]);
     const out = await withAgent(app, async (agent) => {

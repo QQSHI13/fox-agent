@@ -62,6 +62,7 @@ export async function createAgent(opts: {
     apiKey: resolved.apiKey,
     model: config.model,
     provider: resolved.format,
+    label: resolved.label,
     headers: resolved.headers,
     sampling: resolved.sampling,
   };

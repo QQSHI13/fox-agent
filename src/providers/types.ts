@@ -46,6 +46,13 @@ export interface ProviderConfig {
    * open at runtime.
    */
   provider?: string;
+  /**
+   * What the user calls this endpoint — a `[providers.*]` profile name or a
+   * catalog preset id ("openrouter", "deepseek"). Display-only: the status
+   * line and /model show it instead of the API format, which alone read as
+   * "openai-compatible" for half the catalog. Absent for a bare format.
+   */
+  label?: string;
   /** extra HTTP headers from the provider profile / model config */
   headers?: Record<string, string>;
   /** sampling overrides from the model's config entry (temperature, topP, …) */

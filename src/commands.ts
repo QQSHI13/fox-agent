@@ -412,6 +412,9 @@ function applyModelSwitch(t: ModelTarget, state: HarnessState, keyOverride?: str
   state.provider = {
     ...state.provider,
     provider: format,
+    // display identity: the profile/preset the switch named, else none — a
+    // same-endpoint model bump is not a provider change
+    label: t.profileName ?? (sameEndpoint ? state.provider.label : undefined),
     baseUrl,
     model: t.model,
     apiKey,
@@ -507,7 +510,7 @@ function modelPrompt(state: HarnessState): PromptRequest {
 
   // Step 1 choices: the current provider, then every callable profile/preset.
   const providers: { value: string; label: string }[] = [
-    { value: "m:", label: `${state.provider.provider ?? "openai-compatible"} — ${state.provider.baseUrl} (current)` },
+    { value: "m:", label: `${state.provider.label ?? state.provider.provider ?? "openai-compatible"} — ${state.provider.baseUrl} (current)` },
   ];
   const profileNames: string[] = [];
   for (const [name, p] of Object.entries(state.config?.providers ?? {})) {
@@ -626,11 +629,15 @@ function modelPrompt(state: HarnessState): PromptRequest {
  */
 function applyLogin(fields: LoginFields, state: HarnessState): CommandResult {
   // A preset id (openrouter, deepseek, …) expands to its provider format,
-  // default endpoint and conventional env key before validation.
+  // default endpoint and conventional env key before validation. The id itself
+  // is what gets SAVED (resolveProfile expands preset ids on load, so a
+  // restart keeps the identity) and what display shows; only the live
+  // provider's format field takes the expansion.
+  let format: string | undefined;
   if (fields.provider && !availableProviders().includes(fields.provider)) {
     const preset = presetById(fields.provider);
     if (preset) {
-      fields.provider = preset.format;
+      format = preset.format;
       if (!fields.baseUrl && preset.api) fields.baseUrl = preset.api;
       if (!fields.apiKey) {
         for (const name of preset.env) {
@@ -643,12 +650,18 @@ function applyLogin(fields: LoginFields, state: HarnessState): CommandResult {
       }
     }
   }
+  const id = fields.provider;
+  if (format) fields.provider = format; // live activation needs a real format
   if (fields.provider && !availableProviders().includes(fields.provider)) {
     return { handled: true, output: `unknown provider "${fields.provider}" — available: ${availableProviders().join(", ")}, or a /login preset` };
   }
-  const path = saveGlobalConfig(fields, state.configPath);
+  const path = saveGlobalConfig({ ...fields, provider: id }, state.configPath);
   // take effect immediately — the point is not having to restart
   if (fields.provider) state.provider.provider = fields.provider;
+  if (id) {
+    state.provider.label = id;
+    if (state.config) state.config.provider = id;
+  }
   if (fields.apiKey) state.provider.apiKey = fields.apiKey;
   if (fields.baseUrl) state.provider.baseUrl = fields.baseUrl;
   if (fields.baseUrl || fields.provider) setActiveEndpoint(state.provider.baseUrl);
@@ -657,7 +670,6 @@ function applyLogin(fields: LoginFields, state: HarnessState): CommandResult {
     setSessionModel(state.sessionId, fields.model);
   }
   if (state.config) {
-    if (fields.provider) state.config.provider = fields.provider;
     if (fields.apiKey) state.config.apiKey = fields.apiKey;
     if (fields.baseUrl) state.config.baseUrl = fields.baseUrl;
     if (fields.model) state.config.model = fields.model;
@@ -976,7 +988,11 @@ export function runSlashCommand(input: string, state: HarnessState): CommandResu
 
     case "/model": {
       if (!arg && state.interactive) return { handled: true, prompt: modelPrompt(state) };
-      if (!arg) return { handled: true, output: `model: ${state.provider.model} · provider ${state.provider.provider ?? "openai-compatible"}` };
+      if (!arg)
+        return {
+          handled: true,
+          output: `model: ${state.provider.model} · provider ${state.provider.label ?? state.provider.provider ?? "openai-compatible"}`,
+        };
       return applyModelSwitch(parseModelArg(arg, state), state);
     }
 

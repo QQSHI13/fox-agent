@@ -31,7 +31,7 @@ import {
   type MessageRow,
 } from "../store/db.ts";
 import { projectView } from "../context/view.ts";
-import { acquireLock, releaseLock } from "../store/lock.ts";
+import { acquireLock, releaseLock, lockHolder } from "../store/lock.ts";
 import type { Config } from "../core/config.ts";
 import type { ProviderConfig, ChatFn } from "../providers/types.ts";
 import { resolveChat } from "../providers/index.ts";
@@ -224,6 +224,18 @@ export function buildAgent(opts: AcpServerOptions): acp.AgentApp {
       const session = getSession(params.sessionId);
       if (!session) throw RequestError.resourceNotFound(params.sessionId);
       if (running.has(params.sessionId)) throw RequestError.invalidParams(undefined, "a prompt is already running for this session");
+      // #11: a session another live process holds is theirs to write — a second
+      // opener prompting here would interleave appends into one transcript. The
+      // TUI degrades to a read-only viewer for the same reason; ACP has no
+      // viewer mode, so the honest answer is a refused prompt that says who
+      // holds the session.
+      const holder = lockHolder(params.sessionId);
+      if (holder && holder.pid !== process.pid) {
+        throw RequestError.invalidParams(
+          undefined,
+          `session is open in another fox-agent process (${holder.kind}, pid ${holder.pid}) — close it there first, or fork this session`,
+        );
+      }
       // `fox --acp` is launched before the missing-key check (see src/cli.ts), so
       // a keyless install reaches here. Say so in the protocol's own terms — an
       // editor renders `auth_required` as an actionable message, whereas the

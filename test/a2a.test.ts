@@ -141,6 +141,49 @@ describe("a2a client", () => {
     const { runA2aAgent } = await import("../src/a2a/client.ts");
     await expect(runA2aAgent(url, "x")).rejects.toThrow("without a final event");
   });
+
+  test("message/stream: CRLF framing and chunk-split events both parse", async () => {
+    // The spec allows CRLF terminators and servers flush mid-event; a cut that
+    // lands inside \r\n\r\n (or inside a JSON payload) must wait for more
+    // bytes, not truncate the event.
+    server = Bun.serve({
+      port: 0,
+      async fetch(req) {
+        if (req.method !== "POST") return new Response("not found", { status: 404 });
+        const body = (await req.json()) as { id: number; method: string };
+        if (body.method !== "message/stream")
+          return Response.json({ jsonrpc: "2.0", id: body.id, error: { code: -32601, message: "stream only" } });
+        const enc = new TextEncoder();
+        const ev = (r: any) => `data: ${JSON.stringify({ jsonrpc: "2.0", id: body.id, result: r })}\r\n\r\n`;
+        const e1 = ev({ kind: "task", id: "t1", status: { state: "working" } });
+        const e2 = ev({ kind: "status-update", taskId: "t1", status: { state: "completed", message: { role: "agent", parts: [{ kind: "text", text: "crlf ok" }] } }, final: true });
+        const stream = new ReadableStream({
+          start(c) {
+            c.enqueue(enc.encode(e1.slice(0, 20))); // mid-payload
+            c.enqueue(enc.encode(e1.slice(20) + e2)); // terminator + whole next event
+            c.close();
+          },
+        });
+        return new Response(stream, { headers: { "content-type": "text/event-stream" } });
+      },
+    });
+    const { runA2aAgent } = await import("../src/a2a/client.ts");
+    expect(await runA2aAgent(`http://127.0.0.1:${server.port}`, "x")).toBe("crlf ok");
+  });
+
+  test("the outgoing message carries kind:message per the spec", async () => {
+    let seen: any;
+    const url = serve((method, params) => {
+      if (method === "message/stream") return { error: { code: -32601, message: "no" } };
+      seen = params.message;
+      return { result: { kind: "message", role: "agent", parts: [{ kind: "text", text: "ok" }] } };
+    });
+    const { runA2aAgent } = await import("../src/a2a/client.ts");
+    await runA2aAgent(url, "x");
+    expect(seen.kind).toBe("message");
+    expect(seen.role).toBe("user");
+    expect(seen.messageId).toBeTruthy();
+  });
 });
 
 describe("task tool: a2a routing", () => {

@@ -176,6 +176,7 @@ async function main() {
       apiKey: p.apiKey,
       model: c.model,
       provider: p.format,
+      label: p.label,
       headers: p.headers,
       // reasoning effort rides in sampling — providers turn it into the
       // format-specific providerOptions (reasoningEffort / thinking budget)

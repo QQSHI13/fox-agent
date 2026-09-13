@@ -17,6 +17,7 @@ Full machine control, zero permission prompts. Production turn loop with step ca
 - [Install](#install)
 - [Run](#run)
 - [Features](#features)
+- [Benchmarks](#benchmarks)
 - [Mouse and Selection](#mouse-and-selection)
 - [Config](#config)
 - [Diagnostics After Every Edit](#diagnostics-after-every-edit)
@@ -123,6 +124,27 @@ fox -c 2                                         # resume by 'fox ls' index, or 
 fox --acp                                        # serve ACP on stdio
 ```
 
+### How `fox -c <n>` resolves
+
+A bare number is an index into the same list `fox ls` prints: most recently
+worked-in first, across **all** directories, exactly as shown. `fox -c 3` and
+the row numbered 3 in `fox ls` are the same session by construction -- both go
+through one shared resolver (`resolveSessionArg`), so a listing and the
+resume it feeds can never disagree. Anything that is not a number is treated
+as a session id first, so `fox -c mtzc7lak9` also works.
+
+Two things to know:
+
+- **The index is not stable.** It is a position in a recency-sorted list, so
+  working in another session (or deleting one) shifts the numbers. For
+  scripting, prefer the id: `fox -c <id>`.
+- **The interactive picker differs by scope.** `fox -c` with no argument (and
+  `/sessions` in the TUI) lists *this directory's* sessions by default; press
+  `a` there to widen to all directories. `fox ls` and `fox -c <n>` are always
+  all-directories. So "session 3" in the picker can be a different session
+  than `fox -c 3` until you press `a` -- the picker's index is only the
+  all-dirs index once the scope is widened.
+
 ---
 
 ## Features
@@ -138,6 +160,55 @@ fox --acp                                        # serve ACP on stdio
 - **Headless**: `-p "prompt"` one-shot, `--json` NDJSON event stream, stdin piping -- plus a library API (`createAgent`).
 - **SQLite event-sourced sessions**: one database per session. Append-only log + view ops + refs (reverts/forks are queries, not rewrites).
 - **Production turn loop**: step caps, retry/backoff on 429/5xx, parallel tool execution, abort-safe partial persistence, auto-compaction near the context limit.
+
+---
+
+## Benchmarks
+
+Startup time and peak RSS, measured with `/usr/bin/time` on the same machine
+(WSL2, Linux x86_64), 4 runs each, best value shown. "Startup" is the tool's
+cheapest no-network invocation (`--version`); RSS is its peak resident set
+there. Binary size is the installed on-disk footprint of the executable
+itself. These measure the *harness*, not the model -- turn latency is
+dominated by your provider, and every tool here talks to the same APIs.
+
+| Tool | Version | Startup | Peak RSS | Binary |
+|---|---|---|---|---|
+| **fox-agent** | 0.3.1 | **0.01s** | 30 MB | 85 MB |
+| claude code | 2.1.263 | 0.01s* | 40 MB | 206 MB |
+| jcode | 0.84.0 | 0.02s | **21 MB** | 156 MB |
+| opencode | 2.0.3 | 0.11s | 93 MB | 197 MB |
+| pi coding agent | 0.85.1 | 0.33s | 100 MB | 8 MB + node_modules (159 MB) |
+
+\* claude's `--version` short-circuits before loading its bundle; its
+interactive startup is markedly slower.
+
+Reading the table honestly:
+
+- **fox-agent is the only one that is a single self-contained Bun binary** --
+  85 MB including a custom ANSI renderer and libopentui, no node_modules, no
+  runtime download. pi is smaller on disk as a bundle but needs a Node
+  install beside it; claude/opencode/jcode ship 150-200 MB executables.
+- **Startup**: fox-agent's compiled binary answers in ~50ms warm; the
+  `bun src/cli.ts` source path is ~70ms. jcode/claude are comparably fast;
+  opencode and pi pay 100-330ms of module-graph loading.
+- **RSS at startup** is the floor (the runtime + module graph), not the cost
+  of a session: fox-agent's full headless harness with a turn in flight
+  measures ~63-75 MB. jcode is the lightest overall; opencode and pi sit
+  near 100 MB before a single token.
+- Everything here measures cold process cost. What actually distinguishes
+  coding agents is per-turn behavior -- context handling, tool latency,
+  compaction -- which no `--version` number captures.
+
+Reproduce:
+
+```bash
+for i in 1 2 3 4; do /usr/bin/time -f "%e %M" <tool> --version >/dev/null; done
+```
+
+Codex, Gemini CLI, Copilot CLI and antigravity are not in this table only
+because none were installed on the measurement machine -- the method above
+applies to any of them; numbers are not invented.
 
 ---
 
@@ -177,6 +248,29 @@ Project instructions are loaded from every `AGENTS.md` / `CLAUDE.md` on the path
 | `FOX_AGENT_HOME` | State dir (default `~/.local/share/fox-agent`) |
 
 `OPENAI_BASE_URL` / `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` / `GOOGLE_API_KEY` are honored as fallbacks. Unknown config keys and non-URL `baseUrl` values surface as warnings, not silent ignores.
+
+### Multiple providers: one active slot, profiles for the rest
+
+fox-agent stores credentials in two places, and they behave differently:
+
+- **The flat top-level keys** (`provider`, `apiKey`, `baseUrl`, `model`) are
+  the *active* provider -- a single slot. `/login` and a cross-provider
+  `/model` switch **overwrite** it: logging into provider B replaces A's key
+  in the config file. That is the one-active-provider model, and it is
+  deliberate simplicity, but it means the old credentials are gone unless
+  they live somewhere else.
+- **`[providers.<name>]` profiles** store any number of providers side by
+  side, each with its own format, endpoint, key (env-resolved, so the secret
+  can stay in the environment), headers and model list. Selecting one is
+  `provider = "<name>"` or `/model <name>/<model>`, and switching between
+  profiles never touches the flat slot.
+
+So: to keep several providers configured at once, write them as profiles and
+switch with `/model <name>/...`; what `/login` does today is swap the single
+active slot. Sessions remember the model id they ran with, but the provider
+is whatever is active when you resume -- resuming a session does not restore
+its provider's credentials, and on reload the session's stored model is
+re-synced to the active config model.
 
 ### Login wizard
 

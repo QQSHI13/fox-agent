@@ -134,13 +134,29 @@ async function tryStream(base: string, message: unknown, deadline: number, opts:
       if (done) break;
       buf += dec.decode(value, { stream: true });
       let cut: number;
-      while ((cut = buf.indexOf("\n\n")) >= 0 || (cut = buf.indexOf("\r\n\r\n")) >= 0) {
+      let sepLen: number;
+      for (;;) {
+        // Find the earliest *complete* event terminator. \n\n matches inside a
+        // \r\n\r\n (the second CR's \n plus the next \n), so ordering matters:
+        // a CRLF terminator wins when both match, and a partial \r\n\r\n split
+        // across a chunk boundary simply does not match yet — the loop waits
+        // for more bytes instead of cutting mid-event (JSON.parse found that
+        // out the hard way).
+        const crlf = buf.indexOf("\r\n\r\n");
+        const lf = buf.indexOf("\n\n");
+        if (crlf >= 0 && (lf < 0 || crlf < lf)) {
+          cut = crlf;
+          sepLen = 4;
+        } else if (lf >= 0) {
+          cut = lf;
+          sepLen = 2;
+        } else break;
         const raw = buf.slice(0, cut);
-        buf = buf.slice(cut + (buf[cut] === "\r" ? 4 : 2));
+        buf = buf.slice(cut + sepLen);
         const data = raw
           .split(/\r?\n/)
           .filter((l) => l.startsWith("data:"))
-          .map((l) => l.slice(5).trimStart())
+          .map((l) => l.slice(5).replace(/^ /, "").replace(/\r$/, "")) // one optional leading space, trailing CR, per SSE
           .join("\n");
         if (!data) continue;
         const msg = JSON.parse(data) as JsonRpc;
@@ -216,6 +232,9 @@ export async function runA2aAgent(base: string, prompt: string, opts: A2aOptions
   const deadline = Date.now() + (opts.timeoutMs ?? 30 * 60_000);
 
   const message = {
+    // kind is required on a Message object by the spec — strict servers reject
+    // the request with InvalidObject without it
+    kind: "message",
     messageId: `fox-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     role: "user",
     parts: [{ kind: "text", text: prompt }],

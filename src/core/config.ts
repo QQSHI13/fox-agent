@@ -671,6 +671,8 @@ export function resolveValue(v: string | undefined, env: Record<string, string |
 export interface ResolvedProfile {
   /** the API format: openai-compatible / openai-responses / anthropic / google / plugin name */
   format: string;
+  /** what the user calls it — the profile name or preset id, for display */
+  label?: string;
   baseUrl: string;
   apiKey: string;
   headers: Record<string, string>;
@@ -698,12 +700,16 @@ export function resolveProfile(cfg: Config, env: Record<string, string | undefin
       const envKey = preset.env.map((n) => env[n]).find((v) => !!v);
       return {
         format: preset.format,
+        label: preset.id,
         baseUrl: preset.api ?? cfg.baseUrl,
         apiKey: envKey || cfg.apiKey,
         headers: {},
       };
     }
-    return { format: cfg.provider, baseUrl: cfg.baseUrl, apiKey: cfg.apiKey, headers: {} };
+    // a provider name that is neither a profile nor a preset is a plugin's
+    // registered format — it IS the identity, so label it as itself
+    const bare = cfg.provider !== DEFAULTS.provider ? cfg.provider : undefined;
+    return { format: cfg.provider, label: bare, baseUrl: cfg.baseUrl, apiKey: cfg.apiKey, headers: {} };
   }
   const headers: Record<string, string> = {};
   for (const [k, v] of Object.entries(p.headers ?? {})) {
@@ -719,6 +725,7 @@ export function resolveProfile(cfg: Config, env: Record<string, string | undefin
   }
   return {
     format: p.format ?? "openai-compatible",
+    label: cfg.provider,
     baseUrl: p.baseUrl ?? cfg.baseUrl,
     apiKey: resolveValue(p.apiKey, env) ?? cfg.apiKey,
     headers,
