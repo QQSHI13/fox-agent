@@ -1,0 +1,90 @@
+name: Bug Report
+description: Report a bug in fox-agent
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug. Please fill out the sections below.
+
+  - type: input
+    id: version
+    attributes:
+      label: fox-agent version
+      description: "Output of `fox --version`"
+      placeholder: "e.g. 0.3.0-beta.2"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - Linux (x64)
+        - Linux (arm64)
+        - macOS (x64)
+        - macOS (arm64)
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: terminal
+    attributes:
+      label: Terminal
+      description: "Which terminal emulator are you using?"
+      placeholder: "e.g. kitty, iTerm2, Windows Terminal, Alacritty"
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Bug description
+      description: A clear description of what the bug is.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: The smallest possible reproduction.
+      value: |
+        1. 
+        2. 
+        3. 
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What did you expect to happen?
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What actually happened?
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Debug logs
+      description: |
+        Paste the tail of `$FOX_AGENT_HOME/debug.log` (default `~/.local/share/fox-agent/debug.log`).
+      render: text
+
+  - type: textarea
+    id: config
+    attributes:
+      label: Relevant config
+      description: Paste your `config.toml` or `fox-agent.toml` (redact API keys).
+      render: toml
