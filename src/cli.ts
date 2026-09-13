@@ -390,7 +390,7 @@ async function pickSession(cwd: string, opts: { interactive: boolean; model: str
   // toggles to every directory's sessions for when the user knows the one they
   // want lives elsewhere.
   let allDirs = false;
-  const rows = () => sessionRows(sessionList(allDirs ? {} : { cwd }), relTime);
+  const rows = () => sessionRows(sessionList(allDirs ? {} : { cwd }), relTime, allDirs);
   // No sessions in this directory: fall open on the all-directories view rather
   // than minting an empty session the user never asked for. `n` still makes one.
   if (!sessionList({ cwd }).length) allDirs = true;

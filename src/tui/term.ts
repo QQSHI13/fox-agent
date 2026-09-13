@@ -11,6 +11,15 @@ export interface Term {
   setCursor(x: number, y: number): void;
   /** hide the hardware cursor (call before repaint bursts) */
   hideCursor(): void;
+  /**
+   * OSC 9;4 taskbar/terminal progress: state 0 remove, 1 normal, 2 error,
+   * 3 indeterminate; `pct` 0-100 when the state is 1, omitted otherwise.
+   * Terminals that do not know the sequence ignore it — no capability probe
+   * needed.
+   */
+  progress(state: 0 | 1 | 2 | 3, pct?: number): void;
+  /** OSC 9 desktop notification (works over SSH, no helper installed) */
+  notify(msg: string): void;
   begin(): void;
   end(): void;
 }
@@ -105,6 +114,19 @@ export function openTerm(): Term {
     },
     hideCursor() {
       out.write("\x1b[?25l");
+    },
+    progress(state, pct) {
+      // OSC 9;4 (ConEmu / Windows Terminal / WezTerm / kitty): tab + taskbar
+      // progress. Buffered like setCursor — the frame loop flushes once.
+      const p = state === 1 && typeof pct === "number" ? `;${Math.max(0, Math.min(100, Math.round(pct)))}` : ";0";
+      out.write(`\x1b]9;4;${state}${p}\x07`);
+    },
+    notify(msg) {
+      // OSC 9: a growl-style toast from the terminal itself. Strip control
+      // characters — the payload is inside an escape sequence, and a stray
+      // ESC/ BEL from model output would truncate or corrupt it.
+      const clean = msg.replace(/[\x00-\x1f\x07\x7f]/g, " ").slice(0, 200);
+      out.write(`\x1b]9;${clean}\x07`);
     },
     onResize(cb) {
       const handler = () => {

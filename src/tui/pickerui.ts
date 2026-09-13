@@ -180,6 +180,7 @@ export function sessionRows(
     index: number;
     label: string;
     title?: string | null;
+    cwd: string;
     model: string;
     tokens: number;
     preview?: string;
@@ -187,6 +188,8 @@ export function sessionRows(
     current: boolean;
   }[],
   rel: (ts: number) => string,
+  /** add a directory column — set when the list spans more than one cwd */
+  showCwd = false,
 ): PickerRow[] {
   return items.map((it) => ({
     id: it.id,
@@ -197,10 +200,14 @@ export function sessionRows(
       `${rel(it.updatedAt).padStart(3)} ago`,
       `${String(it.tokens).padStart(7)} tok`,
       it.model.padEnd(18),
+      // a directory-scoped list carries its cwd in the title, so a column would
+      // repeat one value down every row; an all-dirs list needs it or the rows
+      // cannot tell each other apart
+      ...(showCwd ? [it.cwd] : []),
       it.label,
       ...(it.preview ? [`» ${it.preview.slice(0, 60)}`] : []),
     ],
-    search: `${it.id} ${it.label} ${it.model} ${it.preview ?? ""}`,
+    search: `${it.id} ${it.label} ${it.model} ${it.cwd} ${it.preview ?? ""}`,
     // What the delete confirm says out loud. The id, plus the title when there
     // is one — quoting `label` instead would put a bare cwd in quotes for an
     // untitled session, which reads like the directory is what gets deleted.

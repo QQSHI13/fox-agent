@@ -135,8 +135,13 @@ export function argsSummary(args: string): string {
 /**
  * The full "what actually ran", whitespace-flattened and capped but NOT
  * truncated to the head-line width — the tool head is expandable, and the
- * expanded view may use the whole screen width. Nothing when there is no
- * meaningful single field and the raw JSON is huge beyond usefulness.
+ * expanded view may use the whole screen width.
+ *
+ * A single-field args object (cmd/path/pattern) is shown whole; a call that
+ * also carries content (write's new text, edit's old/new strings, task's
+ * prompt) gets those fields appended — the expanded view is the only place
+ * the call's actual payload is visible, so showing only the path there would
+ * leave the content permanently invisible.
  */
 export function argsFull(args: string): string {
   const t = (args ?? "").trim();
@@ -144,7 +149,14 @@ export function argsFull(args: string): string {
   try {
     const a = JSON.parse(t);
     const v = a?.cmd ?? a?.path ?? a?.pattern ?? a?.file ?? a?.url ?? a?.command ?? a?.job ?? null;
-    if (typeof v === "string" && v.trim()) return v.replace(/\s+/g, " ").slice(0, 4_000);
+    if (typeof v !== "string" || !v.trim()) return t.replace(/\s+/g, " ").slice(0, 4_000);
+    const extra: string[] = [];
+    for (const k of ["old_string", "new_string", "content", "text", "prompt", "task", "description", "ids", "ops"]) {
+      const x = a?.[k];
+      if (typeof x === "string" && x.trim()) extra.push(`${k}: ${x.replace(/\s+/g, " ").slice(0, 2_000)}`);
+      else if (x !== undefined) extra.push(`${k}: ${JSON.stringify(x).replace(/\s+/g, " ").slice(0, 2_000)}`);
+    }
+    return [v.replace(/\s+/g, " ").slice(0, 4_000), ...extra].join("\n  ");
   } catch {}
   return t.replace(/\s+/g, " ").slice(0, 4_000);
 }
@@ -837,7 +849,11 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
 
   function currentSessionRows(): PickerRow[] {
     const scope = sessAllDirs ? {} : { cwd: process.cwd() };
-    return sessionRows(sessionList({ currentId: state.sessionId, limit: state.config?.sessionListLimit, ...scope }), relTime);
+    return sessionRows(
+      sessionList({ currentId: state.sessionId, limit: state.config?.sessionListLimit, ...scope }),
+      relTime,
+      sessAllDirs,
+    );
   }
 
   /**
@@ -1052,6 +1068,17 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       streamText = null;
       setBusy(false);
       ac = null;
+      // end-of-turn notification (OSC 9): a turn that ran long enough to walk
+      // away from deserves a toast when it lands; errors always announce —
+      // even a fast failure is exactly what the user is waiting on. Terminals
+      // without OSC 9 drop the sequence silently.
+      const ran = Date.now() - startedAt;
+      const errored = items[items.length - 1]?.kind === "error";
+      if (errored || ran >= 10_000) {
+        const secs = Math.round(ran / 1000);
+        term.notify(errored ? `fox-agent — turn failed (${secs}s)` : `fox-agent — turn done (${secs}s)`);
+        term.flush();
+      }
       // reconcile the live user marker with stored seq
       refresh();
       drainQueue();
@@ -1160,6 +1187,10 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       if (state.sessionId) releaseLock(state.sessionId);
     } catch {}
     try {
+      // clear any OSC 9;4 progress the terminal still shows (quit mid-turn)
+      term.progress(0);
+    } catch {}
+    try {
       term.end();
     } catch {}
     try {
@@ -1191,7 +1222,14 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
 
   function setBusy(v: boolean) {
     busy = v;
-    if (v) startedAt = Date.now();
+    if (v) {
+      startedAt = Date.now();
+      // OSC 9;4 indeterminate: the tab/taskbar shows activity from turn start
+      // until end, even when the TUI is in the background
+      term.progress(3);
+    } else {
+      term.progress(0);
+    }
     markDirty();
   }
 
@@ -1219,7 +1257,10 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     return i;
   }
   function toggleExpand(it: Item) {
-    if (it.kind !== "think" && it.kind !== "toolbody") return;
+    // toolhead too: the "▸ input — click or ctrl+t" affordance is painted only
+    // when argsFull produced a detail, and without this branch clicking it did
+    // nothing — the reported "tool call content doesn't display" bug
+    if (it.kind !== "think" && it.kind !== "toolbody" && it.kind !== "toolhead") return;
     it.expanded = !it.expanded;
     if (it.ref != null) {
       if (it.expanded) expandedRefs.add(it.ref);

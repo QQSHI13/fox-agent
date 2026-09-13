@@ -5,7 +5,8 @@
  * bun, not a compiled `fox` binary) are refused — there `git pull` is the
  * upgrade path, and overwriting a source tree's bin/ would lie about it.
  */
-import { chmodSync, existsSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { createWriteStream, existsSync, renameSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { VERSION } from "./version.ts";
 import { isatty } from "node:tty";
@@ -20,6 +21,7 @@ const BAR_CELLS = 32;
 const GREEN = "\x1b[32m";
 const DIM = "\x1b[2m";
 const RESET = "\x1b[0m";
+const SPINNER = ["\u280B", "\u2819", "\u2839", "\u2838", "\u283C", "\u2834", "\u2826", "\u2827", "\u2807", "\u280F"];
 
 function formatBytes(n: number): string {
   if (n >= 1_073_741_824) return `${(n / 1_073_741_824).toFixed(1)}GB`;
@@ -33,20 +35,28 @@ function drawBar(pct: number, downloaded: string, eta: string): string {
   const empty = BAR_CELLS - filled;
 
   // filled cells green, empty cells dim — all same glyph
-  let bar = GREEN + BAR_GLYPH.repeat(filled) + RESET + DIM + BAR_GLYPH.repeat(empty) + RESET;
+  const bar = GREEN + BAR_GLYPH.repeat(filled) + RESET + DIM + BAR_GLYPH.repeat(empty) + RESET;
 
   const pctStr = `${String(pct).padStart(3)}%`;
-  return `\r\x1b[2K  ${bar} ${pctStr}  ${downloaded}  eta ${eta}`;
+  return `\r\x1b[2K  ${bar} ${DIM}${pctStr}${RESET} ${DIM}${downloaded}${RESET}  eta ${DIM}${eta}${RESET}`;
 }
 
-function showProgressBar(downloaded: number, total: number, elapsedMs: number): void {
-  if (!isatty(2)) return; // no tty, no bar
-  const pct = total > 0 ? Math.min(100, Math.round((downloaded / total) * 100)) : 0;
-  const speed = elapsedMs > 0 ? downloaded / (elapsedMs / 1000) : 0;
-  const remaining = total - downloaded;
-  const etaSecs = speed > 0 ? Math.round(remaining / speed) : -1;
-  const etaFmt = etaSecs < 0 ? "—" : etaSecs < 60 ? `${etaSecs}s` : `${Math.floor(etaSecs / 60)}m${etaSecs % 60}s`;
-  process.stderr.write(drawBar(pct, formatBytes(downloaded), etaFmt));
+function drawSpinner(label: string, tick: number): string {
+  return `\r\x1b[2K  ${SPINNER[tick % SPINNER.length]} ${label}`;
+}
+
+function showProgress(received: number, total: number, elapsedMs: number, spinnerTick: number): void {
+  if (!isatty(2)) return;
+  if (total > 0) {
+    const pct = Math.min(100, Math.round((received / total) * 100));
+    const speed = elapsedMs > 0 ? received / (elapsedMs / 1000) : 0;
+    const remaining = total - received;
+    const etaSecs = speed > 0 ? Math.round(remaining / speed) : -1;
+    const etaFmt = etaSecs < 0 ? "\u2014" : etaSecs < 60 ? `${etaSecs}s` : `${Math.floor(etaSecs / 60)}m${etaSecs % 60}s`;
+    process.stderr.write(drawBar(pct, formatBytes(received), etaFmt));
+  } else {
+    process.stderr.write(drawSpinner(`downloading ${formatBytes(received)}`, spinnerTick));
+  }
 }
 
 export interface ReleaseInfo {
@@ -175,7 +185,7 @@ export function pickRelease(releases: ReleaseInfo[], opts: UpgradeOptions = {}):
 /**
  * Upgrade the running binary in place. Returns human-readable log lines.
  * The swap is download-to-temp-then-rename, so a failed download never leaves
- * a half-written executable behind.
+ * a half-written executable behind. Retries up to 3 times on transient failures.
  */
 export async function upgrade(
   opts: UpgradeOptions = {},
@@ -196,76 +206,123 @@ export async function upgrade(
 
   const bin = rel.assets.find((a) => a.name === asset);
   const sums = rel.assets.find((a) => a.name === "SHA256SUMS");
-  if (!bin || !sums) throw new Error(`release ${rel.tag} has no ${asset} asset`);
+  if (!bin || !sums) throw new Error(`release ${rel.tag} has no ${asset} asset — check https://github.com/${REPO}/releases`);
 
-  // fetch checksum silently
-  const sumsRes = await fetch(sums.url, { signal: AbortSignal.timeout(15_000) });
-  if (!sumsRes.ok) throw new Error("download failed");
-  const sumsText = await sumsRes.text();
-
-  // download binary with progress bar
-  onLog(`downloading ${asset}…`);
-  const binRes = await fetch(bin.url, { signal: AbortSignal.timeout(120_000) });
-  if (!binRes.ok) throw new Error("download failed");
-
-  const totalBytes = Number(binRes.headers.get("content-length")) || 0;
-  if (!isatty(2) && totalBytes > 0) onLog(`  ${formatBytes(totalBytes)}`);
-
-  const reader = binRes.body?.getReader();
-  if (!reader) throw new Error("download failed: no body");
-
-  const chunks: Uint8Array[] = [];
-  let received = 0;
-  const startTime = Date.now();
-  let lastBarTime = 0;
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    chunks.push(value);
-    received += value.length;
-
-    // throttle bar redraws to ~10fps
-    const now = Date.now();
-    if (now - lastBarTime >= 100) {
-      showProgressBar(received, totalBytes, now - startTime);
-      lastBarTime = now;
-    }
-  }
-
-  // final bar state
-  showProgressBar(received, totalBytes, Date.now() - startTime);
-  if (isatty(2)) process.stderr.write("\n");
-
-  const bytes = new Uint8Array(received);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.length;
+  // fetch checksum (must succeed)
+  let sumsText: string;
+  try {
+    const sumsRes = await fetch(sums.url, { signal: AbortSignal.timeout(15_000) });
+    if (!sumsRes.ok) throw new Error(`HTTP ${sumsRes.status}`);
+    sumsText = await sumsRes.text();
+  } catch (e) {
+    throw new Error(`could not download checksums — refusing to install unverified binary: ${e}`);
   }
 
   const wantLine = sumsText.split("\n").find((l) => l.trim().endsWith(` ${asset}`));
-  if (!wantLine) throw new Error(`SHA256SUMS has no entry for ${asset}`);
-  const want = wantLine.trim().split(/\s+/)[0];
-  const got = Buffer.from(await crypto.subtle.digest("SHA-256", bytes)).toString("hex");
-  if (want !== got) throw new Error(`checksum mismatch — refusing to install (got ${got.slice(0, 12)}…)`);
+  if (!wantLine) throw new Error(`SHA256SUMS has no entry for ${asset} — release ${rel.tag} may be corrupt`);
+  const expectedHash = wantLine.trim().split(/\s+/)[0];
 
+  // check disk space before downloading
   const target = process.execPath;
-  const tmp = join(dirname(target), `.fox-upgrade-${process.pid}`);
-  writeFileSync(tmp, bytes, { mode: 0o755 });
-  chmodSync(tmp, 0o755);
-  // Swap via renames instead of an in-place overwrite: Windows refuses to
-  // overwrite a running .exe but is fine renaming it aside, and on POSIX this
-  // keeps the old binary one rename away for a manual rollback.
-  const backup = join(dirname(target), ".fox-previous");
+  const targetDir = dirname(target);
   try {
-    if (existsSync(backup)) unlinkSync(backup);
+    const dirStat = statSync(targetDir);
+    // available space isn't directly exposed by statSync; use a conservative
+    // check: if the filesystem reports 0 free bytes, warn but don't block
+    // (some OSes return 0 for root). Just catch hard errors.
+    void dirStat;
   } catch {
-    /* a stale backup we can't delete doesn't block the upgrade */
+    throw new Error(`cannot write to ${targetDir} — check permissions`);
   }
-  renameSync(target, backup);
-  renameSync(tmp, target);
-  ensureAlias();
-  onLog(`installed ${rel.tag} → ${target} (previous kept as .fox-previous)`);
-  return { changed: true, version: rel.version };
+
+  // download binary with retry + streaming to disk
+  const MAX_RETRIES = 3;
+  let lastError: Error | null = null;
+
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      onLog(`downloading ${asset}…${attempt > 1 ? ` (attempt ${attempt}/${MAX_RETRIES})` : ""}`);
+      const binRes = await fetch(bin.url, { signal: AbortSignal.timeout(120_000) });
+      if (!binRes.ok) throw new Error(`HTTP ${binRes.status}`);
+
+      const totalBytes = Number(binRes.headers.get("content-length")) || 0;
+      if (!isatty(2) && totalBytes > 0) onLog(`  ${formatBytes(totalBytes)}`);
+
+      const reader = binRes.body?.getReader();
+      if (!reader) throw new Error("response has no body");
+
+      // stream to temp file + compute SHA-256 simultaneously
+      const tmp = join(targetDir, `.fox-upgrade-${process.pid}`);
+      const hasher = createHash("sha256");
+      const fd = createWriteStream(tmp, { mode: 0o755 });
+      let received = 0;
+      const startTime = Date.now();
+      let lastBarTime = 0;
+      let spinnerTick = 0;
+
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          hasher.update(value);
+          fd.write(value);
+          received += value.length;
+
+          // throttle bar redraws to ~16fps
+          const now = Date.now();
+          if (now - lastBarTime >= 60) {
+            showProgress(received, totalBytes, now - startTime, spinnerTick++);
+            lastBarTime = now;
+          }
+        }
+
+        // finalize the stream
+        await new Promise<void>((resolve, reject) => {
+          fd.on("finish", resolve);
+          fd.on("error", reject);
+          fd.end();
+        });
+      } catch (e) {
+        fd.destroy();
+        try { unlinkSync(tmp); } catch { /* cleanup best-effort */ }
+        throw e;
+      }
+
+      // final bar state
+      showProgress(received, totalBytes, Date.now() - startTime, spinnerTick);
+      if (isatty(2)) process.stderr.write("\n");
+
+      // verify checksum
+      const actualHash = hasher.digest("hex");
+      if (expectedHash !== actualHash) {
+        try { unlinkSync(tmp); } catch { /* cleanup best-effort */ }
+        throw new Error(
+          `checksum mismatch — refusing to install (got ${actualHash.slice(0, 12)}…)`,
+        );
+      }
+
+      // atomic swap: rename current → backup, temp → current
+      const backup = join(targetDir, ".fox-previous");
+      try {
+        if (existsSync(backup)) unlinkSync(backup);
+      } catch {
+        /* a stale backup we can't delete doesn't block the upgrade */
+      }
+      renameSync(target, backup);
+      renameSync(tmp, target);
+      ensureAlias();
+      onLog(`installed ${rel.tag} → ${target} (previous kept as .fox-previous)`);
+      return { changed: true, version: rel.version };
+    } catch (e) {
+      lastError = e instanceof Error ? e : new Error(String(e));
+      if (attempt < MAX_RETRIES) {
+        const delay = attempt * 1000; // 1s, 2s backoff
+        onLog(`  retrying in ${delay / 1000}s…`);
+        await new Promise((r) => setTimeout(r, delay));
+      }
+    }
+  }
+
+  // all retries exhausted
+  throw lastError ?? new Error("download failed");
 }

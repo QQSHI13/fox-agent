@@ -416,6 +416,13 @@ describe("session listing", () => {
     const rows = sessionRows(t.sessionList(), t.relTime);
     const byId = new Map(rows.map((r) => [r.id, r]));
 
+    // all-dirs mode: the cwd column appears, so rows from different directories
+    // can tell each other apart (the `fox -c` `a` toggle had no way to show it)
+    const allDirs = sessionRows(t.sessionList(), t.relTime, true);
+    expect(allDirs[0]!.cells).toContain("/w/project");
+    // directory-scoped mode: no column — every row would repeat the same value
+    expect(rows[0]!.cells).not.toContain("/w/project");
+
     // the delete confirm reads this label out loud, so a titled session names
     // its conversation...
     expect(byId.get(titled.id)!.label).toBe(`${titled.id} "fix the login bug"`);

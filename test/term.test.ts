@@ -116,3 +116,35 @@ describe("term: end() releases stdin so the process can exit", () => {
     expect(process.stdin.listenerCount("data")).toBe(before);
   });
 });
+
+describe("term: OSC 9;4 progress + OSC 9 notification", () => {
+  test("progress emits the ConEmu sequence, notify strips control chars", async () => {
+    const { openTerm } = await import("../src/tui/term.ts");
+    stub = stubStdin();
+    const written: string[] = [];
+    const savedWriter = Bun.stdout.writer;
+    (Bun.stdout as unknown as Record<string, unknown>).writer = () => ({
+      write: (s: string) => (written.push(s), 0),
+      flush: () => 0,
+      end: () => {},
+    });
+    try {
+      const term = openTerm();
+      term.progress(3);
+      term.progress(1, 42);
+      term.progress(1, 999); // clamped
+      term.progress(0);
+      term.notify("done\x1b[0m in 12s");
+      term.end();
+    } finally {
+      (Bun.stdout as unknown as Record<string, unknown>).writer = savedWriter;
+    }
+    const all = written.join("");
+    expect(all).toContain("\x1b]9;4;3;0\x07");
+    expect(all).toContain("\x1b]9;4;1;42\x07");
+    expect(all).toContain("\x1b]9;4;1;100\x07"); // 999 clamped to 100
+    expect(all).toContain("\x1b]9;4;0;0\x07");
+    // the ESC and BEL inside the message must not survive into the payload
+    expect(all).toContain("\x1b]9;done [0m in 12s\x07");
+  });
+});

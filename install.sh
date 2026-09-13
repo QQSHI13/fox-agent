@@ -149,28 +149,32 @@ draw_bar() {
   local pct_str
   pct_str=$(printf "%3d%%" "$pct")
 
-  printf "\r\033[2K  %s%s %s%s%s  eta %s %s" \
+  printf "\r\033[2K  %s %s%s%s %s%s%s  eta %s%s%s" \
     "$bar" \
     "$D" "$pct_str" "$R" \
     "$D" "$downloaded" "$R" \
-    "$D" "$eta" "$R"
+    "$D" "$eta" "$R" >&2
 }
 
 spinner_tick=0
 draw_spinner() {
   local label="$1"
-  printf "\r\033[2K  %s %s" "${SPINNER[$spinner_tick]}" "$label"
+  printf "\r\033[2K  %s %s" "${SPINNER[$spinner_tick]}" "$label" >&2
   spinner_tick=$(( (spinner_tick + 1) % ${#SPINNER[@]} ))
 }
 
 format_bytes() {
   local bytes="$1"
   if (( bytes >= 1073741824 )); then
-    printf "%.1fGB" "$(echo "scale=1; $bytes/1073741824" | bc 2>/dev/null || echo "$bytes")"
+    local whole=$(( bytes / 1073741824 ))
+    local frac=$(( (bytes % 1073741824) * 10 / 1073741824 ))
+    printf "%d.%dGB" "$whole" "$frac"
   elif (( bytes >= 1048576 )); then
-    printf "%.1fMB" "$(echo "scale=1; $bytes/1048576" | bc 2>/dev/null || echo "$bytes")"
+    local whole=$(( bytes / 1048576 ))
+    local frac=$(( (bytes % 1048576) * 10 / 1048576 ))
+    printf "%d.%dMB" "$whole" "$frac"
   elif (( bytes >= 1024 )); then
-    printf "%.0fKB" "$(echo "scale=0; $bytes/1024" | bc 2>/dev/null || echo "$bytes")"
+    printf "%dKB" $(( bytes / 1024 ))
   else
     printf "%dB" "$bytes"
   fi
@@ -193,105 +197,160 @@ DOWNLOAD_URL="https://github.com/${REPO}/releases/download/v${VERSION}/${ASSET}"
 CHECKSUM_URL="https://github.com/${REPO}/releases/download/v${VERSION}/SHA256SUMS"
 
 TMP_DIR="$(mktemp -d)"
-trap 'rm -rf "$TMP_DIR"' EXIT
+
+# track background PIDs for cleanup on early exit
+BG_PIDS=()
+cleanup() {
+  for pid in "${BG_PIDS[@]}"; do
+    kill "$pid" 2>/dev/null || true
+  done
+  rm -rf "$TMP_DIR"
+}
+trap cleanup EXIT
 
 # print header immediately — no waiting
 echo ""
 printf "  %sfox-agent%s %sv%s %s%s/%s%s\n" "$B" "$R" "$D" "$VERSION" "$C" "$OS" "$ARCH" "$R"
 echo ""
 
-# fetch Content-Length in background (don't block startup)
-TOTAL_BYTES_FILE="${TMP_DIR}/.total_bytes"
-curl -sI -L "${DOWNLOAD_URL}" 2>/dev/null | grep -i 'content-length' | tail -1 | tr -d '\r' | awk '{print $2}' > "$TOTAL_BYTES_FILE" &
-CL_PID=$!
+# --- fetch checksum (parallel, must succeed) ---
 
-# start download immediately
-curl -fsSL -o "${TMP_DIR}/${ASSET}" "${DOWNLOAD_URL}" 2>/dev/null &
-DL_PID=$!
-
-# fetch checksum in parallel
 curl -fsSL -o "${TMP_DIR}/SHA256SUMS" "${CHECKSUM_URL}" 2>/dev/null &
 CK_PID=$!
+BG_PIDS+=("$CK_PID")
 
-# wait for Content-Length (with timeout so we don't block forever)
-TOTAL_BYTES=0
-for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
-  if ! kill -0 "$CL_PID" 2>/dev/null; then
-    TOTAL_BYTES="$(cat "$TOTAL_BYTES_FILE" 2>/dev/null || echo 0)"
-    break
-  fi
-  sleep 0.1
+# --- download binary with retry ---
+
+MAX_RETRIES=3
+DL_OK=false
+for ATTEMPT in 1 2 3; do
+  # fetch Content-Length in background (don't block startup)
+  TOTAL_BYTES_FILE="${TMP_DIR}/.total_bytes"
+  curl -sI -L "${DOWNLOAD_URL}" 2>/dev/null | grep -i 'content-length' | tail -1 | tr -d '\r' | awk '{print $2}' > "$TOTAL_BYTES_FILE" &
+  CL_PID=$!
+  BG_PIDS+=("$CL_PID")
+
+  # start download
+  curl -fsSL -o "${TMP_DIR}/${ASSET}" "${DOWNLOAD_URL}" 2>/dev/null &
+  DL_PID=$!
+  BG_PIDS+=("$DL_PID")
+
+  # wait for Content-Length (with timeout so we don't block forever)
+  TOTAL_BYTES=0
+  for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+    if ! kill -0 "$CL_PID" 2>/dev/null; then
+      TOTAL_BYTES="$(cat "$TOTAL_BYTES_FILE" 2>/dev/null || echo 0)"
+      break
+    fi
+    sleep 0.05
+  done
+  [[ -z "$TOTAL_BYTES" || "$TOTAL_BYTES" == "0" ]] && TOTAL_BYTES=0
+
+  # animate progress bar while download runs
+  START_TIME=$(date +%s 2>/dev/null || echo 0)
+  PREV_SIZE=0
+  PREV_TIME=$START_TIME
+  SPEED=0
+
+  while kill -0 "$DL_PID" 2>/dev/null; do
+    CURRENT_SIZE=$(stat -c%s "${TMP_DIR}/${ASSET}" 2>/dev/null || stat -f%z "${TMP_DIR}/${ASSET}" 2>/dev/null || echo 0)
+    NOW=$(date +%s 2>/dev/null || echo 0)
+
+    # re-read TOTAL_BYTES in case Content-Length arrived late
+    if (( TOTAL_BYTES == 0 )); then
+      TOTAL_BYTES="$(cat "$TOTAL_BYTES_FILE" 2>/dev/null || echo 0)"
+      [[ -z "$TOTAL_BYTES" || "$TOTAL_BYTES" == "0" ]] && TOTAL_BYTES=0
+    fi
+
+    # calculate percentage
+    if (( TOTAL_BYTES > 0 )); then
+      PCT=$(( CURRENT_SIZE * 100 / TOTAL_BYTES ))
+      (( PCT > 100 )) && PCT=100
+    else
+      PCT=0
+    fi
+
+    # calculate speed (smoothed over 1 second)
+    TIME_DIFF=$(( NOW - PREV_TIME ))
+    if (( TIME_DIFF >= 1 )); then
+      BYTE_DIFF=$(( CURRENT_SIZE - PREV_SIZE ))
+      SPEED=$(( BYTE_DIFF / TIME_DIFF ))
+      PREV_SIZE=$CURRENT_SIZE
+      PREV_TIME=$NOW
+    fi
+    SPEED_FMT=$(format_bytes "$SPEED" 2>/dev/null || echo "0B")
+
+    # calculate ETA
+    if (( TOTAL_BYTES > 0 && SPEED > 0 )); then
+      REMAINING=$(( TOTAL_BYTES - CURRENT_SIZE ))
+      ETA_SECS=$(( REMAINING / SPEED ))
+    else
+      ETA_SECS=-1
+    fi
+
+    DOWNLOADED_FMT=$(format_bytes "$CURRENT_SIZE")
+    ETA_FMT=$(format_eta "$ETA_SECS")
+
+    if (( TOTAL_BYTES > 0 )); then
+      draw_bar "$PCT" "$DOWNLOADED_FMT" "$ETA_FMT"
+    else
+      draw_spinner "downloading ${DOWNLOADED_FMT}"
+    fi
+
+  sleep 0.08
 done
-[[ -z "$TOTAL_BYTES" || "$TOTAL_BYTES" == "0" ]] && TOTAL_BYTES=0
 
-# animate progress bar while download runs
-START_TIME=$(date +%s 2>/dev/null || echo 0)
-PREV_SIZE=0
-PREV_TIME=$START_TIME
-SPEED=0
+  wait "$DL_PID" 2>/dev/null
+  DL_EXIT=$?
 
-while kill -0 "$DL_PID" 2>/dev/null; do
-  CURRENT_SIZE=$(stat -c%s "${TMP_DIR}/${ASSET}" 2>/dev/null || stat -f%z "${TMP_DIR}/${ASSET}" 2>/dev/null || echo 0)
-  NOW=$(date +%s 2>/dev/null || echo 0)
-  ELAPSED=$(( NOW - START_TIME ))
+  FINAL_SIZE=$(stat -c%s "${TMP_DIR}/${ASSET}" 2>/dev/null || stat -f%z "${TMP_DIR}/${ASSET}" 2>/dev/null || echo 0)
+  FINAL_FMT=$(format_bytes "$FINAL_SIZE")
 
-  # re-read TOTAL_BYTES in case Content-Length arrived late
-  if (( TOTAL_BYTES == 0 )); then
-    TOTAL_BYTES="$(cat "$TOTAL_BYTES_FILE" 2>/dev/null || echo 0)"
-    [[ -z "$TOTAL_BYTES" || "$TOTAL_BYTES" == "0" ]] && TOTAL_BYTES=0
+  if (( DL_EXIT != 0 )); then
+    printf "\r\033[2K"
+    if (( ATTEMPT < MAX_RETRIES )); then
+      echo "  ${Y}! download failed, retrying (${ATTEMPT}/${MAX_RETRIES})${R}"
+      rm -f "${TMP_DIR}/${ASSET}"
+      sleep 1
+      continue
+    fi
+    echo "  ${CROSS} download failed after ${MAX_RETRIES} attempts"
+    echo "    URL: ${DOWNLOAD_URL}" >&2
+    echo "    check your network connection or try again later" >&2
+    exit 1
   fi
 
-  # calculate percentage
-  if (( TOTAL_BYTES > 0 )); then
-    PCT=$(( CURRENT_SIZE * 100 / TOTAL_BYTES ))
-    (( PCT > 100 )) && PCT=100
-  else
-    PCT=0
+  # validate the file isn't an HTML error page (GitHub returns 404 as HTML)
+  if (( FINAL_SIZE < 1024 )); then
+    printf "\r\033[2K"
+    if (( ATTEMPT < MAX_RETRIES )); then
+      echo "  ${Y}! download too small, retrying (${ATTEMPT}/${MAX_RETRIES})${R}"
+      rm -f "${TMP_DIR}/${ASSET}"
+      sleep 1
+      continue
+    fi
+    echo "  ${CROSS} downloaded file is too small (${FINAL_FMT}) — likely an error page"
+    exit 1
+  fi
+  if head -c 16 "${TMP_DIR}/${ASSET}" 2>/dev/null | grep -qi '<!DOCTYPE\|<html'; then
+    printf "\r\033[2K"
+    if (( ATTEMPT < MAX_RETRIES )); then
+      echo "  ${Y}! received HTML instead of binary, retrying (${ATTEMPT}/${MAX_RETRIES})${R}"
+      rm -f "${TMP_DIR}/${ASSET}"
+      sleep 1
+      continue
+    fi
+    echo "  ${CROSS} server returned HTML instead of a binary — version ${VERSION} may not exist"
+    echo "    check https://github.com/${REPO}/releases" >&2
+    exit 1
   fi
 
-  # calculate speed (smoothed over 1 second)
-  TIME_DIFF=$(( NOW - PREV_TIME ))
-  if (( TIME_DIFF >= 1 )); then
-    BYTE_DIFF=$(( CURRENT_SIZE - PREV_SIZE ))
-    SPEED=$(( BYTE_DIFF / TIME_DIFF ))
-    PREV_SIZE=$CURRENT_SIZE
-    PREV_TIME=$NOW
-  fi
-  SPEED_FMT=$(format_bytes "$SPEED" 2>/dev/null || echo "0B")
-
-  # calculate ETA
-  if (( TOTAL_BYTES > 0 && SPEED > 0 )); then
-    REMAINING=$(( TOTAL_BYTES - CURRENT_SIZE ))
-    ETA_SECS=$(( REMAINING / SPEED ))
-  else
-    ETA_SECS=-1
-  fi
-
-  DOWNLOADED_FMT=$(format_bytes "$CURRENT_SIZE")
-  ETA_FMT=$(format_eta "$ETA_SECS")
-
-  if (( TOTAL_BYTES > 0 )); then
-    draw_bar "$PCT" "$DOWNLOADED_FMT" "$ETA_FMT"
-  else
-    draw_spinner "downloading ${DOWNLOADED_FMT}"
-  fi
-
-  sleep 0.15
+  DL_OK=true
+  break
 done
 
-# wait for download to finish and check exit code
-wait "$DL_PID" 2>/dev/null
-DL_EXIT=$?
-
-# final state
-FINAL_SIZE=$(stat -c%s "${TMP_DIR}/${ASSET}" 2>/dev/null || stat -f%z "${TMP_DIR}/${ASSET}" 2>/dev/null || echo 0)
-FINAL_FMT=$(format_bytes "$FINAL_SIZE")
-END_TIME=$(date +%s 2>/dev/null || echo 0)
-TOTAL_TIME=$(( END_TIME - START_TIME ))
-
-if (( DL_EXIT != 0 )); then
-  printf "\r\033[2K"
-  echo "  ${CROSS} download failed"
+if [[ "$DL_OK" != true ]]; then
+  echo "  ${CROSS} download failed" >&2
   exit 1
 fi
 
@@ -302,24 +361,36 @@ else
 fi
 echo ""
 
-# --- verify checksum ---
+# --- verify checksum (mandatory) ---
 
 printf "  ${ARROW} verifying checksum"
-wait "$CK_PID" 2>/dev/null || true
+wait "$CK_PID" 2>/dev/null
+CK_EXIT=$?
+
+if (( CK_EXIT != 0 )) || [[ ! -s "${TMP_DIR}/SHA256SUMS" ]]; then
+  printf "\r\033[2K  ${CROSS} could not download checksums — refusing to install unverified binary\n"
+  echo "    URL: ${CHECKSUM_URL}" >&2
+  echo "    this is a safety measure; try again or install from source" >&2
+  exit 1
+fi
 
 EXPECTED="$(grep "${ASSET}" "${TMP_DIR}/SHA256SUMS" 2>/dev/null | awk '{print $1}')"
 if [[ -z "$EXPECTED" ]]; then
-  printf "\r\033[2K  ${ARROW} verifying checksum ${Y}skipped${R}\n"
-else
-  ACTUAL="$(sha256sum "${TMP_DIR}/${ASSET}" 2>/dev/null | awk '{print $1}')"
-  if [[ "$EXPECTED" != "$ACTUAL" ]]; then
-    printf "\r\033[2K  ${CROSS} checksum mismatch\n"
-    echo "    expected: ${EXPECTED}" >&2
-    echo "    actual:   ${ACTUAL}" >&2
-    exit 1
-  fi
-  printf "\r\033[2K  ${ARROW} verifying checksum ${CHECK}\n"
+  printf "\r\033[2K  ${CROSS} SHA256SUMS has no entry for ${ASSET} — release may be corrupt\n"
+  echo "    check https://github.com/${REPO}/releases" >&2
+  exit 1
 fi
+
+ACTUAL="$(sha256sum "${TMP_DIR}/${ASSET}" 2>/dev/null | awk '{print $1}')"
+if [[ "$EXPECTED" != "$ACTUAL" ]]; then
+  printf "\r\033[2K  ${CROSS} checksum mismatch — refusing to install\n"
+  echo "    expected: ${EXPECTED}" >&2
+  echo "    actual:   ${ACTUAL}" >&2
+  echo "    the download may be corrupted or tampered with" >&2
+  echo "    try again or report at https://github.com/${REPO}/issues" >&2
+  exit 1
+fi
+printf "\r\033[2K  ${ARROW} verifying checksum ${CHECK}\n"
 
 # --- install ---
 
