@@ -155,27 +155,17 @@ draw_bar() {
   local full_cells=$(( filled_cells / 8 ))
   local sub_cell=$(( filled_cells % 8 ))
 
-  # build the bar
+  # build the bar — filled portion in green, empty in dim green
   local bar=""
   local i
   for (( i=0; i<full_cells; i++ )); do
-    bar="${bar}█"
+    bar="${bar}${G}█${R}"
   done
   if (( full_cells < BAR_WIDTH )); then
-    bar="${bar}${BAR_CHARS[$sub_cell]}"
+    bar="${bar}${G}${BAR_CHARS[$sub_cell]}${R}"
     for (( i=full_cells+1; i<BAR_WIDTH; i++ )); do
-      bar="${bar}${BAR_EMPTY}"
+      bar="${bar}${D}░${R}"
     done
-  fi
-
-  # color the bar based on progress
-  local bar_color
-  if (( pct < 30 )); then
-    bar_color="${RED}"
-  elif (( pct < 70 )); then
-    bar_color="${Y}"
-  else
-    bar_color="${G}"
   fi
 
   # format percentage with padding
@@ -183,11 +173,10 @@ draw_bar() {
   pct_str=$(printf "%3d%%" "$pct")
 
   # clear line and draw
-  printf "\r\033[2K  %s%s%s %s%s%s  %s%s%s  %s%s/s%s  %seta %s%s" \
-    "$bar_color" "$bar" "$R" \
+  printf "\r\033[2K  %s%s %s%s%s  %s%s%s  %seta %s%s" \
+    "$bar" \
     "$D" "$pct_str" "$R" \
     "$D" "$downloaded" "$R" \
-    "$C" "$speed" "$R" \
     "$D" "$eta" "$R"
 }
 
