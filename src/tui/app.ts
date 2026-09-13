@@ -24,6 +24,7 @@ import { runTurn, VERSION } from "../loop/agent.ts";
 import { steer } from "../loop/steer.ts";
 import { projectView } from "../context/view.ts";
 import { lookupModel } from "../providers/models.ts";
+import { listSessions } from "../store/db.ts";
 import { createSession, getSession, lastPromptTokens as storedPromptTokens, pinSession, unpinSession } from "../store/db.ts";
 import { acquireLock, releaseLock } from "../store/lock.ts";
 import {
@@ -44,6 +45,8 @@ import { killTree } from "../tools/exec.ts";
 import { debugLog, debugLogPath } from "../core/debuglog.ts";
 import { droppedPath, expandMentions } from "../core/mentions.ts";
 import { liveTheme, setTheme, themeName, type Theme } from "./themes.ts";
+import { setRichMarkdown } from "./markdown.ts";
+import { diffSegs } from "./highlight.ts";
 
 type ItemKind = "user" | "toolhead" | "toolbody" | "info" | "error" | "md" | "think";
 interface Item {
@@ -73,6 +76,16 @@ let KEPT_TOOL_CHARS = 4_000;
 export function setTuiCaps(collapsed: number, kept: number): void {
   COLLAPSED_TOOL_CHARS = collapsed;
   KEPT_TOOL_CHARS = kept;
+}
+
+/**
+ * Rich rendering mode (config `tuiRich`, default off): syntax-tinted code
+ * fences and diff-colored tool output.
+ */
+let RICH = false;
+export function setTuiRich(on: boolean): void {
+  RICH = on;
+  setRichMarkdown(on);
 }
 
 // Live palette: resolves against the active theme on every access, so a
@@ -702,6 +715,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     try {
       const r = applyConfig();
       setTuiCaps(state.config?.tuiCollapsedChars ?? 240, state.config?.tuiKeptChars ?? 4_000);
+      setTuiRich(!!state.config?.tuiRich);
       const wantTheme = state.config?.theme ?? "default";
       // plugin themes register on first buildRegistry, so an unknown name here
       // may just be a plugin theme that has not loaded yet — fall back silently
@@ -1149,6 +1163,18 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     } catch {}
     try {
       restoreOutputRef?.(); // replay anything captured while the grid was up
+    } catch {}
+    // leave a resume hint on the shell — the session is one id away. the
+    // numeric index is what `fox -c N` resolves against (listSessions order)
+    try {
+      if (state.sessionId && !process.env.FOX_AGENT_NO_RESUME_HINT) {
+        const idx = listSessions(50).findIndex((s) => s.id === state.sessionId);
+        console.error(
+          idx >= 0
+            ? `\x1b[90mto resume: fox -c ${idx + 1}\x1b[0m (or fox -c ${state.sessionId})`
+            : `\x1b[90mto resume: fox -c ${state.sessionId}\x1b[0m`,
+        );
+      }
     } catch {}
     finish?.();
   }
@@ -1762,11 +1788,14 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         // info lines that borrow the muted style (welcome, hints) — no arrow, no ↳
         rows = wrapSegs([{ t: it.text, ...itemStyle(it.kind) }], w).map((segs) => ({ segs }));
       } else if (it.expanded) {
-        // full output: real lines, no ⏎ one-lining, no ↳ prefix
+        // full output: real lines, no ⏎ one-lining, no ↳ prefix. Rich mode
+        // paints unified-diff/git markers in their own colors.
         rows = [];
         const lines = it.text.split("\n");
         for (let li = 0; li < lines.length; li++) {
-          rows.push(...wrapSegs([{ t: `  ${lines[li]}`, ...itemStyle(it.kind) }], w).map((segs) => ({ segs })));
+          const colored = RICH ? diffSegs(lines[li]) : null;
+          const segs = colored ? [{ t: "  ", fg: C.chrome }, ...colored] : [{ t: `  ${lines[li]}`, ...itemStyle(it.kind) }];
+          rows.push(...wrapSegs(segs, w).map((segs) => ({ segs })));
         }
       } else {
         // collapsed: one arrow line, like thinking — no partial preview

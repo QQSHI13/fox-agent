@@ -130,6 +130,8 @@ export interface Config {
   tuiCollapsedChars: number;
   /** TUI: chars kept when a tool result is folded inline (default 4000) */
   tuiKeptChars: number;
+  /** TUI rich mode: syntax-tinted code fences + diff-colored tool output (default off) */
+  tuiRich: boolean;
   /** TUI color theme: a preset name or a plugin-registered one (default "default") */
   theme: string;
   /**
@@ -192,6 +194,7 @@ const DEFAULTS: Omit<Config, "projectInstructions"> = {
   sessionListLimit: 50,
   tuiCollapsedChars: 240,
   tuiKeptChars: 4_000,
+  tuiRich: false,
   theme: "default",
   contextMarkers: true,
   plugins: [],
@@ -330,7 +333,7 @@ const KNOWN_KEYS = new Set([
   "model", "baseUrl", "apiKey", "provider", "maxSteps", "retryLimit", "compactAt",
   "requestTimeoutMs", "diagnostics", "mcpServers", "agents", "lsp", "plugins",
   "providers", "disabledPlugins", "toolOutputCap", "sessionListLimit",
-  "tuiCollapsedChars", "tuiKeptChars", "theme", "contextMarkers", "acpHistory",
+  "tuiCollapsedChars", "tuiKeptChars", "tuiRich", "theme", "contextMarkers", "acpHistory",
 ]);
 
 /** Parse one `[[providers.x.models]]` entry; junk fields degrade to absent. */
@@ -400,6 +403,7 @@ function applyTable(cfg: Config, t: Record<string, unknown> | null, scope: "glob
   if (typeof t.sessionListLimit === "number" && t.sessionListLimit >= 1) cfg.sessionListLimit = Math.floor(t.sessionListLimit);
   if (typeof t.tuiCollapsedChars === "number" && t.tuiCollapsedChars >= 40) cfg.tuiCollapsedChars = Math.floor(t.tuiCollapsedChars);
   if (typeof t.tuiKeptChars === "number" && t.tuiKeptChars >= 200) cfg.tuiKeptChars = Math.floor(t.tuiKeptChars);
+  if (typeof t.tuiRich === "boolean") cfg.tuiRich = t.tuiRich;
   if (typeof t.theme === "string" && t.theme.trim()) cfg.theme = t.theme.trim();
   if (typeof t.contextMarkers === "boolean") cfg.contextMarkers = t.contextMarkers;
   if (t.acpHistory === "full" || t.acpHistory === "last") cfg.acpHistory = t.acpHistory;

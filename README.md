@@ -98,6 +98,7 @@ compactAt = 0.85
 retryLimit = 3
 requestTimeoutMs = 120000
 diagnostics = true          # report type errors after each edit (default true)
+tuiRich = false             # rich rendering: syntax-tinted code fences + diff colors (default off)
 
 # Plugins are read from the GLOBAL config only — a plugin runs in fox-agent's own
 # process with your credentials, so a project file cannot introduce one.

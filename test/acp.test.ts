@@ -56,6 +56,7 @@ const cfg = (): Config => ({
   sessionListLimit: 50,
   tuiCollapsedChars: 240,
   tuiKeptChars: 4_000,
+  tuiRich: false,
   theme: "default",
   contextMarkers: true,
   acpHistory: "full",

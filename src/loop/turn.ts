@@ -223,6 +223,7 @@ function fallbackConfig(cfg: ProviderConfig, opts: TurnOptions): Config {
     sessionListLimit: 50,
     tuiCollapsedChars: 240,
     tuiKeptChars: 4_000,
+    tuiRich: false,
     theme: "default",
     contextMarkers: true,
     // a caller that passed only a ProviderConfig has no config file in play, so

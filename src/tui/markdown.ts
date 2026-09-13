@@ -2,6 +2,7 @@
 import type { Seg } from "./wrap.ts";
 import { liveTheme } from "./themes.ts";
 import { charWidth } from "./screen.ts";
+import { highlightLine } from "./highlight.ts";
 
 // live theme lookups: a /theme switch recolors markdown on the next frame
 const MD = liveTheme<"ACCENT" | "CODE_FG" | "HEAD" | "DIM" | "LINK">({
@@ -13,6 +14,15 @@ const MD = liveTheme<"ACCENT" | "CODE_FG" | "HEAD" | "DIM" | "LINK">({
 });
 
 /**
+ * Rich rendering mode (config `tuiRich`, default off): code fences get
+ * per-token syntax tinting instead of one flat color.
+ */
+let rich = false;
+export function setRichMarkdown(on: boolean): void {
+  rich = on;
+}
+
+/**
  * Parser state that can cross a call boundary. The streaming path in the TUI
  * parses the settled prefix once and only re-parses the tail on each frame;
  * `state` is how the tail parse knows it begins inside a code fence (and
@@ -22,6 +32,8 @@ const MD = liveTheme<"ACCENT" | "CODE_FG" | "HEAD" | "DIM" | "LINK">({
 export interface MdState {
   inFence: boolean;
   hadCode: boolean;
+  /** language tag from the fence opener, for rich syntax tinting */
+  lang?: string;
 }
 
 export function renderMarkdown(src: string, state?: MdState): Seg[][] {
@@ -31,6 +43,7 @@ export function renderMarkdown(src: string, state?: MdState): Seg[][] {
   // local aliases; written back into `state` (if given) as the parse advances
   let inFence = state?.inFence ?? false;
   let hadCode = state?.hadCode ?? false;
+  let fenceLang = state?.lang ?? "";
 
   const inline = (text: string, base?: Partial<Seg>): Seg[] => {
     const segs: Seg[] = [];
@@ -62,12 +75,15 @@ export function renderMarkdown(src: string, state?: MdState): Seg[][] {
         if (state) {
           state.inFence = false;
           state.hadCode = false;
+          state.lang = "";
         }
         if (!hadCode) out.push([{ t: "│", fg: MD.CODE_FG }]);
       } else {
         hadCode = true;
         if (state) state.hadCode = true;
-        out.push([{ t: "│ " + line, fg: MD.CODE_FG }]);
+        // rich mode tints tokens; the gutter bar keeps the flat code color so
+        // the block still reads as one unit
+        out.push(rich ? [{ t: "│ ", fg: MD.CODE_FG }, ...highlightLine(line, fenceLang).map((s) => ({ fg: MD.CODE_FG, ...s }))] : [{ t: "│ " + line, fg: MD.CODE_FG }]);
       }
       i++;
       continue;
@@ -76,9 +92,11 @@ export function renderMarkdown(src: string, state?: MdState): Seg[][] {
     if (/^```/.test(line)) {
       inFence = true;
       hadCode = false;
+      fenceLang = /^\s*```(\S*)/.exec(line)?.[1] ?? "";
       if (state) {
         state.inFence = true;
         state.hadCode = false;
+        state.lang = fenceLang;
       }
       i++;
       continue;
