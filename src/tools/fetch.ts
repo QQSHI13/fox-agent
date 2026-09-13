@@ -18,18 +18,38 @@ export const fetchDef: ToolDef = {
 const CAP = 20_000;
 
 function htmlToText(html: string): string {
-  return html
-    .replace(/<script[\s\S]*?<\/script>/gi, " ")
-    .replace(/<style[\s\S]*?<\/style>/gi, " ")
-    .replace(/<!--[\s\S]*?-->/g, " ")
+  // strip executable / non-content blocks; loop until stable so nested or
+  // adjacent tags cannot survive a single pass (a one-shot lazy regex is the
+  // "incomplete sanitization" class) — the output is plain text for the
+  // model, never re-rendered as HTML, so entity decoding here is safe
+  let s = html;
+  let prev = "";
+  while (prev !== s) {
+    prev = s;
+    s = s
+      .replace(/<script\b[^>]*>[\s\S]*?<\/script\s*>/gi, " ")
+      .replace(/<style\b[^>]*>[\s\S]*?<\/style\s*>/gi, " ")
+      .replace(/<!--[\s\S]*?-->/g, " ");
+  }
+  s = s
     .replace(/<(br|p|div|li|tr|h[1-6])[^>]*>/gi, "\n")
-    .replace(/<[^>]+>/g, "")
-    .replace(/&nbsp;/g, " ")
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
+    .replace(/<[^>]+>/g, "");
+  // one decoding pass through a callback — named entities plus numeric
+  // (decimal/hex) references, unknown names left untouched (no double
+  // unescaping: "&amp;lt;" stays "&lt;")
+  const NAMED: Record<string, string> = {
+    amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " ",
+    mdash: "—", ndash: "–", hellip: "…", copy: "©", reg: "®", trade: "™",
+  };
+  s = s.replace(/&(#x?[0-9a-f]+|[a-z]+);/gi, (whole, ent: string) => {
+    const e = ent.toLowerCase();
+    if (e.startsWith("#")) {
+      const n = e[1] === "x" ? parseInt(e.slice(2), 16) : parseInt(e.slice(1), 10);
+      return Number.isFinite(n) && n > 0 && n <= 0x10ffff ? String.fromCodePoint(n) : whole;
+    }
+    return NAMED[e] ?? whole;
+  });
+  return s
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
