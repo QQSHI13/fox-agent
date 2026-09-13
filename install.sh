@@ -257,6 +257,7 @@ CK_PID=$!
 START_TIME=$(date +%s 2>/dev/null || echo 0)
 PREV_SIZE=0
 PREV_TIME=$START_TIME
+SPEED=0
 
 while kill -0 "$DL_PID" 2>/dev/null; do
   CURRENT_SIZE=$(stat -c%s "${TMP_DIR}/${ASSET}" 2>/dev/null || stat -f%z "${TMP_DIR}/${ASSET}" 2>/dev/null || echo 0)
