@@ -148,10 +148,20 @@ jobs:
         run: cat bench/table.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: commit refreshed results
+        # Rebase + retry: a release commit (or another bench run) may land on
+        # main between checkout and push — losing the race must not lose the
+        # data (measured once at CI cost). bench/ + README rebase cleanly onto
+        # anything that doesn't touch them.
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add bench README.md
           git diff --cached --quiet && echo "no bench changes" && exit 0
           git commit -m "bench: refresh results"
-          git push origin HEAD:main
+          for i in 1 2 3; do
+            git pull --rebase origin main && git push origin HEAD:main && exit 0
+            echo "push race lost (attempt $i) — rebasing and retrying"
+            sleep 10
+          done
+          echo "could not push bench results after 3 attempts"
+          exit 1
