@@ -50,7 +50,10 @@ jobs:
         run: |
           mkdir -p "$HOME/.npm-global"
           npm config set prefix "$HOME/.npm-global"
-          npm config set allow-scripts "@anthropic-ai/claude-code @openai/codex opencode-ai @opencode-ai/cli @earendil-works/pi-coding-agent @google/gemini-cli @github/copilot @charmland/crush @qwen-code/qwen-code @kilocode/cli"
+          # Comma-separated — a space-joined string is silently ignored as an
+          # unparseable .npmrc entry (measured in CI logs), which blocks every
+          # postinstall and installs binary-less stubs.
+          npm config set allow-scripts "@anthropic-ai/claude-code,@openai/codex,opencode-ai,@opencode-ai/cli,@earendil-works/pi-coding-agent,@google/gemini-cli,@github/copilot,@charmland/crush,@qwen-code/qwen-code,@kilocode/cli"
           echo "$HOME/.npm-global/bin" >> "$GITHUB_PATH"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           node --version
@@ -60,7 +63,11 @@ jobs:
 
       - uses: actions/setup-python@v7
         with:
-          python-version: "3.x"
+          # 3.12, not latest: aider-chat's newest compatible release and its
+          # pinned dependency tree predate 3.14-era CPython (pip backtracks to
+          # a 2023 aider whose C-extension pins no longer build). 3.12 has full
+          # wheel coverage for everything bench installs.
+          python-version: "3.12"
 
       # Python installs live in a venv: system pip on Ubuntu is
       # externally-managed (PEP 668), and pipx is not guaranteed present —

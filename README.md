@@ -21,27 +21,27 @@ Full machine control, zero permission prompts. Production turn loop with step ca
 
 | agent | version | bundle | `--version` | TUI 1st byte | idle PSS |
 |---|---|---|---|---|---|
-| **fox-agent** | 0.3.1 | 88.9 MB | 9 ms | **11 ms** | 35 MB |
-| claude code | 2.1.270 (Claude Code) | 224.0 MB | 6 ms | **180 ms** | 176 MB |
-| codex | codex-cli 0.154.0 | 0.0 MB | 34 ms | **33 ms** | 49 MB |
-| opencode v1 | 1.18.30 | 0.0 MB | 502 ms | **821 ms** | 361 MB |
-| opencode v2 | n/a (not installed) | — | — | — | — |
-| jcode | jcode v0.84.0 (57d587899) | 0.0 MB | 7 ms | **100 ms** | 29 MB |
-| pi | 0.85.1 | 0.0 MB | 237 ms | **288 ms** | 146 MB |
-| gemini cli | 0.59.0 | 0.0 MB | 1207 ms | **1259 ms** | — |
-| copilot cli | GitHub Copilot CLI 1.0.83. | 0.0 MB | 480 ms | **563 ms** | 47 MB |
-| crush | crush version v0.94.1 | 0.0 MB | 129 ms | **574 ms** | 69 MB |
-| goose | 1.50.0 | 314.5 MB | 5 ms | **5 ms** | 25 MB |
+| **fox-agent** | 0.3.1 | 88.9 MB | 17 ms | **20 ms** | 33 MB |
+| claude code | n/a (not installed) | — | — | — | — |
+| codex | n/a (not installed) | — | — | — | — |
+| opencode v1 | n/a (not installed) | — | — | — | — |
+| opencode v2 | opencode v2.0.3 | 206.4 MB | 122 ms | **230 ms** | 98 MB |
+| jcode | n/a (not installed) | — | — | — | — |
+| pi | n/a (not installed) | — | — | — | — |
+| gemini cli | n/a (not installed) | — | — | — | — |
+| copilot cli | GitHub Copilot CLI 1.0.83. | 177.3 MB | 787 ms | **958 ms** | 236 MB |
+| crush | n/a (not installed) | — | — | — | — |
+| goose | n/a (not installed) | — | — | — | — |
 | aider | n/a (not installed) | — | — | — | — |
 | amp | n/a (not installed) | — | — | — | — |
 | cursor-agent | n/a (not installed) | — | — | — | — |
-| qwen code | 0.23.3 | 0.0 MB | 29 ms | **1215 ms** | 27 MB |
+| qwen code | n/a (not installed) | — | — | — | — |
 | codebuff | n/a (not installed) | — | — | — | — |
-| kilo code | 7.6.2 | 0.0 MB | 844 ms | **1512 ms** | 46 MB |
+| kilo code | n/a (not installed) | — | — | — | — |
 
-fox-agent headless vs scripted local provider: time to first token **161 ms**, peak RSS **58 MB**.
+fox-agent headless vs scripted local provider: time to first token **83 ms**, peak RSS **n/a on this machine (/usr/bin/time missing)**.
 
-_Generated 2026-09-14T12:29:14Z on Linux x86_64 (6.17.0-1022-azure). [How this is measured](#benchmarks) · [raw JSON](bench/results.json)_
+_Generated 2026-09-14T12:42:01Z on Linux x86_64 (6.8.0-1064-azure). [How this is measured](#benchmarks) · [raw JSON](bench/results.json)_
 <!-- bench:end -->
 
 ---
@@ -210,8 +210,7 @@ What each column means, and why `--version` alone is not the story:
 - **TUI 1st byte** (the headline metric): a real interactive launch — the binary started under a PTY with no args, timed to its first output byte, best
   of 5. Several tools short-circuit `--version` before loading their bundle, so `--version` flatters them; first byte does not.
 - **`--version`**: the harness floor, best of 4, kept for reference.
-- **Bundle**: on-disk bytes of the resolved executable. Script-based CLIs (node/python) report their entry file — small on its own, plus the runtime
-  and modules beside it.
+- **Bundle**: full install footprint — the binary itself for native executables, the package directory for script CLIs (weighing only a 2KB loader shim would pretend node and node_modules are free).
 - **Idle PSS**: resident cost of the TUI at rest after a 1.5s settle, before any model traffic (which would dominate everything).
 - **Time to first token** (fox-agent only): spawn to first text event of a headless `fox -p … --json` turn against the repo's scripted local provider —
   no API key, no network. Competitors need real credentials for a turn, so there is no honest cross-tool TTFT; it is reported for fox-agent only.

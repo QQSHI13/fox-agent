@@ -46,10 +46,12 @@ FAKE = os.path.join(ROOT, "test", "fixtures", "fake-provider.ts")
 # REPORTS, so a renamed/vendored install cannot silently pose as something else.
 # opencode is measured separately below: v1 and v2 ship overlapping binary
 # names, and the v2 installer wipes v1's `opencode` — so the bench workflow
-# preserves v1 under an explicit `opencode-v1` name (see bench.yml). Each
-# binary found here is labeled by its REPORTED major version, and duplicate
-# majors collapse to the first binary in this order.
-OPENCODE_BINS = ("opencode-v1", "opencode", "opencode2")
+# preserves v1 under an explicit `opencode-v1` name (see bench.yml). Labels
+# come from the BINARY NAME, not the version: the v2 beta reports 0.0.0-beta-N
+# (zero-ver), so major-based labeling miscategorized it as v1 and the v2 row
+# silently vanished. The reported version still rides along in the row, so a
+# surprise is visible, never silent. `opencode` (bare) falls back to major.
+OPENCODE_BINS = (("opencode-v1", "opencode v1"), ("opencode", None), ("opencode2", "opencode v2"))
 AGENTS = [
     ("fox-agent", ["bin/fox"]),
     ("claude code", ["claude"]),
@@ -116,11 +118,65 @@ def best_startup(path, n):
     return min(ts) if ts else None
 
 
-def disk_bytes(path):
+def is_binary_file(path):
     try:
-        return os.path.getsize(os.path.realpath(path))
+        with open(path, "rb") as f:
+            return b"\x00" in f.read(8192)
     except OSError:
-        return None
+        return False
+
+
+def du_bytes(path):
+    """Disk use of a file or tree in bytes. du -sb when present (it sees
+    sparse files and dir overhead); a plain walk otherwise."""
+    try:
+        p = subprocess.run(["du", "-sb", path], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=60)
+        return int(p.stdout.split()[0])
+    except Exception:
+        total = 0
+        try:
+            if os.path.isfile(path):
+                return os.path.getsize(path)
+            for root, _dirs, files in os.walk(path):
+                for f in files:
+                    try:
+                        total += os.path.getsize(os.path.join(root, f))
+                    except OSError:
+                        pass
+        except OSError:
+            pass
+        return total
+
+
+def footprint(path):
+    """Honest on-disk cost of a CLI as (mb, kind).
+
+    A native executable is its own whole cost ("bin"). A script/shim is not —
+    weighing only pi's 5MB cli.js while pretending node and 200MB of
+    node_modules are free would make every script CLI look impossibly small
+    next to a self-contained binary. So for scripts the cost is the enclosing
+    install root: the nearest ancestor with package.json (npm), or with
+    pyvenv.cfg (a venv console script — the bench venv holds aider only).
+    "entry" is the fallback when no root is found: the file alone, flagged.
+    """
+    real = os.path.realpath(path)
+    try:
+        if is_binary_file(real):
+            return os.path.getsize(real) / 1e6, "bin"
+    except OSError:
+        return None, "entry"
+    d = os.path.dirname(real)
+    for _ in range(5):
+        if os.path.isfile(os.path.join(d, "package.json")) or os.path.isfile(os.path.join(d, "pyvenv.cfg")):
+            return du_bytes(d) / 1e6, "pkg"
+        nd = os.path.dirname(d)
+        if nd == d:
+            break
+        d = nd
+    try:
+        return os.path.getsize(real) / 1e6, "entry"
+    except OSError:
+        return None, "entry"
 
 
 def tui_first_byte(path, probes=5):
@@ -356,7 +412,7 @@ def fmt_ms(v):
 
 def measure(label, path, n_start, n_probes):
     ver = version_of(path)
-    disk = disk_bytes(path)
+    disk, kind = footprint(path)
     startup = best_startup(path, n_start)
     ttfb = tui_first_byte(path, n_probes)
     pss = idle_pss(path)
@@ -365,21 +421,27 @@ def measure(label, path, n_start, n_probes):
         "installed": True,
         "bin": path,
         "version": ver,
-        "disk_mb": round(disk / 1e6, 1) if disk is not None else None,
+        "disk_mb": round(disk, 1) if disk is not None else None,
+        "disk_kind": kind,
         "startup_ms": round(startup, 1) if startup is not None else None,
         "tui_first_byte_ms": round(ttfb, 1) if ttfb is not None else None,
         "idle_pss_mb": round(pss, 1) if pss is not None else None,
     }
-    print(f"{label}: {ver} disk={row['disk_mb']}MB startup={row['startup_ms']}ms ttfb={row['tui_first_byte_ms']}ms pss={row['idle_pss_mb']}MB")
+    print(f"{label}: {ver} disk={row['disk_mb']}MB({kind}) startup={row['startup_ms']}ms ttfb={row['tui_first_byte_ms']}ms pss={row['idle_pss_mb']}MB")
     return row
 
 
 def opencode_label(ver):
-    """Label an opencode binary by the major version it reports (v0/v1 vs v2)."""
+    """Label a bare `opencode` binary by the major version it reports."""
     m = re.search(r"(\d+)\.", ver)
     if not m:
         return None
-    return "opencode v1" if m.group(1) in ("0", "1") else "opencode v2" if m.group(1) == "2" else None
+    if m.group(1) == "2":
+        return "opencode v2"
+    if m.group(1) in ("0", "1"):
+        # 0.x/1.x is the v1 line — except a 0.0.0-beta, which is the v2 beta
+        return "opencode v2" if "beta" in ver else "opencode v1"
+    return None
 
 
 def main():
@@ -398,22 +460,26 @@ def main():
             continue
         rows.append(measure(label, path, n_start, n_probes))
 
-    # opencode v1+v2: overlapping binary names, labeled by reported major.
-    # Duplicate majors collapse to the first binary in OPENCODE_BINS order, so
-    # a machine with only v2's `opencode` gets one v2 row, while the workflow
-    # (v1 preserved as `opencode-v1`) gets both rows. Rows slot in right after
-    # codex, where the fixed opencode entries used to live.
+    # opencode v1+v2: fixed names where upstream gives distinct binaries,
+    # version fallback for the shared `opencode` name. Duplicate labels
+    # collapse to the first binary in OPENCODE_BINS order, so a machine with
+    # only v2's `opencode` gets one v2 row, while the workflow (v1 preserved
+    # as `opencode-v1`) gets both rows.
     oc_rows: list = []
     seen_oc = set()
-    for bin_name in OPENCODE_BINS:
+    for bin_name, fixed in OPENCODE_BINS:
         path = shutil.which(bin_name)
         if not path:
             continue
-        ver = version_of(path)
-        label = opencode_label(ver)
-        if label is None:
-            print(f"{bin_name}: unrecognized version {ver!r} — skipped")
-            continue
+        if fixed is not None:
+            label = fixed
+            ver = version_of(path)
+        else:
+            ver = version_of(path)
+            label = opencode_label(ver)
+            if label is None:
+                print(f"{bin_name}: unrecognized version {ver!r} — skipped")
+                continue
         if label in seen_oc:
             print(f"{bin_name}: {ver} (duplicate {label}, kept first)")
             continue
@@ -452,9 +518,11 @@ def main():
         "machine": f"{platform.system()} {platform.machine()} ({platform.release()})",
         "method": (
             "best of 4 `--version` runs; best of 5 PTY launches (no args) to first output byte; "
-            "PSS after 1.5s idle from /proc smaps_rollup; fox TTFT = spawn to first text event of "
-            "`fox -p … --json` vs the repo's scripted local provider (no key, no network); "
-            "fox peak RSS of that turn via /usr/bin/time -v. Missing tools are n/a, never estimated."
+            "PSS after 1.5s idle from /proc smaps_rollup; bundle = the binary itself, or the package "
+            "dir for script CLIs (entry shims alone would pretend node_modules are free); "
+            "fox TTFT = spawn to first text event of `fox -p … --json` vs the repo's scripted local "
+            "provider (no key, no network); fox peak RSS of that turn via /usr/bin/time -v. "
+            "Missing tools are n/a, never estimated."
         ),
         "rows": rows,
         "fox": fox_extra,
@@ -465,7 +533,7 @@ def main():
     is_fox = lambda r: r["agent"] == "fox-agent"  # noqa: E731
     bars_svg(
         "bundle size",
-        "on-disk bytes of the resolved executable · lower is better",
+        "full install footprint: the binary, or the package dir for script CLIs · lower is better",
         [(r["agent"], r.get("disk_mb"), is_fox(r)) for r in rows],
         "MB",
         lambda v: f"{v:.1f}",
@@ -495,6 +563,10 @@ def main():
             T.append(f"| {r['agent']} | n/a (not installed) | — | — | — | — |")
             continue
         disk = f"{r['disk_mb']:.1f} MB" if r.get("disk_mb") is not None else "—"
+        if r.get("disk_kind") == "pkg":
+            disk += " (pkg)"
+        elif r.get("disk_kind") == "entry":
+            disk += " (entry)"
         st = f"{r['startup_ms']:.0f} ms" if r.get("startup_ms") is not None else "—"
         tb = f"**{r['tui_first_byte_ms']:.0f} ms**" if r.get("tui_first_byte_ms") is not None else "—"
         pss = f"{r['idle_pss_mb']:.0f} MB" if r.get("idle_pss_mb") is not None else "—"
