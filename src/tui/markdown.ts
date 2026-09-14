@@ -138,32 +138,47 @@ export function renderMarkdown(src: string, state?: MdState): Seg[][] {
     }
 
     // GFM table: a header row, a |---| separator, then body rows. Rendered as
-    // aligned plain columns — borders would double the width cost.
+    // a bordered box (│ / ├─┼─┤) with per-column alignment from the separator
+    // row (:--- left, :---: center, ---: right) — the old borderless columns
+    // collapsed into unreadable soup on more than two columns.
     const isTableLine = (l: string) => /^\s*\|.*\|\s*$/.test(l);
     const isSep = (l: string) => /^\s*\|[\s:|-]+\|\s*$/.test(l);
+    const splitRow = (l: string) => l.trim().replace(/^\||\|$/g, "").split("|").map((c) => c.trim());
     if (isTableLine(line) && i + 1 < lines.length && isSep(lines[i + 1])) {
+      const aligns = splitRow(lines[i + 1]).map((cell) => {
+        const left = cell.startsWith(":");
+        const right = cell.endsWith(":");
+        return left && right ? "center" : right ? "right" : "left";
+      });
       const rows: string[][] = [];
       while (i < lines.length && isTableLine(lines[i])) {
-        if (!isSep(lines[i]))
-          rows.push(lines[i].trim().replace(/^\||\|$/g, "").split("|").map((c) => c.trim()));
+        if (!isSep(lines[i])) rows.push(splitRow(lines[i]));
         i++;
       }
       const width = (s: string) => [...s].reduce((w, c) => w + charWidth(c.codePointAt(0)!), 0);
-      const cols = Math.max(...rows.map((r) => r.length));
+      const cols = Math.max(aligns.length, ...rows.map((r) => r.length));
       const widths = Array.from({ length: cols }, () => 1);
       for (const r of rows) for (let c = 0; c < r.length; c++) widths[c] = Math.max(widths[c], width(r[c]));
-      rows.forEach((r, ri) => {
-        const segs: Seg[] = [];
-        for (let c = 0; c < cols; c++) {
-          const cell = r[c] ?? "";
-          const cellSegs = inline(cell, ri === 0 ? { bold: true } : undefined);
-          const pad = c < cols - 1 ? widths[c] - width(cell) : 0; // no trailing pad on the last column
-          if (pad > 0) cellSegs.push({ t: " ".repeat(pad) });
-          segs.push(...cellSegs);
-          if (c < cols - 1) segs.push({ t: "  ", fg: MD.DIM });
+      const padCell = (cell: string, w: number, align: string): string => {
+        const pad = Math.max(0, w - width(cell));
+        if (align === "right") return " ".repeat(pad) + cell;
+        if (align === "center") {
+          const l = Math.floor(pad / 2);
+          return " ".repeat(l) + cell + " ".repeat(pad - l);
         }
+        return cell + " ".repeat(pad);
+      };
+      rows.forEach((r, ri) => {
+        // padding is applied to the plain cell first so inline styling
+        // (bold header, `code`) never inherits into the gutter
+        const cells = Array.from({ length: cols }, (_, c) => padCell(r[c] ?? "", widths[c], aligns[c] ?? "left"));
+        const segs: Seg[] = [{ t: "│ ", fg: MD.DIM }];
+        cells.forEach((cell, c) => {
+          segs.push(...inline(cell, ri === 0 ? { bold: true } : undefined));
+          segs.push({ t: c < cols - 1 ? " │ " : " │", fg: MD.DIM });
+        });
         out.push(segs);
-        if (ri === 0) out.push([{ t: widths.map((w) => "─".repeat(w)).join("──"), fg: MD.DIM }]);
+        if (ri === 0) out.push([{ t: "├" + widths.map((w) => "─".repeat(w + 2)).join("┼") + "┤", fg: MD.DIM }]);
       });
       continue;
     }

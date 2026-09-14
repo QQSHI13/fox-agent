@@ -70,19 +70,29 @@ describe("markdown incremental parse", () => {
 });
 
 describe("tables", () => {
-  test("a GFM table renders as aligned columns with a header rule", () => {
+  test("a GFM table renders as a bordered box with a header rule", () => {
     const rows = renderMarkdown("| name | ctx |\n| --- | --- |\n| foo | 128k |\n| longer | 256k |");
     const text = rows.map((r) => r.map((s) => s.t).join(""));
-    expect(text[0]).toBe("name    ctx");
-    expect(text[1]).toMatch(/^─+───+$/);
-    expect(text[2]).toBe("foo     128k");
-    expect(text[3]).toBe("longer  256k");
-    expect(rows[0].every((s) => s.bold || !s.t.trim())).toBe(true); // header is bold
+    expect(text[0]).toBe("│ name   │ ctx  │");
+    expect(text[1]).toBe("├────────┼──────┤");
+    expect(text[2]).toBe("│ foo    │ 128k │");
+    expect(text[3]).toBe("│ longer │ 256k │");
+    expect(rows[0].every((s) => s.bold || !s.t.trim() || s.t.includes("│"))).toBe(true); // header is bold
+  });
+
+  test("separator colons align columns left, center and right", () => {
+    const rows = renderMarkdown("| a | b | c |\n| :--- | :---: | ---: |\n| x | y | z |");
+    const text = rows.map((r) => r.map((s) => s.t).join(""));
+    expect(text[2]).toBe("│ x │ y │ z │");
+    const wide = renderMarkdown("| a | b | c |\n| :--- | :---: | ---: |\n| xx | yy | zz |");
+    expect(wide.map((r) => r.map((s) => s.t).join(""))[2]).toBe("│ xx │ yy │ zz │");
+    const padded = renderMarkdown("| aa | bb | cc |\n| ---: | :---: | :--- |\n| x | y | z |");
+    expect(padded.map((r) => r.map((s) => s.t).join(""))[2]).toBe("│  x │ y  │ z  │");
   });
 
   test("a table following a paragraph line is not swallowed into it", () => {
     const rows = renderMarkdown("intro\n| a |\n| --- |\n| b |");
     const text = rows.map((r) => r.map((s) => s.t).join(""));
-    expect(text).toEqual(["intro", "a", "─", "b"]);
+    expect(text).toEqual(["intro", "│ a │", "├───┤", "│ b │"]);
   });
 });
