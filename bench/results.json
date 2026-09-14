@@ -1,76 +1,139 @@
 {
-  "generated": "2026-09-14T12:42:01Z",
-  "machine": "Linux x86_64 (6.8.0-1064-azure)",
+  "generated": "2026-09-14T12:52:17Z",
+  "machine": "Linux x86_64 (6.17.0-1022-azure)",
   "method": "best of 4 `--version` runs; best of 5 PTY launches (no args) to first output byte; PSS after 1.5s idle from /proc smaps_rollup; bundle = the binary itself, or the package dir for script CLIs (entry shims alone would pretend node_modules are free); fox TTFT = spawn to first text event of `fox -p \u2026 --json` vs the repo's scripted local provider (no key, no network); fox peak RSS of that turn via /usr/bin/time -v. Missing tools are n/a, never estimated.",
   "rows": [
     {
       "agent": "fox-agent",
       "installed": true,
-      "bin": "/home/codespace/fox-agent/bin/fox",
-      "version": "0.3.1",
+      "bin": "/home/runner/work/fox-agent/fox-agent/bin/fox",
+      "version": "0.4.0",
       "disk_mb": 88.9,
       "disk_kind": "bin",
-      "startup_ms": 16.9,
-      "tui_first_byte_ms": 20.4,
-      "idle_pss_mb": 32.7
+      "startup_ms": 12.0,
+      "tui_first_byte_ms": 14.4,
+      "idle_pss_mb": 34.7
     },
     {
       "agent": "claude code",
-      "installed": false
+      "installed": true,
+      "bin": "/home/runner/.npm-global/bin/claude",
+      "version": "2.1.270 (Claude Code)",
+      "disk_mb": 224.0,
+      "disk_kind": "bin",
+      "startup_ms": 9.0,
+      "tui_first_byte_ms": 206.8,
+      "idle_pss_mb": 175.8
     },
     {
       "agent": "codex",
-      "installed": false
+      "installed": true,
+      "bin": "/home/runner/.npm-global/bin/codex",
+      "version": "codex-cli 0.154.0",
+      "disk_mb": 339.1,
+      "disk_kind": "pkg",
+      "startup_ms": 41.3,
+      "tui_first_byte_ms": 38.0,
+      "idle_pss_mb": 48.7
     },
     {
       "agent": "opencode v1",
-      "installed": false
+      "installed": true,
+      "bin": "/home/runner/.local/bin/opencode-v1",
+      "version": "1.18.30",
+      "disk_mb": 0.0,
+      "disk_kind": "entry",
+      "startup_ms": 617.7,
+      "tui_first_byte_ms": 1023.7,
+      "idle_pss_mb": 329.4
     },
     {
       "agent": "opencode v2",
       "installed": true,
-      "bin": "/home/codespace/.opencode/bin/opencode",
-      "version": "opencode v2.0.3",
-      "disk_mb": 206.4,
+      "bin": "/home/runner/.npm-global/bin/opencode2",
+      "version": "opencode2 v0.0.0-beta-19271",
+      "disk_mb": 207.4,
       "disk_kind": "bin",
-      "startup_ms": 121.7,
-      "tui_first_byte_ms": 229.7,
-      "idle_pss_mb": 97.5
+      "startup_ms": 82.1,
+      "tui_first_byte_ms": 135.3,
+      "idle_pss_mb": 97.3
     },
     {
       "agent": "jcode",
-      "installed": false
+      "installed": true,
+      "bin": "/home/runner/.local/bin/jcode",
+      "version": "jcode v0.84.0 (57d587899)",
+      "disk_mb": 0.0,
+      "disk_kind": "entry",
+      "startup_ms": 10.2,
+      "tui_first_byte_ms": 12.6,
+      "idle_pss_mb": 27.9
     },
     {
       "agent": "pi",
-      "installed": false
+      "installed": true,
+      "bin": "/home/runner/.npm-global/bin/pi",
+      "version": "0.85.1",
+      "disk_mb": 415.1,
+      "disk_kind": "pkg",
+      "startup_ms": 291.2,
+      "tui_first_byte_ms": 352.3,
+      "idle_pss_mb": 144.2
     },
     {
       "agent": "gemini cli",
-      "installed": false
+      "installed": true,
+      "bin": "/home/runner/.npm-global/bin/gemini",
+      "version": "0.59.0",
+      "disk_mb": 101.8,
+      "disk_kind": "pkg",
+      "startup_ms": 1520.7,
+      "tui_first_byte_ms": 1604.4,
+      "idle_pss_mb": 145.6
     },
     {
       "agent": "copilot cli",
       "installed": true,
-      "bin": "/usr/local/bin/copilot",
+      "bin": "/home/runner/.npm-global/bin/copilot",
       "version": "GitHub Copilot CLI 1.0.83.",
-      "disk_mb": 177.3,
-      "disk_kind": "bin",
-      "startup_ms": 786.9,
-      "tui_first_byte_ms": 957.6,
-      "idle_pss_mb": 236.4
+      "disk_mb": 309.5,
+      "disk_kind": "pkg",
+      "startup_ms": 589.9,
+      "tui_first_byte_ms": 692.2,
+      "idle_pss_mb": 47.4
     },
     {
       "agent": "crush",
-      "installed": false
+      "installed": true,
+      "bin": "/home/runner/.npm-global/bin/crush",
+      "version": "crush version v0.94.1",
+      "disk_mb": 122.1,
+      "disk_kind": "pkg",
+      "startup_ms": 159.7,
+      "tui_first_byte_ms": 483.1,
+      "idle_pss_mb": 68.8
     },
     {
       "agent": "goose",
-      "installed": false
+      "installed": true,
+      "bin": "/home/runner/.local/bin/goose",
+      "version": "1.50.0",
+      "disk_mb": 314.5,
+      "disk_kind": "bin",
+      "startup_ms": 8.1,
+      "tui_first_byte_ms": 7.9,
+      "idle_pss_mb": 25.0
     },
     {
       "agent": "aider",
-      "installed": false
+      "installed": true,
+      "bin": "/home/runner/work/fox-agent/fox-agent/.venv-bench/bin/aider",
+      "version": "aider 0.86.2",
+      "disk_mb": 642.8,
+      "disk_kind": "pkg",
+      "startup_ms": 821.9,
+      "tui_first_byte_ms": 738.6,
+      "idle_pss_mb": 66.8
     },
     {
       "agent": "amp",
@@ -82,7 +145,14 @@
     },
     {
       "agent": "qwen code",
-      "installed": false
+      "installed": true,
+      "bin": "/home/runner/.npm-global/bin/qwen",
+      "version": "0.23.3",
+      "disk_mb": 138.0,
+      "disk_kind": "pkg",
+      "startup_ms": 37.1,
+      "tui_first_byte_ms": 1579.6,
+      "idle_pss_mb": 26.6
     },
     {
       "agent": "codebuff",
@@ -90,12 +160,19 @@
     },
     {
       "agent": "kilo code",
-      "installed": false
+      "installed": true,
+      "bin": "/home/runner/.npm-global/bin/kilocode",
+      "version": "7.6.2",
+      "disk_mb": 538.8,
+      "disk_kind": "pkg",
+      "startup_ms": 997.5,
+      "tui_first_byte_ms": 1830.0,
+      "idle_pss_mb": 45.9
     }
   ],
   "fox": {
-    "ttft_ms": 82.8,
-    "headless_peak_rss_mb": null,
+    "ttft_ms": 52.1,
+    "headless_peak_rss_mb": 57.9,
     "method": "headless `fox -p \u2026 --json` vs scripted local provider; RSS via /usr/bin/time -v; TUI bytes via PTY"
   }
 }
