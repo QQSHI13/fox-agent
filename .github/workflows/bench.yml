@@ -1,0 +1,110 @@
+name: bench
+
+# Measures what `--version` cannot: time to first char of an actual TUI
+# launch, bundle size, time to first token and memory — across fox-agent and
+# every competitor CLI that installs cleanly. Regenerates bench/*.svg +
+# bench/*.md and splices the snapshot into the top of the README, then commits
+# the result so the graphs on main are never stale.
+#
+# Loop guard: the commit-back step pushes as github-actions[bot], and this job
+# skips for that actor — so a bench commit never triggers another bench run.
+#
+# Weekly schedule plus every main push plus manual dispatch. Competitor
+# installs are all best-effort (`|| true`): a tool that fails to install is
+# recorded as n/a in the table, never estimated or invented.
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  bench:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - uses: actions/setup-node@v7
+        with:
+          node-version: lts/*
+      - uses: actions/setup-python@v8
+        with:
+          python-version: "3.x"
+
+      - run: bun install --frozen-lockfile
+      - run: bun run build
+
+      - name: install competitor CLIs (best effort — failures become n/a rows)
+        # Sources: opencode.ai docs (v1 = `opencode` via opencode-ai, v2 = `opencode2`
+        # via @opencode-ai/cli), pi.dev (npm @earendil-works/pi-coding-agent, bin `pi`),
+        # DeepSeek/crush docs (npm @charmland/crush), Qwen Code docs (npm
+        # @qwen-code/qwen-code), kilo.ai docs (npm @kilocode/cli), 1jehuang/jcode
+        # README (install.sh), block/goose docs (download_cli.sh + CONFIGURE=false).
+        # amp / cursor-agent / codebuff have no reliable one-line install and are
+        # probed from PATH only — n/a when absent.
+        #
+        # opencode needs care: the v2 installer wipes v1's `opencode` binary, so
+        # v1 is installed FIRST and copied aside under an explicit `opencode-v1`
+        # name before v2 goes in. The bench script labels each by reported major.
+        run: |
+          set +e
+          npm i -g @anthropic-ai/claude-code          # claude
+          npm i -g @openai/codex                      # codex
+          npm i -g opencode-ai                        # opencode v1 (bin opencode)
+          mkdir -p "$HOME/.local/bin"
+          cp "$(command -v opencode)" "$HOME/.local/bin/opencode-v1" && chmod +x "$HOME/.local/bin/opencode-v1"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.local/bin:$PATH"
+          npm i -g @opencode-ai/cli@beta              # opencode v2 (bin opencode2; wipes v1's opencode)
+          npm i -g @earendil-works/pi-coding-agent    # pi
+          npm i -g @google/gemini-cli                 # gemini
+          npm i -g @github/copilot                    # copilot
+          npm i -g @charmland/crush                   # crush
+          npm i -g @qwen-code/qwen-code               # qwen
+          npm i -g @kilocode/cli                      # kilo code
+          pipx install aider-chat || pip install aider-chat  # aider
+          curl -fsSL https://raw.githubusercontent.com/1jehuang/jcode/main/install.sh | bash  # jcode
+          curl -fsSL https://github.com/block/goose/releases/download/stable/download_cli.sh | CONFIGURE=false bash  # goose
+          echo "--- installed versions ---"
+          for b in claude codex opencode-v1 opencode opencode2 pi gemini copilot crush qwen aider jcode goose kilocode; do
+            command -v "$b" >/dev/null && echo "$b: $("$b" --version 2>&1 | head -1)" || echo "$b: MISSING";
+          done
+          exit 0
+
+      - name: run benchmarks
+        run: python3 scripts/bench/bench.py --out bench
+
+      - name: splice snapshot into README
+        run: |
+          python3 - <<'EOF'
+          from pathlib import Path
+          readme = Path("README.md")
+          snippet = Path("bench/snippet.md").read_text()
+          text = readme.read_text()
+          start, end = "<!-- bench:start -->", "<!-- bench:end -->"
+          assert start in text and end in text, "README bench markers missing"
+          pre, rest = text.split(start, 1)
+          _, post = rest.split(end, 1)
+          readme.write_text(f"{pre}{start}\n{snippet}{end}{post}")
+          EOF
+          git diff --stat
+
+      - name: publish table to job summary
+        run: cat bench/table.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: commit refreshed results
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add bench README.md
+          git diff --cached --quiet && echo "no bench changes" && exit 0
+          git commit -m "bench: refresh results"
+          git push origin HEAD:main

@@ -15,7 +15,8 @@
     "dev": "bun src/cli.ts",
     "build": "bun run build.ts",
     "test": "bun test",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "bench": "bun run build && python3 scripts/bench/bench.py"
   },
   "devDependencies": {
     "bun-types": "^1.4.0",
