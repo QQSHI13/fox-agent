@@ -186,6 +186,22 @@ function missingRequired(def: ToolDef, args: any): string | null {
   return null;
 }
 
+/**
+ * How much of a tool call's arguments rides on tool_start/tool_end.
+ *
+ * The store keeps the full arguments (the assistant node's tool_calls JSON),
+ * but events are a live display + protocol path: ACP's rawInput and the TUI's
+ * expandable head both read them. Capping at 200 chars truncated mid-JSON so
+ * often that streaming clients routinely showed different content than the
+ * settled transcript. 4_000 matches the TUI expanded-view cap (argsFull), so
+ * streaming and settled show the same content for everything but giant calls,
+ * while a 100KB `write` still doesn't ride every event.
+ */
+const EVENT_ARGS_CAP = 4_000;
+function eventArgs(args: string): string {
+  return args.length > EVENT_ARGS_CAP ? args.slice(0, EVENT_ARGS_CAP) : args;
+}
+
 async function execToolCall(call: ToolCall, tools: Map<string, Tool>, tctx: ToolContext): Promise<ToolResult> {
   const tool = tools.get(call.name);
   if (!tool) return { ok: false, output: `error: unknown tool ${call.name}` };
@@ -498,7 +514,7 @@ export async function* runTurnCore(
     // announce every call before awaiting any of them, so consumers can show
     // work as in-flight rather than only after the whole batch settles
     for (const call of outcome.calls) {
-      yield { type: "tool_start", id: call.id, name: call.name, args: call.arguments.slice(0, 200) };
+      yield { type: "tool_start", id: call.id, name: call.name, args: eventArgs(call.arguments) };
     }
 
     const liveEvents = new EventQueue();
@@ -583,7 +599,7 @@ export async function* runTurnCore(
     const results = await finished;
 
     for (const { call, node, res } of results) {
-      yield { type: "tool_end", id: call.id, seq: node.seq, name: call.name, args: call.arguments.slice(0, 200), output: res.output, ok: res.ok };
+      yield { type: "tool_end", id: call.id, seq: node.seq, name: call.name, args: eventArgs(call.arguments), output: res.output, ok: res.ok };
     }
 
     // next step's assistant hangs off the last tool result of this step

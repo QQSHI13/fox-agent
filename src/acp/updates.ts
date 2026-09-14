@@ -138,8 +138,9 @@ function safeJson(s: string): unknown {
   try {
     return JSON.parse(s);
   } catch {
-    // tool_start carries args truncated to 200 chars, so this is expected for
-    // large calls — hand the client the fragment rather than dropping the field
+    // event args are capped at EVENT_ARGS_CAP (turn.ts), so JSON parsing
+    // genuinely fails for giant calls — hand the client the fragment rather
+    // than dropping the field
     return s;
   }
 }

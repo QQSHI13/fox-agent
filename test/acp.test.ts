@@ -665,12 +665,17 @@ describe("event mapping", () => {
     expect(map({ type: "child_tool", session: "sub", name: "read", done: true, ok: true })).toBeNull();
   });
 
-  test("truncated tool_start args reach the client as a string, not as a dropped field", async () => {
-    // turn.ts truncates args to 200 chars before emitting tool_start, so JSON
-    // parsing genuinely fails for large calls; the fragment is still useful.
+  test("tool_start args arrive whole, so streaming and settled views match", async () => {
+    // turn.ts used to truncate args to 200 chars before emitting tool_start, so
+    // the TUI's expandable head and ACP clients showed different content than
+    // the settled transcript for anything but tiny calls. Events now carry up
+    // to EVENT_ARGS_CAP (4_000); only beyond that does the fragment fallback apply.
     const { toSessionUpdate } = await import("../src/acp/updates.ts");
-    const u = toSessionUpdate({ type: "tool_start", id: "t", name: "write", args: '{"content":"aaaa' }, { contextWindow: 1 });
-    expect(u).toMatchObject({ rawInput: '{"content":"aaaa' });
+    const big = JSON.stringify({ path: "/w/big.txt", content: "x".repeat(500) });
+    const u = toSessionUpdate({ type: "tool_start", id: "t", name: "write", args: big }, { contextWindow: 1 });
+    expect(u).toMatchObject({ rawInput: { path: "/w/big.txt" } });
+    const frag = toSessionUpdate({ type: "tool_start", id: "t", name: "write", args: `{"content":"${"a".repeat(4100)}` }, { contextWindow: 1 });
+    expect(typeof (frag as any)?.rawInput).toBe("string");
   });
 
   test("tool kinds cover the whole built-in registry and default to other", async () => {
