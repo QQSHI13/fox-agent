@@ -21,7 +21,7 @@ import { charWidth } from "./screen.ts";
 import { Picker, type PickerRow } from "./picker.ts";
 import { sessionRows } from "./pickerui.ts";
 import { runTurn, VERSION } from "../loop/agent.ts";
-import { steer } from "../loop/steer.ts";
+import { steer, peekSteer, withdrawSteer } from "../loop/steer.ts";
 import { projectView } from "../context/view.ts";
 import { lookupModel } from "../providers/models.ts";
 import { listSessions } from "../store/db.ts";
@@ -273,6 +273,16 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   let exitCode = 0;
   let finish: (() => void) | null = null;
   const queued: { raw: string; lit: boolean }[] = [];
+  /**
+   * The think item the current reasoning stream is writing into, or null.
+   *
+   * Reasoning deltas have no step id, so without this they merged into
+   * whatever think item happened to be last — including one from before a
+   * tool ran, or a collapsed one replayed from a previous turn. The seal
+   * breaks exactly where a step breaks: any tool event or steered line clears
+   * it, so thinking between tool calls always starts its own visible block.
+   */
+  let liveThink: Item | null = null;
   const expandedRefs = new Set<number>(); // think nodes expanded across refreshes
   // provider-reported usage for the CURRENT turn's last step (real numbers,
   // not estimates) — the only token figure the status bar is willing to show
@@ -311,7 +321,6 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
    * deliberate: opening the list mid-turn must not interrupt the turn.
    */
   let overlay: Picker | null = null;
-  let overlayMode: "sessions" | "queue" = "sessions";
   let sessAllDirs = false; // session overlay scope: this directory vs everywhere
 
   /**
@@ -354,12 +363,15 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     return it;
   }
   function appendToLastThink(delta: string) {
-    const last = items[items.length - 1];
-    if (last && last.kind === "think") {
-      last.text += delta;
-      touch(last.k);
+    // Sealed by tool boundaries: thinking belongs to the step that produced
+    // it, so a new stream never merges into a think item from before a tool
+    // ran (or from a previous turn's replayed transcript). liveThink is that
+    // seal — set on creation, cleared by any tool/steer event (see runAgent).
+    if (liveThink) {
+      liveThink.text += delta;
+      touch(liveThink.k);
     } else {
-      push("think", delta, { expanded: false });
+      liveThink = push("think", delta, { expanded: false });
     }
     markDirty();
   }
@@ -815,7 +827,6 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   /** Build and show the session overlay. */
   function openPicker(req: PickerRequest) {
     if (req.kind !== "sessions") return;
-    overlayMode = "sessions";
     sessAllDirs = false;
     overlay = new Picker(currentSessionRows(), {
       title: "sessions — most recently used first",
@@ -829,22 +840,29 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     markDirty();
   }
 
-  /** ctrl+up: review what's waiting behind the running turn. */
-  function openQueue() {
-    if (!queued.length) return flash("queue is empty");
-    overlayMode = "queue";
-    overlay = new Picker(queueRows(), {
-      title: "queued messages — enter pulls one back into the editor, d drops it",
-      allowDelete: true,
-    });
-    markDirty();
-  }
-
-  function queueRows(): PickerRow[] {
-    return queued.map((q, i) => {
-      const preview = q.raw.replace(/\s+/g, " ").trim() || "(whitespace)";
-      return { id: String(i), cells: [`${i + 1}.`, preview.slice(0, 100)], search: preview.toLowerCase(), label: preview.slice(0, 60) };
-    });
+  /**
+   * Withdraw the most recent waiting message back into the editor — no
+   * selector. Queued next-turn messages first (the back off the queue), then
+   * parked steers (ctrl+s), which withdrawSteer pulls out of the turn loop
+   * before their step boundary arrives. Withdrawing only reverts to undefined
+   * when there is nothing left, or the steer already drained into the turn.
+   */
+  function withdrawLast() {
+    const last = queued.pop();
+    if (last) {
+      chsSet(last.raw);
+      markDirty();
+      return flash("withdrawn — enter resends, esc drops");
+    }
+    if (state.sessionId) {
+      const s = withdrawSteer(state.sessionId);
+      if (s !== undefined) {
+        chsSet(s);
+        markDirty();
+        return flash("steering withdrawn — enter resends, esc drops");
+      }
+    }
+    return flash("queue is empty");
   }
 
   function currentSessionRows(): PickerRow[] {
@@ -878,29 +896,6 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           : overlay.key({ name: k.name, ctrl: k.ctrl });
     markDirty();
     if (!action) return true;
-    if (overlayMode === "queue") {
-      switch (action.kind) {
-        case "cancel":
-          overlay = null;
-          break;
-        case "choose": {
-          // pull the message back into the editor for changes before it runs
-          const [m] = queued.splice(Number(action.id), 1);
-          overlay = null;
-          if (m) chsSet(m.raw);
-          break;
-        }
-        case "delete": {
-          queued.splice(Number(action.id), 1);
-          if (!queued.length) overlay = null;
-          else overlay.setRows(queueRows());
-          break;
-        }
-        default:
-          break; // new/fork are not queue concepts
-      }
-      return true;
-    }
     switch (action.kind) {
       case "cancel":
         overlay = null;
@@ -972,6 +967,12 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     // id → one-line label ("exec echo hi"), so in-flight and settled heads both
     // say what actually ran, not just the tool's name
     const callLabels = new Map<string, string>();
+    // id → full arguments, so the in-flight head's expandable input shows the
+    // same content as the settled one (tool_start carries the full args now)
+    const callArgs = new Map<string, string>();
+    // a new turn seals the previous stream: its first reasoning delta must not
+    // merge into a replayed think item from history (see liveThink)
+    liveThink = null;
     // session label → its one live progress line (child_tool dedupe)
     const childItems = new Map<string, { item: Item; count: number; last: string }>();
     try {
@@ -988,9 +989,15 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           statsRev++;
         } else if (ev.type === "tool_start") {
           callLabels.set(ev.id, `${ev.name}${argsSummary(ev.args)}`);
+          callArgs.set(ev.id, ev.args);
+          liveThink = null; // a tool boundary seals the thinking block before it
         } else if (ev.type === "tool_output") {
           // Live output of an in-flight call (exec streaming). Shown as a pair
           // of items the deltas mutate; tool_end swaps them for the final result.
+          // The pair renders through the same itemRows path as settled items —
+          // same head label + expandable input, same body — so streaming and
+          // settled show the same content.
+          liveThink = null;
           if (md) {
             push("md", md);
             md = "";
@@ -999,7 +1006,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           let live = liveTools.get(ev.id);
           if (!live) {
             live = {
-              head: push("toolhead", `» ${callLabels.get(ev.id) ?? "exec"} — running`),
+              head: push("toolhead", `» ${callLabels.get(ev.id) ?? "exec"} — running`, {
+                detail: argsFull(callArgs.get(ev.id) ?? "") || undefined,
+              }),
               body: push("toolbody", "", { toolResult: true, expanded: true }), // live output streams in full
               text: "",
             };
@@ -1010,9 +1019,16 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           touch(live.body.k);
           markDirty();
         } else if (ev.type === "tool_end") {
-          // swap the live pair for the settled result
+          liveThink = null;
+          // swap the live pair for the settled result, keeping whatever the
+          // user unfolded mid-stream open — output you were watching must not
+          // snap shut the moment the tool finishes
           const live = liveTools.get(ev.id);
+          let headOpen = false;
+          let bodyOpen = false;
           if (live) {
+            headOpen = !!live.head.expanded;
+            bodyOpen = !!live.body.expanded;
             items = items.filter((i) => i !== live.head && i !== live.body);
             liveTools.delete(ev.id);
           }
@@ -1023,14 +1039,19 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           }
           // raw text, newlines intact: collapsed rendering shows an arrow line,
           // the expanded view gets the real lines (see itemRows)
-          push("toolhead", `[m${ev.seq}] » ${callLabels.get(ev.id) ?? `${ev.name}${argsSummary(ev.args)}`}${ev.ok ? "" : " — failed"}`, { detail: argsFull(ev.args) });
-          push("toolbody", ev.output.slice(0, KEPT_TOOL_CHARS * 4), { ref: ev.seq, expanded: expandedRefs.has(ev.seq), toolResult: true });
+          const detail = argsFull(ev.args) || undefined;
+          push("toolhead", `[m${ev.seq}] » ${callLabels.get(ev.id) ?? `${ev.name}${argsSummary(ev.args)}`}${ev.ok ? "" : " — failed"}`, { detail, expanded: headOpen || undefined });
+          const bodyOpenFinal = expandedRefs.has(ev.seq) || bodyOpen;
+          if (bodyOpenFinal) expandedRefs.add(ev.seq);
+          push("toolbody", ev.output.slice(0, KEPT_TOOL_CHARS * 4), { ref: ev.seq, expanded: bodyOpenFinal, toolResult: true });
           statsRev++;
         } else if (ev.type === "child_tool") {
           // A subagent's progress: ONE line per delegated session, updated in
           // place with a running count — a 40-call subagent used to print 40
           // identical "session · exec" lines down the transcript. The key drops
           // any "(retry N)" suffix so a retried delegation keeps its one line.
+          // A tool boundary like any other: it seals the thinking block.
+          liveThink = null;
           if (md) {
             push("md", md);
             md = "";
@@ -1048,6 +1069,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           touch(child.item.k);
           markDirty();
         } else if (ev.type === "steered") {
+          liveThink = null;
           if (md) {
             push("md", md);
             md = "";
@@ -1066,6 +1088,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     } finally {
       if (md) push("md", md);
       streamText = null;
+      liveThink = null; // refresh() rebuilds items; no reference may survive it
       setBusy(false);
       ac = null;
       // end-of-turn notification (OSC 9): a turn that ran long enough to walk
@@ -1390,7 +1413,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       return submit();
     }
     if (name === "up" && ctrl) {
-      openQueue(); // review/edit what's waiting behind the running turn
+      withdrawLast(); // pop the back of the queue into the editor — no selector
       return;
     }
     if (name === "t" && ctrl) {
@@ -1710,6 +1733,26 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     flash(okd ? `copied ${text.length} chars${lines > 1 ? ` (${lines} lines)` : ""}` : "copy failed — no clipboard tool");
   }
 
+  /** Everything waiting to send, oldest first, as dock rows.
+   *
+   * Queued next-turn messages, then steers parked for the running turn's next
+   * step boundary. Both stay painted above the input until they are actually
+   * sent: a queued row vanishes when drainQueue dispatches it, a steering row
+   * when the turn's drainSteer consumes it — the same moment its `steered`
+   * event lands in the transcript. One helper for paint() and onClick() so the
+   * hit-test can never disagree with the pixels about how many rows these are.
+   */
+  function pendingLines(): string[] {
+    const lines = queued.map((q, i) => `queued ${i + 1}/${queued.length}: ${oneLine(q.raw)}`);
+    const steers = state.sessionId ? peekSteer(state.sessionId) : [];
+    steers.forEach((s, i) => lines.push(`steering ${i + 1}/${steers.length}: ${oneLine(s)}`));
+    return lines;
+  }
+
+  function oneLine(s: string): string {
+    return s.replace(/\s+/g, " ").trim() || "(whitespace)";
+  }
+
   function onClick(x: number, y: number) {
     const vh = viewportH();
     const { inputTop } = dockGeom();
@@ -1719,10 +1762,11 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       markDirty();
     }
 
-    // hint popup rows float above the input box (and any queue rows) — same
+    // hint popup rows float above the input box (and any pending rows) — same
     // row budget paint() uses, or the hit-test disagrees with the pixels
-    const qShown = queued.length ? Math.min(queued.length, Math.max(1, inputTop - 1)) : 0;
-    const qRows = qShown + (queued.length > qShown ? 1 : 0);
+    const pendN = pendingLines().length;
+    const qShown = pendN ? Math.min(pendN, Math.max(1, inputTop - 1)) : 0;
+    const qRows = qShown + (pendN > qShown ? 1 : 0);
     const hints = hintText(Math.max(1, inputTop - qRows - 1));
     if (hints.active && hints.rows.length) {
       const hTop = inputTop - qRows - hints.rows.length;
@@ -1810,8 +1854,10 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       rows.push({ segs: [] });
     } else if (it.kind === "toolhead" && it.detail) {
       // a tool call whose input overflowed the head line: collapsed shows the
-      // truncated one-liner with a hint, expanded wraps the FULL input across
-      // the whole screen width instead of stopping at 60 chars
+      // one-liner with a leading arrow (like thinking/output) plus a hint, so
+      // the affordance is visible without reading to the end of the line;
+      // expanded wraps the FULL input across the whole screen width instead of
+      // stopping at 60 chars
       if (it.expanded) {
         rows = wrapSegs([{ t: `▾ ${it.text}`, fg: C.tool }], w).map((segs) => ({ segs }));
         rows.push(...wrapSegs([{ t: `  ${it.detail}`, fg: C.chrome }], w).map((segs) => ({ segs })));
@@ -1819,8 +1865,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         rows = [
           {
             segs: [
+              { t: "▸ ", fg: C.chrome },
               { t: it.text, fg: C.tool },
-              { t: "  ▸ input — click or ctrl+t", fg: C.chrome },
+              { t: " · input — click or ctrl+t", fg: C.chrome },
             ],
           },
         ];
@@ -2408,23 +2455,24 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       }
     }
 
-    // queued messages stack directly above the input box, latest at the bottom —
-    // the line you're about to send next sits closest to your hands. ctrl+up
-    // opens the chooser.
+    // queued + steering messages stack directly above the input box, oldest
+    // at the top — the line about to send next sits closest to your hands.
+    // ctrl+up withdraws the last one back into the editor.
     let queueRowsH = 0;
-    if (queued.length) {
+    const pend = pendingLines();
+    if (pend.length) {
       // the stack may use every row above the dock except one — the slash-hint
       // overlay floats above it and needs at least a sliver of room
-      const shown = queued.slice(0, Math.max(1, inputTop - 1));
-      queueRowsH = shown.length + (queued.length > shown.length ? 1 : 0);
+      const shown = pend.slice(0, Math.max(1, inputTop - 1));
+      queueRowsH = shown.length + (pend.length > shown.length ? 1 : 0);
       const qTop = inputTop - queueRowsH;
       for (let i = 0; i < shown.length; i++) {
         screen.fillRow(qTop + i, 0, W, S.barBgRow);
-        screen.text(1, qTop + i, clipW(`queued ${i + 1}/${queued.length}: ${shown[i].raw.replace(/\s+/g, " ").trim() || "(whitespace)"}`, W - 2), S.hintDim);
+        screen.text(1, qTop + i, clipW(shown[i], W - 2), S.hintDim);
       }
-      if (queued.length > shown.length) {
+      if (pend.length > shown.length) {
         screen.fillRow(qTop + shown.length, 0, W, S.barBgRow);
-        screen.text(1, qTop + shown.length, clipW(`… ${queued.length - shown.length} more — ctrl+up to review`, W - 2), S.hintDim);
+        screen.text(1, qTop + shown.length, clipW(`… ${pend.length - shown.length} more — ctrl+up withdraws last`, W - 2), S.hintDim);
       }
     }
 
