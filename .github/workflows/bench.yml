@@ -35,9 +35,42 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: lts/*
-      - uses: actions/setup-python@v8
+
+      # Global npm installs must land in a directory that is on PATH for every
+      # LATER step (each step starts a fresh shell, so plain `export PATH`
+      # inside one step is lost). Pin the prefix explicitly rather than relying
+      # on the runner default.
+      #
+      # Install scripts must be allowed explicitly: npm ≥11 blocks postinstall
+      # scripts by default, and several of these CLIs fetch their native binary
+      # in postinstall — without this, `opencode2` installs as a 232-byte stub
+      # with no binary behind it (measured). Bare package names; keep this list
+      # in sync with the install step below.
+      - name: setup npm
+        run: |
+          mkdir -p "$HOME/.npm-global"
+          npm config set prefix "$HOME/.npm-global"
+          npm config set allow-scripts "@anthropic-ai/claude-code @openai/codex opencode-ai @opencode-ai/cli @earendil-works/pi-coding-agent @google/gemini-cli @github/copilot @charmland/crush @qwen-code/qwen-code @kilocode/cli"
+          echo "$HOME/.npm-global/bin" >> "$GITHUB_PATH"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          node --version
+          npm --version
+          npm config get prefix
+          npm config get allow-scripts
+
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.x"
+
+      # Python installs live in a venv: system pip on Ubuntu is
+      # externally-managed (PEP 668), and pipx is not guaranteed present —
+      # both failure modes silently produce "not installed" rows.
+      - name: setup python venv
+        run: |
+          python3 -m venv .venv-bench
+          .venv-bench/bin/pip install --upgrade pip
+          echo "$PWD/.venv-bench/bin" >> "$GITHUB_PATH"
+          .venv-bench/bin/pip --version
 
       - run: bun install --frozen-lockfile
       - run: bun run build
@@ -60,22 +93,29 @@ jobs:
           npm i -g @openai/codex                      # codex
           npm i -g opencode-ai                        # opencode v1 (bin opencode)
           mkdir -p "$HOME/.local/bin"
-          cp "$(command -v opencode)" "$HOME/.local/bin/opencode-v1" && chmod +x "$HOME/.local/bin/opencode-v1"
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          export PATH="$HOME/.local/bin:$PATH"
+          # A wrapper, not a file copy: v1's launcher may resolve siblings
+          # relative to its own install dir, which a copy would break — and a
+          # wrapper keeps working because npm never removes the v1 package when
+          # the (differently-named) v2 package goes in.
+          if command -v opencode >/dev/null; then
+            printf '#!/bin/sh\nexec "%s" "$@"\n' "$(command -v opencode)" > "$HOME/.local/bin/opencode-v1"
+            chmod +x "$HOME/.local/bin/opencode-v1"
+          else
+            echo "WARN: opencode v1 install failed — no opencode-v1"
+          fi
           npm i -g @opencode-ai/cli@beta              # opencode v2 (bin opencode2; wipes v1's opencode)
           npm i -g @earendil-works/pi-coding-agent    # pi
           npm i -g @google/gemini-cli                 # gemini
           npm i -g @github/copilot                    # copilot
           npm i -g @charmland/crush                   # crush
           npm i -g @qwen-code/qwen-code               # qwen
-          npm i -g @kilocode/cli                      # kilo code
-          pipx install aider-chat || pip install aider-chat  # aider
-          curl -fsSL https://raw.githubusercontent.com/1jehuang/jcode/main/install.sh | bash  # jcode
+          npm i -g @kilocode/cli                      # kilo code (bins kilo + kilocode)
+          .venv-bench/bin/pip install aider-chat      # aider, into the venv
+          curl -fsSL https://jcode.sh/install | bash  # jcode (official installer per 1jehuang/jcode README)
           curl -fsSL https://github.com/block/goose/releases/download/stable/download_cli.sh | CONFIGURE=false bash  # goose
           echo "--- installed versions ---"
-          for b in claude codex opencode-v1 opencode opencode2 pi gemini copilot crush qwen aider jcode goose kilocode; do
-            command -v "$b" >/dev/null && echo "$b: $("$b" --version 2>&1 | head -1)" || echo "$b: MISSING";
+          for b in claude codex opencode-v1 opencode opencode2 pi gemini copilot crush qwen aider jcode goose kilo kilocode; do
+            command -v "$b" >/dev/null && echo "$b: $(timeout 20 "$b" --version 2>&1 | head -1)" || echo "$b: MISSING";
           done
           exit 0
 
