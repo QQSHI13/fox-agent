@@ -230,6 +230,25 @@ describe("turn manager", () => {
     expect(te.output).toContain("unknown tool");
   });
 
+  test("tool_start and tool_end carry the same full args (streaming/settled parity)", async () => {
+    const t = await setup();
+    const s = t.createSession("/w", "m1");
+    const registry = new Map([echoTool()]);
+    // 500 chars: the old 200-char event cap would have truncated this mid-JSON
+    const args = JSON.stringify({ say: "yo".repeat(250) });
+    const mock = mockChat([
+      [{ type: "tool_call", call: { id: "t1", name: "echo", arguments: args } }, { type: "done", reason: "tool_calls" }],
+      textDone("done"),
+    ]);
+    const events = await collect(
+      t.runTurnCore(s.id, cfg(), "go", undefined, { chat: mock.fn as any, registryOverride: registry, quiet: true }),
+    );
+    const start = events.find((e): e is Extract<typeof e, { type: "tool_start" }> => e.type === "tool_start")!;
+    const end = events.find((e): e is Extract<typeof e, { type: "tool_end" }> => e.type === "tool_end")!;
+    expect(start.args).toBe(args);
+    expect(end.args).toBe(args);
+  });
+
   test("usage events are recorded per assistant node", async () => {
     const t = await setup();
     const s = t.createSession("/w", "m1");
@@ -324,6 +343,36 @@ describe("steering", () => {
     // and the model saw it in this turn's request
     const sent = JSON.stringify(mock.calls[0].messages);
     expect(sent).toContain("also do this");
+  });
+
+  test("peek shows undelivered steers oldest-first without consuming them", async () => {
+    const t = await setup();
+    const s = t.createSession("/w", "m1");
+    const { steer, peekSteer, drainSteer } = await import("../src/loop/steer.ts");
+    expect(peekSteer(s.id)).toEqual([]);
+    steer(s.id, "first");
+    steer(s.id, "second");
+    expect(peekSteer(s.id)).toEqual(["first", "second"]);
+    // peeking consumes nothing — the turn still drains both in order
+    expect(drainSteer(s.id)).toEqual(["first", "second"]);
+    expect(peekSteer(s.id)).toEqual([]);
+  });
+
+  test("withdraw pops the back of the queue so it can go back to the editor", async () => {
+    const t = await setup();
+    const s = t.createSession("/w", "m1");
+    const { steer, peekSteer, withdrawSteer, drainSteer } = await import("../src/loop/steer.ts");
+    steer(s.id, "first");
+    steer(s.id, "second");
+    expect(withdrawSteer(s.id)).toBe("second");
+    expect(peekSteer(s.id)).toEqual(["first"]);
+    // the remainder still delivers normally
+    expect(drainSteer(s.id)).toEqual(["first"]);
+    // empty, and drained-away queues both withdraw to undefined
+    expect(withdrawSteer(s.id)).toBeUndefined();
+    steer(s.id, "gone");
+    drainSteer(s.id);
+    expect(withdrawSteer(s.id)).toBeUndefined();
   });
 });
 
