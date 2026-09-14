@@ -100,13 +100,14 @@ jobs:
           npm i -g @openai/codex                      # codex
           npm i -g opencode-ai                        # opencode v1 (bin opencode)
           mkdir -p "$HOME/.local/bin"
-          # A wrapper, not a file copy: v1's launcher may resolve siblings
-          # relative to its own install dir, which a copy would break — and a
-          # wrapper keeps working because npm never removes the v1 package when
-          # the (differently-named) v2 package goes in.
+          # A symlink, not a copy or wrapper script: the bench measures footprint
+          # via realpath, so a symlink still weighs v1's real package dir —
+          # while a copied file or shell wrapper would measure as a weightless
+          # "entry" shim. Safe because npm never removes the v1 package when
+          # the (differently-named) v2 package goes in, and node resolves
+          # __dirname through the link, so sibling lookups keep working.
           if command -v opencode >/dev/null; then
-            printf '#!/bin/sh\nexec "%s" "$@"\n' "$(command -v opencode)" > "$HOME/.local/bin/opencode-v1"
-            chmod +x "$HOME/.local/bin/opencode-v1"
+            ln -sf "$(command -v opencode)" "$HOME/.local/bin/opencode-v1"
           else
             echo "WARN: opencode v1 install failed — no opencode-v1"
           fi
