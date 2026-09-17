@@ -32,6 +32,7 @@ import {
   COMMANDS,
   matchCommands,
   helpText,
+  providerDisplayName,
   sessionList,
   relTime,
   type CommandSpec,
@@ -817,7 +818,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     const info = lookupModel(state.provider.model);
     push(
       "toolbody",
-      `model ${state.provider.model} (${Math.round(info.contextWindow / 1000)}k ctx) · ${state.provider.label ?? state.provider.provider ?? "openai-compatible"}` +
+      `model ${state.provider.model} (${Math.round(info.contextWindow / 1000)}k ctx) · ${providerDisplayName(state)}` +
         `${state.provider.baseUrl && !/api\.openai\.com/.test(state.provider.baseUrl) ? ` · ${state.provider.baseUrl}` : ""}`,
     );
     push("toolbody", "enter send · \\ newline · ! shell · / commands · esc interrupt · ctrl+t expand all · drag/dbl-click select");
@@ -2339,7 +2340,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         : "ctx —";
       const home = process.env.HOME ?? "";
       const cwdShort = home && state.cwd.startsWith(home) ? "~" + state.cwd.slice(home.length) : state.cwd;
-      return `${cwdShort} · ${state.provider.model} · ${ctx}${state.readOnly ? " · read-only" : ""}`;
+      return `${cwdShort} · ${providerDisplayName(state)} · ${state.provider.model} · ${ctx}${state.readOnly ? " · read-only" : ""}`;
     } catch {
       return state.cwd;
     }

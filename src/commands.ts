@@ -359,6 +359,19 @@ function profileHeaders(p: { headers?: Record<string, string> }, mc?: { headers?
 }
 
 /**
+ * Human name for the active provider. `/login` saves a catalog preset id
+ * ("openrouter"), which is what `label` carries — shown raw it reads as an
+ * id, so map it to the catalog display name ("OpenRouter"). A `[providers.*]`
+ * profile name is user-chosen and shown as-is; with neither, the wire format
+ * is the only honest identity.
+ */
+export function providerDisplayName(state: HarnessState): string {
+  const label = state.provider.label;
+  if (label) return presetById(label)?.name ?? label;
+  return state.provider.provider ?? "openai-compatible";
+}
+
+/**
  * Parse a `/model` argument. `profile/model` splits only when the head names a
  * configured profile or catalog preset — model ids legitimately contain "/"
  * (openrouter's `anthropic/claude-sonnet-4`), so a bare id is never split.
@@ -510,7 +523,7 @@ function modelPrompt(state: HarnessState): PromptRequest {
 
   // Step 1 choices: the current provider, then every callable profile/preset.
   const providers: { value: string; label: string }[] = [
-    { value: "m:", label: `${state.provider.label ?? state.provider.provider ?? "openai-compatible"} — ${state.provider.baseUrl} (current)` },
+    { value: "m:", label: `${providerDisplayName(state)} — ${state.provider.baseUrl} (current)` },
   ];
   const profileNames: string[] = [];
   for (const [name, p] of Object.entries(state.config?.providers ?? {})) {
@@ -991,7 +1004,7 @@ export function runSlashCommand(input: string, state: HarnessState): CommandResu
       if (!arg)
         return {
           handled: true,
-          output: `model: ${state.provider.model} · provider ${state.provider.label ?? state.provider.provider ?? "openai-compatible"}`,
+          output: `model: ${state.provider.model} · provider ${providerDisplayName(state)}`,
         };
       return applyModelSwitch(parseModelArg(arg, state), state);
     }
