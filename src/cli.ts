@@ -19,33 +19,36 @@ import {
 import { shutdownTools } from "./tools/index.ts";
 import { VERSION } from "./loop/prompt.ts";
 
-function usage(): string {
-  return `fox-agent v${VERSION} — light coding harness with agent-controlled context
+function usage(color?: boolean): string {
+  const st = {
+    b: (s: string) => (color ? `\x1b[1m${s}\x1b[0m` : s),
+    dim: (s: string) => (color ? `\x1b[2m${s}\x1b[0m` : s),
+  };
+  const flag = (spec: string, desc: string, extra = "") =>
+    `  ${st.b(spec.padEnd(24))} ${desc}${extra ? `\n${" ".repeat(28)}${st.dim(extra)}` : ""}`;
+  return `${st.b(`fox-agent v${VERSION}`)} \u2014 light coding harness with agent-controlled context
 
 usage: fox [options] [-p "prompt"]
 
-  (no args)        open TUI in a new session bound to cwd
-  -p, --print      run one prompt headless, print the answer, exit
-                   (reads stdin when no prompt given or stdin is piped)
-  --json           with -p: emit NDJSON agent events instead of text
-  --acp            serve the Agent Client Protocol on stdio (for Zed, acpx, ...)
-  -c, --continue [n|id]  continue a session: latest, a 'fox ls' index, or an id
-                   (no argument + a real terminal opens the picker)
-  --no-tui         plain streaming mode (pipes)
-  --model <id>     override model
-  --provider <p>   openai-compatible | anthropic | google | plugin-registered
-  --base-url <u>   override API base url
-  --max-steps <n>  turn step cap (default 0 = unlimited)
-  --retry-limit <n>        provider retry attempts (default 3)
-  --compact-at <f>       auto-compact at this fraction of the context window (default 0.85)
-  --request-timeout-ms <n>  abort a provider request silent this long (default 120000, 0 = never)
-  --config <path>  config file override
-  --trust          mark this directory trusted and skip the TUI trust prompt
-                   (trust = project fox-agent.toml / AGENTS.md may run code as you)
-  ls               list sessions
-   plugins [on|off <name>]  manage plugins without the TUI
-  upgrade [--beta|<version>]  self-update from GitHub releases
-  help             show this
+${flag("(no args)", "open TUI in a new session bound to cwd")}
+${flag("-p, --print", "run one prompt headless, print the answer, exit", "(reads stdin when no prompt given or stdin is piped)")}
+${flag("--json", "with -p: emit NDJSON agent events instead of text")}
+${flag("--acp", "serve the Agent Client Protocol on stdio (for Zed, acpx, ...)")}
+${flag("-c, --continue [n|id]", "continue a session: latest, a 'fox ls' index, or an id", "(no argument + a real terminal opens the picker)")}
+${flag("--no-tui", "plain streaming mode (pipes)")}
+${flag("--model <id>", "override model")}
+${flag("--provider <p>", "openai-compatible | anthropic | google | plugin-registered")}
+${flag("--base-url <u>", "override API base url")}
+${flag("--max-steps <n>", "turn step cap (default 0 = unlimited)")}
+${flag("--retry-limit <n>", "provider retry attempts (default 3)")}
+${flag("--compact-at <f>", "auto-compact at this fraction of the context window (default 0.85)")}
+${flag("--request-timeout-ms <n>", "abort a provider request silent this long (default 120000, 0 = never)")}
+${flag("--config <path>", "config file override")}
+${flag("--trust", "mark this directory trusted and skip the TUI trust prompt", "(trust = project fox-agent.toml / AGENTS.md may run code as you)")}
+${flag("ls", "list sessions")}
+${flag("plugin [on|off|add|rm|info <name>]", "manage plugins without the TUI")}
+${flag("upgrade [--beta|<version>]", "self-update from GitHub releases")}
+${flag("help", "show this")}
 
 slash commands inside a session: /help`;
 }
@@ -103,10 +106,10 @@ async function main() {
   void import("./core/upgrade.ts").then((m) => m.ensureAlias()).catch(() => {});
 
   if (parsed.flags.get("version")) return console.log(VERSION);
-  if (parsed.flags.get("help") || parsed.rest[0] === "help") return console.log(usage());
-  if (parsed.rest[0] === "plugins") {
+  if (parsed.flags.get("help") || parsed.rest[0] === "help") return console.log(usage(cliColor()));
+  if (parsed.rest[0] === "plugin" || parsed.rest[0] === "plugins") {
     // plugin management without entering the TUI — same inventory and
-    // verbs the /plugins slash command works through, in terminal colors
+    // verbs the /plugin slash command works through, in terminal colors
     const { cliColor, pluginAddPath, pluginInfoText, pluginListText, pluginRemovePath, pluginSetEnabled } =
       await import("./commands.ts");
     try {
@@ -129,7 +132,7 @@ async function main() {
                 ? await pluginInfoText(ctx, name)
                 : sub === undefined
                   ? await pluginListText(ctx)
-                  : "usage: fox plugins [on|off|add|rm|info <name>]";
+                  : "usage: fox plugin [on|off|add|rm|info <name>]";
       console.log(out);
     } catch (e) {
       console.error(`fox-agent error: ${errMsg(e)}`);

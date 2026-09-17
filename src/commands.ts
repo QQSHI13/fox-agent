@@ -180,11 +180,12 @@ export const COMMANDS: CommandSpec[] = [
   { name: "/thinking", desc: "reasoning effort for reasoning models", usage: "[low|medium|high|default]", arg: true, help: "bare: chooser in the TUI; sets provider reasoning options (OpenAI reasoningEffort, Anthropic thinking budget, Google thinkingConfig) and saves to the global config" },
   { name: "/reload", desc: "re-read config files and re-apply model, theme, caps and plugins" },
   {
-    name: "/plugins",
+    name: "/plugin",
+    aliases: ["/plugins"],
     desc: "manage plugins: list, inspect, install, switch on/off",
     usage: "[on|off|add|rm|info <name>]",
     arg: true,
-    help: "bare: interactive picker in the TUI, printed list elsewhere; on/off flips it live, add/rm installs/uninstalls a file, info details one",
+    help: "bare: interactive wizard in the TUI, printed list elsewhere; on/off flips it live, add/rm installs/uninstalls a file, info details one",
   },
   {
     name: "/upgrade",
@@ -771,7 +772,7 @@ export interface PluginInventoryEntry {
   contributes: string[];
 }
 
-/** One-line summary of what a loaded plugin contributes, for /plugins. */
+/** One-line summary of what a loaded plugin contributes, for /plugin. */
 function describePlugin(p: FoxPlugin): string[] {
   const parts: string[] = [];
   if (p.tools?.length) parts.push(`tools: ${p.tools.map((t) => t.def.name).join(", ")}`);
@@ -828,7 +829,7 @@ export async function pluginInventory(opts: { config?: Config; configPath?: stri
 }
 
 /**
- * The interactive /plugins wizard — the same select-step UI as /model and
+ * The interactive /plugin wizard — the same select-step UI as /model and
  * /login, not the session-picker overlay. Options build synchronously from
  * config alone (no plugin imports to open the menu); the chosen action does
  * the loading. Values are on/off spellings matchPluginTarget resolves.
@@ -883,7 +884,7 @@ function pluginsPrompt(state: HarnessState): PromptRequest {
   };
 }
 
-/** Rendered inventory for `fox plugins` and non-interactive /plugins. */
+/** Rendered inventory for `fox plugin` and non-interactive /plugin. */
 export async function pluginListText(opts: { config?: Config; configPath?: string; color?: boolean }): Promise<string> {
   const { entries, warnings } = await pluginInventory(opts);
   const st = sty(opts.color);
@@ -897,7 +898,7 @@ export async function pluginListText(opts: { config?: Config; configPath?: strin
     lines.push(st.yellow("warnings:"));
     for (const w of warnings) lines.push(st.yellow(`  ! ${w}`));
   }
-  lines.push(st.dim("manage: /plugins on|off|add|rm|info <name>  (headless: fox plugins …)"));
+  lines.push(st.dim("manage: /plugin on|off|add|rm|info <name>  (headless: fox plugin …)"));
   return lines.join("\n");
 }
 
@@ -1489,7 +1490,7 @@ export function runSlashCommand(input: string, state: HarnessState): CommandResu
       if (state.interactive) return { handled: true, reload: true };
       return { handled: true, output: `config reloads in the TUI (and on /new); file: ${state.configPath ?? "global config"}` };
 
-    case "/plugins": {
+    case "/plugin": {
       // Bare opens the same select-step wizard as /model and /login in the
       // TUI, and prints the list elsewhere. on/off/add/rm/info also run
       // directly; on/off/add/rm reload after the write lands.
@@ -1518,19 +1519,19 @@ export function runSlashCommand(input: string, state: HarnessState): CommandResu
             },
           };
         }
-        return { handled: true, output: "usage: /plugins add <path>" };
+        return { handled: true, output: "usage: /plugin add <path>" };
       }
       if (sub === "rm" || sub === "remove" || sub === "uninstall") {
         if (name) return { handled: true, task: () => pluginRemovePath(state, name), reload: true };
         if (state.interactive) return { handled: true, prompt: pluginsPrompt(state) };
-        return { handled: true, output: "usage: /plugins rm <name>" };
+        return { handled: true, output: "usage: /plugin rm <name>" };
       }
       if (sub === "info") {
         if (name) return { handled: true, task: () => pluginInfoText(state, name) };
         if (state.interactive) return { handled: true, prompt: pluginsPrompt(state) };
-        return { handled: true, output: "usage: /plugins info <name>" };
+        return { handled: true, output: "usage: /plugin info <name>" };
       }
-      return { handled: true, output: "usage: /plugins [on|off|add|rm|info <name>]" };
+      return { handled: true, output: "usage: /plugin [on|off|add|rm|info <name>]" };
     }
 
     case "/exit":
