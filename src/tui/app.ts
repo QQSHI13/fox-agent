@@ -644,6 +644,44 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     return i;
   }
 
+  /**
+   * Click handling for a select step's floating option list. The row math
+   * mirrors paint()'s wizard block exactly (header, "… above", windowed
+   * options, "… below") — any drift and clicks land on the wrong options.
+   */
+  function promptClick(x: number, y: number) {
+    void x;
+    const p = prompt!;
+    const opts = promptOptions();
+    if (!opts.length) return;
+    const { inputTop } = dockGeom();
+    const MAX = Math.max(1, Math.min(5, inputTop - 1));
+    const start = opts.length <= MAX ? 0 : Math.max(0, Math.min(p.sel - Math.floor(MAX / 2), opts.length - MAX));
+    const end = Math.min(opts.length, start + MAX);
+    const above = start > 0 ? 1 : 0;
+    const below = end < opts.length ? 1 : 0;
+    const rows = 1 + above + (end - start) + below;
+    const idx = y - (inputTop - rows);
+    if (idx <= 0 || idx >= rows) return; // header, or outside the menu
+    const optRow = idx - 1 - above;
+    if (optRow < 0) {
+      p.sel = Math.max(0, p.sel - MAX); // "… above": page the highlight up
+      markDirty();
+      return;
+    }
+    if (optRow >= end - start) {
+      p.sel = Math.min(opts.length - 1, p.sel + MAX); // "… below": page down
+      markDirty();
+      return;
+    }
+    const i = start + optRow;
+    if (i === p.sel) promptSubmit(); // second click on the row confirms it
+    else {
+      p.sel = i;
+      markDirty();
+    }
+  }
+
   function promptSubmit() {
     if (!commitStep()) return;
     const p = prompt!;
@@ -665,7 +703,16 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     if (!prompt) return false;
     const p = prompt;
     const st = p.steps[p.idx];
-    if (k.type === "mouse") return true; // a question is modal, like the picker
+    if (k.type === "mouse") {
+      // a question is modal, like the picker — but a select step's options are
+      // clickable: first click highlights, a second click on the same row
+      // submits. Clicks used to die here entirely, so choosing with the mouse
+      // left the stale highlight behind and enter committed the wrong answer —
+      // notably landing /login on the "model id" text step after "picking" a
+      // listed model.
+      if (k.action === "up" && st.kind === "select") promptClick(k.x, k.y);
+      return true;
+    }
     if (k.type === "paste") {
       if (st.kind === "text") insertText(k.text);
       else {
