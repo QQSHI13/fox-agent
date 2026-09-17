@@ -1,23 +1,25 @@
-// Provider resolution: explicit config wins, then claude-* model sniffing.
-// Both SDKs load lazily — importing this module (or anything that reaches it,
-// like the turn loop) must not pull the AI SDK in until a request is actually
-// made. Tests inject their own ChatFn and pay nothing.
+// Provider resolution: one registry, seeded by the bundled formats plugin,
+// extended by user plugins. Both SDKs load lazily — importing this module (or
+// anything that reaches it, like the turn loop) must not pull the AI SDK in
+// until a request is actually made. Tests inject their own ChatFn and pay nothing.
 import type { ChatFn, ProviderConfig } from "./types.ts";
 import { FoxError } from "../core/errors.ts";
+import { BUNDLED_PROVIDER_NAMES, bundledProviderFns, isAnthropic } from "./bundled.ts";
 
+export { isAnthropic };
 export * from "./types.ts";
 
-/** Built-in names, so an unresolvable one can say what it could have been. */
-const BUILT_IN = ["openai-compatible", "openai-responses", "anthropic", "google"] as const;
-
 /**
- * Providers a plugin registered, by config name.
+ * Providers a plugin registered, by config name. Bundled formats seed the map
+ * at import; user plugins overlay it — except the reserved bundled names (see
+ * `setCustomProviders`).
  *
  * Module-level rather than threaded through `resolveChat`'s signature, because
  * `resolveChat` is a `ChatFn` — the shape the whole loop, the SDK and every test
  * mock is typed against. Widening it to carry a registry would change five call
  * sites to pass something only this function reads.
  */
+const bundled = new Map<string, ChatFn>(Object.entries(bundledProviderFns));
 const custom = new Map<string, ChatFn>();
 
 /**
@@ -28,22 +30,16 @@ const custom = new Map<string, ChatFn>();
 export function setCustomProviders(providers: Map<string, ChatFn>): void {
   custom.clear();
   for (const [name, fn] of providers) {
-    // shadowing a built-in would make `provider = "anthropic"` mean something
-    // other than Anthropic, which no amount of documentation makes safe
-    if ((BUILT_IN as readonly string[]).includes(name)) continue;
+    // shadowing a bundled name would make `provider = "anthropic"` mean
+    // something other than Anthropic, which no amount of documentation makes safe
+    if ((BUNDLED_PROVIDER_NAMES as readonly string[]).includes(name)) continue;
     custom.set(name, fn);
   }
 }
 
-/** The provider names currently resolvable, built-in and plugin-registered. */
+/** The provider names currently resolvable, bundled and plugin-registered. */
 export function availableProviders(): string[] {
-  return [...BUILT_IN, ...custom.keys()];
-}
-
-export function isAnthropic(cfg: ProviderConfig): boolean {
-  if (cfg.provider === "anthropic") return true;
-  if (cfg.provider === "openai-compatible" || cfg.provider === "openai-responses" || cfg.provider === "google") return false;
-  return /^claude/i.test(cfg.model) && !/openai\.com/.test(cfg.baseUrl);
+  return [...bundled.keys(), ...custom.keys()];
 }
 
 /**
@@ -100,36 +96,15 @@ export function reasoningProviderOptions(cfg: ProviderConfig): { providerOptions
   return { providerOptions: options };
 }
 
-/** Resolved default ChatFn honoring cfg.provider. */
+/** Resolved default ChatFn honoring cfg.provider — one lookup across the bundled formats and plugin providers. */
 export const resolveChat: ChatFn = async function* (cfg, messages, tools, signal) {
-  const name = cfg.provider;
-  if (name && !(BUILT_IN as readonly string[]).includes(name)) {
-    const fn = custom.get(name);
-    // Previously any unrecognized name fell through to openai-compatible, which
-    // meant a typo'd provider produced a confusing 401 from the wrong endpoint
-    // instead of saying what was wrong.
-    if (!fn) {
-      throw new FoxError(`unknown provider '${name}' — available: ${availableProviders().join(", ")}`);
-    }
-    yield* fn(cfg, messages, tools, signal);
-    return;
+  const name = cfg.provider?.trim() || "openai-compatible";
+  const fn = custom.get(name) ?? bundled.get(name);
+  // Previously any unrecognized name fell through to openai-compatible, which
+  // meant a typo'd provider produced a confusing 401 from the wrong endpoint
+  // instead of saying what was wrong.
+  if (!fn) {
+    throw new FoxError(`unknown provider '${name}' — available: ${availableProviders().join(", ")}`);
   }
-  // The key check lives at request time, not startup: a keyless launch opens
-  // the TUI fine (that's what /login is for), and the error names the fix at
-  // the moment it actually matters. Local gateways (ollama, a localhost proxy, …)
-  // legitimately need no key.
-  if (!cfg.apiKey && !/^https?:\/\/(localhost|127\.|\[::1\])/.test(cfg.baseUrl)) {
-    throw new FoxError(`no API key configured — use /login, or set FOX_AGENT_API_KEY`);
-  }
-  // lazy, always: importing a provider module must not pull its SDK into a
-  // process that never calls it (TUI startup, tests with injected ChatFn)
-  const mod =
-    name === "google"
-      ? await import("./google.ts")
-      : name === "openai-responses"
-        ? await import("./openai-responses.ts")
-        : isAnthropic(cfg)
-          ? await import("./anthropic.ts")
-          : await import("./openai-compatible.ts");
-  yield* mod.streamChat(cfg, messages, tools, signal);
+  yield* fn(cfg, messages, tools, signal);
 };
