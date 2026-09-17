@@ -395,7 +395,7 @@ fox-agent speaks ACP in both directions, over the same `runTurnCore` the TUI use
 "agent_servers": { "fox-agent": { "command": "fox", "args": ["--acp"] } }
 ```
 
-Sessions are the real thing, not a protocol shim: `session/new`, `list`, `load`, `resume`, `fork`, `delete` and `close` all map onto the same per-session SQLite databases the TUI writes, so a session started in Zed shows up in `fox ls` and resumes in the TUI. Tool calls, thoughts, token usage and compaction stream as native ACP updates; `session/cancel` aborts the turn.
+Sessions are the real thing, not a protocol shim: `session/new`, `list`, `load`, `resume`, `fork`, `delete` and `close` all map onto the same per-session SQLite databases the TUI writes, so a session started in Zed shows up in `fox ls` and resumes in the TUI. How much history `session/load` replays is governed by `acpHistory` (`"full"` by default, `"last"` for the latest exchange only, or a trailing-node count). Tool calls, thoughts, token usage and compaction stream as native ACP updates; `session/cancel` aborts the turn.
 
 Two things a client should know:
 
