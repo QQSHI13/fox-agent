@@ -2,15 +2,19 @@
  * The plugin surface, re-exported from `../sdk.ts` so an author writes
  * `import type { FoxPlugin } from "fox-agent/sdk"`.
  *
- * Three extension points, chosen because each already had a seam:
+ * Extension points, chosen because each already had a seam:
  *
  *   tools     — a `Tool` is `{ def, run }`, structurally identical to a built-in,
  *               so there is no adapter layer. `buildSystemPrompt` derives the
  *               roster from the live registry, so a plugin tool describes itself
  *               to the model with no prompt-side work.
- *   hooks     — three points in the turn loop, deliberately *additive* (see below).
- *   providers — `resolveChat` is a 4-line dispatcher on `cfg.provider`; a plugin
- *               can register a name it dispatches to.
+ *   hooks     — seven points in the turn loop, deliberately *additive* (see below).
+ *   providers — `resolveChat` is one lookup over the bundled formats plus this
+ *               map; a plugin can register a name it dispatches to.
+ *   themes    — selectable via `/theme` or the `theme` config key.
+ *   mcpServers/agents — integration packs: servers and delegation targets
+ *               without a config file. Explicit config wins on collision.
+ *   commands  — slash commands run through the same result as built-ins.
  *
  * ## Why hooks are patch-based
  *
@@ -28,6 +32,34 @@
  */
 import type { Tool } from "../tools/types.ts";
 import type { ChatFn, ChatMessage, ToolDef } from "../providers/types.ts";
+import type { ExternalAgentConfig, McpServerConfig } from "../core/config.ts";
+
+/** Context a plugin slash command runs with — the session it acts in, nothing else. */
+export interface PluginCommandContext {
+  sessionId: string;
+  cwd: string;
+}
+
+/**
+ * A slash command contributed by a plugin (`/deploy`, …).
+ *
+ * Matched exactly like a built-in (case-insensitive, `/`-prefixed) and run
+ * through the same `CommandResult` — output floats, `newSessionId` switches,
+ * `task` runs async work — so a plugin command behaves like a native one.
+ * A name colliding with a built-in never fires (the built-in wins) and is
+ * reported at registry build.
+ */
+export interface PluginCommand {
+  /** "/deploy" — must start with "/" and contain no spaces */
+  name: string;
+  /** one line, shown in /help and the hint popup */
+  description: string;
+  /** argument syntax, if any; shown in /help and as the argument hint */
+  usage?: string;
+  /** longer /help line; falls back to `description` */
+  help?: string;
+  run: (arg: string, ctx: PluginCommandContext) => import("../commands.ts").CommandResult;
+}
 
 /** Fires once per session, on the turn whose user message is the session's first. */
 export interface SessionStartContext {
@@ -133,4 +165,19 @@ export interface FoxPlugin {
   providers?: Record<string, ChatFn>;
   /** TUI themes (keyed by name), selectable via `/theme` or the `theme` config key */
   themes?: Record<string, import("../tui/themes.ts").Theme>;
+  /**
+   * MCP servers this plugin packs (`[mcpServers.*]` entries without a config
+   * file) — the marketplace shape for "install the Postgres tools". Merged
+   * before connecting; an explicitly configured server of the same name wins,
+   * and the collision is reported.
+   */
+  mcpServers?: Record<string, McpServerConfig>;
+  /**
+   * Delegation targets this plugin packs (`[agents.*]` entries: an ACP
+   * `command` or an A2A `url`) — the marketplace shape for "install a remote
+   * reviewer". Same merge rule as `mcpServers`: explicit config wins.
+   */
+  agents?: Record<string, ExternalAgentConfig>;
+  /** slash commands (`/deploy`, …) — run through the same result as built-ins */
+  commands?: PluginCommand[];
 }

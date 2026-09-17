@@ -294,6 +294,7 @@ export async function* runTurnCore(
   const effCfg = opts.config ?? fallbackConfig(cfg, opts);
   let setupWarnings: string[] = [];
   let tools: Map<string, Tool>;
+  let agents = effCfg.agents;
   let plugins: FoxPlugin[] = opts.pluginsOverride ?? [];
   if (opts.registryOverride) {
     tools = opts.registryOverride;
@@ -320,6 +321,9 @@ export async function* runTurnCore(
     const built = await buildRegistry(effCfg);
     tools = built.tools;
     setupWarnings = built.warnings;
+    // plugin-packed delegation targets ride along: `task` reads this table,
+    // so a packed remote agent is delegable with no config file
+    agents = built.agents;
     if (!opts.pluginsOverride) plugins = built.plugins;
   }
   // markers off = ctx_edit has no addresses to edit; the prompt gates itself on
@@ -540,7 +544,7 @@ export async function* runTurnCore(
           cwd: session.cwd,
           signal,
           providerCfg: cfg,
-          agents: effCfg.agents,
+          agents,
           lsp: effCfg.lsp,
           diagnostics: effCfg.diagnostics,
           emit: quiet ? undefined : liveEvents.push,

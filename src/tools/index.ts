@@ -1,7 +1,8 @@
 import type { ToolDef } from "../providers/types.ts";
-import type { Config } from "../core/config.ts";
+import type { Config, ExternalAgentConfig, McpServerConfig } from "../core/config.ts";
 import type { ToolContext, ToolResult } from "./types.ts";
 import type { Tool } from "./types.ts";
+import { COMMANDS } from "../commands.ts";
 import * as F from "./files.ts";
 import { execDef, execRun } from "./exec.ts";
 import { cleanupPty, ptySessionName } from "./pty.ts";
@@ -11,6 +12,7 @@ import { taskDef, taskRun } from "./task.ts";
 import { mcpTools, closeMcp } from "./mcp.ts";
 import { loadPlugins, setActivePlugins } from "../plugins/load.ts";
 import { bundledPlugins, bundledDisabled } from "../plugins/bundled.ts";
+import { bundledProviderPlugin } from "../providers/bundled.ts";
 import type { FoxPlugin } from "../plugins/types.ts";
 import { setCustomProviders } from "../providers/index.ts";
 import type { ChatFn } from "../providers/types.ts";
@@ -63,46 +65,112 @@ export function defaultRegistry(): Map<string, Tool> {
 export async function buildRegistry(
   cfg: Config,
   exclude?: Set<string>,
-): Promise<{ tools: Map<string, Tool>; warnings: string[]; plugins: FoxPlugin[] }> {
+): Promise<{ tools: Map<string, Tool>; warnings: string[]; plugins: FoxPlugin[]; agents: Record<string, ExternalAgentConfig> }> {
   const map = baseRegistry();
   setOutputCap(cfg.toolOutputCap ?? 30_000);
   // `?? []` on both: `Config` is public surface an embedder (or a test) may build
   // by hand, and a config written before these fields existed must degrade to
   // "no warnings, no plugins" rather than crash the registry build.
   const warnings: string[] = [...(cfg.warnings ?? [])];
-  if (Object.keys(cfg.mcpServers).length) {
-    const res = await mcpTools(cfg.mcpServers);
-    warnings.push(...res.warnings);
-    for (const [name, tool] of res.tools) map.set(name, tool);
-  }
-
-  // Bundled plugins first, through the exact merge path user plugins take —
-  // they are how pty/todo/fetch ship, and disabledPlugins applies to them too.
   const disabled = cfg.disabledPlugins ?? [];
-  const plugins: FoxPlugin[] = bundledPlugins().filter((p) => !bundledDisabled(p.name, disabled));
-  for (const p of plugins) for (const tool of p.tools ?? []) map.set(tool.def.name, tool);
 
-  if (cfg.plugins?.length) {
-    const { globalConfigPath } = await import("../core/config.ts");
-    const { dirname } = await import("node:path");
-    const res = await loadPlugins(cfg.plugins, dirname(globalConfigPath()), disabled);
-    warnings.push(...res.warnings);
-    plugins.push(...res.plugins);
-    for (const p of res.plugins) {
-      for (const tool of p.tools ?? []) {
-        // Later registration wins, so a plugin can deliberately shadow a built-in
-        // or an MCP tool. Reported either way: overriding `write` is a legitimate
-        // thing to want and an accident that would otherwise be invisible.
-        if (map.has(tool.def.name)) {
-          warnings.push(`plugin '${p.name}' overrides existing tool '${tool.def.name}'`);
-        }
-        map.set(tool.def.name, tool);
-      }
+  // User plugins load before anything connects: a plugin may pack MCP servers
+  // and delegation targets alongside its tools, and those merge before
+  // mcpTools dials out. Bundled plugins first, through the exact merge path
+  // user plugins take.
+  const { globalConfigPath } = await import("../core/config.ts");
+  const { dirname } = await import("node:path");
+  const res = await loadPlugins(cfg.plugins ?? [], dirname(globalConfigPath()), disabled);
+  warnings.push(...res.warnings);
+  const plugins: FoxPlugin[] = [
+    ...bundledPlugins().filter((p) => !bundledDisabled(p.name, disabled)),
+    bundledProviderPlugin(),
+    ...res.plugins,
+  ];
+
+  // Integration packs: plugin-contributed servers merge under explicit config —
+  // a config file names what the user chose, a pack only suggests. Collisions
+  // are reported, never silent.
+  const packedServers = new Map<string, string>(); // server name -> plugin name
+  for (const p of res.plugins) {
+    for (const [name, s] of Object.entries(p.mcpServers ?? {})) {
+      if (!s || typeof s !== "object" || typeof (s as { command?: unknown }).command !== "string") continue;
+      if (!packedServers.has(name)) packedServers.set(name, p.name);
     }
   }
+  const servers: Record<string, McpServerConfig> = {};
+  for (const [name, pluginName] of packedServers) {
+    const pack = res.plugins.find((p) => p.name === pluginName)!;
+    servers[name] = (pack.mcpServers as Record<string, McpServerConfig>)[name];
+  }
+  for (const [name, s] of Object.entries(cfg.mcpServers ?? {})) {
+    if (packedServers.has(name)) warnings.push(`mcp server '${name}' is configured explicitly — plugin-packed server ignored`);
+    servers[name] = s;
+  }
+
+  // Same merge for delegation targets (ACP `command` or A2A `url` entries).
+  // Returned for the turn loop: `task` reads the merged table, so a packed
+  // remote agent is delegable with no config file.
+  const agents: Record<string, ExternalAgentConfig> = {};
+  for (const p of res.plugins) {
+    for (const [name, a] of Object.entries(p.agents ?? {})) {
+      if (!a || typeof a !== "object") continue;
+      // "default" is fox-agent delegating to itself and is synthesized at call
+      // time, so it is not a name a plugin may rebind either
+      if (name === "default") {
+        warnings.push(`plugin '${p.name}' agent 'default' ignored — that name is fox-agent itself`);
+        continue;
+      }
+      if (agents[name]) continue; // first pack wins; reported below at the collision site
+      agents[name] = a as ExternalAgentConfig;
+    }
+  }
+  for (const [name, a] of Object.entries(cfg.agents ?? {})) {
+    if (agents[name]) warnings.push(`agent '${name}' is configured explicitly — plugin-packed agent ignored`);
+    agents[name] = a;
+  }
+
+  // MCP enters the registry as the bundled:mcp plugin — same merge path and
+  // override warnings as every other tool source, and `disabledPlugins`
+  // switches the whole bridge off. First in the list: least specific wins.
+  const mcpPlugin: FoxPlugin = { name: "bundled:mcp", tools: [] };
+  if (bundledDisabled("mcp", disabled)) {
+    await closeMcp(); // an earlier config may have connected; don't leak the children
+  } else {
+    const mc = await mcpTools(servers);
+    warnings.push(...mc.warnings);
+    mcpPlugin.tools = [...mc.tools.values()];
+  }
+  plugins.unshift(mcpPlugin);
+
+  const mergeTools = (owner: string, list: Tool[] | undefined) => {
+    for (const t of list ?? []) {
+      // Later registration wins, so a plugin can deliberately shadow a built-in
+      // or an MCP tool. Reported either way: overriding `write` is a legitimate
+      // thing to want and an accident that would otherwise be invisible.
+      if (map.has(t.def.name)) warnings.push(`plugin '${owner}' overrides existing tool '${t.def.name}'`);
+      map.set(t.def.name, t);
+    }
+  };
+  // Precedence, least to most specific: MCP bridge, bundled plugins, user plugins.
+  for (const p of plugins) mergeTools(p.name, p.tools);
+
+  // A plugin command colliding with a built-in never fires (the built-in wins
+  // in runSlashCommand), so the collision is reported here rather than failing
+  // silently the first time it is typed.
+  const builtinWords = new Set(COMMANDS.flatMap((c) => [c.name.toLowerCase(), ...(c.aliases ?? []).map((a) => a.toLowerCase())]));
+  for (const p of plugins) {
+    for (const c of p.commands ?? []) {
+      if (builtinWords.has(c.name.toLowerCase())) warnings.push(`plugin '${p.name}' command '${c.name}' collides with a built-in and never fires`);
+    }
+  }
+
   // providers are registered even when a plugin contributes no tools
   const customProviders = new Map<string, ChatFn>();
   for (const p of plugins) {
+    // bundled:providers seeds the registry at import; re-registering its names
+    // here would only hit the reserved-name refusal, so it is skipped openly
+    if (p.name === "bundled:providers") continue;
     for (const [name, fn] of Object.entries(p.providers ?? {})) {
       if (typeof fn === "function") customProviders.set(name, fn);
     }
@@ -115,7 +183,7 @@ export async function buildRegistry(
   setActivePlugins(plugins);
 
   if (exclude) for (const name of exclude) map.delete(name);
-  return { tools: map, warnings, plugins };
+  return { tools: map, warnings, plugins, agents };
 }
 
 /** Cleanup live pty + MCP children + language servers when a session ends. */

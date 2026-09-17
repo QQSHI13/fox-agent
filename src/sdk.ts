@@ -16,12 +16,15 @@ import { shutdownTools } from "./tools/index.ts";
 export type {
   FoxPlugin,
   PluginHooks,
+  PluginCommand,
+  PluginCommandContext,
   SessionStartContext,
   BeforeLLMCallContext,
   BeforeLLMCallPatch,
   AfterToolContext,
   AfterToolPatch,
 } from "./plugins/types.ts";
+export type { McpServerConfig, ExternalAgentConfig } from "./core/config.ts";
 export type { Tool, ToolContext, ToolResult } from "./tools/types.ts";
 export { ok, fail } from "./tools/types.ts";
 export type { UiBridge, UiStep } from "./core/ui.ts";

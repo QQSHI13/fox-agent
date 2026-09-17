@@ -25,6 +25,17 @@ import { ensureFreshCatalog, presetById, providerPresets } from "./providers/mod
 import { endpointModels, ensureEndpointModels } from "./providers/endpointmodels.ts";
 import { setActiveEndpoint } from "./providers/models.ts";
 import type { UiStep } from "./core/ui.ts";
+import { activePlugins } from "./plugins/load.ts";
+import type { PluginCommand } from "./plugins/types.ts";
+
+/**
+ * Plugin slash commands across the active plugins. Built-ins win on
+ * collision (warned at registry build), so this only feeds matching, help
+ * and the fallback branch — never the built-in switch.
+ */
+function pluginCommands(): PluginCommand[] {
+  return activePlugins().flatMap((p) => p.commands ?? []);
+}
 
 export interface HarnessState {
   sessionId: string;
@@ -218,7 +229,17 @@ export function matchCommands(input: string): CommandSpec[] {
     else if (names.some((n) => isSubsequence(q.slice(1), n.slice(1)))) rank = 2;
     if (rank >= 0) scored.push({ c, rank });
   }
-  return scored.sort((a, b) => a.rank - b.rank || a.c.name.length - b.c.name.length).map((s) => s.c);
+  const out = scored.sort((a, b) => a.rank - b.rank || a.c.name.length - b.c.name.length).map((s) => s.c);
+  // Plugin commands complete like built-ins (arg:true: complete the name, don't
+  // fire), ranked after them — a built-in always wins the name.
+  const have = new Set(out.map((c) => c.name));
+  for (const pc of pluginCommands()) {
+    if (have.has(pc.name)) continue;
+    const view: CommandSpec = { name: pc.name, desc: pc.description, usage: pc.usage, help: pc.help, arg: true };
+    if (pc.name.startsWith(q)) out.push(view);
+    else if (isSubsequence(q.slice(1), pc.name.slice(1))) out.push(view);
+  }
+  return out;
 }
 
 /** Are all of `q`'s characters present in `s`, in order? (fuzzy match) */
@@ -233,7 +254,16 @@ function isSubsequence(q: string, s: string): boolean {
 export function helpText(): string {
   const left = COMMANDS.map((c) => `${c.name}${c.usage ? ` ${c.usage}` : ""}`);
   const w = Math.max(...left.map((s) => s.length));
-  return COMMANDS.map((c, i) => `${left[i].padEnd(w)}  ${c.help ?? c.desc}`).join("\n");
+  const lines = COMMANDS.map((c, i) => `${left[i].padEnd(w)}  ${c.help ?? c.desc}`);
+  // Plugin commands get their own section rather than merging into the roster,
+  // so their provenance stays visible. Absent with no plugins, so the bare
+  // output is byte-identical to before.
+  const pcs = pluginCommands();
+  if (pcs.length) {
+    lines.push("", "plugin commands:");
+    for (const pc of pcs) lines.push(`${`${pc.name}${pc.usage ? ` ${pc.usage}` : ""}`.padEnd(w)}  ${pc.help ?? pc.description}`);
+  }
+  return lines.join("\n");
 }
 
 // ---- session listing (shared by /sessions, `fox ls` and the picker) ----
@@ -1164,8 +1194,21 @@ export function runSlashCommand(input: string, state: HarnessState): CommandResu
 
     case "/exit":
       return { handled: true, exit: true };
-    default:
+    default: {
+      // Plugin slash commands run through the same result as built-ins —
+      // output floats, newSessionId switches, task runs async work. A
+      // read-only viewer gets the same refusal as any writing built-in.
+      if (state.readOnly) return { handled: true, output: `${word} is disabled — this session is open elsewhere (read-only view)` };
+      const hit = pluginCommands().find((c) => c.name.toLowerCase() === word.toLowerCase());
+      if (hit) {
+        try {
+          return hit.run(arg, { sessionId: state.sessionId, cwd: state.cwd });
+        } catch (e) {
+          return { handled: true, output: `${word} failed: ${(e as Error).message}` };
+        }
+      }
       return { handled: true, output: `unknown command ${word} — try /help` };
+    }
   }
 }
 
