@@ -11,7 +11,7 @@ import { agentHome } from "../core/paths.ts";
 export const execDef: ToolDef = {
   name: "exec",
   description:
-    "Run a shell command (bash) starting from the session's directory. Each call is independent: the working directory NEVER carries over from a previous exec, so a `cd` has no effect on the next call — use the workdir argument (or `cd x && cmd` within one call) instead. `background: true` starts the command detached and returns a job id immediately — poll new output with exec({job}) and stop it with exec({job, signal:\"kill\"}); output is NOT pushed to you, you only see what you poll. For an interactive shell that keeps its directory, use pty. Foreground runs return exit code + merged output (tail-capped). Runs with full machine access.",
+    "Run a shell command (bash) starting from the session's directory. Each call is independent: the working directory NEVER carries over from a previous exec, so a `cd` has no effect on the next call — use the workdir argument (or `cd x && cmd` within one call) instead. `background: true` starts the command detached and returns a job id immediately — poll new output with exec({job}) and stop it with exec({job, signal:\"kill\"}); output is NOT pushed to you, you only see what you poll. For an interactive shell that keeps its directory, use pty. Foreground runs return exit code + merged output (tail-capped, unless full:true). `full: true` lifts the per-result output cap for this call (foreground or poll) so you receive the whole output — use it when the capped tail is not enough; the hard memory guards still apply. Runs with full machine access.",
   parameters: {
     type: "object",
     properties: {
@@ -21,6 +21,7 @@ export const execDef: ToolDef = {
       background: { type: "boolean", description: "Start detached and return a job id instead of waiting for the exit code" },
       job: { type: "string", description: "Poll a background job: returns output produced since your last poll plus its status" },
       signal: { type: "string", enum: ["kill"], description: "With job: terminate the job's process tree" },
+      full: { type: "boolean", description: "Return the full uncapped output for this call instead of the tail-capped default" },
     },
     required: [],
   },
@@ -113,7 +114,7 @@ function startJob(args: { cmd: string; workdir?: string }, ctx: ToolContext): To
   return ok(`job ${id} started (pid ${proc.pid}, cwd ${cwd}) — poll with exec({job:"${id}"}), stop with exec({job:"${id}", signal:"kill"})`);
 }
 
-function pollJob(args: { job: string; signal?: string }, ctx: ToolContext): ToolResult {
+function pollJob(args: { job: string; signal?: string; full?: boolean }, ctx: ToolContext): ToolResult {
   const job = sessionJobs(ctx.sessionId).get(args.job);
   if (!job) return fail(`error: no job ${args.job} in this session`);
   const reap = () => {
@@ -154,7 +155,9 @@ function pollJob(args: { job: string; signal?: string }, ctx: ToolContext): Tool
       ? `job ${job.id} running (${secs}s, pid ${job.pid})`
       : `job ${job.id} exited ${job.exitCode} after ${secs}s`;
   if (job.exitCode !== null) reap(); // final poll reaps it + unlinks the log
-  const body = data.length > outCap() ? data.slice(-outCap()) + "\n… (head truncated)" : data;
+  // full:true lifts the per-result cap for this poll — the 1MB tail-read guard
+  // above still bounds memory, and says so when it bites
+  const body = !args.full && data.length > outCap() ? data.slice(-outCap()) + "\n… (head truncated)" : data;
   return ok(`${status}\n${body.trimEnd() || "(no new output)"}`);
 }
 
@@ -174,10 +177,10 @@ export function killExecJobs(sessionId: string): void {
 // ---- foreground (with live output streaming to the UI) ---------------------
 
 export async function execRun(
-  args: { cmd?: string; workdir?: string; timeout_ms?: number; background?: boolean; job?: string; signal?: string },
+  args: { cmd?: string; workdir?: string; timeout_ms?: number; background?: boolean; job?: string; signal?: string; full?: boolean },
   ctx: ToolContext,
 ): Promise<ToolResult> {
-  if (args.job) return pollJob({ job: args.job, signal: args.signal }, ctx);
+  if (args.job) return pollJob({ job: args.job, signal: args.signal, full: args.full }, ctx);
   if (!args.cmd) return fail("error: exec needs cmd (or a job to poll)");
   if (args.background) return startJob({ cmd: args.cmd, workdir: args.workdir }, ctx);
 
@@ -257,7 +260,9 @@ export async function execRun(
   if (stderr.trim()) s += (s ? "\n[stderr]\n" : "") + stderr;
   s = s.trimEnd();
   if (dropped > 0) s = `… (${dropped} chars dropped, output too chatty)\n${s}`;
-  const truncated = s.length > outCap() ? s.slice(-outCap()) + "\n… (head truncated)" : s;
+  // full:true lifts the per-result cap for this call — the 5MB in-memory guard
+  // above still bounds it, and says so when it bites
+  const truncated = !args.full && s.length > outCap() ? s.slice(-outCap()) + "\n… (head truncated)" : s;
   let head = `exit ${code}`;
   if (killedBy) head += ` (${killedBy})`;
   const body = `${head}\n${truncated || "(no output)"}`;
