@@ -231,7 +231,7 @@ describe("plugin tools in the registry", () => {
     const { tools, warnings, plugins } = await buildRegistry(await cfgWith([FIX_OK]));
 
     expect(warnings).toEqual([]);
-    expect(plugins.map((p) => p.name)).toEqual(["bundled:pty", "bundled:todo", "bundled:fetch", "fixture"]);
+    expect(plugins.map((p) => p.name)).toEqual(["bundled:mcp", "bundled:pty", "bundled:todo", "bundled:fetch", "bundled:providers", "fixture"]);
     expect(tools.has("ping")).toBe(true);
     expect(tools.has("read")).toBe(true); // built-ins unaffected
 
@@ -412,6 +412,15 @@ describe("lifecycle hooks in a real turn", () => {
 });
 
 describe("plugin providers", () => {
+  test("bundled formats resolve with no registry build (seeded at import)", async () => {
+    // the four API formats are plugins too, but unlike user providers they
+    // need no buildRegistry first — the seed happens at module load, so the
+    // SDK, the ACP server and a keyless TUI all resolve identically
+    const { availableProviders } = await import("../src/providers/index.ts");
+    for (const name of ["openai-compatible", "openai-responses", "anthropic", "google"]) {
+      expect(availableProviders()).toContain(name);
+    }
+  });
   test("a plugin provider is resolvable by the name a config would give", async () => {
     const { buildRegistry } = await import("../src/tools/index.ts");
     const { availableProviders, resolveChat } = await import("../src/providers/index.ts");
@@ -450,5 +459,99 @@ describe("plugin providers", () => {
     // makes a silent redefinition of that safe
     expect(isAnthropic({ ...provider(), provider: "anthropic" })).toBe(true);
     setCustomProviders(new Map());
+  });
+});
+
+const FIX_PACK = join(import.meta.dir, "fixtures", "plugin-pack.ts");
+
+describe("plugin integration packs", () => {
+  test("packed MCP servers connect through the registry; explicit config wins", async () => {
+    const { buildRegistry } = await import("../src/tools/index.ts");
+    const { tools, warnings, plugins } = await buildRegistry(await cfgWith([FIX_PACK]));
+
+    // the pack's server entry was dialed — the warning names it, which only
+    // happens when the merge actually handed it to the bridge
+    expect(warnings.some((w) => w.includes("mcp server 'packed' unavailable"))).toBe(true);
+    expect(plugins.map((p) => p.name)).toContain("bundled:mcp");
+
+    // ...but an explicitly configured server of the same name wins over the pack
+    const cfg2 = await cfgWith([FIX_PACK]);
+    cfg2.mcpServers = { packed: { command: "also-not-a-real-binary" } };
+    const r2 = await buildRegistry(cfg2);
+    expect(r2.warnings.some((w) => w.includes("mcp server 'packed' is configured explicitly"))).toBe(true);
+    expect(tools.has("ping")).toBe(false); // this pack contributes no tools
+  });
+
+  test("packed agents reach the turn's agent table; explicit config wins", async () => {
+    const { buildRegistry } = await import("../src/tools/index.ts");
+    const { agents, warnings } = await buildRegistry(await cfgWith([FIX_PACK]));
+    expect(agents.packedreviewer).toEqual({ url: "https://reviewer.example.com" });
+    // the only warning is the fixture's deliberately unreachable MCP server —
+    // nothing about the agents merge
+    expect(warnings.every((w) => w.includes("mcp server 'packed' unavailable"))).toBe(true);
+
+    const cfg2 = await cfgWith([FIX_PACK]);
+    cfg2.agents = { packedreviewer: { url: "https://override.example.com" } };
+    const r2 = await buildRegistry(cfg2);
+    expect(r2.agents.packedreviewer).toEqual({ url: "https://override.example.com" });
+    expect(r2.warnings.some((w) => w.includes("agent 'packedreviewer' is configured explicitly"))).toBe(true);
+  });
+});
+
+describe("plugin slash commands", () => {
+  test("a plugin command runs, completes, and appears in help", async () => {
+    const { setActivePlugins } = await import("../src/plugins/load.ts");
+    const t = await import("../src/commands.ts");
+    const { createSession } = await import("../src/store/db.ts");
+    const s = createSession(work, "test-model").id;
+    const state = { sessionId: s, cwd: work, provider: { baseUrl: "http://x", apiKey: "k", model: "m" } };
+    setActivePlugins([
+      {
+        name: "pack",
+        commands: [
+          {
+            name: "/packed",
+            description: "packed cmd",
+            run: (arg: string, ctx: { sessionId: string }) => ({ handled: true as const, output: `ran:${arg}:${ctx.sessionId}` }),
+          },
+        ],
+      },
+    ]);
+    try {
+      // runs through the same result a built-in returns
+      const res = t.runSlashCommand("/packed hello", state)!;
+      expect(res.output).toBe(`ran:hello:${s}`);
+      // completes like a built-in, and shows up in /help's plugin section
+      expect(t.matchCommands("/pack").map((c) => c.name)).toContain("/packed");
+      expect(t.matchCommands("/packed")[0].name).toBe("/packed");
+      expect(t.helpText()).toContain("/packed");
+      // unknown stays unknown, and a read-only viewer is refused
+      expect(t.runSlashCommand("/nope", state)!.output).toMatch(/unknown command/);
+      expect(t.runSlashCommand("/packed", { ...state, readOnly: true })!.output).toContain("disabled");
+    } finally {
+      setActivePlugins([]);
+    }
+  });
+
+  test("a plugin command colliding with a built-in is warned and never fires", async () => {
+    const { buildRegistry } = await import("../src/tools/index.ts");
+    const { setActivePlugins } = await import("../src/plugins/load.ts");
+    const t = await import("../src/commands.ts");
+    const { createSession } = await import("../src/store/db.ts");
+    const shadow = join(home, "shadow-cmd.ts");
+    writeFileSync(
+      shadow,
+      `export default { name: "shadowcmd", commands: [{ name: "/todo", description: "shadowed", run: () => ({ handled: true, output: "shadowed todo" }) }] };\n`,
+    );
+    try {
+      const { warnings } = await buildRegistry(await cfgWith([shadow]));
+      expect(warnings.some((w) => w.includes("command '/todo' collides with a built-in"))).toBe(true);
+      // buildRegistry made the shadow plugin active, and still the built-in wins
+      const s = createSession(work, "test-model").id;
+      const res = t.runSlashCommand("/todo", { sessionId: s, cwd: work, provider: { baseUrl: "http://x", apiKey: "k", model: "m" } })!;
+      expect(res.output).toBe("(no todos)");
+    } finally {
+      setActivePlugins([]);
+    }
   });
 });
