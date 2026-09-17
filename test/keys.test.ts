@@ -10,10 +10,12 @@ function feedKeys(input: string): Key[] {
 
 describe("key decoder", () => {
   test("SGR wheel events", () => {
+    // wheel notches carry their screen position (0-based here: SGR is 1-based),
+    // so the app can route dock scrolls to the input and the rest to the transcript
     const ks = feedKeys("\x1b[<64;10;5M\x1b[<65;3;2M");
     expect(ks).toEqual([
-      { type: "named", name: "wheelup" },
-      { type: "named", name: "wheeldown" },
+      { type: "named", name: "wheelup", x: 9, y: 4 },
+      { type: "named", name: "wheeldown", x: 2, y: 1 },
     ]);
   });
 
@@ -38,8 +40,8 @@ describe("key decoder", () => {
   test("wheel is not mistaken for a button press or drag", () => {
     // 64/65 are wheel notches, and they arrive with `M` like a press does
     expect(feedKeys("\x1b[<64;1;1M\x1b[<65;1;1M")).toEqual([
-      { type: "named", name: "wheelup" },
-      { type: "named", name: "wheeldown" },
+      { type: "named", name: "wheelup", x: 0, y: 0 },
+      { type: "named", name: "wheeldown", x: 0, y: 0 },
     ]);
   });
 

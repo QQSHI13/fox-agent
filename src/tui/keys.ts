@@ -1,7 +1,7 @@
 // stdin byte-stream decoder: CSI keys, ctrl combos, bracketed paste, SGR mouse
 export type Key =
   | { type: "char"; ch: string }
-  | { type: "named"; name: string; ctrl?: boolean; meta?: boolean; shift?: boolean }
+  | { type: "named"; name: string; ctrl?: boolean; meta?: boolean; shift?: boolean; x?: number; y?: number }
   /**
    * Left button, as three distinct events rather than one.
    *
@@ -238,9 +238,10 @@ export function createDecoder(emit: (k: Key) => void) {
       buf = buf.slice(mm[0].length);
       // With ?1002h the terminal also reports motion while a button is held, as
       // the button code + 32 (bit 5 = "this is a drag"). Wheel is 64/65 and is
-      // not a button at all, so it is matched first.
-      if (btn === 64) emit({ type: "named", name: "wheelup" });
-      else if (btn === 65) emit({ type: "named", name: "wheeldown" });
+      // not a button at all — it is a scroll at a position, so it carries the
+      // coordinates the app routes it by (dock vs transcript).
+      if (btn === 64) emit({ type: "named", name: "wheelup", x, y });
+      else if (btn === 65) emit({ type: "named", name: "wheeldown", x, y });
       else if (mm[4] === "m") emit({ type: "mouse", action: "up", x, y });
       else if (btn === 32) emit({ type: "mouse", action: "drag", x, y });
       else if (btn === 0) emit({ type: "mouse", action: "down", x, y });

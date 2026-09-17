@@ -308,6 +308,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   let press: PressState | null = null;
   let selA: Anchor | null = null;
   let selB: Anchor | null = null;
+  /** last pointer position seen (any button/wheel event) — keyboard page keys,
+   *  which carry no position of their own, route by where the pointer sits */
+  let lastMouse = { x: 0, y: 0 };
   /** multi-click tracking: same spot inside the window extends the streak */
   const clickStreak = { x: -1, y: -1, at: 0, count: 0 };
 
@@ -1344,7 +1347,18 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     const { name, ctrl } = k;
 
     if (name === "wheelup" || name === "wheeldown") {
-      const dir = name === "wheelup" ? -3 : 3;
+      const up = name === "wheelup";
+      // route by position: over the dock the wheel walks the input caret, and
+      // the dock's caret-follow carries the visible window with it; anywhere
+      // else it scrolls the transcript. (A modal consumed the wheel already —
+      // overlayKey/promptKey run before this.)
+      const wy = k.y ?? lastMouse.y;
+      lastMouse = { x: k.x ?? lastMouse.x, y: wy };
+      if (wy >= dockTopY()) {
+        moveCaretVertical(up ? -1 : 1, false);
+        return;
+      }
+      const dir = up ? -3 : 3;
       if (stick && dir < 0) stick = false;
       scrollTop += dir;
       clampScroll();
@@ -1462,14 +1476,24 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       }
       return;
     }
-    if (name === "pageup") {
-      stick = false;
-      scrollTop -= Math.floor(viewportH() * 0.8);
-      clampScroll();
-      markDirty();
-      return;
-    }
-    if (name === "pagedown") {
+    // Page/home/end keys carry no position, so they route by where the
+    // pointer sits: in the dock they move the input caret, otherwise they
+    // scroll the transcript as before.
+    const inDock = () => lastMouse.y >= dockTopY();
+    if (name === "pageup" || name === "pagedown") {
+      if (inDock()) {
+        const dir = name === "pageup" ? -1 : 1;
+        const n = Math.max(1, dockGeom().shownCount);
+        for (let i = 0; i < n; i++) moveCaretVertical(dir, false);
+        return;
+      }
+      if (name === "pageup") {
+        stick = false;
+        scrollTop -= Math.floor(viewportH() * 0.8);
+        clampScroll();
+        markDirty();
+        return;
+      }
       scrollTop += Math.floor(viewportH() * 0.8);
       clampScroll();
       const max = Math.max(0, totalRows() - viewportH());
@@ -1478,12 +1502,24 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       return;
     }
     if (name === "home") {
+      if (inDock()) {
+        cur = 0;
+        inSelAnchor = null;
+        markDirty();
+        return;
+      }
       stick = false;
       scrollTop = 0;
       markDirty();
       return;
     }
     if (name === "end") {
+      if (inDock()) {
+        cur = buf.length;
+        inSelAnchor = null;
+        markDirty();
+        return;
+      }
       stick = true;
       markDirty();
       return;
@@ -1610,6 +1646,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
    * button-down to a toggle any more, which is the reported bug.
    */
   function onMouse(action: "down" | "drag" | "up", x: number, y: number) {
+    lastMouse = { x, y };
     const g = gestureFor(action, press, x, y);
     if (action === "down") {
       // Scrollbar strip at the right edge: press jumps, drag scrubs.
@@ -2336,6 +2373,20 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       if (caret.visRow < firstShown) firstShown = caret.visRow;
     }
     return { layout, caret, shownCount, firstShown, inputTop: H - 1 - shownCount };
+  }
+
+  /**
+   * First screen row belonging to the dock: the queued/steering rows stacked
+   * above the input box plus the box itself. Same row budget paint() and
+   * onClick() use, so scroll routing agrees with the pixels about where the
+   * dock starts — the flex height and queue length fall out of dockGeom, no
+   * special case needed for either.
+   */
+  function dockTopY(): number {
+    const { inputTop } = dockGeom();
+    const pendN = pendingLines().length;
+    const qShown = pendN ? Math.min(pendN, Math.max(1, inputTop - 1)) : 0;
+    return inputTop - (qShown + (pendN > qShown ? 1 : 0));
   }
 
   function paint() {
