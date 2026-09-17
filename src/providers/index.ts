@@ -8,7 +8,6 @@ import { BUNDLED_PROVIDER_NAMES, bundledProviderFns, isAnthropic } from "./bundl
 
 export { isAnthropic };
 export * from "./types.ts";
-
 /**
  * Providers a plugin registered, by config name. Bundled formats seed the map
  * at import; user plugins overlay it — except the reserved bundled names (see
@@ -21,6 +20,14 @@ export * from "./types.ts";
  */
 const bundled = new Map<string, ChatFn>(Object.entries(bundledProviderFns));
 const custom = new Map<string, ChatFn>();
+/** Bundled formats switched off via `disabledPlugins` (replaced per registry build). */
+const disabledBundled = new Set<string>();
+
+/** Replace the set of disabled bundled formats — called per buildRegistry from config. */
+export function setDisabledBundledProviders(names: string[]): void {
+  disabledBundled.clear();
+  for (const n of names) disabledBundled.add(n);
+}
 
 /**
  * Register plugin providers. Called from the turn loop after `loadPlugins`;
@@ -39,7 +46,7 @@ export function setCustomProviders(providers: Map<string, ChatFn>): void {
 
 /** The provider names currently resolvable, bundled and plugin-registered. */
 export function availableProviders(): string[] {
-  return [...bundled.keys(), ...custom.keys()];
+  return [...bundled.keys(), ...custom.keys()].filter((n) => !disabledBundled.has(n));
 }
 
 /**
@@ -99,7 +106,7 @@ export function reasoningProviderOptions(cfg: ProviderConfig): { providerOptions
 /** Resolved default ChatFn honoring cfg.provider — one lookup across the bundled formats and plugin providers. */
 export const resolveChat: ChatFn = async function* (cfg, messages, tools, signal) {
   const name = cfg.provider?.trim() || "openai-compatible";
-  const fn = custom.get(name) ?? bundled.get(name);
+  const fn = !disabledBundled.has(name) ? (custom.get(name) ?? bundled.get(name)) : undefined;
   // Previously any unrecognized name fell through to openai-compatible, which
   // meant a typo'd provider produced a confusing 401 from the wrong endpoint
   // instead of saying what was wrong.

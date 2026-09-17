@@ -12,9 +12,9 @@ import { taskDef, taskRun } from "./task.ts";
 import { mcpTools, closeMcp } from "./mcp.ts";
 import { loadPlugins, setActivePlugins } from "../plugins/load.ts";
 import { bundledPlugins, bundledDisabled } from "../plugins/bundled.ts";
-import { bundledProviderPlugin } from "../providers/bundled.ts";
+import { BUNDLED_PROVIDER_PLUGIN_NAMES, bundledProviderPlugins } from "../providers/bundled.ts";
 import type { FoxPlugin } from "../plugins/types.ts";
-import { setCustomProviders } from "../providers/index.ts";
+import { setCustomProviders, setDisabledBundledProviders } from "../providers/index.ts";
 import type { ChatFn } from "../providers/types.ts";
 import { shutdownLsp } from "../lsp/client.ts";
 
@@ -84,7 +84,7 @@ export async function buildRegistry(
   warnings.push(...res.warnings);
   const plugins: FoxPlugin[] = [
     ...bundledPlugins().filter((p) => !bundledDisabled(p.name, disabled)),
-    bundledProviderPlugin(),
+    ...bundledProviderPlugins(),
     ...res.plugins,
   ];
 
@@ -168,14 +168,19 @@ export async function buildRegistry(
   // providers are registered even when a plugin contributes no tools
   const customProviders = new Map<string, ChatFn>();
   for (const p of plugins) {
-    // bundled:providers seeds the registry at import; re-registering its names
-    // here would only hit the reserved-name refusal, so it is skipped openly
-    if (p.name === "bundled:providers") continue;
+    // bundled formats seed the registry at import; re-registering their names
+    // here would only hit the reserved-name refusal, so they are skipped openly
+    if ((BUNDLED_PROVIDER_PLUGIN_NAMES as readonly string[]).includes(p.name)) continue;
     for (const [name, fn] of Object.entries(p.providers ?? {})) {
       if (typeof fn === "function") customProviders.set(name, fn);
     }
   }
   setCustomProviders(customProviders);
+  // a switched-off bundled format stops resolving — /plugins off anthropic
+  // means provider=anthropic no longer exists, honestly listed as missing
+  setDisabledBundledProviders(
+    BUNDLED_PROVIDER_PLUGIN_NAMES.filter((n) => bundledDisabled(n, disabled)).map((n) => n.replace(/^bundled:/, "")),
+  );
   // plugin themes become selectable via `/theme` / the `theme` config key
   const { registerThemes } = await import("../tui/themes.ts");
   for (const p of plugins) if (p.themes) registerThemes(p.themes);

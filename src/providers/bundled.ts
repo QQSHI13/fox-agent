@@ -18,6 +18,9 @@ import type { FoxPlugin } from "../plugins/types.ts";
 /** Config names fox-agent itself speaks. Reserved against user plugins. */
 export const BUNDLED_PROVIDER_NAMES = ["openai-compatible", "openai-responses", "anthropic", "google"] as const;
 
+/** Plugin names for the four formats — one plugin per provider. */
+export const BUNDLED_PROVIDER_PLUGIN_NAMES = BUNDLED_PROVIDER_NAMES.map((n) => `bundled:${n}`);
+
 export function isAnthropic(cfg: ProviderConfig): boolean {
   if (cfg.provider === "anthropic") return true;
   if (cfg.provider === "openai-compatible" || cfg.provider === "openai-responses" || cfg.provider === "google") return false;
@@ -67,7 +70,14 @@ export const bundledProviderFns: Record<(typeof BUNDLED_PROVIDER_NAMES)[number],
   google,
 };
 
-/** The four formats as one bundled plugin — merged through the same path as user plugins. */
-export function bundledProviderPlugin(): FoxPlugin {
-  return { name: "bundled:providers", providers: { ...bundledProviderFns } };
+/**
+ * The four formats as four bundled plugins — one per provider, so each can
+ * be inspected, disabled and shadowed... well, listed and disabled (the
+ * format names stay reserved) through the same management as every plugin.
+ */
+export function bundledProviderPlugins(): FoxPlugin[] {
+  return (Object.keys(bundledProviderFns) as (keyof typeof bundledProviderFns)[]).map((name) => ({
+    name: `bundled:${name}`,
+    providers: { [name]: bundledProviderFns[name] },
+  }));
 }
