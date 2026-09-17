@@ -42,6 +42,7 @@ usage: fox [options] [-p "prompt"]
   --trust          mark this directory trusted and skip the TUI trust prompt
                    (trust = project fox-agent.toml / AGENTS.md may run code as you)
   ls               list sessions
+   plugins [on|off <name>]  manage plugins without the TUI
   upgrade [--beta|<version>]  self-update from GitHub releases
   help             show this
 
@@ -102,6 +103,37 @@ async function main() {
 
   if (parsed.flags.get("version")) return console.log(VERSION);
   if (parsed.flags.get("help") || parsed.rest[0] === "help") return console.log(usage());
+  if (parsed.rest[0] === "plugins") {
+    // plugin management without entering the TUI — same inventory and
+    // on/off the /plugins slash command works through
+    const { pluginAddPath, pluginInfoText, pluginListText, pluginRemovePath, pluginSetEnabled } = await import("./commands.ts");
+    try {
+      const flagPath = (parsed.flags.get("config") as string) || undefined;
+      const { effectiveConfigPath } = await import("./core/config.ts");
+      const configPath = effectiveConfigPath(flagPath);
+      const pcfg = loadConfig({ cwd: process.cwd(), configPath });
+      const [sub, ...words] = parsed.rest.slice(1);
+      const name = words.join(" ");
+      const ctx = { config: pcfg, configPath };
+      const out =
+        (sub === "on" || sub === "off") && name
+          ? await pluginSetEnabled(ctx, name, sub === "on")
+          : sub === "add" && name
+            ? await pluginAddPath(ctx, name)
+            : (sub === "rm" || sub === "remove" || sub === "uninstall") && name
+              ? await pluginRemovePath(ctx, name)
+              : sub === "info" && name
+                ? await pluginInfoText(ctx, name)
+                : sub === undefined
+                  ? await pluginListText(ctx)
+                  : "usage: fox plugins [on|off|add|rm|info <name>]";
+      console.log(out);
+    } catch (e) {
+      console.error(`fox-agent error: ${errMsg(e)}`);
+      process.exitCode = 1;
+    }
+    return;
+  }
   if (parsed.rest[0] === "ls") {
     // same renderer the TUI and `/sessions` use, so a session that looks stale
     // here looks stale there too — this used to be its own loop over

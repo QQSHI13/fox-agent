@@ -25,7 +25,13 @@ import { ensureFreshCatalog, presetById, providerPresets } from "./providers/mod
 import { endpointModels, ensureEndpointModels } from "./providers/endpointmodels.ts";
 import { setActiveEndpoint } from "./providers/models.ts";
 import type { UiStep } from "./core/ui.ts";
-import { activePlugins } from "./plugins/load.ts";
+import { activePlugins, isPluginPathDisabled, loadPlugins } from "./plugins/load.ts";
+import { bundledDisabled, bundledPlugins } from "./plugins/bundled.ts";
+import { bundledProviderPlugin } from "./providers/bundled.ts";
+import { addPluginPath, effectiveConfigPath, globalConfigPath, removePluginPath, setPluginDisabled } from "./core/config.ts";
+import { dirname } from "node:path";
+import type { PickerRow } from "./tui/picker.ts";
+import type { FoxPlugin } from "./plugins/types.ts";
 import type { PluginCommand } from "./plugins/types.ts";
 
 /**
@@ -72,7 +78,7 @@ export interface HarnessState {
 export const READONLY_COMMANDS = new Set(["/help", "/?", "/todo", "/todos", "/sessions", "/usage", "/exit", "/quit"]);
 
 /** A front end that set `interactive` is asked to open one of these. */
-export type PickerRequest = { kind: "sessions"; cwd?: string };
+export type PickerRequest = { kind: "sessions"; cwd?: string } | { kind: "plugins" };
 
 /** One question in a prompt wizard — the shared protocol from core/ui.ts. */
 export type PromptStep = UiStep;
@@ -174,6 +180,13 @@ export const COMMANDS: CommandSpec[] = [
   { name: "/theme", desc: "show or switch the color theme", usage: "[name]", arg: true, help: "bare: searchable chooser in the TUI; with a name, switches and saves to the global config" },
   { name: "/thinking", desc: "reasoning effort for reasoning models", usage: "[low|medium|high|default]", arg: true, help: "bare: chooser in the TUI; sets provider reasoning options (OpenAI reasoningEffort, Anthropic thinking budget, Google thinkingConfig) and saves to the global config" },
   { name: "/reload", desc: "re-read config files and re-apply model, theme, caps and plugins" },
+  {
+    name: "/plugins",
+    desc: "manage plugins: list, inspect, install, switch on/off",
+    usage: "[on|off|add|rm|info <name>]",
+    arg: true,
+    help: "bare: interactive picker in the TUI, printed list elsewhere; on/off flips it live, add/rm installs/uninstalls a file, info details one",
+  },
   {
     name: "/upgrade",
     desc: "upgrade fox-agent to the latest release",
@@ -721,6 +734,214 @@ function applyLogin(fields: LoginFields, state: HarnessState): CommandResult {
 }
 
 /**
+ * Everything plugin management can act on: bundled capabilities plus
+ * configured files. `id` is what on/off accepts (short name, full
+ * `bundled:` name, or the configured path); `storeId` is what lands in
+ * `disabledPlugins` (short for bundled, the path as configured for files).
+ */
+export interface PluginInventoryEntry {
+  id: string;
+  name: string;
+  source: string;
+  storeId: string;
+  enabled: boolean;
+  contributes: string[];
+}
+
+/** One-line summary of what a loaded plugin contributes, for /plugins. */
+function describePlugin(p: FoxPlugin): string[] {
+  const parts: string[] = [];
+  if (p.tools?.length) parts.push(`tools: ${p.tools.map((t) => t.def.name).join(", ")}`);
+  const hooks = Object.keys(p.hooks ?? {});
+  if (hooks.length) parts.push(`hooks: ${hooks.join(", ")}`);
+  if (p.providers && Object.keys(p.providers).length) parts.push(`providers: ${Object.keys(p.providers).join(", ")}`);
+  if (p.themes && Object.keys(p.themes).length) parts.push(`themes: ${Object.keys(p.themes).join(", ")}`);
+  if (p.mcpServers && Object.keys(p.mcpServers).length) parts.push(`servers: ${Object.keys(p.mcpServers).join(", ")}`);
+  if (p.agents && Object.keys(p.agents).length) parts.push(`agents: ${Object.keys(p.agents).join(", ")}`);
+  if (p.commands?.length) parts.push(`commands: ${p.commands.map((c) => c.name).join(", ")}`);
+  return parts.length ? parts : ["(no contributions)"];
+}
+
+/**
+ * Load the configured files fresh (not the turn's cached actives) and lay
+ * out every plugin with its on/off state. Disabled files are not imported —
+ * their row shows the path and says so.
+ */
+export async function pluginInventory(opts: { config?: Config; configPath?: string }): Promise<{
+  entries: PluginInventoryEntry[];
+  warnings: string[];
+}> {
+  const configured = opts.config?.plugins ?? [];
+  const disabled = opts.config?.disabledPlugins ?? [];
+  const dir = dirname(opts.configPath ?? effectiveConfigPath());
+  const { plugins, warnings, files } = await loadPlugins(configured, dir, disabled);
+  const byName = new Map(plugins.map((p) => [p.name, p]));
+  const entries: PluginInventoryEntry[] = [];
+  const bundledOrder: FoxPlugin[] = [...bundledPlugins(), { name: "bundled:mcp", tools: [] }, bundledProviderPlugin()];
+  for (const b of bundledOrder) {
+    const short = b.name.replace(/^bundled:/, "");
+    const off = bundledDisabled(b.name, disabled);
+    entries.push({
+      id: short,
+      name: b.name,
+      source: "bundled",
+      storeId: short,
+      enabled: !off,
+      contributes: off ? ["(disabled)"] : describePlugin(byName.get(b.name) ?? b),
+    });
+  }
+  for (const f of files) {
+    const p = f.name ? byName.get(f.name) : undefined;
+    entries.push({
+      id: f.path,
+      name: f.name ?? f.path,
+      source: f.path,
+      storeId: f.path,
+      enabled: !f.disabled,
+      contributes: f.disabled ? ["(disabled — enable to inspect)"] : p ? describePlugin(p) : ["(not loaded — see warnings)"],
+    });
+  }
+  return { entries, warnings };
+}
+
+/** Picker rows for the interactive /plugins list. `id` is the on/off/info spelling. */
+export async function pluginPickerRows(opts: { config?: Config; configPath?: string }): Promise<PickerRow[]> {
+  const { entries } = await pluginInventory(opts);
+  return entries.map((e) => ({
+    id: e.id,
+    cells: [e.enabled ? "on" : "off", e.id, e.enabled ? e.contributes.join("; ") : "off"],
+    search: `${e.id} ${e.name} ${e.source}`.toLowerCase(),
+  }));
+}
+
+/** Rendered inventory for `fox plugins` and non-interactive /plugins. */
+export async function pluginListText(opts: { config?: Config; configPath?: string }): Promise<string> {
+  const { entries, warnings } = await pluginInventory(opts);
+  const on = entries.filter((e) => e.enabled);
+  const lines = [`plugins (${on.length} on, ${entries.length - on.length} off):`];
+  for (const e of entries) {
+    const what = e.enabled ? e.contributes.join("; ") : e.source === "bundled" ? "bundled" : e.source;
+    lines.push(`  ${(e.enabled ? "on " : "off").padEnd(4)} ${e.id}  ${what}`);
+  }
+  if (warnings.length) {
+    lines.push("warnings:");
+    for (const w of warnings) lines.push(`  ! ${w}`);
+  }
+  lines.push("manage: /plugins on|off <name>  (headless: fox plugins [on|off <name>])");
+  return lines.join("\n");
+}
+
+/**
+ * Resolve an on/off target against the inventory. A spelling can name several
+ * entries (two configured paths with one basename) — that is ambiguous, never
+ * a guess.
+ */
+export function matchPluginTarget(
+  input: string,
+  entries: PluginInventoryEntry[],
+): { entry: PluginInventoryEntry } | { ambiguous: string[] } | null {
+  const q = input.toLowerCase();
+  const spellings = (e: PluginInventoryEntry): string[] => {
+    // the plugin's own name first: that is what users will type. Then the
+    // bundled short/full forms, or the configured path plus its basename and
+    // stem (mirroring the loader's disabled matching).
+    const out = [e.name.toLowerCase()];
+    if (e.source === "bundled") out.push(e.id.toLowerCase());
+    else {
+      const base = e.source.split("/").pop() ?? e.source;
+      out.push(e.source.toLowerCase(), base.toLowerCase(), base.replace(/\.(ts|js|mjs|mts)$/, "").toLowerCase());
+    }
+    return [...new Set(out)];
+  };
+  const hits = entries.filter((e) => spellings(e).includes(q));
+  if (hits.length === 1) return { entry: hits[0] };
+  if (hits.length > 1) return { ambiguous: hits.map((h) => h.source) };
+  return null;
+}
+
+/** Flip one plugin in the global config's `disabledPlugins`. */
+export async function pluginSetEnabled(
+  opts: { config?: Config; configPath?: string },
+  input: string,
+  enable: boolean,
+): Promise<string> {
+  const { entries } = await pluginInventory(opts);
+  const m = matchPluginTarget(input, entries);
+  if (!m) {
+    return `unknown plugin '${input}' — names: ${entries.map((e) => e.id).join(", ") || "(none)"}`;
+  }
+  if ("ambiguous" in m) return `'${input}' matches several plugins — be specific: ${m.ambiguous.join(", ")}`;
+  const e = m.entry;
+  if (enable && e.enabled) return `${e.id} is already on`;
+  if (!enable && !e.enabled) return `${e.id} is already off`;
+  const path = opts.configPath ?? effectiveConfigPath();
+  const disabled = opts.config?.disabledPlugins ?? [];
+  if (enable) {
+    // remove every spelling that disables this target (short and bundled:
+    // forms alike), or it stays off under the other one
+    const gone = disabled.filter((d) =>
+      e.source === "bundled" ? bundledDisabled(e.name, [d]) : isPluginPathDisabled(e.source, [d]),
+    );
+    for (const d of gone) setPluginDisabled(d, false, path);
+    if (!gone.length) return `${e.id} is already on`;
+  } else {
+    setPluginDisabled(e.storeId, true, path);
+  }
+  return `${e.id} ${enable ? "on" : "off"} — saved to ${path} (/reload re-reads it)`;
+}
+
+/** Full detail on one plugin: source, status, every contribution, its warnings. */
+export async function pluginInfoText(
+  opts: { config?: Config; configPath?: string },
+  input: string,
+): Promise<string> {
+  const { entries, warnings } = await pluginInventory(opts);
+  const m = matchPluginTarget(input, entries);
+  if (!m) return `unknown plugin '${input}' — names: ${entries.map((e) => e.id).join(", ") || "(none)"}`;
+  if ("ambiguous" in m) return `'${input}' matches several plugins — be specific: ${m.ambiguous.join(", ")}`;
+  const e = m.entry;
+  const lines = [`${e.name} — ${e.enabled ? "on" : "off"}`, `source: ${e.source}`];
+  for (const c of e.contributes) lines.push(`  ${c}`);
+  const related = warnings.filter((w) => w.includes(e.name) || (e.source !== "bundled" && w.includes(e.source)));
+  for (const w of related) lines.push(`  ! ${w}`);
+  return lines.join("\n");
+}
+
+/** Install a plugin file into the global config. */
+export async function pluginAddPath(
+  opts: { config?: Config; configPath?: string },
+  input: string,
+): Promise<string> {
+  const path = opts.configPath ?? effectiveConfigPath();
+  if ((opts.config?.plugins ?? []).includes(input)) return `${input} is already installed`;
+  try {
+    const r = addPluginPath(input, path);
+    return `${input} installed — ${r.plugins.length} plugin file(s) in ${r.path} (/reload re-reads it)`;
+  } catch (e) {
+    return `cannot install '${input}': ${(e as Error).message}`;
+  }
+}
+
+/** Uninstall a plugin file, clearing its on/off state with it. */
+export async function pluginRemovePath(
+  opts: { config?: Config; configPath?: string },
+  input: string,
+): Promise<string> {
+  const { entries } = await pluginInventory(opts);
+  const m = matchPluginTarget(input, entries.filter((e) => e.source !== "bundled"));
+  if (!m) return `unknown plugin file '${input}' — files: ${entries.filter((e) => e.source !== "bundled").map((e) => e.id).join(", ") || "(none)"}`;
+  if ("ambiguous" in m) return `'${input}' matches several plugins — be specific: ${m.ambiguous.join(", ")}`;
+  const e = m.entry;
+  const path = opts.configPath ?? effectiveConfigPath();
+  removePluginPath(e.storeId, path);
+  // dropping the file must not leave a stale off-switch behind for a future
+  // plugin installed under the same name
+  const disabled = opts.config?.disabledPlugins ?? [];
+  for (const d of disabled.filter((d) => isPluginPathDisabled(e.source, [d]))) setPluginDisabled(d, false, path);
+  return `${e.id} uninstalled — removed from ${path}`;
+}
+
+/**
  * The `/login` wizard for interactive hosts: ask, don't make them read /help.
  * kv args from the command line prefill the steps, so `/login provider=google`
  * still lands in the wizard with that choice already made.
@@ -1191,6 +1412,27 @@ export function runSlashCommand(input: string, state: HarnessState): CommandResu
       // hosts just say where the config lives
       if (state.interactive) return { handled: true, reload: true };
       return { handled: true, output: `config reloads in the TUI (and on /new); file: ${state.configPath ?? "global config"}` };
+
+    case "/plugins": {
+      // Bare opens the interactive picker in the TUI and prints elsewhere.
+      // on/off flips live (reload re-reads the file right after the write);
+      // add/rm installs/uninstalls a file; info details one plugin.
+      if (!arg) {
+        if (state.interactive) return { handled: true, picker: { kind: "plugins" } };
+        return { handled: true, task: () => pluginListText(state) };
+      }
+      const [sub, ...words] = arg.split(/\s+/);
+      const name = words.join(" ");
+      if ((sub === "on" || sub === "off") && name) {
+        return { handled: true, task: () => pluginSetEnabled(state, name, sub === "on"), reload: true };
+      }
+      if (sub === "add" && name) return { handled: true, task: () => pluginAddPath(state, name), reload: true };
+      if ((sub === "rm" || sub === "remove" || sub === "uninstall") && name) {
+        return { handled: true, task: () => pluginRemovePath(state, name), reload: true };
+      }
+      if (sub === "info" && name) return { handled: true, task: () => pluginInfoText(state, name) };
+      return { handled: true, output: "usage: /plugins [on|off|add|rm|info <name>]" };
+    }
 
     case "/exit":
       return { handled: true, exit: true };

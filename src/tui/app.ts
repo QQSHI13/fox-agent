@@ -31,7 +31,11 @@ import {
   runSlashCommand,
   COMMANDS,
   matchCommands,
+  matchPluginTarget,
   helpText,
+  pluginInventory,
+  pluginPickerRows,
+  pluginSetEnabled,
   providerDisplayName,
   sessionList,
   relTime,
@@ -325,6 +329,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
    * deliberate: opening the list mid-turn must not interrupt the turn.
    */
   let overlay: Picker | null = null;
+  let overlayKind: "sessions" | "plugins" = "sessions";
   let sessAllDirs = false; // session overlay scope: this directory vs everywhere
 
   /**
@@ -474,13 +479,28 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       applyRuntimeConfig();
       welcomeBlock();
     }
-    if (res.reload) {
+    const doReload = () => {
       // plugins re-import on the next turn's buildRegistry — /reload exists so
       // editing a plugin file takes effect without restarting fox-agent
       void import("../plugins/load.ts").then((m) => m.reloadPlugins()).catch(() => {});
       applyRuntimeConfig();
       push("info", `reloaded config + plugins — model ${state.provider.model} · theme ${themeName()}`);
-    }
+    };
+    // a result carrying both runs the work first and reloads after: /plugins
+    // on/off writes the config file in its task, and reloading before that
+    // write lands would re-read the stale file. (Only /plugins pairs them.)
+    if (res.task) {
+      const task = res.task;
+      const reload = res.reload;
+      void (async () => {
+        try {
+          setCmdOut(await task());
+        } catch (e) {
+          push("error", `error: ${(e as Error).message ?? e}`);
+        }
+        if (reload) doReload();
+      })();
+    } else if (res.reload) doReload();
     if (res.picker) openPicker(res.picker);
     // a wizard's run may itself answer with another wizard — chain it
     if (res.prompt) startPrompt(res.prompt);
@@ -488,16 +508,6 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     // bar caches per statsRev, and an idle session never re-polls on its own
     statsRev++;
     markDirty();
-    if (res.task) {
-      const task = res.task;
-      void (async () => {
-        try {
-          setCmdOut(await task());
-        } catch (e) {
-          push("error", `error: ${(e as Error).message ?? e}`);
-        }
-      })();
-    }
     if (res.exit) gracefulExit(0);
   }
 
@@ -875,9 +885,19 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     attachLock(id);
   }
 
-  /** Build and show the session overlay. */
+  /** Build and show a modal list: sessions, or the plugin manager. */
   function openPicker(req: PickerRequest) {
-    if (req.kind !== "sessions") return;
+    if (req.kind === "plugins") {
+      overlayKind = "plugins";
+      void (async () => {
+        overlay = new Picker(await pluginPickerRows({ config: state.config, configPath: state.configPath }), {
+          title: "plugins — enter toggles on/off · esc closes",
+        });
+        markDirty();
+      })();
+      return;
+    }
+    overlayKind = "sessions";
     sessAllDirs = false;
     overlay = new Picker(currentSessionRows(), {
       title: "sessions — most recently used first",
@@ -950,14 +970,40 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     switch (action.kind) {
       case "cancel":
         overlay = null;
+        overlayKind = "sessions";
         break;
       case "choose":
+        if (overlayKind === "plugins") {
+          // Enter flips the highlighted plugin and refreshes the rows in
+          // place, so several can be toggled without reopening the list —
+          // then the new state applies live, same as /plugins on|off
+          const id = action.id;
+          void (async () => {
+            const opts = { config: state.config, configPath: state.configPath };
+            const { entries } = await pluginInventory(opts);
+            const m = matchPluginTarget(id, entries);
+            const out =
+              !m || "ambiguous" in m
+                ? `cannot toggle '${id}' — reopen /plugins`
+                : await pluginSetEnabled(opts, id, !m.entry.enabled);
+            try {
+              const { reloadPlugins } = await import("../plugins/load.ts");
+              reloadPlugins();
+            } catch {}
+            applyRuntimeConfig();
+            if (overlay) overlay.setRows(await pluginPickerRows(opts));
+            flash(out);
+          })();
+          break;
+        }
         overlay = null;
+        overlayKind = "sessions";
         switchSession(action.id);
         push("info", `switched to ${action.id}`);
         break;
       case "new": {
         overlay = null;
+        overlayKind = "sessions";
         const res = runSlashCommand("/new", state);
         if (res?.newSessionId) switchSession(res.newSessionId);
         if (res?.output) push("info", res.output);
@@ -965,6 +1011,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       }
       case "fork": {
         overlay = null;
+        overlayKind = "sessions";
         const res = runSlashCommand(`/fork ${action.id}`, state);
         if (res?.output) push("info", res.output);
         if (res?.newSessionId) switchSession(res.newSessionId);
