@@ -7,31 +7,31 @@
 <text x="181" y="80" fill="#e6e1d8" font-size="12">0.0 MB</text>
 <text x="16" y="105" fill="#e6e1d8" font-size="12">fox-agent</text>
 <rect x="170" y="93" width="61" height="16" fill="#e0803c"/>
-<text x="239" y="106" fill="#e6e1d8" font-size="12">88.9 MB</text>
+<text x="239" y="106" fill="#e6e1d8" font-size="12">89.0 MB</text>
 <text x="16" y="131" fill="#8a8578" font-size="12">gemini cli</text>
 <rect x="170" y="119" width="70" height="16" fill="#5b7fa6"/>
-<text x="248" y="132" fill="#e6e1d8" font-size="12">101.8 MB</text>
+<text x="248" y="132" fill="#e6e1d8" font-size="12">102.0 MB</text>
 <text x="16" y="157" fill="#8a8578" font-size="12">crush</text>
 <rect x="170" y="145" width="84" height="16" fill="#5b7fa6"/>
-<text x="262" y="158" fill="#e6e1d8" font-size="12">122.1 MB</text>
+<text x="262" y="158" fill="#e6e1d8" font-size="12">122.4 MB</text>
 <text x="16" y="183" fill="#8a8578" font-size="12">qwen code</text>
-<rect x="170" y="171" width="94" height="16" fill="#5b7fa6"/>
-<text x="272" y="184" fill="#e6e1d8" font-size="12">138.0 MB</text>
-<text x="16" y="209" fill="#8a8578" font-size="12">opencode v1</text>
-<rect x="170" y="197" width="126" height="16" fill="#5b7fa6"/>
-<text x="304" y="210" fill="#e6e1d8" font-size="12">184.8 MB</text>
-<text x="16" y="235" fill="#8a8578" font-size="12">opencode v2</text>
-<rect x="170" y="223" width="142" height="16" fill="#5b7fa6"/>
-<text x="320" y="236" fill="#e6e1d8" font-size="12">207.4 MB</text>
-<text x="16" y="261" fill="#8a8578" font-size="12">claude code</text>
-<rect x="170" y="249" width="153" height="16" fill="#5b7fa6"/>
-<text x="331" y="262" fill="#e6e1d8" font-size="12">224.0 MB</text>
-<text x="16" y="287" fill="#8a8578" font-size="12">copilot cli</text>
-<rect x="170" y="275" width="212" height="16" fill="#5b7fa6"/>
-<text x="390" y="288" fill="#e6e1d8" font-size="12">309.5 MB</text>
+<rect x="170" y="171" width="96" height="16" fill="#5b7fa6"/>
+<text x="274" y="184" fill="#e6e1d8" font-size="12">140.7 MB</text>
+<text x="16" y="209" fill="#8a8578" font-size="12">copilot cli</text>
+<rect x="170" y="197" width="114" height="16" fill="#5b7fa6"/>
+<text x="292" y="210" fill="#e6e1d8" font-size="12">166.5 MB</text>
+<text x="16" y="235" fill="#8a8578" font-size="12">opencode v1</text>
+<rect x="170" y="223" width="127" height="16" fill="#5b7fa6"/>
+<text x="305" y="236" fill="#e6e1d8" font-size="12">185.0 MB</text>
+<text x="16" y="261" fill="#8a8578" font-size="12">opencode v2</text>
+<rect x="170" y="249" width="142" height="16" fill="#5b7fa6"/>
+<text x="320" y="262" fill="#e6e1d8" font-size="12">207.4 MB</text>
+<text x="16" y="287" fill="#8a8578" font-size="12">claude code</text>
+<rect x="170" y="275" width="158" height="16" fill="#5b7fa6"/>
+<text x="336" y="288" fill="#e6e1d8" font-size="12">230.6 MB</text>
 <text x="16" y="313" fill="#8a8578" font-size="12">goose</text>
 <rect x="170" y="301" width="215" height="16" fill="#5b7fa6"/>
-<text x="393" y="314" fill="#e6e1d8" font-size="12">314.5 MB</text>
+<text x="393" y="314" fill="#e6e1d8" font-size="12">314.6 MB</text>
 <text x="16" y="339" fill="#8a8578" font-size="12">codex</text>
 <rect x="170" y="327" width="232" height="16" fill="#5b7fa6"/>
 <text x="410" y="340" fill="#e6e1d8" font-size="12">339.1 MB</text>
@@ -39,8 +39,8 @@
 <rect x="170" y="353" width="284" height="16" fill="#5b7fa6"/>
 <text x="462" y="366" fill="#e6e1d8" font-size="12">415.1 MB</text>
 <text x="16" y="391" fill="#8a8578" font-size="12">kilo code</text>
-<rect x="170" y="379" width="369" height="16" fill="#5b7fa6"/>
-<text x="547" y="392" fill="#e6e1d8" font-size="12">538.8 MB</text>
+<rect x="170" y="379" width="370" height="16" fill="#5b7fa6"/>
+<text x="548" y="392" fill="#e6e1d8" font-size="12">539.9 MB</text>
 <text x="16" y="417" fill="#8a8578" font-size="12">aider</text>
 <rect x="170" y="405" width="440" height="16" fill="#5b7fa6"/>
 <text x="618" y="418" fill="#e6e1d8" font-size="12">642.8 MB</text>
