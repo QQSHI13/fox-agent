@@ -231,7 +231,17 @@ describe("plugin tools in the registry", () => {
     const { tools, warnings, plugins } = await buildRegistry(await cfgWith([FIX_OK]));
 
     expect(warnings).toEqual([]);
-    expect(plugins.map((p) => p.name)).toEqual(["bundled:mcp", "bundled:pty", "bundled:todo", "bundled:fetch", "bundled:providers", "fixture"]);
+    expect(plugins.map((p) => p.name)).toEqual([
+      "bundled:mcp",
+      "bundled:pty",
+      "bundled:todo",
+      "bundled:fetch",
+      "bundled:openai-compatible",
+      "bundled:openai-responses",
+      "bundled:anthropic",
+      "bundled:google",
+      "fixture",
+    ]);
     expect(tools.has("ping")).toBe(true);
     expect(tools.has("read")).toBe(true); // built-ins unaffected
 
@@ -589,15 +599,64 @@ describe("plugin management", () => {
     }
   });
 
-  test("picker rows carry the on/off spelling, state and contributions", async () => {
+  test("bare /plugins in the TUI opens the standard select-step wizard", async () => {
     const t = await import("../src/commands.ts");
-    const rows = await t.pluginPickerRows(ctxOf(await mgmtCfg(), join(home, "config.toml")));
-    const ids = rows.map((r) => r.id);
-    expect(ids).toContain("pty");
-    expect(ids).toContain(FIX_PACK);
-    const pty = rows.find((r) => r.id === "pty")!;
-    expect(pty.cells[0]).toBe("on");
-    expect(pty.search).toContain("bundled");
+    const cfgPath = join(home, "config.toml");
+    const cfg = await mgmtCfg();
+    // NOTE: configPath stays inside the tmp dir on purpose — the wizard's run
+    // writes the real global config when it is missing (that path is covered
+    // by the effective-config test above; here it must stay hermetic)
+    const state = { sessionId: "s", cwd: work, provider: { baseUrl: "http://x", apiKey: "k", model: "m" }, config: cfg, configPath: cfgPath, interactive: true };
+    const res = t.runSlashCommand("/plugins", state as never)!;
+    // same UI as /model and /login: a prompt with select steps, not the
+    // session-picker overlay
+    expect(res.prompt).toBeTruthy();
+    expect(res.picker).toBeUndefined();
+    const steps = res.prompt!.steps;
+    expect(steps.map((s) => s.key)).toEqual(["plugin", "action"]);
+    const plugOpts = steps[0].options as { value: string; label: string }[];
+    expect(plugOpts.some((o) => o.value === "pty" && o.label.startsWith("on"))).toBe(true);
+    expect(plugOpts.some((o) => o.value === "anthropic")).toBe(true);
+    expect(plugOpts.some((o) => o.value === FIX_PACK)).toBe(true);
+    // drive the wizard: switch pty off through its own run
+    const ran = res.prompt!.run({ plugin: "pty", action: "off" }, state as never) as { task: () => Promise<string>; reload: boolean };
+    expect(ran.reload).toBe(true);
+    const out = await ran.task();
+    expect(out).toContain("pty off");
+    // non-interactive hosts still get the printed list
+    const plain = t.runSlashCommand("/plugins", { ...state, interactive: false } as never)!;
+    expect(plain.prompt).toBeUndefined();
+    expect(typeof plain.task).toBe("function");
+  });
+
+  test("switching off a bundled format removes it from resolution", async () => {
+    const { buildRegistry } = await import("../src/tools/index.ts");
+    const { availableProviders, resolveChat, setDisabledBundledProviders } = await import("../src/providers/index.ts");
+    try {
+      const cfg = await mgmtCfg();
+      cfg.disabledPlugins = ["anthropic"];
+      await buildRegistry(cfg);
+      expect(availableProviders()).not.toContain("anthropic");
+      expect(availableProviders()).toContain("google");
+      const run = async () => {
+        for await (const _ of resolveChat({ baseUrl: "https://x", apiKey: "k", model: "m", provider: "anthropic" }, [], [])) void _;
+      };
+      await expect(run()).rejects.toThrow(/unknown provider 'anthropic'/);
+    } finally {
+      setDisabledBundledProviders([]);
+    }
+  });
+
+  test("colored lists paint but plain output stays byte-clean", async () => {
+    const t = await import("../src/commands.ts");
+    const plain = t.formatSessionList([]);
+    expect(plain).toBe("(no sessions)");
+    const cfg = await mgmtCfg();
+    const list = await t.pluginListText({ config: cfg as never, configPath: join(home, "config.toml") });
+    expect(list).not.toContain("\x1b[");
+    const colored = await t.pluginListText({ config: cfg as never, configPath: join(home, "config.toml"), color: true });
+    expect(colored).toContain("\x1b[32m");
+    expect(colored).toContain("\x1b[0m");
   });
 });
 
