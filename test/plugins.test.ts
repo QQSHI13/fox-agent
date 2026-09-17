@@ -498,6 +498,109 @@ describe("plugin integration packs", () => {
   });
 });
 
+describe("plugin management", () => {
+  const FIX_BASE = "plugin-pack.ts";
+  function configFile(): string {
+    const p = join(home, "config.toml");
+    writeFileSync(p, `plugins = ["${FIX_PACK}"]\n`);
+    return p;
+  }
+  async function mgmtCfg() {
+    const { loadConfig } = await import("../src/core/config.ts");
+    return loadConfig({ cwd: work, configPath: configFile() }, { FOX_AGENT_MODEL: "test-model", FOX_AGENT_API_KEY: "k" });
+  }
+  const ctxOf = (cfg: { plugins: string[]; disabledPlugins: string[] }, path: string) => ({ config: cfg as never, configPath: path });
+
+  test("list shows bundled and files with contributions and counts", async () => {
+    const t = await import("../src/commands.ts");
+    const cfg = await mgmtCfg();
+    const out = await t.pluginListText(ctxOf(cfg, join(home, "config.toml")));
+    expect(out).toContain("plugins (");
+    expect(out).toContain("pty");
+    expect(out).toContain("pack");
+    expect(out).toContain("commands: /packed");
+  });
+
+  test("off/on round-trips through the config file and takes effect on reload", async () => {
+    const t = await import("../src/commands.ts");
+    const path = join(home, "config.toml");
+    const off = await t.pluginSetEnabled(ctxOf(await mgmtCfg(), path), FIX_PACK, false);
+    expect(off).toContain("off");
+    // the file says so, and a fresh load honors it
+    const { loadConfig } = await import("../src/core/config.ts");
+    const reloaded = loadConfig({ cwd: work, configPath: path }, {});
+    expect(reloaded.disabledPlugins).toContain(FIX_PACK);
+    const listed = await t.pluginListText({ config: reloaded as never, configPath: path });
+    expect(listed).toMatch(/off\s+\/.*plugin-pack\.ts/);
+    // back on again clears the entry
+    const on = await t.pluginSetEnabled({ config: reloaded as never, configPath: path }, FIX_BASE, true);
+    expect(on).toContain(" on");
+    const reloaded2 = loadConfig({ cwd: work, configPath: path }, {});
+    expect(reloaded2.disabledPlugins).toEqual([]);
+  });
+
+  test("add refuses a missing file; rm uninstalls and clears the off-switch", async () => {
+    const t = await import("../src/commands.ts");
+    const path = join(home, "config.toml");
+    const missing = join(home, "nope.ts");
+    expect(await t.pluginAddPath(ctxOf(await mgmtCfg(), path), missing)).toContain("no plugin file");
+    expect(await t.pluginAddPath(ctxOf(await mgmtCfg(), path), FIX_PACK)).toContain("already installed");
+    // off, then rm: the file entry and the off-switch both go
+    await t.pluginSetEnabled(ctxOf(await mgmtCfg(), path), FIX_PACK, false);
+    const rm = await t.pluginRemovePath(ctxOf(await mgmtCfg(), path), FIX_BASE);
+    expect(rm).toContain("uninstalled");
+    const { loadConfig } = await import("../src/core/config.ts");
+    const reloaded = loadConfig({ cwd: work, configPath: path }, {});
+    expect(reloaded.plugins).toEqual([]);
+    expect(reloaded.disabledPlugins).toEqual([]);
+    expect(await t.pluginRemovePath({ config: reloaded as never, configPath: path }, FIX_BASE)).toContain("unknown plugin file");
+  });
+
+  test("info details one plugin; unknown and ambiguous are reported", async () => {
+    const t = await import("../src/commands.ts");
+    const path = join(home, "config.toml");
+    const info = await t.pluginInfoText(ctxOf(await mgmtCfg(), path), "pack");
+    expect(info).toContain("source:");
+    expect(info).toContain("commands: /packed");
+    expect(await t.pluginInfoText(ctxOf(await mgmtCfg(), path), "nope")).toContain("unknown plugin");
+    // same file by two spellings: the shared basename is ambiguous
+    const { loadConfig } = await import("../src/core/config.ts");
+    writeFileSync(path, `plugins = ["${FIX_PACK}", "./${FIX_BASE}"]\n`);
+    const cfg2 = loadConfig({ cwd: home, configPath: path }, {});
+    expect(await t.pluginInfoText({ config: cfg2 as never, configPath: path }, FIX_BASE)).toContain("matches several");
+  });
+
+  test("writes go to the effective config file, never the default", async () => {
+    // regression: an early version resolved the write path from the --config
+    // flag alone, so with FOX_AGENT_CONFIG set it edited the real global
+    // config instead of the file the process actually read
+    const t = await import("../src/commands.ts");
+    const cfgPath = join(home, "env-config.toml");
+    writeFileSync(cfgPath, `plugins = []\n`);
+    const prev = process.env.FOX_AGENT_CONFIG;
+    process.env.FOX_AGENT_CONFIG = cfgPath;
+    try {
+      const out = await t.pluginSetEnabled({}, "pty", false);
+      expect(out).toContain(cfgPath);
+      expect(readFileSync(cfgPath, "utf8")).toContain("pty");
+    } finally {
+      if (prev === undefined) delete process.env.FOX_AGENT_CONFIG;
+      else process.env.FOX_AGENT_CONFIG = prev;
+    }
+  });
+
+  test("picker rows carry the on/off spelling, state and contributions", async () => {
+    const t = await import("../src/commands.ts");
+    const rows = await t.pluginPickerRows(ctxOf(await mgmtCfg(), join(home, "config.toml")));
+    const ids = rows.map((r) => r.id);
+    expect(ids).toContain("pty");
+    expect(ids).toContain(FIX_PACK);
+    const pty = rows.find((r) => r.id === "pty")!;
+    expect(pty.cells[0]).toBe("on");
+    expect(pty.search).toContain("bundled");
+  });
+});
+
 describe("plugin slash commands", () => {
   test("a plugin command runs, completes, and appears in help", async () => {
     const { setActivePlugins } = await import("../src/plugins/load.ts");

@@ -492,6 +492,19 @@ A plugin tool needs no prompt work; `buildSystemPrompt` derives its roster from 
 
 `pty`, `todo` and `fetch` ship as plugins (`bundled:pty`, `bundled:todo`, `bundled:fetch`), as do the four API formats (`bundled:providers`) and the MCP bridge (`bundled:mcp`) -- same `FoxPlugin` shape, same merge path, so a user plugin shadows or `disabledPlugins` switches off a bundled capability exactly the way it does any other. `disabledPlugins = ["mcp"]` disconnects every MCP server; `["pty"]` kills the tmux shell.
 
+### Managing plugins
+
+`/plugins` lists everything — bundled capabilities plus configured files — with what each contributes and whether it is on or off. In the TUI it opens a picker where enter flips the highlighted plugin in place; elsewhere it prints the same list:
+
+```
+/plugins on pty        off again: /plugins off pty
+/plugins add ~/extra.ts      install a file (must exist)
+/plugins rm extra             uninstall (clears its off-switch too)
+/plugins info pg              source, status, contributions, warnings
+```
+
+`fox plugins` does the same without entering the TUI (`fox plugins off pty`, `fox plugins add …`, …). Flips apply immediately — the host re-reads the config right after the write, so the next turn runs the new set. Names accept the short form (`pty`), the full form (`bundled:pty`), the plugin's own name, or the configured path and its basename/stem; an ambiguous spelling lists candidates instead of guessing. All writes go to the effective global config (`--config`, else `FOX_AGENT_CONFIG`, else the default) with a `.bak` beside it.
+
 ### Failure is always a warning, never a throw
 
 A plugin that throws at import, exports the wrong shape, or points at a missing file costs you one `warn` line at the top of the turn -- the same treatment an unreachable MCP server gets. A hook that throws mid-turn is caught per call, so a typo in `afterTool` cannot take down a turn that has already done real work.
