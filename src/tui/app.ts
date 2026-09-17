@@ -1356,10 +1356,16 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       return;
     }
     if (name === "c" && ctrl) {
-      // A live input selection copies its text, as it does everywhere else.
+      // A live input selection copies its text, as it does everywhere else —
+      // through the same copyText path as the transcript, so both report the
+      // same confirmation. The selection is dropped: what was copied is staged
+      // nowhere, and a stale highlight would lie about that.
       const ir = inSelRange();
       if (ir) {
-        void clipWrite(buf.slice(ir[0], ir[1]).map((c) => c.c).join(""), term).then((okd) => okd && flash("copied"));
+        const text = buf.slice(ir[0], ir[1]).map((c) => c.c).join("");
+        inSelAnchor = null;
+        markDirty();
+        void copyText(text);
         return;
       }
       // A live selection makes ctrl+c mean copy, as it does everywhere else.
@@ -1727,6 +1733,17 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     if (!selA || !selB) return;
     buildRows();
     const text = extractSelection(rowBuf.map((r) => r.segs), selA, selB);
+    if (!text) return;
+    await copyText(text);
+  }
+
+  /**
+   * The one copy path for transcript and input alike: same clipboard probes,
+   * same status-bar confirmation on success or failure. Two callers used to
+   * report two different messages ("copied N chars…" vs bare "copied") through
+   * two different code paths.
+   */
+  async function copyText(text: string) {
     if (!text) return;
     const okd = await clipWrite(text, term);
     const lines = text.split("\n").length;
