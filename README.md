@@ -424,7 +424,7 @@ Unlike `exec`/`pty`/MCP children, an ACP child is **not** given a credential-str
 
 ## Plugins
 
-A plugin is one module with a default export. It can add tools, hook the turn loop, and register providers:
+A plugin is one module with a default export. It can add tools, hook the turn loop, register providers and themes, pack MCP servers and delegation targets, and add slash commands:
 
 ```ts
 // ~/my-fox-plugin.ts
@@ -449,6 +449,22 @@ const plugin: FoxPlugin = {
     // keyed by the `provider` config value
     async *["mine-gateway"](cfg, messages, tools, signal) { /* yield StreamEvents */ },
   },
+
+  // integration packs: MCP servers and task agents without a config file.
+  // Explicit config wins on collision, and the collision is reported.
+  mcpServers: {
+    pg: { command: "mcp-postgres", args: ["postgres://..."] },
+  },
+  agents: {
+    reviewer: { url: "https://agent.example.com", headers: { authorization: "Bearer ..." } },
+  },
+
+  // slash commands, run through the same result as built-ins
+  commands: [{
+    name: "/deploy",
+    description: "ship it",
+    run: (arg, { sessionId, cwd }) => ({ handled: true as const, output: `deploying ${cwd}...` }),
+  }],
 };
 export default plugin;
 ```
@@ -470,7 +486,11 @@ A `plugins` entry in a project `fox-agent.toml` is ignored, with a warning sayin
 
 `afterTool` runs between the tool and the transcript write, so the patched text is the only version in the system -- what gets stored, what the model reads on the next step, and what the `tool_end` event reports are the same string.
 
-A plugin tool needs no prompt work; `buildSystemPrompt` derives its roster from the live registry, so the tool appears automatically. A plugin registering a name that already exists shadows it and the collision is reported as a warning -- allowed, but never silent. Redefining a built-in *provider* name is not allowed.
+A plugin tool needs no prompt work; `buildSystemPrompt` derives its roster from the live registry, so the tool appears automatically. A plugin registering a name that already exists shadows it and the collision is reported as a warning -- allowed, but never silent. Registering a bundled *provider* name (`openai-compatible`, `openai-responses`, `anthropic`, `google` -- the `bundled:providers` plugin) is refused, and a command colliding with a built-in never fires (also warned).
+
+### Bundled plugins
+
+`pty`, `todo` and `fetch` ship as plugins (`bundled:pty`, `bundled:todo`, `bundled:fetch`), as do the four API formats (`bundled:providers`) and the MCP bridge (`bundled:mcp`) -- same `FoxPlugin` shape, same merge path, so a user plugin shadows or `disabledPlugins` switches off a bundled capability exactly the way it does any other. `disabledPlugins = ["mcp"]` disconnects every MCP server; `["pty"]` kills the tmux shell.
 
 ### Failure is always a warning, never a throw
 
@@ -478,7 +498,7 @@ A plugin that throws at import, exports the wrong shape, or points at a missing 
 
 A plugin tool can also ask the user questions mid-run: `ctx.ui` is a `UiBridge` with `select` (an option menu), `input` (a text field, optionally masked) and `wizard` (a multi-step mix of both). It exists only on interactive hosts -- check for it and treat a `undefined` answer as "the user cancelled".
 
-The types (`FoxPlugin`, `PluginHooks`, and the context/patch types for each hook) are re-exported from `fox-agent`, alongside `Tool`, `ToolContext`, `ok`/`fail`, `ChatFn` and `UiBridge`/`UiStep`.
+The types (`FoxPlugin`, `PluginHooks`, `PluginCommand`, `McpServerConfig`, `ExternalAgentConfig`, and the context/patch types for each hook) are re-exported from `fox-agent`, alongside `Tool`, `ToolContext`, `ok`/`fail`, `ChatFn` and `UiBridge`/`UiStep`.
 
 ---
 
