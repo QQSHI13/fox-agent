@@ -31,11 +31,7 @@ import {
   runSlashCommand,
   COMMANDS,
   matchCommands,
-  matchPluginTarget,
   helpText,
-  pluginInventory,
-  pluginPickerRows,
-  pluginSetEnabled,
   providerDisplayName,
   sessionList,
   relTime,
@@ -329,7 +325,6 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
    * deliberate: opening the list mid-turn must not interrupt the turn.
    */
   let overlay: Picker | null = null;
-  let overlayKind: "sessions" | "plugins" = "sessions";
   let sessAllDirs = false; // session overlay scope: this directory vs everywhere
 
   /**
@@ -885,19 +880,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     attachLock(id);
   }
 
-  /** Build and show a modal list: sessions, or the plugin manager. */
+  /** Build and show the session overlay. */
   function openPicker(req: PickerRequest) {
-    if (req.kind === "plugins") {
-      overlayKind = "plugins";
-      void (async () => {
-        overlay = new Picker(await pluginPickerRows({ config: state.config, configPath: state.configPath }), {
-          title: "plugins — enter toggles on/off · esc closes",
-        });
-        markDirty();
-      })();
-      return;
-    }
-    overlayKind = "sessions";
+    if (req.kind !== "sessions") return;
     sessAllDirs = false;
     overlay = new Picker(currentSessionRows(), {
       title: "sessions — most recently used first",
@@ -970,40 +955,14 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     switch (action.kind) {
       case "cancel":
         overlay = null;
-        overlayKind = "sessions";
         break;
       case "choose":
-        if (overlayKind === "plugins") {
-          // Enter flips the highlighted plugin and refreshes the rows in
-          // place, so several can be toggled without reopening the list —
-          // then the new state applies live, same as /plugins on|off
-          const id = action.id;
-          void (async () => {
-            const opts = { config: state.config, configPath: state.configPath };
-            const { entries } = await pluginInventory(opts);
-            const m = matchPluginTarget(id, entries);
-            const out =
-              !m || "ambiguous" in m
-                ? `cannot toggle '${id}' — reopen /plugins`
-                : await pluginSetEnabled(opts, id, !m.entry.enabled);
-            try {
-              const { reloadPlugins } = await import("../plugins/load.ts");
-              reloadPlugins();
-            } catch {}
-            applyRuntimeConfig();
-            if (overlay) overlay.setRows(await pluginPickerRows(opts));
-            flash(out);
-          })();
-          break;
-        }
         overlay = null;
-        overlayKind = "sessions";
         switchSession(action.id);
         push("info", `switched to ${action.id}`);
         break;
       case "new": {
         overlay = null;
-        overlayKind = "sessions";
         const res = runSlashCommand("/new", state);
         if (res?.newSessionId) switchSession(res.newSessionId);
         if (res?.output) push("info", res.output);
@@ -1011,7 +970,6 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       }
       case "fork": {
         overlay = null;
-        overlayKind = "sessions";
         const res = runSlashCommand(`/fork ${action.id}`, state);
         if (res?.output) push("info", res.output);
         if (res?.newSessionId) switchSession(res.newSessionId);

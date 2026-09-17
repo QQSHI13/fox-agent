@@ -27,10 +27,9 @@ import { setActiveEndpoint } from "./providers/models.ts";
 import type { UiStep } from "./core/ui.ts";
 import { activePlugins, isPluginPathDisabled, loadPlugins } from "./plugins/load.ts";
 import { bundledDisabled, bundledPlugins } from "./plugins/bundled.ts";
-import { bundledProviderPlugin } from "./providers/bundled.ts";
+import { BUNDLED_PROVIDER_PLUGIN_NAMES, bundledProviderPlugins } from "./providers/bundled.ts";
 import { addPluginPath, effectiveConfigPath, globalConfigPath, removePluginPath, setPluginDisabled } from "./core/config.ts";
 import { dirname } from "node:path";
-import type { PickerRow } from "./tui/picker.ts";
 import type { FoxPlugin } from "./plugins/types.ts";
 import type { PluginCommand } from "./plugins/types.ts";
 
@@ -78,7 +77,7 @@ export interface HarnessState {
 export const READONLY_COMMANDS = new Set(["/help", "/?", "/todo", "/todos", "/sessions", "/usage", "/exit", "/quit"]);
 
 /** A front end that set `interactive` is asked to open one of these. */
-export type PickerRequest = { kind: "sessions"; cwd?: string } | { kind: "plugins" };
+export type PickerRequest = { kind: "sessions"; cwd?: string };
 
 /** One question in a prompt wizard — the shared protocol from core/ui.ts. */
 export type PromptStep = UiStep;
@@ -340,16 +339,40 @@ export function relTime(ts: number, now = Date.now()): string {
   return `${Math.floor(s / 86_400)}d`;
 }
 
+/**
+ * ANSI styling for headless command output. Opt-in per call, never ambient:
+ * the TUI paints its own styles (escape codes would land on its grid as
+ * garbage), and piped output must stay clean — so only the CLI passes
+ * `color: true`, and only when stdout is a TTY without NO_COLOR.
+ */
+export function cliColor(): boolean {
+  return !!process.stdout.isTTY && !process.env.NO_COLOR;
+}
+export interface Sty {
+  b: (s: string) => string;
+  green: (s: string) => string;
+  red: (s: string) => string;
+  yellow: (s: string) => string;
+  cyan: (s: string) => string;
+  dim: (s: string) => string;
+}
+export function sty(color?: boolean): Sty {
+  const p = (code: string) => (s: string) => (color ? `\x1b[${code}m${s}\x1b[0m` : s);
+  return { b: p("1"), green: p("32"), red: p("31"), yellow: p("33"), cyan: p("36"), dim: p("2") };
+}
+
 /** The printed list, for `/sessions` outside the TUI and for `fox ls`. */
-export function formatSessionList(items: SessionListItem[]): string {
+export function formatSessionList(items: SessionListItem[], opts: { color?: boolean } = {}): string {
   if (!items.length) return "(no sessions)";
+  const st = sty(opts.color);
   return items
-    .map(
-      (it) =>
-        `${it.current ? "*" : " "}${String(it.index).padStart(2)}  ${it.id}  ${relTime(it.updatedAt).padStart(3)} ago  ${
-          String(it.tokens).padStart(7)
-        } tok  ${it.model.padEnd(20)} ${it.label}${it.preview ? `  » ${it.preview.slice(0, 60)}` : ""}`,
-    )
+    .map((it) => {
+      const marker = it.current ? st.green(`*${String(it.index).padStart(2)}`) : ` ${String(it.index).padStart(2)}`;
+      const prev = it.preview ? st.dim(`  » ${it.preview.slice(0, 60)}`) : "";
+      return `${marker}  ${st.cyan(it.id)}  ${st.dim(`${relTime(it.updatedAt).padStart(3)} ago`)}  ${st.dim(
+        `${String(it.tokens).padStart(7)} tok`,
+      )}  ${st.yellow(it.model.padEnd(20))} ${it.label}${prev}`;
+    })
     .join("\n");
 }
 
@@ -777,7 +800,7 @@ export async function pluginInventory(opts: { config?: Config; configPath?: stri
   const { plugins, warnings, files } = await loadPlugins(configured, dir, disabled);
   const byName = new Map(plugins.map((p) => [p.name, p]));
   const entries: PluginInventoryEntry[] = [];
-  const bundledOrder: FoxPlugin[] = [...bundledPlugins(), { name: "bundled:mcp", tools: [] }, bundledProviderPlugin()];
+  const bundledOrder: FoxPlugin[] = [...bundledPlugins(), { name: "bundled:mcp", tools: [] }, ...bundledProviderPlugins()];
   for (const b of bundledOrder) {
     const short = b.name.replace(/^bundled:/, "");
     const off = bundledDisabled(b.name, disabled);
@@ -804,30 +827,77 @@ export async function pluginInventory(opts: { config?: Config; configPath?: stri
   return { entries, warnings };
 }
 
-/** Picker rows for the interactive /plugins list. `id` is the on/off/info spelling. */
-export async function pluginPickerRows(opts: { config?: Config; configPath?: string }): Promise<PickerRow[]> {
-  const { entries } = await pluginInventory(opts);
-  return entries.map((e) => ({
-    id: e.id,
-    cells: [e.enabled ? "on" : "off", e.id, e.enabled ? e.contributes.join("; ") : "off"],
-    search: `${e.id} ${e.name} ${e.source}`.toLowerCase(),
-  }));
+/**
+ * The interactive /plugins wizard — the same select-step UI as /model and
+ * /login, not the session-picker overlay. Options build synchronously from
+ * config alone (no plugin imports to open the menu); the chosen action does
+ * the loading. Values are on/off spellings matchPluginTarget resolves.
+ */
+function pluginsPrompt(state: HarnessState): PromptRequest {
+  const disabled = state.config?.disabledPlugins ?? [];
+  const configured = state.config?.plugins ?? [];
+  const bundledIds = [...bundledPlugins().map((p) => p.name), "bundled:mcp", ...BUNDLED_PROVIDER_PLUGIN_NAMES];
+  const options = [
+    ...bundledIds.map((full) => {
+      const short = full.replace(/^bundled:/, "");
+      const on = !bundledDisabled(full, disabled);
+      return { value: short, label: `${on ? "on " : "off"} ${short} (bundled)` };
+    }),
+    ...configured.map((raw) => {
+      const on = !isPluginPathDisabled(raw, disabled);
+      return { value: raw, label: `${on ? "on " : "off"} ${raw}` };
+    }),
+  ];
+  return {
+    title: "plugins — pick one, then what to do with it",
+    steps: [
+      { key: "plugin", label: "plugin — type to search", kind: "select", options, initial: options[0]?.value },
+      {
+        key: "action",
+        label: "action",
+        kind: "select",
+        options: [
+          { value: "on", label: "switch on" },
+          { value: "off", label: "switch off" },
+          { value: "info", label: "show details" },
+          { value: "uninstall", label: "uninstall file (files only)" },
+        ],
+        initial: "off",
+      },
+    ],
+    run: (a, s) => {
+      const target = (a.plugin ?? "").trim();
+      if (!target) return { handled: true, output: "no plugin selected" };
+      if (a.action === "info") return { handled: true, task: () => pluginInfoText(s, target) };
+      if (a.action === "uninstall") {
+        if (bundledIds.some((b) => b === target || b.replace(/^bundled:/, "") === target)) {
+          return { handled: true, output: `${target} is bundled — switch it off instead of uninstalling` };
+        }
+        return { handled: true, task: () => pluginRemovePath(s, target), reload: true };
+      }
+      if (a.action === "on" || a.action === "off") {
+        return { handled: true, task: () => pluginSetEnabled(s, target, a.action === "on"), reload: true };
+      }
+      return { handled: true, output: "no action selected" };
+    },
+  };
 }
 
 /** Rendered inventory for `fox plugins` and non-interactive /plugins. */
-export async function pluginListText(opts: { config?: Config; configPath?: string }): Promise<string> {
+export async function pluginListText(opts: { config?: Config; configPath?: string; color?: boolean }): Promise<string> {
   const { entries, warnings } = await pluginInventory(opts);
+  const st = sty(opts.color);
   const on = entries.filter((e) => e.enabled);
-  const lines = [`plugins (${on.length} on, ${entries.length - on.length} off):`];
+  const lines = [st.b(`plugins (${on.length} on, ${entries.length - on.length} off):`)];
   for (const e of entries) {
     const what = e.enabled ? e.contributes.join("; ") : e.source === "bundled" ? "bundled" : e.source;
-    lines.push(`  ${(e.enabled ? "on " : "off").padEnd(4)} ${e.id}  ${what}`);
+    lines.push(`  ${e.enabled ? st.green("on ") : st.red("off")} ${st.cyan(e.id)}  ${e.enabled ? what : st.dim(what)}`);
   }
   if (warnings.length) {
-    lines.push("warnings:");
-    for (const w of warnings) lines.push(`  ! ${w}`);
+    lines.push(st.yellow("warnings:"));
+    for (const w of warnings) lines.push(st.yellow(`  ! ${w}`));
   }
-  lines.push("manage: /plugins on|off <name>  (headless: fox plugins [on|off <name>])");
+  lines.push(st.dim("manage: /plugins on|off|add|rm|info <name>  (headless: fox plugins …)"));
   return lines.join("\n");
 }
 
@@ -861,16 +931,17 @@ export function matchPluginTarget(
 
 /** Flip one plugin in the global config's `disabledPlugins`. */
 export async function pluginSetEnabled(
-  opts: { config?: Config; configPath?: string },
+  opts: { config?: Config; configPath?: string; color?: boolean },
   input: string,
   enable: boolean,
 ): Promise<string> {
+  const st = sty(opts.color);
   const { entries } = await pluginInventory(opts);
   const m = matchPluginTarget(input, entries);
   if (!m) {
-    return `unknown plugin '${input}' — names: ${entries.map((e) => e.id).join(", ") || "(none)"}`;
+    return st.yellow(`unknown plugin '${input}' — names: ${entries.map((e) => e.id).join(", ") || "(none)"}`);
   }
-  if ("ambiguous" in m) return `'${input}' matches several plugins — be specific: ${m.ambiguous.join(", ")}`;
+  if ("ambiguous" in m) return st.yellow(`'${input}' matches several plugins — be specific: ${m.ambiguous.join(", ")}`);
   const e = m.entry;
   if (enable && e.enabled) return `${e.id} is already on`;
   if (!enable && !e.enabled) return `${e.id} is already off`;
@@ -887,23 +958,28 @@ export async function pluginSetEnabled(
   } else {
     setPluginDisabled(e.storeId, true, path);
   }
-  return `${e.id} ${enable ? "on" : "off"} — saved to ${path} (/reload re-reads it)`;
+  const done = `${e.id} ${enable ? "on" : "off"} — saved to ${path} (/reload re-reads it)`;
+  return enable ? st.green(done) : st.red(done);
 }
 
 /** Full detail on one plugin: source, status, every contribution, its warnings. */
 export async function pluginInfoText(
-  opts: { config?: Config; configPath?: string },
+  opts: { config?: Config; configPath?: string; color?: boolean },
   input: string,
 ): Promise<string> {
+  const st = sty(opts.color);
   const { entries, warnings } = await pluginInventory(opts);
   const m = matchPluginTarget(input, entries);
-  if (!m) return `unknown plugin '${input}' — names: ${entries.map((e) => e.id).join(", ") || "(none)"}`;
-  if ("ambiguous" in m) return `'${input}' matches several plugins — be specific: ${m.ambiguous.join(", ")}`;
+  if (!m) return st.yellow(`unknown plugin '${input}' — names: ${entries.map((e) => e.id).join(", ") || "(none)"}`);
+  if ("ambiguous" in m) return st.yellow(`'${input}' matches several plugins — be specific: ${m.ambiguous.join(", ")}`);
   const e = m.entry;
-  const lines = [`${e.name} — ${e.enabled ? "on" : "off"}`, `source: ${e.source}`];
+  const lines = [
+    `${st.b(e.name)} — ${e.enabled ? st.green("on") : st.red("off")}`,
+    st.dim(`source: ${e.source}`),
+  ];
   for (const c of e.contributes) lines.push(`  ${c}`);
   const related = warnings.filter((w) => w.includes(e.name) || (e.source !== "bundled" && w.includes(e.source)));
-  for (const w of related) lines.push(`  ! ${w}`);
+  for (const w of related) lines.push(st.yellow(`  ! ${w}`));
   return lines.join("\n");
 }
 
@@ -1414,11 +1490,11 @@ export function runSlashCommand(input: string, state: HarnessState): CommandResu
       return { handled: true, output: `config reloads in the TUI (and on /new); file: ${state.configPath ?? "global config"}` };
 
     case "/plugins": {
-      // Bare opens the interactive picker in the TUI and prints elsewhere.
-      // on/off flips live (reload re-reads the file right after the write);
-      // add/rm installs/uninstalls a file; info details one plugin.
+      // Bare opens the same select-step wizard as /model and /login in the
+      // TUI, and prints the list elsewhere. on/off/add/rm/info also run
+      // directly; on/off/add/rm reload after the write lands.
       if (!arg) {
-        if (state.interactive) return { handled: true, picker: { kind: "plugins" } };
+        if (state.interactive) return { handled: true, prompt: pluginsPrompt(state) };
         return { handled: true, task: () => pluginListText(state) };
       }
       const [sub, ...words] = arg.split(/\s+/);
@@ -1426,11 +1502,34 @@ export function runSlashCommand(input: string, state: HarnessState): CommandResu
       if ((sub === "on" || sub === "off") && name) {
         return { handled: true, task: () => pluginSetEnabled(state, name, sub === "on"), reload: true };
       }
-      if (sub === "add" && name) return { handled: true, task: () => pluginAddPath(state, name), reload: true };
-      if ((sub === "rm" || sub === "remove" || sub === "uninstall") && name) {
-        return { handled: true, task: () => pluginRemovePath(state, name), reload: true };
+      if (sub === "add") {
+        if (name) return { handled: true, task: () => pluginAddPath(state, name), reload: true };
+        if (state.interactive) {
+          return {
+            handled: true,
+            prompt: {
+              title: "install plugin",
+              steps: [{ key: "path", label: "plugin file path", kind: "text", hint: "~ expands; relative to the config dir" }],
+              run: (a, s) => {
+                const p = (a.path ?? "").trim();
+                if (!p) return { handled: true, output: "no path entered" };
+                return { handled: true, task: () => pluginAddPath(s, p), reload: true };
+              },
+            },
+          };
+        }
+        return { handled: true, output: "usage: /plugins add <path>" };
       }
-      if (sub === "info" && name) return { handled: true, task: () => pluginInfoText(state, name) };
+      if (sub === "rm" || sub === "remove" || sub === "uninstall") {
+        if (name) return { handled: true, task: () => pluginRemovePath(state, name), reload: true };
+        if (state.interactive) return { handled: true, prompt: pluginsPrompt(state) };
+        return { handled: true, output: "usage: /plugins rm <name>" };
+      }
+      if (sub === "info") {
+        if (name) return { handled: true, task: () => pluginInfoText(state, name) };
+        if (state.interactive) return { handled: true, prompt: pluginsPrompt(state) };
+        return { handled: true, output: "usage: /plugins info <name>" };
+      }
       return { handled: true, output: "usage: /plugins [on|off|add|rm|info <name>]" };
     }
 

@@ -7,6 +7,7 @@ import { runTurnCore } from "./loop/turn.ts";
 import { resolveChat } from "./providers/index.ts";
 import { setActiveEndpoint } from "./providers/models.ts";
 import {
+  cliColor,
   formatSessionList,
   helpText,
   relTime,
@@ -105,8 +106,9 @@ async function main() {
   if (parsed.flags.get("help") || parsed.rest[0] === "help") return console.log(usage());
   if (parsed.rest[0] === "plugins") {
     // plugin management without entering the TUI — same inventory and
-    // on/off the /plugins slash command works through
-    const { pluginAddPath, pluginInfoText, pluginListText, pluginRemovePath, pluginSetEnabled } = await import("./commands.ts");
+    // verbs the /plugins slash command works through, in terminal colors
+    const { cliColor, pluginAddPath, pluginInfoText, pluginListText, pluginRemovePath, pluginSetEnabled } =
+      await import("./commands.ts");
     try {
       const flagPath = (parsed.flags.get("config") as string) || undefined;
       const { effectiveConfigPath } = await import("./core/config.ts");
@@ -114,7 +116,8 @@ async function main() {
       const pcfg = loadConfig({ cwd: process.cwd(), configPath });
       const [sub, ...words] = parsed.rest.slice(1);
       const name = words.join(" ");
-      const ctx = { config: pcfg, configPath };
+      const color = cliColor();
+      const ctx = { config: pcfg, configPath, color };
       const out =
         (sub === "on" || sub === "off") && name
           ? await pluginSetEnabled(ctx, name, sub === "on")
@@ -138,7 +141,7 @@ async function main() {
     // same renderer the TUI and `/sessions` use, so a session that looks stale
     // here looks stale there too — this used to be its own loop over
     // `created_at` and disagreed with every other listing about ordering
-    console.log(formatSessionList(sessionList({ limit: loadConfig({ cwd: process.cwd() }).sessionListLimit })));
+    console.log(formatSessionList(sessionList({ limit: loadConfig({ cwd: process.cwd() }).sessionListLimit }), { color: cliColor() }));
     return;
   }
   if (parsed.rest[0] === "upgrade") {
