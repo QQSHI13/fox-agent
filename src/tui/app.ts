@@ -399,7 +399,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         } catch {}
       }
     }
-    for (const n of nodes.slice(-300)) {
+    for (const n of nodes) {
       const m = n.msg;
       if (m.role === "user") out.push({ k: nk(), kind: "user", text: `[m${m.seq}] ❯ ${n.content}` });
       else if (m.role === "tool") {
