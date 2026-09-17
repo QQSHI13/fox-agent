@@ -494,16 +494,16 @@ A plugin tool needs no prompt work; `buildSystemPrompt` derives its roster from 
 
 ### Managing plugins
 
-`/plugins` lists everything — bundled capabilities plus configured files — with what each contributes and whether it is on or off. In the TUI it opens the same select-step wizard `/model` and `/login` use (pick a plugin, pick on/off/details/uninstall); elsewhere it prints the same list:
+`/plugin` lists everything — bundled capabilities plus configured files — with what each contributes and whether it is on or off. In the TUI it opens the same select-step wizard `/model` and `/login` use (pick a plugin, pick on/off/details/uninstall); elsewhere it prints the same list:
 
 ```
-/plugins on pty        off again: /plugins off pty
-/plugins add ~/extra.ts      install a file (must exist)
-/plugins rm extra             uninstall (clears its off-switch too)
-/plugins info pg              source, status, contributions, warnings
+/plugin on pty         off again: /plugin off pty
+/plugin add ~/extra.ts       install a file (must exist)
+/plugin rm extra              uninstall (clears its off-switch too)
+/plugin info pg               source, status, contributions, warnings
 ```
 
-`fox plugins` does the same without entering the TUI (`fox plugins off pty`, `fox plugins add …`, …), in terminal colors when stdout is a TTY (piped output stays plain; `NO_COLOR` respected) — as is `fox ls`. Flips apply immediately — the host re-reads the config right after the write, so the next turn runs the new set. Names accept the short form (`pty`), the full form (`bundled:pty`), the plugin's own name, or the configured path and its basename/stem; an ambiguous spelling lists candidates instead of guessing. All writes go to the effective global config (`--config`, else `FOX_AGENT_CONFIG`, else the default) with a `.bak` beside it.
+`fox plugin` does the same without entering the TUI (`fox plugin off pty`, `fox plugin add …`, …), in terminal colors when stdout is a TTY (piped output stays plain; `NO_COLOR` respected) — as is `fox ls`, and `fox --help` paints its flags bold on a terminal for the same reason. Flips apply immediately — the host re-reads the config right after the write, so the next turn runs the new set. Names accept the short form (`pty`), the full form (`bundled:pty`), the plugin's own name, or the configured path and its basename/stem; an ambiguous spelling lists candidates instead of guessing. All writes go to the effective global config (`--config`, else `FOX_AGENT_CONFIG`, else the default) with a `.bak` beside it.
 
 ### Failure is always a warning, never a throw
 

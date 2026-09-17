@@ -599,7 +599,7 @@ describe("plugin management", () => {
     }
   });
 
-  test("bare /plugins in the TUI opens the standard select-step wizard", async () => {
+  test("bare /plugin in the TUI opens the standard select-step wizard", async () => {
     const t = await import("../src/commands.ts");
     const cfgPath = join(home, "config.toml");
     const cfg = await mgmtCfg();
@@ -607,11 +607,14 @@ describe("plugin management", () => {
     // writes the real global config when it is missing (that path is covered
     // by the effective-config test above; here it must stay hermetic)
     const state = { sessionId: "s", cwd: work, provider: { baseUrl: "http://x", apiKey: "k", model: "m" }, config: cfg, configPath: cfgPath, interactive: true };
-    const res = t.runSlashCommand("/plugins", state as never)!;
+    const res = t.runSlashCommand("/plugin", state as never)!;
     // same UI as /model and /login: a prompt with select steps, not the
     // session-picker overlay
     expect(res.prompt).toBeTruthy();
     expect(res.picker).toBeUndefined();
+    // the old spelling survives as an alias
+    const alias = t.runSlashCommand("/plugins", state as never)!;
+    expect(alias.prompt?.title).toBe(res.prompt?.title);
     const steps = res.prompt!.steps;
     expect(steps.map((s) => s.key)).toEqual(["plugin", "action"]);
     const plugOpts = steps[0].options as { value: string; label: string }[];
@@ -624,7 +627,7 @@ describe("plugin management", () => {
     const out = await ran.task();
     expect(out).toContain("pty off");
     // non-interactive hosts still get the printed list
-    const plain = t.runSlashCommand("/plugins", { ...state, interactive: false } as never)!;
+    const plain = t.runSlashCommand("/plugin", { ...state, interactive: false } as never)!;
     expect(plain.prompt).toBeUndefined();
     expect(typeof plain.task).toBe("function");
   });
