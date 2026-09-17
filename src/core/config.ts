@@ -1,4 +1,4 @@
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import { homedir } from "node:os";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { execSync } from "node:child_process";
@@ -516,6 +516,107 @@ const LEGACY_PROJECT_NAME = ".fox.json";
 
 export function globalConfigPath(): string {
   return join(homedir(), ".config", GLOBAL_CONFIG_NAME);
+}
+
+/**
+ * The global config file actually in play: explicit `--config`, else
+ * `FOX_AGENT_CONFIG` (tests, sandboxes), else the default. Every writer must
+ * go through this — writing the default while the process read the override
+ * silently edits a file the user never named (measured).
+ */
+export function effectiveConfigPath(override?: string): string {
+  return override ?? process.env.FOX_AGENT_CONFIG ?? globalConfigPath();
+}
+
+/**
+ * Add or remove one entry in the global config's top-level `disabledPlugins`.
+ */
+export function setPluginDisabled(
+  entry: string,
+  disable: boolean,
+  path = globalConfigPath(),
+): { path: string; disabled: string[] } {
+  const r = patchTopLevelStringArray(path, "disabledPlugins", (cur) =>
+    disable ? [...cur.filter((d) => d !== entry), entry] : cur.filter((d) => d !== entry),
+  );
+  return { path: r.path, disabled: r.values };
+}
+
+/**
+ * Rewrite one top-level string-array key through `update`, preserving
+ * everything else line-for-line. Shared by `disabledPlugins` and `plugins`
+ * management — there is no TOML writer in Bun, and a malformed file throws
+ * loudly rather than being overwritten.
+ */
+function patchTopLevelStringArray(
+  path: string,
+  key: string,
+  update: (cur: string[]) => string[],
+): { path: string; values: string[] } {
+  let rest = "";
+  let cur: string[] = [];
+  let text: string | null = null;
+  try {
+    text = readFileSync(path, "utf8");
+  } catch {
+    // no existing file — start fresh
+  }
+  if (text !== null) {
+    let parsed: Record<string, unknown>;
+    try {
+      parsed = Bun.TOML.parse(text) as Record<string, unknown>;
+    } catch (e) {
+      throw new ConfigError(`invalid TOML in ${path}: ${(e as Error).message}`);
+    }
+    const v = parsed[key];
+    if (Array.isArray(v)) cur = v.filter((x): x is string => typeof x === "string");
+    const keptLines: string[] = [];
+    let inTables = false;
+    const head = new RegExp(`^\\s*${key}\\s*=`);
+    for (const line of text.split("\n")) {
+      if (/^\s*\[/.test(line)) inTables = true;
+      if (!inTables && head.test(line)) continue; // stale copy — re-emitted below
+      keptLines.push(line);
+    }
+    rest = keptLines.join("\n").replace(/^\n+/, "");
+  }
+  const next = update(cur);
+  mkdirSync(dirname(path), { recursive: true });
+  try {
+    writeFileSync(`${path}.bak`, readFileSync(path, "utf8"));
+  } catch {
+    /* no existing file to back up */
+  }
+  writeFileSync(path, `${key} = ${JSON.stringify(next)}\n${rest ? `\n${rest.replace(/\n*$/, "\n")}` : ""}`);
+  return { path, values: next };
+}
+
+/** Resolve a `plugins` entry the way the loader does (tilde + config-dir-relative). */
+function expandPluginEntry(raw: string, configPath: string): string {
+  let out = raw;
+  if (out === "~") out = homedir();
+  else if (out.startsWith("~/")) out = `${homedir()}/${out.slice(2)}`;
+  if (!isAbsolute(out)) out = join(dirname(configPath), out);
+  return out;
+}
+
+/**
+ * Install a plugin file: append its path to the global `plugins` array.
+ * The file must exist — a typo'd path would otherwise surface three turns
+ * later as a load warning nobody connects to the install.
+ */
+export function addPluginPath(entry: string, path = globalConfigPath()): { path: string; plugins: string[] } {
+  if (!existsSync(expandPluginEntry(entry, path))) {
+    throw new ConfigError(`no plugin file '${entry}' (resolved against ${dirname(path)}) — nothing installed`);
+  }
+  const r = patchTopLevelStringArray(path, "plugins", (cur) => (cur.includes(entry) ? cur : [...cur, entry]));
+  return { path: r.path, plugins: r.values };
+}
+
+/** Uninstall a plugin file: drop its path from the global `plugins` array. */
+export function removePluginPath(entry: string, path = globalConfigPath()): { path: string; plugins: string[] } {
+  const r = patchTopLevelStringArray(path, "plugins", (cur) => cur.filter((p) => p !== entry));
+  return { path: r.path, plugins: r.values };
 }
 
 /**

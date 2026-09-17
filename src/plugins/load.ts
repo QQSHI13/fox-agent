@@ -16,7 +16,7 @@ import type { FoxPlugin } from "./types.ts";
 
 export type { FoxPlugin } from "./types.ts";
 
-let cache: { key: string; plugins: FoxPlugin[]; warnings: string[] } | null = null;
+let cache: { key: string; plugins: FoxPlugin[]; warnings: string[]; files: { path: string; name: string | null; disabled: boolean }[] } | null = null;
 
 /**
  * `~/plugin.ts` in a config file should mean what it means in a shell. Node's
@@ -84,6 +84,17 @@ export function reloadPlugins(): void {
   forceFresh = true;
 }
 
+/**
+ * Does a `disabledPlugins` entry match this configured path? Shared by the
+ * loader's skip and `/plugins` management, so the two can never disagree
+ * about what "off" means: the entry as written, its basename, or its stem.
+ */
+export function isPluginPathDisabled(raw: string, disabled: string[]): boolean {
+  const base = raw.split("/").pop() ?? raw;
+  const stem = base.replace(/\.(ts|js|mjs|mts)$/, "");
+  return disabled.some((d) => d === raw || d === base || d === stem);
+}
+
 export async function loadPlugins(
   paths: string[],
   // Relative plugin paths resolve against the GLOBAL config dir, never the
@@ -91,23 +102,23 @@ export async function loadPlugins(
   // "cd repo && fox" load that repo's code despite the global-only rule.
   cwd = join(homedir(), ".config", "fox-agent"),
   disabled: string[] = [],
-): Promise<{ plugins: FoxPlugin[]; warnings: string[] }> {
+): Promise<{ plugins: FoxPlugin[]; warnings: string[]; files: { path: string; name: string | null; disabled: boolean }[] }> {
   const fresh = forceFresh;
   forceFresh = false;
   const key = JSON.stringify([paths, cwd, disabled]);
-  if (!fresh && cache?.key === key) return { plugins: cache.plugins, warnings: cache.warnings };
+  if (!fresh && cache?.key === key) return { plugins: cache.plugins, warnings: cache.warnings, files: cache.files };
 
   const plugins: FoxPlugin[] = [];
   const warnings: string[] = [];
+  const files: { path: string; name: string | null; disabled: boolean }[] = [];
   const seen = new Set<string>();
-  const isDisabled = (raw: string) => {
-    const base = raw.split("/").pop() ?? raw;
-    const stem = base.replace(/\.(ts|js|mjs|mts)$/, "");
-    return disabled.some((d) => d === raw || d === base || d === stem);
-  };
+  const isDisabled = (raw: string) => isPluginPathDisabled(raw, disabled);
 
   for (const raw of paths) {
-    if (isDisabled(raw)) continue;
+    if (isDisabled(raw)) {
+      files.push({ path: raw, name: null, disabled: true });
+      continue;
+    }
     const path = expand(raw, cwd);
     let mod: unknown;
     try {
@@ -120,6 +131,7 @@ export async function loadPlugins(
       const w = `plugin '${raw}' failed to load: ${(e as Error).message.slice(0, 200)}`;
       warnings.push(w);
       console.error(`fox-agent: ${w}`);
+      files.push({ path: raw, name: null, disabled: false });
       continue;
     }
     const res = validate(mod, path);
@@ -127,6 +139,7 @@ export async function loadPlugins(
       const w = `plugin '${raw}' invalid: ${res.error}`;
       warnings.push(w);
       console.error(`fox-agent: ${w}`);
+      files.push({ path: raw, name: null, disabled: false });
       continue;
     }
     // two config entries resolving to the same plugin name would register its
@@ -135,14 +148,16 @@ export async function loadPlugins(
       const w = `plugin '${raw}' skipped: name '${res.plugin.name}' is already loaded`;
       warnings.push(w);
       console.error(`fox-agent: ${w}`);
+      files.push({ path: raw, name: res.plugin.name, disabled: false });
       continue;
     }
     seen.add(res.plugin.name);
     plugins.push(res.plugin);
+    files.push({ path: raw, name: res.plugin.name, disabled: false });
   }
 
-  cache = { key, plugins, warnings };
-  return { plugins, warnings };
+  cache = { key, plugins, warnings, files };
+  return { plugins, warnings, files };
 }
 
 /** Drop the cache so the next `loadPlugins` re-imports. Tests need this. */
