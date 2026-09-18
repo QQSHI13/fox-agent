@@ -264,7 +264,7 @@ describe("interactive wizards", () => {
     // bare: wizard with a provider select; an unknown endpoint maps to "custom"
     const bare = t.runSlashCommand("/login", state)!;
     expect(bare.prompt).toBeDefined();
-    expect(bare.prompt!.steps.map((st) => st.key)).toEqual(["provider", "apiKey", "baseUrl", "model", "modelCustom"]);
+    expect(bare.prompt!.steps.map((st) => st.key)).toEqual(["provider", "apiKey", "baseUrl", "model", "modelCustom", "saveProfile"]);
     expect(bare.prompt!.steps[0].kind).toBe("select");
     expect(bare.prompt!.steps[0].initial).toBe("custom");
     expect(bare.prompt!.steps[1].secret).toBe(true);
@@ -348,6 +348,107 @@ describe("interactive wizards", () => {
     };
     const opts2 = t.runSlashCommand("/model", state2)!.prompt!.steps[0].options as { value: string; label: string }[];
     expect(opts2.filter((o) => o.value === "p:mine")).toHaveLength(0);
+  });
+
+  test("/login keeps several providers as profiles instead of one slot", async () => {
+    const t = await setup();
+    // catalog holding deepseek, so the preset path lists a real model
+    const { mkdirSync, writeFileSync, readFileSync } = await import("node:fs");
+    const { loadConfig } = await import("../src/core/config.ts");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, "models.dev.json"),
+      JSON.stringify({
+        at: Date.now(),
+        providers: [
+          { id: "deepseek", name: "DeepSeek", api: "https://api.deepseek.com/v1", env: ["DEEPSEEK_API_KEY"], format: "openai-compatible", models: [{ id: "deepseek-chat", name: "DeepSeek Chat", context: 64000 }] },
+          { id: "openrouter", name: "OpenRouter", api: "https://openrouter.ai/api/v1", env: ["OPENROUTER_API_KEY"], format: "openai-compatible", models: [{ id: "m-or", name: "M Or", context: 128000 }] },
+        ],
+      }),
+    );
+    const cfgPath = join(dir, "config.toml");
+    writeFileSync(cfgPath, 'model = "m0"\nprovider = "openai-compatible"\napiKey = "k0"\n');
+    const s = t.createSession("/w", "m1");
+    const fresh = () => {
+      const cfg = loadConfig({ cwd: "/w", configPath: cfgPath }, {});
+      return {
+        sessionId: s.id,
+        cwd: "/w",
+        interactive: true,
+        configPath: cfgPath,
+        provider: { baseUrl: cfg.baseUrl, apiKey: cfg.apiKey, model: cfg.model, provider: cfg.provider, label: undefined } as any,
+        config: cfg as any,
+      };
+    };
+
+    // save a preset login as a profile: the table lands, the flat slot only
+    // learns the pointer, and the old flat key is untouched
+    const st1 = fresh();
+    const w1 = t.runSlashCommand("/login", st1)!.prompt!;
+    const r1 = w1.run({ provider: "deepseek", apiKey: "sk-ds", baseUrl: "", model: "deepseek-chat", modelCustom: "", saveProfile: "ds" }, st1);
+    expect(r1.output).toContain("provider: ds");
+    const file1 = readFileSync(cfgPath, "utf8");
+    expect(file1).toContain("[providers.ds]");
+    expect(file1).toContain('apiKey = "sk-ds"');
+    expect(file1).toContain('apiKey = "k0"'); // the flat fallback survived
+    expect(file1).toContain('provider = "ds"');
+    expect(st1.provider.label).toBe("ds");
+    expect(st1.provider.baseUrl).toBe("https://api.deepseek.com/v1");
+
+    // a second login coexists; the wizard offers the saved profile first and
+    // preselects it while it is active
+    const st2 = fresh();
+    const w2 = t.runSlashCommand("/login", st2)!.prompt!;
+    const provOpts = w2.steps[0].options as { value: string }[];
+    expect(provOpts[0].value).toBe("profile:ds");
+    expect(w2.steps[0].initial).toBe("profile:ds");
+    const r2 = w2.run({ provider: "openrouter", apiKey: "sk-or", baseUrl: "", model: "__custom", modelCustom: "m-or", saveProfile: "or" }, st2);
+    expect(r2.output).toContain("provider: or");
+    expect(readFileSync(cfgPath, "utf8")).toContain("[providers.or]");
+
+    // profile picks skip credential steps and activate through the profile
+    const st3 = fresh();
+    const w3 = t.runSlashCommand("/login", st3)!.prompt!;
+    const skip = (key: string, a: Record<string, string>) => t.runSlashCommand("/login", st3)!.prompt!.steps.find((st) => st.key === key)!.skipIf!(a);
+    void w3;
+    expect(skip("apiKey", { provider: "profile:ds" })).toBe(true);
+    expect(skip("baseUrl", { provider: "profile:ds" })).toBe(true);
+    expect(skip("saveProfile", { provider: "profile:ds" })).toBe(true);
+    const r3 = t.runSlashCommand("/login", st3)!.prompt!.run(
+      { provider: "profile:ds", model: "deepseek-chat", modelCustom: "", saveProfile: "" }, st3,
+    );
+    expect(r3.output).toContain("provider: ds");
+    expect(st3.provider.label).toBe("ds");
+    expect(st3.provider.baseUrl).toBe("https://api.deepseek.com/v1");
+    expect(st3.provider.apiKey).toBe("sk-ds");
+    expect(st3.config.provider).toBe("ds");
+
+    // headless: profile name switches, key alongside one is refused loudly
+    const st4 = { ...fresh(), interactive: false };
+    expect(t.runSlashCommand("/login provider=or", st4)!.output).toContain("provider: or");
+    expect(st4.provider.label).toBe("or");
+    expect(t.runSlashCommand("/login provider=or key=x", st4)!.output).toContain("saved profile");
+
+    // a bad profile name fails before anything is written
+    const st5 = fresh();
+    const r5 = t.runSlashCommand("/login", st5)!.prompt!.run(
+      { provider: "deepseek", apiKey: "k", baseUrl: "", model: "deepseek-chat", modelCustom: "", saveProfile: "no spaces" }, st5,
+    );
+    expect(r5.output).toContain("cannot save profile");
+    expect(readFileSync(cfgPath, "utf8")).not.toContain("no spaces");
+
+    // the model step lists a profile's own models, then the custom escape hatch
+    const st6 = fresh();
+    (st6.config as any).providers.mine = {
+      format: "openai-compatible",
+      baseUrl: "https://x.invalid/v1",
+      apiKey: "k",
+      models: [{ id: "m-x" }],
+    };
+    const w6 = t.runSlashCommand("/login", st6)!.prompt!;
+    const modelStep = w6.steps.find((st) => st.key === "model")!;
+    const mopts = (modelStep.options as (a: Record<string, string>) => { value: string }[])({ provider: "profile:mine" });
+    expect(mopts.map((m) => m.value)).toEqual(["m-x", "__custom"]);
   });
 
   test("bare /model, /prune and /fork ask; bare /delete opens the session picker", async () => {

@@ -570,7 +570,10 @@ function parseTomlDocument(text: string, path: string): Record<string, unknown> 
   try {
     return parseTomlLib(text) as unknown as Record<string, unknown>;
   } catch (e) {
-    throw new ConfigError(`invalid TOML in ${path}: ${(e as Error).message}`);
+    // the library's message carries a multi-line source excerpt; the one-liner
+    // contract (see the cli test) keeps the first line, which names the fault
+    const first = (e as Error).message.split("\n")[0];
+    throw new ConfigError(`invalid TOML in ${path}: ${first}`);
   }
 }
 

@@ -18,7 +18,7 @@ import { viewTokenEstimate } from "./context/render.ts";
 import { checkBudget } from "./context/budget.ts";
 import type { ProviderConfig } from "./providers/types.ts";
 import { renderTodos, getTodos } from "./tools/todo.ts";
-import { saveGlobalConfig, resolveValue, type Config } from "./core/config.ts";
+import { resolveProfile, resolveValue, saveGlobalConfig, saveProviderProfile, type Config } from "./core/config.ts";
 import { setTheme, themeName, themeNames } from "./tui/themes.ts";
 import { availableProviders } from "./providers/index.ts";
 import { ensureFreshCatalog, presetById, providerPresets } from "./providers/modelsdev.ts";
@@ -1025,6 +1025,61 @@ export async function pluginRemovePath(
 }
 
 /**
+ * Activate a named provider profile: the live state, the session record and
+ * the top-level config all resolve through the real profile path, exactly as
+ * a restart would — so activation can never disagree with a reload about
+ * what the profile means. With `writeProfile`, the table is created or
+ * refreshed first (a login that keeps several providers side by side).
+ */
+function applyProfileLogin(
+  name: string,
+  opts: { model?: string; format?: string; baseUrl?: string; apiKey?: string; writeProfile?: boolean },
+  state: HarnessState,
+): CommandResult {
+  if (!state.config) return { handled: true, output: "no config loaded — cannot switch profiles" };
+  if (opts.writeProfile) {
+    try {
+      saveProviderProfile(
+        name,
+        { format: opts.format, baseUrl: opts.baseUrl, apiKey: opts.apiKey || undefined, defaultModel: opts.model },
+        state.configPath,
+      );
+    } catch (e) {
+      return { handled: true, output: `cannot save profile '${name}': ${(e as Error).message}` };
+    }
+    // the in-memory table gets the same row a reload would read
+    state.config.providers[name] = {
+      format: opts.format,
+      baseUrl: opts.baseUrl,
+      apiKey: opts.apiKey || undefined,
+      defaultModel: opts.model,
+      models: state.config.providers[name]?.models ?? [],
+    };
+  } else if (!state.config.providers[name]) {
+    return { handled: true, output: `unknown profile '${name}'` };
+  }
+  const profile = state.config.providers[name];
+  const model = opts.model ?? profile?.defaultModel ?? state.provider.model;
+  const resolved = resolveProfile({ ...state.config, provider: name, model }, process.env);
+  state.provider.provider = resolved.format;
+  state.provider.label = resolved.label;
+  state.provider.baseUrl = resolved.baseUrl;
+  state.provider.apiKey = resolved.apiKey;
+  state.provider.model = model;
+  state.provider.headers = resolved.headers;
+  state.provider.sampling = resolved.sampling;
+  setActiveEndpoint(resolved.baseUrl);
+  setSessionModel(state.sessionId, model);
+  state.config.provider = name;
+  state.config.model = model;
+  const saved = saveGlobalConfig({ provider: name, model }, state.configPath);
+  return {
+    handled: true,
+    output: `provider: ${name} (${resolved.format}) · model ${model} — saved to ${saved} (/reload re-reads it)`,
+  };
+}
+
+/**
  * The `/login` wizard for interactive hosts: ask, don't make them read /help.
  * kv args from the command line prefill the steps, so `/login provider=google`
  * still lands in the wizard with that choice already made.
@@ -1054,6 +1109,47 @@ function loginPrompt(state: HarnessState, pre: LoginFields = {}): PromptRequest 
   const currentPreset =
     canon && canon.api === p.baseUrl ? canon.id : (byEndpoint?.id ?? (canon && !canon.api ? canon.id : "custom"));
   const presetOf = (a: Record<string, string>) => presets.find((x) => x.id === a.provider);
+  // a configured profile is its own choice (value `profile:<name>`), not a
+  // preset id — explicit config beats the catalog when both claim a name
+  const profileOf = (a: Record<string, string>) => {
+    const v = a.provider ?? "";
+    return v.startsWith("profile:") ? state.config?.providers[v.slice("profile:".length)] : undefined;
+  };
+  const currentProfile = state.config && state.config.providers[state.config.provider] ? state.config.provider : null;
+  const preProfile =
+    pre.provider && pre.provider !== "custom" && state.config?.providers[pre.provider] ? `profile:${pre.provider}` : null;
+  /**
+   * Model options for the picked login target. Profiles list their own
+   * models plus whatever the endpoint itself advertises (a corporate gateway
+   * is in no catalog); presets list the catalog; a custom endpoint lists
+   * nothing, sending the flow straight to the text step. `ensureLive` fires
+   * the background endpoint refresh — options rendering passes true, skipIf
+   * reads the cache only, so the predicate never doubles the fetch.
+   */
+  const loginModelOptions = (a: Record<string, string>, ensureLive: boolean): { value: string; label: string }[] => {
+    const prof = profileOf(a);
+    if (prof) {
+      const baseUrl = prof.baseUrl ?? p.baseUrl;
+      const key = resolveValue(prof.apiKey) ?? (baseUrl === p.baseUrl ? p.apiKey : undefined) ?? "";
+      if (ensureLive) ensureEndpointModels(baseUrl, key, prof.format);
+      const live = (endpointModels(baseUrl) ?? []).map((m) => ({
+        value: m.id,
+        label: m.context ? `${m.name ?? m.id} (${Math.round(m.context / 1000)}k ctx)` : (m.name ?? m.id),
+      }));
+      const configured = (prof.models ?? [])
+        .filter((m) => !m.disabled)
+        .map((m) => ({ value: m.id, label: m.contextWindow ? `${m.name ?? m.id} (${Math.round(m.contextWindow / 1000)}k ctx)` : (m.name ?? m.id) }));
+      const seen = new Set<string>();
+      const out = [...live, ...configured].filter((m) => (seen.has(m.value) ? false : (seen.add(m.value), true)));
+      return [...out, { value: "__custom", label: "✎ type a model id…" }];
+    }
+    const models = presetOf(a)?.models ?? [];
+    const opts = models.map((m) => ({
+      value: m.id,
+      label: m.context ? `${m.id} (${Math.round(m.context / 1000)}k ctx)` : m.id,
+    }));
+    return [...opts, { value: "__custom", label: "✎ type a model id…" }];
+  };
   return {
     title: "login — leave a field empty to keep the current value",
     steps: [
@@ -1062,10 +1158,14 @@ function loginPrompt(state: HarnessState, pre: LoginFields = {}): PromptRequest 
         label: "provider",
         kind: "select",
         options: [
+          ...Object.entries(state.config?.providers ?? {}).map(([name, prof]) => ({
+            value: `profile:${name}`,
+            label: `${name} — profile · ${prof.format ?? "openai-compatible"}${prof.baseUrl ? ` · ${prof.baseUrl}` : ""}`,
+          })),
           ...presets.map((x) => ({ value: x.id, label: x.api ? `${x.name} — ${x.api}` : x.name })),
           { value: "custom", label: "custom (any provider format fox-agent speaks)" },
         ],
-        initial: pre.provider ?? currentPreset,
+        initial: preProfile ?? pre.provider ?? (currentProfile ? `profile:${currentProfile}` : currentPreset),
       },
       {
         key: "apiKey",
@@ -1076,6 +1176,8 @@ function loginPrompt(state: HarnessState, pre: LoginFields = {}): PromptRequest 
           const env = presetOf(a)?.env ?? [];
           return env.length ? `empty = keep current / $${env[0]}` : "empty = keep current (none needed)";
         },
+        // a profile carries its own credentials — nothing to ask
+        skipIf: (a) => (a.provider ?? "").startsWith("profile:"),
       },
       {
         key: "baseUrl",
@@ -1083,27 +1185,21 @@ function loginPrompt(state: HarnessState, pre: LoginFields = {}): PromptRequest 
         kind: "text",
         initial: (a) => pre.baseUrl ?? presetOf(a)?.api ?? p.baseUrl,
         hint: "empty = keep current",
+        skipIf: (a) => (a.provider ?? "").startsWith("profile:"),
       },
       {
         key: "model",
         label: "model",
         kind: "select",
-        options: (a) => {
-          const models = presetOf(a)?.models ?? [];
-          const opts = models.map((m) => ({
-            value: m.id,
-            label: m.context ? `${m.id} (${Math.round(m.context / 1000)}k ctx)` : m.id,
-          }));
-          return [...opts, { value: "__custom", label: "✎ type a model id…" }];
-        },
+        options: (a) => loginModelOptions(a, true),
         initial: (a) => {
           const cur = pre.model ?? p.model;
-          const models = presetOf(a)?.models ?? [];
-          return models.some((m) => m.id === cur) ? cur : "__custom";
+          const ids = loginModelOptions(a, false).map((m) => m.value);
+          return ids.includes(cur) ? cur : "__custom";
         },
         // no catalog table for this provider (custom, or a preset that lists
         // nothing) — the select would be a one-row menu, so go straight to text
-        skipIf: (a) => (presetOf(a)?.models ?? []).length === 0,
+        skipIf: (a) => loginModelOptions(a, false).length <= 1,
       },
       {
         key: "modelCustom",
@@ -1116,12 +1212,34 @@ function loginPrompt(state: HarnessState, pre: LoginFields = {}): PromptRequest 
         // asked only when the select was skipped (nothing listed) or the user
         // explicitly chose "type a model id…" — picking a listed model no
         // longer re-asks for an id it just confirmed
-        skipIf: (a) => (presetOf(a)?.models ?? []).length > 0 && (a.model ?? "") !== "__custom",
+        skipIf: (a) => {
+          const listed = loginModelOptions(a, false);
+          return listed.length > 1 && (a.model ?? "") !== "__custom";
+        },
+      },
+      {
+        key: "saveProfile",
+        label: "remember as profile",
+        kind: "text",
+        allowEmpty: true,
+        initial: (a) => {
+          const pr = presetOf(a);
+          return pr && a.provider !== "custom" ? pr.id : "";
+        },
+        hint: "empty = one-off login in the flat slot; a name keeps this provider beside your others",
+        skipIf: (a) => (a.provider ?? "").startsWith("profile:"),
       },
     ],
     run: (answers, s) => {
+      const sel = answers.provider ?? "";
+      // an existing profile: switch to it, nothing else to learn
+      if (sel.startsWith("profile:")) {
+        const model = answers.model === "__custom" ? answers.modelCustom?.trim() : answers.model;
+        return applyProfileLogin(sel.slice("profile:".length), { model: model || undefined }, s);
+      }
       // "custom" means an arbitrary openai-compatible endpoint; other formats
       // can still be named explicitly via kv args (/login provider=anthropic …)
+      const preset = presetOf(answers);
       const fields: LoginFields = { provider: answers.provider === "custom" ? "openai-compatible" : answers.provider };
       for (const k of ["apiKey", "baseUrl"] as const) {
         const v = answers[k]?.trim();
@@ -1132,6 +1250,28 @@ function loginPrompt(state: HarnessState, pre: LoginFields = {}): PromptRequest 
       // kv args the user left untouched in the wizard still count as entered
       if (pre.apiKey && !fields.apiKey) fields.apiKey = pre.apiKey;
       if (pre.model && !fields.model) fields.model = pre.model;
+      // a name keeps this login as a profile next to the others; empty stays
+      // a one-off in the flat slot, exactly as before
+      const saveName = (answers.saveProfile ?? "").trim();
+      if (saveName) {
+        const format = answers.provider === "custom" ? "openai-compatible" : (preset?.format ?? fields.provider!);
+        if (!availableProviders().includes(format)) {
+          return { handled: true, output: `unknown provider "${format}" — available: ${availableProviders().join(", ")}, or a /login preset` };
+        }
+        return applyProfileLogin(
+          saveName,
+          {
+            model: fields.model,
+            format,
+            // an empty baseUrl keeps the current endpoint for custom logins,
+            // but a preset names its own endpoint when nothing was typed
+            baseUrl: fields.baseUrl ?? (answers.provider === "custom" ? undefined : preset?.api),
+            apiKey: fields.apiKey,
+            writeProfile: true,
+          },
+          s,
+        );
+      }
       return applyLogin(fields, s);
     },
   };
@@ -1365,6 +1505,15 @@ export function runSlashCommand(input: string, state: HarnessState): CommandResu
             `providers: ${availableProviders().join(", ")}`,
           ].join("\n"),
         };
+      }
+      // a configured profile name switches to it directly — headless
+      // multi-provider use needs no wizard. Anything but model= alongside a
+      // profile is refused loudly: the profile's credentials live in its table.
+      if (fields.provider && state.config?.providers[fields.provider]) {
+        if (fields.apiKey || fields.baseUrl) {
+          return { handled: true, output: `provider '${fields.provider}' is a saved profile — switch with model= only, or edit its table for the rest` };
+        }
+        return applyProfileLogin(fields.provider, { model: fields.model }, state);
       }
       return applyLogin(fields, state);
     }
