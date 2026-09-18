@@ -37,6 +37,17 @@ describe("key decoder", () => {
     expect(feedKeys("\x1b[<32;4;2m")).toEqual([{ type: "mouse", action: "up", x: 3, y: 1 }]);
   });
 
+  test("a wheel release scrolls nothing — the notch already scrolled on press", () => {
+    // several terminals send press + release per notch; emitting both doubled
+    // every scroll (measured: one notch moved a menu two rows)
+    const out: Key[] = [];
+    const dec = createDecoder((k) => out.push(k));
+    dec.feed(new TextEncoder().encode("\x1b[<64;10;5M\x1b[<64;10;5m\x1b[<65;3;2M\x1b[<65;3;2m"));
+    expect(out).toEqual([
+      { type: "named", name: "wheelup", x: 9, y: 4 },
+      { type: "named", name: "wheeldown", x: 2, y: 1 },
+    ]);
+  });
   test("wheel is not mistaken for a button press or drag", () => {
     // 64/65 are wheel notches, and they arrive with `M` like a press does
     expect(feedKeys("\x1b[<64;1;1M\x1b[<65;1;1M")).toEqual([

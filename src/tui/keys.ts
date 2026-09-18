@@ -239,9 +239,15 @@ export function createDecoder(emit: (k: Key) => void) {
       // With ?1002h the terminal also reports motion while a button is held, as
       // the button code + 32 (bit 5 = "this is a drag"). Wheel is 64/65 and is
       // not a button at all — it is a scroll at a position, so it carries the
-      // coordinates the app routes it by (dock vs transcript).
-      if (btn === 64) emit({ type: "named", name: "wheelup", x, y });
-      else if (btn === 65) emit({ type: "named", name: "wheeldown", x, y });
+      // coordinates the app routes it by (dock vs transcript). A wheel *release*
+      // (SGR `m`) reports nothing new — the notch already scrolled on its press
+      // — and several terminals send one per notch, so emitting it too would
+      // scroll every notch twice.
+      if (btn === 64 || btn === 65) {
+        if (mm[4] === "m") return true;
+        emit({ type: "named", name: btn === 64 ? "wheelup" : "wheeldown", x, y });
+        return true;
+      }
       else if (mm[4] === "m") emit({ type: "mouse", action: "up", x, y });
       else if (btn === 32) emit({ type: "mouse", action: "drag", x, y });
       else if (btn === 0) emit({ type: "mouse", action: "down", x, y });

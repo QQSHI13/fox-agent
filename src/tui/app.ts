@@ -347,6 +347,14 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     sel: number;
     /** typed filter for a select step's option list */
     filter: string;
+    /**
+     * The select options as of step entry. Endpoint/catalog refreshes landing
+     * mid-navigation used to reorder the live list under the user's fingers,
+     * so the highlight jumped rows between keypresses — every consumer
+     * (paint, commit, click) reads the snapshot, and only (re-)entering the
+     * step re-resolves it against the answers so far.
+     */
+    snap: { idx: number; opts: { value: string; label: string }[] } | null;
     done: (answers: Record<string, string> | null) => void;
   } | null = null;
   const hasSel = () => selA !== null && selB !== null && !(selA.row === selB.row && selA.col === selB.col);
@@ -522,6 +530,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       answers: {},
       sel: 0,
       filter: "",
+      snap: null,
       done: (answers) => {
         if (answers === null) return flash("cancelled");
         try {
@@ -581,6 +590,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       answers: {},
       sel: 0,
       filter: "",
+      snap: null,
       done: (answers) => {
         resolve(answers ?? undefined);
         pumpAskQueue();
@@ -593,8 +603,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   /** The filtered option list of the current select step (all of them on a text step). */
   function promptOptions(): { value: string; label: string }[] {
     const p = prompt!;
-    const st = p.steps[p.idx];
-    const all = resolveField(st.options, p.answers) ?? [];
+    const all = (p.snap && p.snap.idx === p.idx ? p.snap.opts : resolveField(p.steps[p.idx].options, p.answers)) ?? [];
     const f = p.filter.trim().toLowerCase();
     if (!f) return all;
     return all.filter((o) => o.label.toLowerCase().includes(f) || o.value.toLowerCase().includes(f));
@@ -606,6 +615,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     p.filter = "";
     if (st.kind === "select") {
       const opts = resolveField(st.options, p.answers) ?? [];
+      p.snap = { idx: p.idx, opts };
       // a revisited step starts on its previous answer, not the default
       const initial = p.answers[st.key] ?? resolveField(st.initial, p.answers);
       const i = opts.findIndex((o) => o.value === initial);
@@ -770,8 +780,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         p.sel = (p.sel + (name === "up" ? -1 : 1) + n) % Math.max(1, n);
         markDirty();
       } else if (name === "wheelup" || name === "wheeldown") {
-        // the wheel scrolls the open menu — modal, so no transcript scroll lost
-        p.sel = Math.max(0, Math.min(Math.max(0, n - 1), p.sel + (name === "wheelup" ? -3 : 3)));
+        // the wheel steps the open menu one row — granular, like the session
+        // picker overlay maps it to single steps; modal, so no scroll lost
+        p.sel = Math.max(0, Math.min(Math.max(0, n - 1), p.sel + (name === "wheelup" ? -1 : 1)));
         markDirty();
       } else if (name === "backspace") {
         if (p.filter) {
