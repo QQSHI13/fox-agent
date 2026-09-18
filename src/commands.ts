@@ -589,6 +589,8 @@ function modelPrompt(state: HarnessState): PromptRequest {
   };
 
   // Step 1 choices: the current provider, then every callable profile/preset.
+  // A row resolving to the current identity is skipped — otherwise the
+  // provider you are on appears twice, once as "(current)" and once bare.
   const providers: { value: string; label: string }[] = [
     { value: "m:", label: `${providerDisplayName(state)} — ${state.provider.baseUrl} (current)` },
   ];
@@ -596,12 +598,16 @@ function modelPrompt(state: HarnessState): PromptRequest {
   for (const [name, p] of Object.entries(state.config?.providers ?? {})) {
     const baseUrl = p.baseUrl ?? state.provider.baseUrl;
     if (creds(baseUrl, [p.apiKey]) === null) continue; // logged out — hidden
+    if (state.provider.label === name) continue; // this profile is the current row
     profileNames.push(name);
     providers.push({ value: `p:${name}`, label: `${name} — ${p.format ?? "openai-compatible"} · ${baseUrl}` });
   }
   const presetIds: string[] = [];
   for (const preset of providerPresets()) {
     if (creds(preset.api, preset.env.map((e) => process.env[e])) === null) continue;
+    // same endpoint under the same identity as the current row: selecting it
+    // would be a no-op wearing a different value
+    if (state.provider.label === preset.id && state.provider.baseUrl === (preset.api ?? state.provider.baseUrl)) continue;
     presetIds.push(preset.id);
     providers.push({ value: `x:${preset.id}`, label: `${preset.name} — ${preset.api ?? preset.format}` });
   }

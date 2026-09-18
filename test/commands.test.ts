@@ -314,6 +314,42 @@ describe("interactive wizards", () => {
     expect(state.provider.model).toBe("gemini-2.5-pro");
   });
 
+  test("/model provider step never lists the current identity twice", async () => {
+    const t = await setup();
+    // seed a cached catalog holding the openrouter preset: without it only
+    // static presets (and their env-gated visibility) are in play
+    const { mkdirSync, writeFileSync } = await import("node:fs");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, "models.dev.json"),
+      JSON.stringify({
+        at: Date.now(),
+        providers: [{ id: "openrouter", name: "OpenRouter", api: "https://openrouter.ai/api/v1", env: ["OPENROUTER_API_KEY"], format: "openai-compatible", models: [] }],
+      }),
+    );
+    const s = t.createSession("/w", "m1");
+    // logged in via the preset: the current row already IS openrouter, so the
+    // preset row would resolve to the same endpoint under the same identity
+    const state = {
+      sessionId: s.id,
+      cwd: "/w",
+      interactive: true,
+      provider: { baseUrl: "https://openrouter.ai/api/v1", apiKey: "k", model: "m", provider: "openai-compatible", label: "openrouter" } as any,
+      config: { provider: "openrouter", model: "m", providers: {} } as any,
+    };
+    const opts = t.runSlashCommand("/model", state)!.prompt!.steps[0].options as { value: string; label: string }[];
+    expect(opts[0].value).toBe("m:");
+    expect(opts.filter((o) => o.value === "x:openrouter")).toHaveLength(0);
+    // same for a profile: the current row already is it
+    const state2 = {
+      ...state,
+      provider: { ...state.provider, label: "mine" },
+      config: { provider: "mine", model: "m", providers: { mine: { baseUrl: "https://openrouter.ai/api/v1", apiKey: "k", models: [] } } } as any,
+    };
+    const opts2 = t.runSlashCommand("/model", state2)!.prompt!.steps[0].options as { value: string; label: string }[];
+    expect(opts2.filter((o) => o.value === "p:mine")).toHaveLength(0);
+  });
+
   test("bare /model, /prune and /fork ask; bare /delete opens the session picker", async () => {
     const t = await setup();
     const s = t.createSession("/w", "m1");
