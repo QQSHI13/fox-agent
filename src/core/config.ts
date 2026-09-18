@@ -2,6 +2,7 @@ import { dirname, isAbsolute, join } from "node:path";
 import { homedir } from "node:os";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { execSync } from "node:child_process";
+import { parse as parseTomlLib, stringify as stringifyToml } from "smol-toml";
 import { ConfigError } from "./errors.ts";
 import { setConfiguredModels } from "../providers/models.ts";
 import { presetById } from "../providers/modelsdev.ts";
@@ -230,11 +231,7 @@ function readToml(path: string | null): Record<string, unknown> | null {
   } catch (e) {
     throw new ConfigError(`cannot read ${path}: ${(e as Error).message}`);
   }
-  try {
-    return Bun.TOML.parse(text) as Record<string, unknown>;
-  } catch (e) {
-    throw new ConfigError(`invalid TOML in ${path}: ${(e as Error).message}`);
-  }
+  return parseTomlDocument(text, path);
 }
 
 /** Walk up from `cwd` looking for the first existing candidate filename. */
@@ -536,59 +533,56 @@ export function setPluginDisabled(
   disable: boolean,
   path = globalConfigPath(),
 ): { path: string; disabled: string[] } {
-  const r = patchTopLevelStringArray(path, "disabledPlugins", (cur) =>
+  const values = editStringArray(path, "disabledPlugins", (cur) =>
     disable ? [...cur.filter((d) => d !== entry), entry] : cur.filter((d) => d !== entry),
   );
-  return { path: r.path, disabled: r.values };
+  return { path, disabled: values };
 }
 
 /**
- * Rewrite one top-level string-array key through `update`, preserving
- * everything else line-for-line. Shared by `disabledPlugins` and `plugins`
- * management — there is no TOML writer in Bun, and a malformed file throws
- * loudly rather than being overwritten.
+ * Read a config file, mutate the parsed document, and write it back through
+ * the TOML library — never line surgery, so written files are always
+ * well-formed. Unknown keys and tables round-trip untouched. A malformed
+ * file throws loudly instead of being overwritten; a missing file starts
+ * empty. A wrong write loses keys with no undo, so the previous content is
+ * kept beside it as `.bak`.
  */
-function patchTopLevelStringArray(
-  path: string,
-  key: string,
-  update: (cur: string[]) => string[],
-): { path: string; values: string[] } {
-  let rest = "";
-  let cur: string[] = [];
+function editConfigFile(path: string, edit: (doc: Record<string, unknown>) => void): void {
   let text: string | null = null;
   try {
     text = readFileSync(path, "utf8");
-  } catch {
-    // no existing file — start fresh
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException)?.code !== "ENOENT") throw new ConfigError(`cannot read ${path}: ${(e as Error).message}`);
   }
-  if (text !== null) {
-    let parsed: Record<string, unknown>;
-    try {
-      parsed = Bun.TOML.parse(text) as Record<string, unknown>;
-    } catch (e) {
-      throw new ConfigError(`invalid TOML in ${path}: ${(e as Error).message}`);
-    }
-    const v = parsed[key];
-    if (Array.isArray(v)) cur = v.filter((x): x is string => typeof x === "string");
-    const keptLines: string[] = [];
-    let inTables = false;
-    const head = new RegExp(`^\\s*${key}\\s*=`);
-    for (const line of text.split("\n")) {
-      if (/^\s*\[/.test(line)) inTables = true;
-      if (!inTables && head.test(line)) continue; // stale copy — re-emitted below
-      keptLines.push(line);
-    }
-    rest = keptLines.join("\n").replace(/^\n+/, "");
-  }
-  const next = update(cur);
+  const doc = (text === null ? {} : parseTomlDocument(text, path)) as Record<string, unknown>;
+  edit(doc);
   mkdirSync(dirname(path), { recursive: true });
-  try {
-    writeFileSync(`${path}.bak`, readFileSync(path, "utf8"));
-  } catch {
-    /* no existing file to back up */
+  if (text !== null) {
+    try {
+      writeFileSync(`${path}.bak`, text);
+    } catch {}
   }
-  writeFileSync(path, `${key} = ${JSON.stringify(next)}\n${rest ? `\n${rest.replace(/\n*$/, "\n")}` : ""}`);
-  return { path, values: next };
+  writeFileSync(path, stringifyToml(doc));
+}
+
+/** Parse TOML text, throwing ConfigError naming the file. */
+function parseTomlDocument(text: string, path: string): Record<string, unknown> {
+  try {
+    return parseTomlLib(text) as unknown as Record<string, unknown>;
+  } catch (e) {
+    throw new ConfigError(`invalid TOML in ${path}: ${(e as Error).message}`);
+  }
+}
+
+/** Rewrite one top-level string-array key through `update`. */
+function editStringArray(path: string, key: string, update: (cur: string[]) => string[]): string[] {
+  let values: string[] = [];
+  editConfigFile(path, (doc) => {
+    const cur = Array.isArray(doc[key]) ? (doc[key] as unknown[]).filter((x): x is string => typeof x === "string") : [];
+    values = update(cur);
+    doc[key] = values;
+  });
+  return values;
 }
 
 /** Resolve a `plugins` entry the way the loader does (tilde + config-dir-relative). */
@@ -609,76 +603,81 @@ export function addPluginPath(entry: string, path = globalConfigPath()): { path:
   if (!existsSync(expandPluginEntry(entry, path))) {
     throw new ConfigError(`no plugin file '${entry}' (resolved against ${dirname(path)}) — nothing installed`);
   }
-  const r = patchTopLevelStringArray(path, "plugins", (cur) => (cur.includes(entry) ? cur : [...cur, entry]));
-  return { path: r.path, plugins: r.values };
+  return { path, plugins: editStringArray(path, "plugins", (cur) => (cur.includes(entry) ? cur : [...cur, entry])) };
 }
 
 /** Uninstall a plugin file: drop its path from the global `plugins` array. */
 export function removePluginPath(entry: string, path = globalConfigPath()): { path: string; plugins: string[] } {
-  const r = patchTopLevelStringArray(path, "plugins", (cur) => cur.filter((p) => p !== entry));
-  return { path: r.path, plugins: r.values };
+  return { path, plugins: editStringArray(path, "plugins", (cur) => cur.filter((p) => p !== entry)) };
+}
+
+export interface ProviderProfileFields {
+  format?: string;
+  baseUrl?: string;
+  apiKey?: string;
+  defaultModel?: string;
+}
+
+/**
+ * Write a `[providers.<name>]` profile table. Only the passed fields are
+ * set — anything else in the table (`models`, custom keys) survives, and a
+ * field passed as `undefined` is removed (so a profile stops pinning a key
+ * and falls back to the environment). Refuses junk names and non-table
+ * occupants rather than guessing.
+ */
+export function saveProviderProfile(name: string, fields: ProviderProfileFields, path = globalConfigPath()): string {
+  if (!/^[A-Za-z0-9_-]+$/.test(name)) throw new ConfigError(`bad profile name '${name}' — letters, numbers, dash, underscore`);
+  editConfigFile(path, (doc) => {
+    let providers = doc.providers;
+    if (providers === undefined) {
+      providers = {};
+      doc.providers = providers;
+    }
+    if (typeof providers !== "object" || providers === null || Array.isArray(providers)) {
+      throw new ConfigError(`'providers' in ${path} is not a table — fix it by hand, fox-agent will not guess`);
+    }
+    const tables = providers as Record<string, unknown>;
+    let table = tables[name];
+    if (table === undefined) {
+      table = {};
+      tables[name] = table;
+    }
+    if (typeof table !== "object" || table === null || Array.isArray(table)) {
+      throw new ConfigError(`'[providers.${name}]' in ${path} is not a table — fix it by hand, fox-agent will not guess`);
+    }
+    const t = table as Record<string, unknown>;
+    for (const [k, v] of Object.entries(fields)) {
+      if (v === undefined) delete t[k];
+      else t[k] = v;
+    }
+    if (!Object.keys(t).length) delete tables[name]; // a save that stores nothing stores no table
+  });
+  return path;
 }
 
 /**
  * Write login fields into the global config, preserving everything else.
  *
- * There is no TOML *writer* in Bun, so this is a line-level patch: top-level
- * assignments of the named keys (only those above the first `[table]` header)
- * are dropped and the new values prepended. Comments and tables survive
- * untouched. Values go through JSON.stringify, which is a valid TOML basic
- * string for anything a key/URL/model id can contain.
+ * Read-modify-write through the TOML library: only the passed top-level keys
+ * change, and unknown keys plus all tables round-trip untouched. `""` for
+ * reasoningEffort clears the key; absence of a field keeps whatever was saved
+ * (so `/theme` alone never erases the provider and key).
  */
 export function saveGlobalConfig(
   fields: { provider?: string; apiKey?: string; baseUrl?: string; model?: string; theme?: string; reasoningEffort?: string },
   path = globalConfigPath(),
 ): string {
-  let rest = "";
-  /** existing top-level values for keys this call does NOT set — dropping them
-   *  would gut the config (e.g. /theme alone erasing the saved provider+key) */
-  const kept: Record<string, string> = {};
-  try {
-    const lines = readFileSync(path, "utf8").split("\n");
-    let inTables = false;
-    const keptLines: string[] = [];
-    for (const line of lines) {
-      if (/^\s*\[/.test(line)) inTables = true;
-      if (!inTables) {
-        const m = line.match(/^\s*(provider|apiKey|baseUrl|model|theme|reasoningEffort)\s*=\s*(.*)$/);
-        if (m) {
-          // reasoningEffort = "" explicitly clears the key; absence keeps it
-          if (!(m[1] in fields) && !(fields.reasoningEffort === "" && m[1] === "reasoningEffort")) kept[m[1]] = m[2].trim();
-          continue; // stale copy of a managed key — the head re-emits it
-        }
-      }
-      keptLines.push(line);
+  editConfigFile(path, (doc) => {
+    if (fields.provider !== undefined) doc.provider = fields.provider;
+    if (fields.apiKey !== undefined) doc.apiKey = fields.apiKey;
+    if (fields.baseUrl !== undefined) doc.baseUrl = fields.baseUrl;
+    if (fields.model !== undefined) doc.model = fields.model;
+    if (fields.theme !== undefined) doc.theme = fields.theme;
+    if (fields.reasoningEffort !== undefined) {
+      if (fields.reasoningEffort) doc.reasoningEffort = fields.reasoningEffort;
+      else delete doc.reasoningEffort;
     }
-    rest = keptLines.join("\n").replace(/^\n+/, "");
-  } catch {
-    // no existing file — start fresh
-  }
-  const head = [
-    fields.provider !== undefined ? `provider = ${JSON.stringify(fields.provider)}` : kept.provider ? `provider = ${kept.provider}` : null,
-    fields.apiKey !== undefined ? `apiKey = ${JSON.stringify(fields.apiKey)}` : kept.apiKey ? `apiKey = ${kept.apiKey}` : null,
-    fields.baseUrl !== undefined ? `baseUrl = ${JSON.stringify(fields.baseUrl)}` : kept.baseUrl ? `baseUrl = ${kept.baseUrl}` : null,
-    fields.model !== undefined ? `model = ${JSON.stringify(fields.model)}` : kept.model ? `model = ${kept.model}` : null,
-    fields.theme !== undefined ? `theme = ${JSON.stringify(fields.theme)}` : kept.theme ? `theme = ${kept.theme}` : null,
-    // "" clears the key (provider default); undefined keeps whatever was saved
-    fields.reasoningEffort !== undefined
-      ? fields.reasoningEffort
-        ? `reasoningEffort = ${JSON.stringify(fields.reasoningEffort)}`
-        : null
-      : kept.reasoningEffort
-        ? `reasoningEffort = ${kept.reasoningEffort}`
-        : null,
-  ].filter(Boolean);
-  mkdirSync(dirname(path), { recursive: true });
-  // a wrong write loses the user's key with no undo — keep one backup
-  try {
-    writeFileSync(`${path}.bak`, readFileSync(path, "utf8"));
-  } catch {
-    /* no existing file to back up */
-  }
-  writeFileSync(path, `${head.join("\n")}\n${rest ? `\n${rest.replace(/\n*$/, "\n")}` : ""}`);
+  });
   return path;
 }
 
