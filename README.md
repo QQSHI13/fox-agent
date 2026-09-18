@@ -272,29 +272,30 @@ Project instructions are loaded from every `AGENTS.md` / `CLAUDE.md` on the path
 fox-agent stores credentials in two places, and they behave differently:
 
 - **The flat top-level keys** (`provider`, `apiKey`, `baseUrl`, `model`) are
-  the *active* provider -- a single slot. `/login` and a cross-provider
-  `/model` switch **overwrite** it: logging into provider B replaces A's key
-  in the config file. That is the one-active-provider model, and it is
-  deliberate simplicity, but it means the old credentials are gone unless
-  they live somewhere else.
+  the *active* provider -- a single slot. A cross-provider `/model` switch
+  **overwrites** it.
 - **`[providers.<name>]` profiles** store any number of providers side by
   side, each with its own format, endpoint, key (env-resolved, so the secret
   can stay in the environment), headers and model list. Selecting one is
-  `provider = "<name>"` or `/model <name>/<model>`, and switching between
-  profiles never touches the flat slot.
+  `provider = "<name>"`, `/model <name>/<model>`, or `/login provider=<name>`,
+  and switching between profiles never touches anyone else's credentials.
 
-So: to keep several providers configured at once, write them as profiles and
-switch with `/model <name>/...`; what `/login` does today is swap the single
-active slot. Sessions remember the model id they ran with, but the provider
-is whatever is active when you resume -- resuming a session does not restore
-its provider's credentials, and on reload the session's stored model is
-re-synced to the active config model.
+`/login` manages both: pick a preset or custom endpoint and name it at the
+`remember as profile` step to keep it beside your others (the table records
+the format, endpoint, key and default model); leave the name empty for a
+one-off login in the flat slot, as before. Already-saved profiles lead the
+provider list, carry their own credentials (those steps are skipped), and
+switch with `/login provider=<name>` headlessly too. Sessions remember the
+model id they ran with, but the provider is whatever is active when you
+resume -- resuming a session does not restore its provider's credentials,
+and on reload the session's stored model is re-synced to the active config
+model.
 
 ### Login wizard
 
-No key at all? The TUI opens anyway and `/login` walks you through provider, key, base URL and model as an interactive wizard (the key is typed masked), writes `~/.config/fox-agent/config.toml` and takes effect without a restart. Provider choices come from the models.dev catalog (200+ providers, cached 24h at `$FOX_AGENT_HOME/models.dev.json`, with static fallbacks offline), so picking e.g. OpenRouter prefills the endpoint, names the env var an empty key falls back to, and lists that provider's real models with their context windows.
+No key at all? The TUI opens anyway and `/login` walks you through provider, key, base URL, model and an optional profile name as an interactive wizard (the key is typed masked), writes `~/.config/fox-agent/config.toml` and takes effect without a restart. Provider choices are your saved profiles first, then the models.dev catalog (200+ providers, cached 24h at `$FOX_AGENT_HOME/models.dev.json`, with static fallbacks offline), so picking e.g. OpenRouter prefills the endpoint, names the env var an empty key falls back to, and lists that provider's real models with their context windows. A profile lists its own models plus whatever its endpoint advertises.
 
-Headless clients use kv pairs instead: `/login provider=<p> key=<k> [baseUrl=<u>] [model=<m>]`, where `<p>` may also be a preset id like `deepseek`.
+Headless clients use kv pairs instead: `/login provider=<p> key=<k> [baseUrl=<u>] [model=<m>]`, where `<p>` may be a preset id like `deepseek` or a saved profile name (a profile switch takes `model=` only -- its credentials live in its table).
 
 ### Request timeout
 
