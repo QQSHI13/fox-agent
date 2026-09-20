@@ -65,6 +65,9 @@ interface Item {
   toolResult?: boolean;
   /** full untruncated tool input — the head line is clickable to reveal it */
   detail?: string;
+  /** part of the startup block — rebuilt live when config changes, and dropped
+   *  (with the block's lifetime) by the next refresh() */
+  welcome?: boolean;
 }
 
 /**
@@ -367,8 +370,8 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   }
 
   // ---- item mutations ----
-  function push(kind: ItemKind, text: string, opts?: { ref?: number; expanded?: boolean; ephemeral?: boolean; toolResult?: boolean; detail?: string }) {
-    const it: Item = { k: nk(), kind, text, ref: opts?.ref, expanded: opts?.expanded, ephemeral: opts?.ephemeral, toolResult: opts?.toolResult, detail: opts?.detail };
+  function push(kind: ItemKind, text: string, opts?: { ref?: number; expanded?: boolean; ephemeral?: boolean; toolResult?: boolean; detail?: string; welcome?: boolean }) {
+    const it: Item = { k: nk(), kind, text, ref: opts?.ref, expanded: opts?.expanded, ephemeral: opts?.ephemeral, toolResult: opts?.toolResult, detail: opts?.detail, welcome: opts?.welcome };
     items.push(it);
     touch(it.k);
     markDirty();
@@ -391,6 +394,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   function refresh() {
     items = loadItems(); // loadItems already restores expandedRefs
     for (const it of items) touch(it.k);
+    // the rebuild drops the startup block with everything else — its lifetime
+    // ends here, so a later refreshWelcome() must not resurrect it
+    welcomed = false;
     statsRev++;
     markDirty();
   }
@@ -508,8 +514,11 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     // a wizard's run may itself answer with another wizard — chain it
     if (res.prompt) startPrompt(res.prompt);
     // a command may have changed provider/model (/login, /model) — the status
-    // bar caches per statsRev, and an idle session never re-polls on its own
+    // bar caches per statsRev, and an idle session never re-polls on its own.
+    // Same for the startup block: it is pushed once and would otherwise freeze
+    // the pre-command provider, key state and model on screen.
     statsRev++;
+    refreshWelcome();
     markDirty();
     if (res.exit) gracefulExit(0);
   }
@@ -825,20 +834,46 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
    * item list, so anything pushed before it never existed (the banner vanished
    * that way once). Runs at boot and on /new.
    */
+  let welcomed = false;
+  let banner: string | null = null;
   function welcomeBlock() {
-    push("info", `fox-agent v${VERSION} — ${BANNERS[Math.floor(Math.random() * BANNERS.length)]}`);
-    push("toolbody", `working directory: ${state.cwd}`);
-    push("toolbody", `session ${state.sessionId || "new — created on first message"} · ${state.cwd}`);
+    welcomed = true;
+    refreshWelcome();
+  }
+
+  /**
+   * Rebuild the startup block in place against the LIVE provider and config.
+   * The block is pushed once and then frozen, so a /login that lands a key or
+   * a /model switch left its own contradiction on screen ("no API key" above
+   * a working session). Rebuilding on every command result keeps it honest
+   * for exactly its lifetime: refresh() ends that lifetime by dropping the
+   * items and disarming this (see welcomed), and the tagline is picked once
+   * so the banner does not re-roll under you.
+   */
+  function refreshWelcome() {
+    if (!welcomed) return;
+    const rest = items.filter((it) => !it.welcome);
+    if (!banner) banner = BANNERS[Math.floor(Math.random() * BANNERS.length)];
+    const head: Item[] = [];
+    const w = (kind: ItemKind, text: string) => {
+      const it: Item = { k: nk(), kind, text, welcome: true };
+      touch(it.k);
+      head.push(it);
+    };
+    w("info", `fox-agent v${VERSION} — ${banner}`);
+    w("toolbody", `working directory: ${state.cwd}`);
+    w("toolbody", `session ${state.sessionId || "new — created on first message"} · ${state.cwd}`);
     if (!state.provider.apiKey)
-      push("error", "no API key configured — /login opens the setup wizard (saved to ~/.config/fox-agent/config.toml)");
+      w("error", "no API key configured — /login opens the setup wizard (saved to ~/.config/fox-agent/config.toml)");
     const info = lookupModel(state.provider.model);
-    push(
+    w(
       "toolbody",
       `model ${state.provider.model} (${Math.round(info.contextWindow / 1000)}k ctx) · ${providerDisplayName(state)}` +
         `${state.provider.baseUrl && !/api\.openai\.com/.test(state.provider.baseUrl) ? ` · ${state.provider.baseUrl}` : ""}`,
     );
-    push("toolbody", "enter send · \\ newline · ! shell · / commands · esc interrupt · ctrl+t expand all · drag/dbl-click select");
-    push("toolbody", "/login setup · /model switch · /sessions resume · /usage tokens · /prune context · /upgrade update · /help all");
+    w("toolbody", "enter send · \\ newline · ! shell · / commands · esc interrupt · ctrl+t expand all · drag/dbl-click select");
+    w("toolbody", "/login setup · /model switch · /sessions resume · /usage tokens · /prune context · /upgrade update · /help all");
+    items = [...head, ...rest];
     statsRev++;
     markDirty();
   }
