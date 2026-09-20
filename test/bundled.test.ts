@@ -114,6 +114,26 @@ describe("beforeTool", () => {
     expect(end.output).toContain("rewritten");
     expect(end.output).not.toContain("original");
   }, 30_000);
+
+  test("the stored assistant call carries the rewritten args, not the original", async () => {
+    // the DB row used to keep the pre-rewrite args next to the post-rewrite
+    // result, so replay and the next step's model context disagreed with what ran
+    const rewriter: FoxPlugin = {
+      name: "rewriter-stored",
+      hooks: {
+        beforeTool: (c) => (c.name === "exec" ? { args: { cmd: "echo rewritten" } } : undefined),
+      },
+    };
+    const { runTurnCore } = await import("../src/loop/turn.ts");
+    const { createSession, allMessages } = await import("../src/store/db.ts");
+    const sessionId = createSession(work, "test-model").id;
+    const chat = scripted([{ tool: "exec", args: { cmd: "echo original" } }, { text: "done" }]);
+    for await (const _ of runTurnCore(sessionId, provider(), "go", undefined, { chat, config: await cfg(), pluginsOverride: [rewriter] })) void _;
+    const asst = allMessages(sessionId).find((m) => m.role === "assistant" && m.tool_calls);
+    expect(asst).toBeTruthy();
+    expect(asst!.tool_calls).toContain("rewritten");
+    expect(asst!.tool_calls).not.toContain("original");
+  }, 30_000);
 });
 
 describe("onTurnStart / onTurnEnd", () => {

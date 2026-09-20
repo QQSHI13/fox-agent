@@ -45,6 +45,24 @@ describe("saveGlobalConfig", () => {
     saveGlobalConfig({ theme: "nord" }, join(dir, "global3.toml"));
     expect(readFileSync(join(dir, "global3.toml"), "utf8")).toContain('theme = "nord"');
   });
+
+  test("writers default to the effective config file, never the real home", async () => {
+    // regression: saveGlobalConfig/saveProviderProfile defaulted to the real
+    // global path, so a process that read FOX_AGENT_CONFIG wrote home instead
+    const { saveGlobalConfig, saveProviderProfile } = await import("../src/core/config.ts");
+    const target = join(dir, "env.toml");
+    const prev = process.env.FOX_AGENT_CONFIG;
+    process.env.FOX_AGENT_CONFIG = target;
+    try {
+      saveGlobalConfig({ model: "m-env" });
+      expect(readFileSync(target, "utf8")).toContain('model = "m-env"');
+      saveProviderProfile("p1", { format: "openai-compatible", baseUrl: "https://x/v1" });
+      expect(readFileSync(target, "utf8")).toContain("[providers.p1]");
+    } finally {
+      if (prev === undefined) delete process.env.FOX_AGENT_CONFIG;
+      else process.env.FOX_AGENT_CONFIG = prev;
+    }
+  });
 });
 
 describe("config cascade", () => {

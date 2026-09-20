@@ -572,3 +572,74 @@ describe("session listing", () => {
     expect(byId.get(untitled.id)!.cells.at(-1)).toBe("/w/project");
   });
 });
+
+describe("bug-hunt regressions", () => {
+  test("/login keeps a typed custom model id when the select is skipped", async () => {
+    const t = await setup();
+    const cfgPath = join(dir, "config.toml");
+    const s = t.createSession("/w", "m1");
+    const state = {
+      sessionId: s.id,
+      cwd: "/w",
+      provider: { baseUrl: "http://127.0.0.1:1", apiKey: "", model: "m" } as any,
+      configPath: cfgPath,
+      interactive: true,
+    };
+    // a custom endpoint lists nothing, so the model select is skipped and
+    // answers.model is never committed — only modelCustom holds the typed id,
+    // which the run used to discard, saving the stale model with success
+    const wiz = t.runSlashCommand("/login", state)!.prompt!;
+    const res = wiz.run({ provider: "custom", apiKey: "", baseUrl: "http://127.0.0.1:1", modelCustom: "m-x", saveProfile: "" }, state);
+    expect(res.output).toContain("saved");
+    expect(state.provider.model).toBe("m-x");
+  });
+
+  test("bare /fork with an empty answer forks at the tip instead of looping", async () => {
+    const t = await setup();
+    const s = t.createSession("/w", "m1");
+    t.appendMessage(s.id, { parent_id: null, role: "user", content: "a", tokens: 1 });
+    const state = {
+      sessionId: s.id,
+      cwd: "/w",
+      provider: { baseUrl: "http://x", apiKey: "k", model: "m" } as any,
+      interactive: true,
+    };
+    const res = t.runSlashCommand("/fork", state)!.prompt!.run({ at: "" }, state);
+    // a fork happened (new session id reported), not a re-prompt
+    expect(res.newSessionId).toBeTruthy();
+    expect(res.newSessionId).not.toBe(s.id);
+    expect((res as { prompt?: unknown }).prompt).toBeUndefined();
+  });
+
+  test("/thinking default clears the live effort, not just the file", async () => {
+    const t = await setup();
+    const cfgPath = join(dir, "config.toml");
+    const s = t.createSession("/w", "m1");
+    const state = {
+      sessionId: s.id,
+      cwd: "/w",
+      provider: { baseUrl: "http://x", apiKey: "k", model: "m" } as any,
+      configPath: cfgPath,
+    };
+    t.runSlashCommand("/thinking high", state);
+    expect((state.provider.sampling as any)?.reasoningEffort).toBe("high");
+    const res = t.runSlashCommand("/thinking default", state)!;
+    expect(res.output).toContain("provider default");
+    // the provider must stop receiving the old effort immediately, while the
+    // readout (which prefers live sampling) agrees with the file
+    expect((state.provider.sampling as any)?.reasoningEffort).toBeUndefined();
+  });
+
+  test("index resolution honors the listing limit", async () => {
+    const t = await setup();
+    const a = t.createSession("/w", "m1");
+    const b = t.createSession("/w", "m1");
+    const c = t.createSession("/w", "m1");
+    // recency order: c, b, a — a limit-1 page shows only c
+    expect(t.resolveSessionArg("1", 1)).toBe(c.id);
+    expect(t.resolveSessionArg("2", 1)).toBeNull();
+    // default depth resolves the full list as before
+    expect(t.resolveSessionArg("2")).toBe(b.id);
+    expect(t.resolveSessionArg(a.id)).toBe(a.id);
+  });
+});
