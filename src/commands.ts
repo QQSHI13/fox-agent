@@ -381,12 +381,14 @@ export function formatSessionList(items: SessionListItem[], opts: { color?: bool
  * Accept either a session id or a 1-based index into `/sessions`, returning null
  * if neither resolves. Shared so `/sessions <n>`, `/delete <n>` and `fox -c <n>`
  * cannot disagree about what "2" means — a mismatch there would delete or resume
- * a different session than the one the list showed. Both resolve against the same
+ * a different session than the one the list showed. `limit` must be the same
+ * sessionListLimit the listing used: indices past a shorter page would resolve
+ * to sessions the user was never shown. Both resolve against the same
  * recency-ordered list the picker shows.
  */
-export function resolveSessionArg(arg: string): string | null {
+export function resolveSessionArg(arg: string, limit = 50): string | null {
   const n = Number(arg);
-  if (Number.isInteger(n) && n >= 1) return listSessions(50)[n - 1]?.id ?? null;
+  if (Number.isInteger(n) && n >= 1) return listSessions(limit)[n - 1]?.id ?? null;
   return getSession(arg) ? arg : null;
 }
 
@@ -1080,6 +1082,17 @@ function applyProfileLogin(
 }
 
 /**
+ * Resolve the login wizard's model answer: a listed pick wins, otherwise the
+ * typed custom id. The fallback also covers the skipped select — a custom
+ * endpoint lists nothing, so answers.model is unset and only modelCustom
+ * holds the typed id (previously discarded, saving the old model silently).
+ */
+function loginModelAnswer(answers: Record<string, string>): string | undefined {
+  if (answers.model && answers.model !== "__custom") return answers.model;
+  return answers.modelCustom?.trim() || undefined;
+}
+
+/**
  * The `/login` wizard for interactive hosts: ask, don't make them read /help.
  * kv args from the command line prefill the steps, so `/login provider=google`
  * still lands in the wizard with that choice already made.
@@ -1234,8 +1247,7 @@ function loginPrompt(state: HarnessState, pre: LoginFields = {}): PromptRequest 
       const sel = answers.provider ?? "";
       // an existing profile: switch to it, nothing else to learn
       if (sel.startsWith("profile:")) {
-        const model = answers.model === "__custom" ? answers.modelCustom?.trim() : answers.model;
-        return applyProfileLogin(sel.slice("profile:".length), { model: model || undefined }, s);
+        return applyProfileLogin(sel.slice("profile:".length), { model: loginModelAnswer(answers) }, s);
       }
       // "custom" means an arbitrary openai-compatible endpoint; other formats
       // can still be named explicitly via kv args (/login provider=anthropic …)
@@ -1245,7 +1257,7 @@ function loginPrompt(state: HarnessState, pre: LoginFields = {}): PromptRequest 
         const v = answers[k]?.trim();
         if (v) fields[k] = v;
       }
-      const model = answers.model === "__custom" ? answers.modelCustom?.trim() : answers.model;
+      const model = loginModelAnswer(answers);
       if (model) fields.model = model;
       // kv args the user left untouched in the wizard still count as entered
       if (pre.apiKey && !fields.apiKey) fields.apiKey = pre.apiKey;
@@ -1312,7 +1324,7 @@ export function runSlashCommand(input: string, state: HarnessState): CommandResu
       // Without one, an interactive host gets a picker and everyone else gets
       // the list they always got.
       if (arg) {
-        const id = resolveSessionArg(arg);
+        const id = resolveSessionArg(arg, state.config?.sessionListLimit ?? 50);
         if (!id) {
           const n = Number(arg);
           return {
@@ -1335,7 +1347,18 @@ export function runSlashCommand(input: string, state: HarnessState): CommandResu
           prompt: {
             title: "fork — mN cuts this session at a marker, an id forks another session at its tip",
             steps: [{ key: "at", label: "marker or session id", kind: "text", hint: "empty = fork here at the tip" }],
-            run: (a, s) => runSlashCommand(`/fork ${a.at?.trim() ?? ""}`, s) ?? { handled: true },
+            run: (a, s) => {
+              const at = (a.at ?? "").trim();
+              if (!at) {
+                // empty forks here at the tip, as promised — re-entering
+                // `/fork ` would reopen this same prompt in a loop
+                if (!s.sessionId) return { handled: true, output: "no session yet — send a message first" };
+                const fork = forkSession(s.sessionId);
+                if (!fork) return { handled: true, output: "fork failed" };
+                return { handled: true, newSessionId: fork.id, output: `forked -> ${fork.id}` };
+              }
+              return runSlashCommand(`/fork ${at}`, s) ?? { handled: true };
+            },
           },
         };
       }
@@ -1351,7 +1374,7 @@ export function runSlashCommand(input: string, state: HarnessState): CommandResu
           upto = Number(m[1]);
           if (!getMessage(state.sessionId, upto)) return { handled: true, output: `no message m${upto}` };
         } else {
-          const id = resolveSessionArg(arg);
+          const id = resolveSessionArg(arg, state.config?.sessionListLimit ?? 50);
           if (!id) return { handled: true, output: `usage: /fork [mN|id|list-index]` };
           source = id;
         }
@@ -1370,7 +1393,7 @@ export function runSlashCommand(input: string, state: HarnessState): CommandResu
       // and /undo cannot reach it.
       const [target, confirm] = rest;
       if (!target) return { handled: true, output: "usage: /delete <id|list-index> yes" };
-      const id = resolveSessionArg(target);
+      const id = resolveSessionArg(target, state.config?.sessionListLimit ?? 50);
       if (!id) return { handled: true, output: `unknown session ${target}` };
       // The live session's database handle is open and the turn loop keeps
       // appending to it; deleting the file underneath would leave a TUI writing
@@ -1605,7 +1628,14 @@ export function runSlashCommand(input: string, state: HarnessState): CommandResu
       const apply = (effort: string): CommandResult => {
         if (effort && !EFFORTS.includes(effort))
           return { handled: true, output: `unknown effort '${effort}' — use low | medium | high, or 'default' to clear` };
-        state.provider.sampling = { ...state.provider.sampling, ...(effort ? { reasoningEffort: effort } : {}) };
+        // clearing drops the live key too — spreading nothing over the old
+        // object left the provider receiving the previous effort while the
+        // file (and the status readout) already said "provider default"
+        if (effort) state.provider.sampling = { ...state.provider.sampling, reasoningEffort: effort };
+        else if (state.provider.sampling) {
+          const { reasoningEffort: _dropped, ...rest } = state.provider.sampling;
+          state.provider.sampling = rest;
+        }
         if (state.config) {
           if (effort) state.config.reasoningEffort = effort as "low" | "medium" | "high";
           else delete state.config.reasoningEffort;

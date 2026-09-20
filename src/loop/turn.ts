@@ -499,17 +499,44 @@ export async function* runTurnCore(
       appendMessage(sessionId, { parent_id: stepParentId, role: "think", content: outcome.reasoning, tokens: estTok(outcome.reasoning) });
     }
 
+    // `beforeTool` resolves BEFORE the assistant node is persisted, so a guard
+    // plugin's arg rewrite (or veto) lands in the stored tool_calls JSON —
+    // what ran, what the transcript stores, and what `tool_end` reports are
+    // one text. Persisting first and patching the local afterwards left the DB
+    // holding the pre-rewrite args next to the post-rewrite result.
+    const prepared: { call: ToolCall; veto?: ToolResult }[] = [];
+    const preWarns: string[] = [];
+    for (const call of outcome.calls) {
+      let c = call;
+      let veto: ToolResult | undefined;
+      for (const p of hooked) {
+        if (!p.hooks?.beforeTool) continue;
+        const patch = await runHook(
+          p,
+          "beforeTool",
+          () => p.hooks!.beforeTool!({ sessionId, name: c.name, args: safeParseArgs(c.arguments).args }),
+          (message) => preWarns.push(message),
+        );
+        if (patch?.args !== undefined) c = { ...c, arguments: JSON.stringify(patch.args) };
+        // a veto answers for the tool outright — the skipped run still lands
+        // in the transcript so tool_call/tool_result pairing holds
+        if (typeof patch?.output === "string") veto = { ok: true, output: patch.output };
+      }
+      prepared.push({ call: c, veto });
+    }
+    for (const w of preWarns) yield { type: "warn", message: w };
+
     const asstNode = appendMessage(sessionId, {
       parent_id: stepParentId,
       role: "assistant",
       content: outcome.text,
-      tool_calls: outcome.calls.length ? JSON.stringify(outcome.calls) : null,
-      tokens: estTok(outcome.text) + outcome.calls.reduce((a, c) => a + estTok(c.arguments), 0),
+      tool_calls: prepared.length ? JSON.stringify(prepared.map((p) => p.call)) : null,
+      tokens: estTok(outcome.text) + prepared.reduce((a, p) => a + estTok(p.call.arguments), 0),
     });
     if (outcome.usage) recordUsage(sessionId, asstNode.id, outcome.usage.prompt_tokens, outcome.usage.completion_tokens);
     if (outcome.usage && !quiet) yield { type: "usage", ...outcome.usage };
 
-    if (!outcome.calls.length) {
+    if (!prepared.length) {
       yield await endTurn(outcome.finish.startsWith("error") ? outcome.finish : outcome.finish || "stop", step);
       return;
     }
@@ -517,28 +544,14 @@ export async function* runTurnCore(
     // ---- execute all calls in parallel; failures isolated per call ----
     // announce every call before awaiting any of them, so consumers can show
     // work as in-flight rather than only after the whole batch settles
-    for (const call of outcome.calls) {
+    for (const { call } of prepared) {
       yield { type: "tool_start", id: call.id, name: call.name, args: eventArgs(call.arguments) };
     }
 
     const liveEvents = new EventQueue();
     const settled = Promise.all(
-      outcome.calls.map(async (call) => {
-        // `beforeTool` may rewrite the args, or answer for the tool outright
-        // (a guard plugin's veto) — the skipped run still lands in the
-        // transcript so tool_call/tool_result pairing holds.
-        let res: ToolResult | undefined;
-        for (const p of hooked) {
-          if (!p.hooks?.beforeTool) continue;
-          const patch = await runHook(
-            p,
-            "beforeTool",
-            () => p.hooks!.beforeTool!({ sessionId, name: call.name, args: safeParseArgs(call.arguments).args }),
-            (message) => liveEvents.push({ type: "warn", message }),
-          );
-          if (patch?.args !== undefined) call = { ...call, arguments: JSON.stringify(patch.args) };
-          if (typeof patch?.output === "string") res = { ok: true, output: patch.output };
-        }
+      prepared.map(async ({ call, veto }) => {
+        let res: ToolResult | undefined = veto;
         res ??= await execToolCall(call, tools, {
           sessionId,
           cwd: session.cwd,

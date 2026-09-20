@@ -78,9 +78,9 @@ export async function buildRegistry(
   // and delegation targets alongside its tools, and those merge before
   // mcpTools dials out. Bundled plugins first, through the exact merge path
   // user plugins take.
-  const { globalConfigPath } = await import("../core/config.ts");
+  const { effectiveConfigPath } = await import("../core/config.ts");
   const { dirname } = await import("node:path");
-  const res = await loadPlugins(cfg.plugins ?? [], dirname(globalConfigPath()), disabled);
+  const res = await loadPlugins(cfg.plugins ?? [], dirname(effectiveConfigPath()), disabled);
   warnings.push(...res.warnings);
   const plugins: FoxPlugin[] = [
     ...bundledPlugins().filter((p) => !bundledDisabled(p.name, disabled)),

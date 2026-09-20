@@ -679,14 +679,16 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     const p = prompt!;
     const opts = promptOptions();
     if (!opts.length) return;
-    const { inputTop } = dockGeom();
-    const MAX = Math.max(1, Math.min(5, inputTop - 1));
+    // same geometry the menu paints with (see dockFloats) — anything else
+    // resolves clicks against rows the menu never occupied
+    const menuTop = dockFloats().top;
+    const MAX = Math.max(1, Math.min(5, menuTop - 1));
     const start = opts.length <= MAX ? 0 : Math.max(0, Math.min(p.sel - Math.floor(MAX / 2), opts.length - MAX));
     const end = Math.min(opts.length, start + MAX);
     const above = start > 0 ? 1 : 0;
     const below = end < opts.length ? 1 : 0;
     const rows = 1 + above + (end - start) + below;
-    const idx = y - (inputTop - rows);
+    const idx = y - (menuTop - rows);
     if (idx <= 0 || idx >= rows) return; // header, or outside the menu
     const optRow = idx - 1 - above;
     if (optRow < 0) {
@@ -1322,10 +1324,11 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       restoreOutputRef?.(); // replay anything captured while the grid was up
     } catch {}
     // leave a resume hint on the shell — the session is one id away. the
-    // numeric index is what `fox -c N` resolves against (listSessions order)
+    // numeric index is what `fox -c N` resolves against (same list length,
+    // or the printed number would resume a different session)
     try {
       if (state.sessionId && !process.env.FOX_AGENT_NO_RESUME_HINT) {
-        const idx = listSessions(50).findIndex((s) => s.id === state.sessionId);
+        const idx = listSessions(state.config?.sessionListLimit ?? 50).findIndex((s) => s.id === state.sessionId);
         console.error(
           idx >= 0
             ? `\x1b[90mto resume: fox -c ${idx + 1}\x1b[0m (or fox -c ${state.sessionId})`
@@ -1909,17 +1912,25 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   function onClick(x: number, y: number) {
     const vh = viewportH();
     const { inputTop } = dockGeom();
-    // a click dismisses floating command output, same as a keypress
+    // floating command output dies on click, same as a keypress — and the
+    // click is consumed by the dismissal, never also toggling whatever
+    // transcript row the overlay was painted over
+    const dismissedCmd = !!cmdOut;
     if (cmdOut) {
       cmdOut = null;
       markDirty();
     }
 
+    // queued/steering rows are painted over the transcript but belong to the
+    // dock — same geometry paint() uses (see dockFloats), or clicks reach
+    // through to the transcript item underneath and flip it. Consumed, not
+    // acted on: withdrawing an arbitrary row would be a new behavior, the
+    // toggle is a bug.
+    const { queueH: qRows } = dockFloats();
+    if (qRows && y >= inputTop - qRows && y < inputTop) return;
+
     // hint popup rows float above the input box (and any pending rows) — same
     // row budget paint() uses, or the hit-test disagrees with the pixels
-    const pendN = pendingLines().length;
-    const qShown = pendN ? Math.min(pendN, Math.max(1, inputTop - 1)) : 0;
-    const qRows = qShown + (pendN > qShown ? 1 : 0);
     const hints = hintText(Math.max(1, inputTop - qRows - 1));
     if (hints.active && hints.rows.length) {
       const hTop = inputTop - qRows - hints.rows.length;
@@ -1927,8 +1938,13 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         const idx = (hints.start ?? 0) + (y - hTop);
         const target = hints.matches?.[idx];
         if (target) {
-          chsSet(target.usage ? `${target.name} ` : target.name);
-          hintSel = 0;
+          // an argument already being typed makes this row informational: its
+          // syntax line must not rewrite the input and eat the argument
+          // (submit() avoids the same rewrite for the same reason)
+          if (!display().includes(" ")) {
+            chsSet(target.usage ? `${target.name} ` : target.name);
+            hintSel = 0;
+          }
         }
         return;
       }
@@ -1955,7 +1971,10 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       return;
     }
 
-    // transcript: map row -> owning item
+    // transcript: map row -> owning item. Unreachable behind a dismissed
+    // overlay (see above): without the guard the same click both cleared the
+    // float and flipped something it never touched.
+    if (dismissedCmd) return;
     buildRows();
     const row = y + scrollTop;
     if (y >= vh || row < 0 || row >= rowOwner.length) return;
@@ -2298,6 +2317,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         c.prefixRows.push(...wrapSegs(mline, w).map((segs) => ({ segs })));
       }
       c.cut = newCut;
+      c.md = md; // the tail renders from the fence state AT the cut, not behind it
     }
     c.text = text;
     const rows = c.prefixRows.slice();
@@ -2475,6 +2495,22 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   }
 
   /**
+   * Rows above the input dock claimed by floating layers, and the first row
+   * above them. paint() and every hit-test MUST derive these here — every
+   * past mismatch painted one thing and clicked another (wizard menu over
+   * queued rows, clicks falling through floats onto transcript items).
+   */
+  function dockFloats(): { queueH: number; cmdH: number; top: number } {
+    const { inputTop } = dockGeom();
+    const pendN = pendingLines().length;
+    const qShown = pendN ? Math.min(pendN, Math.max(1, inputTop - 1)) : 0;
+    const queueH = qShown + (pendN > qShown ? 1 : 0);
+    const cAvail = cmdOut?.length ? Math.max(1, inputTop - queueH - 1) : 0;
+    const cmdH = cmdOut?.length ? Math.min(cmdOut.length, cAvail) + (cmdOut.length > cAvail ? 1 : 0) : 0;
+    return { queueH, cmdH, top: inputTop - queueH - cmdH };
+  }
+
+  /**
    * First screen row belonging to the dock: the queued/steering rows stacked
    * above the input box plus the box itself. Same row budget paint() and
    * onClick() use, so scroll routing agrees with the pixels about where the
@@ -2598,14 +2634,17 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       const rows: { text: string; sel: boolean }[] = [
         { text: `${prompt.title}${stepPos} — ${st.label}${hint ? ` (${hint})` : ""}${filterNote} · esc cancels`, sel: false },
       ];
+      // rows above the dock floats (see dockFloats) — the menu must clear the
+      // queue and command-output rows or it paints over them
+      const menuTop = dockFloats().top;
       if (st.kind === "select") {
         const opts = promptOptions();
         if (!opts.length) {
           rows.push({ text: "  no matches — backspace to widen", sel: false });
         } else {
           // a models.dev-fed list can run to hundreds of entries — window it by
-          // the space actually available above the dock, not a fixed row count
-          const MAX = Math.max(1, Math.min(5, inputTop - 1));
+          // the space actually available, not a fixed row count
+          const MAX = Math.max(1, Math.min(5, menuTop - 1));
           const start = opts.length <= MAX ? 0 : Math.max(0, Math.min(prompt.sel - Math.floor(MAX / 2), opts.length - MAX));
           const end = Math.min(opts.length, start + MAX);
           if (start > 0) rows.push({ text: `  … ${start} more above`, sel: false });
@@ -2615,7 +2654,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           if (end < opts.length) rows.push({ text: `  … ${opts.length - end} more below`, sel: false });
         }
       }
-      const hTop = inputTop - rows.length;
+      const hTop = menuTop - rows.length;
       for (let i = 0; i < rows.length; i++) {
         screen.fillRow(hTop + i, 0, W, S.barBgRow);
         screen.text(1, hTop + i, clipW(rows[i].text, W - 2), rows[i].sel ? S.hintSel : S.hintDim);

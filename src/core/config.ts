@@ -531,7 +531,7 @@ export function effectiveConfigPath(override?: string): string {
 export function setPluginDisabled(
   entry: string,
   disable: boolean,
-  path = globalConfigPath(),
+  path = effectiveConfigPath(),
 ): { path: string; disabled: string[] } {
   const values = editStringArray(path, "disabledPlugins", (cur) =>
     disable ? [...cur.filter((d) => d !== entry), entry] : cur.filter((d) => d !== entry),
@@ -602,7 +602,7 @@ function expandPluginEntry(raw: string, configPath: string): string {
  * The file must exist — a typo'd path would otherwise surface three turns
  * later as a load warning nobody connects to the install.
  */
-export function addPluginPath(entry: string, path = globalConfigPath()): { path: string; plugins: string[] } {
+export function addPluginPath(entry: string, path = effectiveConfigPath()): { path: string; plugins: string[] } {
   if (!existsSync(expandPluginEntry(entry, path))) {
     throw new ConfigError(`no plugin file '${entry}' (resolved against ${dirname(path)}) — nothing installed`);
   }
@@ -610,7 +610,7 @@ export function addPluginPath(entry: string, path = globalConfigPath()): { path:
 }
 
 /** Uninstall a plugin file: drop its path from the global `plugins` array. */
-export function removePluginPath(entry: string, path = globalConfigPath()): { path: string; plugins: string[] } {
+export function removePluginPath(entry: string, path = effectiveConfigPath()): { path: string; plugins: string[] } {
   return { path, plugins: editStringArray(path, "plugins", (cur) => cur.filter((p) => p !== entry)) };
 }
 
@@ -628,7 +628,7 @@ export interface ProviderProfileFields {
  * and falls back to the environment). Refuses junk names and non-table
  * occupants rather than guessing.
  */
-export function saveProviderProfile(name: string, fields: ProviderProfileFields, path = globalConfigPath()): string {
+export function saveProviderProfile(name: string, fields: ProviderProfileFields, path = effectiveConfigPath()): string {
   if (!/^[A-Za-z0-9_-]+$/.test(name)) throw new ConfigError(`bad profile name '${name}' — letters, numbers, dash, underscore`);
   editConfigFile(path, (doc) => {
     let providers = doc.providers;
@@ -668,7 +668,7 @@ export function saveProviderProfile(name: string, fields: ProviderProfileFields,
  */
 export function saveGlobalConfig(
   fields: { provider?: string; apiKey?: string; baseUrl?: string; model?: string; theme?: string; reasoningEffort?: string },
-  path = globalConfigPath(),
+  path = effectiveConfigPath(),
 ): string {
   editConfigFile(path, (doc) => {
     if (fields.provider !== undefined) doc.provider = fields.provider;
