@@ -287,8 +287,9 @@ async function main() {
   let sessionId: string;
   if (cont) {
     if (typeof cont === "string") {
-      // `fox -c 2` / `fox -c <id>`: resolve against the same list /sessions uses
-      const id = resolveSessionArg(cont);
+      // `fox -c 2` / `fox -c <id>`: resolve against the same list /sessions uses,
+      // at the same length — a custom sessionListLimit changes what N means
+      const id = resolveSessionArg(cont, loadConfig(configOverrides).sessionListLimit);
       if (!id) {
         console.error(`fox-agent: no session '${cont}' — see 'fox ls'`);
         process.exit(1);
