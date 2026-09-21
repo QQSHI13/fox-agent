@@ -5,3 +5,4 @@ cli
 dist/
 *.backup
 .fox-previous
+__pycache__/
