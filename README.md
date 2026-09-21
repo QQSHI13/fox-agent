@@ -153,11 +153,12 @@ Or with the TUI wizard: just run `fox` with no env vars and `/login` will guide 
 
 ```bash
 fox -p "summarize this repo's layout"            # one-shot answer
-fox -p "..." --json                              # NDJSON agent events
+fox json -p "..."                                # NDJSON agent events (also: -p ... --json)
 echo "explain src/loop/turn.ts" | fox            # piped prompt
+fox mini                                         # plain streaming REPL, no TUI (tab-completes /commands, colors on a TTY)
 fox -c                                           # resume latest session (picker in a terminal)
 fox -c 2                                         # resume by 'fox ls' index, or by id
-fox --acp                                        # serve ACP on stdio
+fox acp                                          # serve ACP on stdio (also: --acp)
 ```
 
 ### How `fox -c <n>` resolves
@@ -185,7 +186,7 @@ Two things to know:
 
 ## Features
 
-- **Tools**: read/write/edit (whitespace-tolerant patch engine)/glob/grep (ripgrep when present)/exec (process-group kill)/pty (tmux pipe-pane, resize-proof)/ctx_edit/todowrite/task (delegation over ACP or A2A)/fetch/MCP client. `read` attaches images, audio and video as media when the active model accepts them (gemini: all three; gpt/claude families: images).
+- **Tools**: read/write/edit (whitespace-tolerant patch engine)/glob/grep (ripgrep when present)/exec (process-group kill, `full:true` uncapped)/pty (tmux pipe-pane, resize-proof)/repl (in-process JS scratchpad, persistent vars, direct tool calls)/ctx (search/stats/hide/rewrite your own context; `ctx_edit` stays as a deprecated alias)/todowrite/task (delegation over ACP or A2A)/fetch/MCP client. `read` attaches images, audio and video as media when the active model accepts them (gemini: all three; gpt/claude families: images).
 - **ACP both ways**: `fox --acp` serves the Agent Client Protocol to Zed/acpx, and fox drives other ACP agents as a client (that is what `task` is built on). Agents configured with a `url` are reached over **A2A** (HTTP/JSON-RPC, SSE streaming when offered).
 - **Plugins**: one module adds tools, lifecycle hooks (`onSessionStart`/`beforeLLMCall`/`afterTool`) and custom providers. Global config only, and a broken one costs a warning rather than the run.
 - **200+ providers** via the models.dev catalog -- `/login` presets prefill endpoint, env var and real model lists. Any OpenAI-compatible/Responses, Anthropic or Gemini endpoint works too.
@@ -193,7 +194,7 @@ Two things to know:
 - **Steering mid-turn**: queue messages (stacked above the input until sent, ctrl+up withdraws the last one back into the editor) or ctrl+s to inject after the current tool finishes.
 - **@path mentions and drag-and-drop**: paste or drop file paths and their contents are inlined at dispatch (binary-sniffed, size-capped).
 - **TUI on custom ANSI renderer**: streaming markdown, inline `[mN]` markers, slash commands, `!` shell mode, esc interrupt, mouse selection, themes.
-- **Headless**: `-p "prompt"` one-shot, `--json` NDJSON event stream, stdin piping -- plus a library API (`createAgent`).
+- **Headless**: `-p "prompt"` one-shot, `fox json` NDJSON event stream, stdin piping, `fox mini` plain REPL (runtime header, colors, tab completion, `!` shell, queued turns — everything but markdown rendering and live rewrites) -- plus a library API (`createAgent`).
 - **SQLite event-sourced sessions**: one database per session. Append-only log + view ops + refs (reverts/forks are queries, not rewrites).
 - **Production turn loop**: step caps, retry/backoff on 429/5xx, parallel tool execution, abort-safe partial persistence, auto-compaction near the context limit.
 
@@ -491,7 +492,7 @@ A plugin tool needs no prompt work; `buildSystemPrompt` derives its roster from 
 
 ### Bundled plugins
 
-`pty`, `todo` and `fetch` ship as plugins (`bundled:pty`, `bundled:todo`, `bundled:fetch`), as does each API format (`bundled:openai-compatible`, `bundled:openai-responses`, `bundled:anthropic`, `bundled:google`) and the MCP bridge (`bundled:mcp`) -- same `FoxPlugin` shape, same merge path, so a user plugin shadows or `disabledPlugins` switches off a bundled capability exactly the way it does any other. `disabledPlugins = ["mcp"]` disconnects every MCP server; `["pty"]` kills the tmux shell; `["anthropic"]` makes that format unresolvable.
+`pty`, `todo`, `fetch` and `repl` ship as plugins (`bundled:pty`, `bundled:todo`, `bundled:fetch`, `bundled:repl`), as does each API format (`bundled:openai-compatible`, `bundled:openai-responses`, `bundled:anthropic`, `bundled:google`) and the MCP bridge (`bundled:mcp`) -- same `FoxPlugin` shape, same merge path, so a user plugin shadows or `disabledPlugins` switches off a bundled capability exactly the way it does any other. `disabledPlugins = ["mcp"]` disconnects every MCP server; `["pty"]` kills the tmux shell; `["anthropic"]` makes that format unresolvable.
 
 ### Managing plugins
 
