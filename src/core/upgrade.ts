@@ -81,12 +81,26 @@ export function platformAsset(): string | null {
   return p && a ? `fox-${p}-${a}` : null;
 }
 
+/** API headers: identity always, bearer token when the user provided one. */
+export function githubHeaders(): Record<string, string> {
+  const headers: Record<string, string> = { "User-Agent": `fox-agent/${VERSION}`, Accept: "application/vnd.github+json" };
+  // same tokens the gh CLI honors: an authenticated call gets 5,000 req/hour
+  // instead of the shared unauthenticated 60
+  const token = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN;
+  if (token) headers.Authorization = `Bearer ${token}`;
+  return headers;
+}
+
 /** Recent releases, newest first, prereleases included. */
 export async function fetchReleases(limit = 10): Promise<ReleaseInfo[]> {
   const res = await fetch(`https://api.github.com/repos/${REPO}/releases?per_page=${limit}`, {
-    headers: { "User-Agent": `fox-agent/${VERSION}`, Accept: "application/vnd.github+json" },
+    headers: githubHeaders(),
     signal: AbortSignal.timeout(15_000),
   });
+  // unauthenticated API calls share 60 req/hour per IP — on a busy NAT that
+  // budget is gone before fox-agent ever runs, and the API answers 403, not
+  // 429. Name the fix instead of a bare status.
+  if (res.status === 403) throw new Error("release check failed: HTTP 403 (GitHub API rate limit — set GITHUB_TOKEN or GH_TOKEN to raise it)");
   if (!res.ok) throw new Error(`release check failed: HTTP ${res.status}`);
   const j = (await res.json()) as {
     tag_name: string;

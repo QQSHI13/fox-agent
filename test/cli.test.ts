@@ -115,6 +115,63 @@ describe("config failures are one-liners", () => {
   }, 30_000);
 });
 
+describe("argv parsing", () => {
+  test("subcommand flags reach their handler instead of dying in the parser", async () => {
+    const { parseArgv } = await import("../src/cli.ts");
+    expect(parseArgv(["upgrade", "--beta"]).rest).toEqual(["upgrade", "--beta"]);
+    expect(parseArgv(["upgrade", "--help"]).rest).toEqual(["upgrade", "--help"]);
+    expect(parseArgv(["ls", "--help"]).rest).toEqual(["ls", "--help"]);
+    expect(parseArgv(["-p", "x"]).flags.get("print")).toBe("x");
+    expect(parseArgv(["json", "-p", "x"]).flags.get("json")).toBe(true);
+  });
+
+  test("unknown flags still throw instead of running something unintended", async () => {
+    const { parseArgv } = await import("../src/cli.ts");
+    const { ConfigError } = await import("../src/core/errors.ts");
+    // flag-first order was never supported: the usage documents flag-after
+    expect(() => parseArgv(["--beta", "upgrade"])).toThrow(ConfigError);
+    // and a typo after a subcommand is still caught, not swallowed
+    expect(() => parseArgv(["ls", "--jsno"])).toThrow(ConfigError);
+    expect(() => parseArgv(["--frobnicate"])).toThrow(ConfigError);
+  });
+
+  test("per-command help documents the command, unknown topics fall back", async () => {
+    const { commandHelp } = await import("../src/cli.ts");
+    expect(commandHelp("upgrade")).toContain("fox upgrade [--beta|<version>]");
+    expect(commandHelp("plugin")).toContain("fox plugin [on|off|add|rm|info");
+    expect(commandHelp("nope")).toContain("usage: fox");
+  });
+
+  test("fox help <cmd> prints the command help via spawn", () => {
+    const r = runCli(["help", "upgrade"]);
+    expect(r.code).toBe(0);
+    expect(r.out).toContain("fox upgrade [--beta|<version>]");
+  }, 30_000);
+});
+
+describe("upgrade auth", () => {
+  test("githubHeaders honors GITHUB_TOKEN/GH_TOKEN, preferring GITHUB_TOKEN", async () => {
+    const { githubHeaders } = await import("../src/core/upgrade.ts");
+    const prevG = process.env.GITHUB_TOKEN;
+    const prevH = process.env.GH_TOKEN;
+    delete process.env.GITHUB_TOKEN;
+    delete process.env.GH_TOKEN;
+    try {
+      expect(githubHeaders().Authorization).toBeUndefined();
+      expect(githubHeaders()["User-Agent"]).toMatch(/^fox-agent\//);
+      process.env.GH_TOKEN = "gh-x";
+      expect(githubHeaders().Authorization).toBe("Bearer gh-x");
+      process.env.GITHUB_TOKEN = "ghu-y";
+      expect(githubHeaders().Authorization).toBe("Bearer ghu-y");
+    } finally {
+      if (prevG === undefined) delete process.env.GITHUB_TOKEN;
+      else process.env.GITHUB_TOKEN = prevG;
+      if (prevH === undefined) delete process.env.GH_TOKEN;
+      else process.env.GH_TOKEN = prevH;
+    }
+  });
+});
+
 describe("session selection from the CLI", () => {
   test("`fox ls` renders the same list `/sessions` prints", () => {
     // one session to list, made by a headless command that touches the store

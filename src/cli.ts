@@ -64,7 +64,13 @@ interface Parsed {
   flags: Map<string, string | boolean>;
   rest: string[];
 }
-function parseArgv(argv: string[]): Parsed {
+/** First-position subcommands: flags after one belong to it, not to fox. */
+const SUBCOMMANDS = new Set(["ls", "plugin", "plugins", "upgrade", "json", "mini", "acp", "help"]);
+/** Subcommand-specific flags (beyond --help/-h, which every subcommand takes). */
+const SUBCOMMAND_FLAGS: Record<string, Set<string>> = {
+  upgrade: new Set(["--beta"]),
+};
+export function parseArgv(argv: string[]): Parsed {
   const flags = new Map<string, string | boolean>();
   const rest: string[] = [];
   const VALUED = new Set([
@@ -92,7 +98,14 @@ function parseArgv(argv: string[]): Parsed {
     else if (a === "--json") flags.set("json", true);
     else if (a === "--acp") flags.set("acp", true);
     else if (a === "--trust") flags.set("trust", true);
-    else if (a === "-h" || a === "--help") flags.set("help", true);
+    else if (a === "-h" || a === "--help") {
+      // after a known subcommand this belongs to it (`fox upgrade --help`
+      // documents upgrade); otherwise it is the global overview. Consuming it
+      // globally first is what made every `fox <cmd> --help` print the wrong help.
+      const sub = rest[0];
+      if (sub !== undefined && SUBCOMMANDS.has(sub)) rest.push(a);
+      else flags.set("help", true);
+    }
     else if (a === "--version" || a === "-v") flags.set("version", true);
     else if (VALUED.has(a)) flags.set(a === "-p" ? "print" : a.slice(2), argv[++i] ?? "");
     else if (!a.startsWith("-")) {
@@ -103,11 +116,32 @@ function parseArgv(argv: string[]): Parsed {
         flags.set(a === "json" ? "json" : a === "mini" ? "no-tui" : "acp", true);
       } else rest.push(a);
     } else {
-      console.error(`fox-agent: unknown flag ${a}`);
-      process.exit(1);
+      // after a known subcommand, --help/-h and that subcommand's own flags
+      // belong to it (so `fox upgrade --beta` reaches the upgrade handler
+      // instead of dying in the parser); anywhere else an unknown flag is
+      // still a hard error, not a silent ignore
+      const sub = rest[0];
+      if (sub !== undefined && SUBCOMMANDS.has(sub) && (a === "--help" || a === "-h" || SUBCOMMAND_FLAGS[sub]?.has(a))) {
+        rest.push(a);
+      } else {
+        throw new ConfigError(`unknown flag ${a}`);
+      }
     }
   }
   return { flags, rest };
+}
+
+/** Usage for one subcommand: `fox <cmd> --help` and `fox help <cmd>`. */
+export function commandHelp(cmd: string): string {
+  const H: Record<string, string> = {
+    ls: `usage: fox ls\n\nlist sessions, most recently worked-in first, across all directories.\nPass an index to resume it: fox -c 2 (or fox -c <id>).`,
+    plugin: `usage: fox plugin [on|off|add|rm|info <name>]\n\nlist plugins and switch them on/off without entering the TUI.\nNames accept the short form (pty), the full form (bundled:pty), the\nplugin's own name, or the configured path. (Also: fox plugins, /plugin.)`,
+    upgrade: `usage: fox upgrade [--beta|<version>]\n\nbare: latest stable release; beta: newest release including betas;\na version installs that tag (e.g. fox upgrade 0.5.0-beta.1).\nDownloads are SHA-256 verified; the previous binary is kept as .fox-previous.\nGitHub API rate limits apply — set GITHUB_TOKEN (or GH_TOKEN) to raise them.`,
+    json: `usage: fox json [-p "prompt"]\n\nheadless NDJSON agent events on stdout (same as -p ... --json).\nReads stdin when no prompt is given or stdin is piped.`,
+    mini: `usage: fox mini [-p "prompt"]\n\nplain streaming REPL, no TUI: runtime header, colors, tab completion\nfor /commands, ! shell mode, queued turns. Piped stdin stays non-interactive.`,
+    acp: `usage: fox acp\n\nserve the Agent Client Protocol on stdio, for Zed, acpx and other\nACP clients. Stdout is the protocol stream: nothing else may be written to it.`,
+  };
+  return H[cmd] ?? usage();
 }
 
 /** informational startup lines — gray, not the alarming default stderr red */
@@ -119,8 +153,15 @@ async function main() {
   void import("./core/upgrade.ts").then((m) => m.ensureAlias()).catch(() => {});
 
   if (parsed.flags.get("version")) return console.log(VERSION);
-  if (parsed.flags.get("help") || parsed.rest[0] === "help") return console.log(usage(cliColor()));
+  if (parsed.flags.get("help") || parsed.rest[0] === "help") {
+    // `fox help <cmd>` documents one subcommand; bare help stays the overview
+    const topic = parsed.rest[0] === "help" ? parsed.rest[1] : undefined;
+    const known: Record<string, string> = { ls: "ls", plugin: "plugin", plugins: "plugin", upgrade: "upgrade", json: "json", mini: "mini", acp: "acp" };
+    if (topic && known[topic]) return console.log(commandHelp(known[topic]));
+    return console.log(usage(cliColor()));
+  }
   if (parsed.rest[0] === "plugin" || parsed.rest[0] === "plugins") {
+    if (parsed.rest[1] === "--help" || parsed.rest[1] === "-h") return console.log(commandHelp("plugin"));
     // plugin management without entering the TUI — same inventory and
     // verbs the /plugin slash command works through, in terminal colors
     const { cliColor, pluginAddPath, pluginInfoText, pluginListText, pluginRemovePath, pluginSetEnabled } =
@@ -154,6 +195,7 @@ async function main() {
     return;
   }
   if (parsed.rest[0] === "ls") {
+    if (parsed.rest[1] === "--help" || parsed.rest[1] === "-h") return console.log(commandHelp("ls"));
     // same renderer the TUI and `/sessions` use, so a session that looks stale
     // here looks stale there too — this used to be its own loop over
     // `created_at` and disagreed with every other listing about ordering
@@ -161,6 +203,7 @@ async function main() {
     return;
   }
   if (parsed.rest[0] === "upgrade") {
+    if (parsed.rest[1] === "--help" || parsed.rest[1] === "-h") return console.log(commandHelp("upgrade"));
     const sel = parsed.rest[1];
     const opts: import("./core/upgrade.ts").UpgradeOptions =
       sel === "--beta" || sel === "beta" ? { beta: true }
@@ -645,11 +688,14 @@ async function plainLoop(state: HarnessState) {
 // A bad config is now a thrown ConfigError rather than a silently ignored file.
 // .catch rather than top-level await: `bun build --bytecode` targets CJS, which
 // has no TLA, and the pending handles inside main() keep the process alive the
-// same way the await did.
-main().catch((e) => {
-  if (e instanceof ConfigError) {
-    console.error(`fox-agent: ${e.message}`);
-    process.exit(1);
-  }
-  throw e;
-});
+// same way the await did. Guarded so tests can import parseArgv/commandHelp
+// without launching the CLI.
+if (import.meta.main) {
+  main().catch((e) => {
+    if (e instanceof ConfigError) {
+      console.error(`fox-agent: ${e.message}`);
+      process.exit(1);
+    }
+    throw e;
+  });
+}
