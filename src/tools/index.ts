@@ -22,7 +22,7 @@ export type { Tool, ToolContext, ToolResult } from "./types.ts";
 
 /**
  * The core tool set — the ones that are the harness itself (files, exec,
- * context editing, delegation). pty, todo and fetch ship as bundled plugins
+ * context editing, delegation). pty, todo, fetch and repl ship as bundled plugins
  * instead (see src/plugins/bundled.ts), so they can be shadowed or disabled.
  */
 export function baseRegistry(): Map<string, Tool> {
@@ -198,6 +198,8 @@ export async function shutdownTools(sessionId: string): Promise<void> {
   // here), then the harness's own children
   await fireSessionEnd(sessionId, "exit");
   await cleanupPty(ptySessionName(sessionId)); // belt and braces when no registry was ever built
+  const { cleanupRepl } = await import("./repl.ts");
+  cleanupRepl(sessionId);
   const { killExecJobs } = await import("./exec.ts");
   killExecJobs(sessionId);
   const { killTasks } = await import("./task.ts");

@@ -7,11 +7,14 @@
  *   - `disabledPlugins = ["pty"]` turns one off without touching code;
  *   - the pty plugin demonstrates the lifecycle seam: its tmux session is
  *     released from `onSessionEnd`, not from a special case in the harness.
+ *   - the repl plugin demonstrates the same seam for lighter state: its
+ *     per-session scratchpad is dropped from `onSessionEnd`.
  */
 import type { FoxPlugin } from "./types.ts";
 import { ptyDef, drivePty, cleanupPty, ptySessionName } from "../tools/pty.ts";
 import { todoDef, todoRun } from "../tools/todo.ts";
 import { fetchDef, fetchRun } from "../tools/fetch.ts";
+import { replDef, replRun, cleanupRepl } from "../tools/repl.ts";
 
 const ptyPlugin: FoxPlugin = {
   name: "bundled:pty",
@@ -26,9 +29,18 @@ const ptyPlugin: FoxPlugin = {
 const todoPlugin: FoxPlugin = { name: "bundled:todo", tools: [{ def: todoDef, run: todoRun }] };
 const fetchPlugin: FoxPlugin = { name: "bundled:fetch", tools: [{ def: fetchDef, run: fetchRun }] };
 
+const replPlugin: FoxPlugin = {
+  name: "bundled:repl",
+  tools: [{ def: replDef, run: replRun }],
+  hooks: {
+    // the scratchpad is per-session memory; drop it with the session
+    onSessionEnd: (c) => cleanupRepl(c.sessionId),
+  },
+};
+
 /** All bundled plugins. Order matters only for shadowing: user plugins load after. */
 export function bundledPlugins(): FoxPlugin[] {
-  return [ptyPlugin, todoPlugin, fetchPlugin];
+  return [ptyPlugin, todoPlugin, fetchPlugin, replPlugin];
 }
 
 /**

@@ -51,6 +51,7 @@ export function buildSystemPrompt(
   roster.push(`Available now: ${opts.tools.map((t) => t.name).join(", ")}`);
   if (have.has("exec")) roster.push(`- exec never drifts: every call starts in the session directory, and \`workdir\` is per-call, never sticky.`);
   if (have.has("pty")) roster.push(`- pty is one persistent shell that KEEPS its working directory, environment and processes between calls.`);
+  if (have.has("repl")) roster.push(`- repl is an in-process JS scratchpad with persistent vars; reach tools from code as tools.call(name, args) — direct calls bypass beforeTool/afterTool hooks.`);
   sections.push(roster.join("\n"));
 
   if (have.has("ctx_edit")) {

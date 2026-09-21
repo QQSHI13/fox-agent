@@ -258,7 +258,7 @@ describe("ctx_edit", () => {
 describe("registry", () => {
   test("base registry exposes the built-in tools", () => {
     const reg = defaultRegistry();
-    for (const name of ["read", "write", "edit", "glob", "grep", "exec", "pty", "ctx_edit", "todowrite", "task", "fetch"]) {
+    for (const name of ["read", "write", "edit", "glob", "grep", "exec", "pty", "ctx_edit", "todowrite", "task", "fetch", "repl"]) {
       expect(reg.has(name)).toBe(true);
     }
   });

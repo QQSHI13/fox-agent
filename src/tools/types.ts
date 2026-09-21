@@ -44,6 +44,12 @@ export interface ToolContext {
   /** id of the tool call being executed — pairs `tool_output` deltas with the in-flight call */
   callId?: string;
   /**
+   * The live tool registry, set by the turn loop when it executes calls.
+   * Lets meta-tools (repl) invoke sibling tools directly. Absent on bare
+   * contexts (tests, SDK without a turn) — check for it.
+   */
+  tools?: Map<string, Tool>;
+  /**
    * Ask the user questions mid-run — select menus, text input, wizards (see
    * core/ui.ts). Present only when the host is interactive (today: the TUI);
    * a tool on a headless host must not block waiting for an answer that can

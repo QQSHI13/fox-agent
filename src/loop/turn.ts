@@ -558,6 +558,7 @@ export async function* runTurnCore(
           signal,
           providerCfg: cfg,
           agents,
+          tools,
           lsp: effCfg.lsp,
           diagnostics: effCfg.diagnostics,
           emit: quiet ? undefined : liveEvents.push,

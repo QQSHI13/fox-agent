@@ -236,6 +236,7 @@ describe("plugin tools in the registry", () => {
       "bundled:pty",
       "bundled:todo",
       "bundled:fetch",
+      "bundled:repl",
       "bundled:openai-compatible",
       "bundled:openai-responses",
       "bundled:anthropic",
