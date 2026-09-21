@@ -263,6 +263,17 @@ function isSubsequence(q: string, s: string): boolean {
   return false;
 }
 
+/**
+ * Tab-completion for line-based hosts (mini): slash-command words only, so a
+ * completer can offer them without understanding arguments. A trailing space
+ * after commands that take one, so the next keystroke starts the argument
+ * rather than extending the name — the same rule submit() applies on enter.
+ */
+export function completeSlashCommand(line: string): string[] {
+  if (!line.startsWith("/") || /\s/.test(line)) return [];
+  return matchCommands(line).map((c) => c.name + (c.usage ? " " : ""));
+}
+
 /** The `/help` text, generated from COMMANDS so it cannot drift from them. */
 export function helpText(): string {
   const left = COMMANDS.map((c) => `${c.name}${c.usage ? ` ${c.usage}` : ""}`);

@@ -192,6 +192,20 @@ describe("command matching", () => {
     expect(t.matchCommands("/mo something")[0].name).toBe("/model");
   });
 
+  test("completeSlashCommand offers command words for Tab, nothing else", async () => {
+    const t = await setup();
+    // prefix narrows to the command, with a trailing space when it takes args
+    expect(t.completeSlashCommand("/de")).toContain("/delete ");
+    expect(t.completeSlashCommand("/help")).toEqual(["/help"]);
+    // exact bare commands without args complete plainly
+    expect(t.completeSlashCommand("/new")).toEqual(["/new"]);
+    // non-slash input and argument positions complete nothing — ids and
+    // paths are not the completer's business
+    expect(t.completeSlashCommand("hello")).toEqual([]);
+    expect(t.completeSlashCommand("/delete 12")).toEqual([]);
+    expect(t.completeSlashCommand("")).toEqual([]);
+  });
+
   test("/help is generated from COMMANDS and cannot drift from them", async () => {
     const t = await setup();
     const help = t.helpText();

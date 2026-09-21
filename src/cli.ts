@@ -8,16 +8,20 @@ import { resolveChat } from "./providers/index.ts";
 import { setActiveEndpoint } from "./providers/models.ts";
 import {
   cliColor,
+  completeSlashCommand,
   formatSessionList,
   helpText,
+  providerDisplayName,
   relTime,
   resolveSessionArg,
   runSlashCommand,
   sessionList,
+  sty,
   type HarnessState,
 } from "./commands.ts";
 import { shutdownTools } from "./tools/index.ts";
 import { VERSION } from "./loop/prompt.ts";
+import { expandMentions } from "./core/mentions.ts";
 
 function usage(color?: boolean): string {
   const st = {
@@ -32,10 +36,10 @@ usage: fox [options] [-p "prompt"]
 
 ${flag("(no args)", "open TUI in a new session bound to cwd")}
 ${flag("-p, --print", "run one prompt headless, print the answer, exit", "(reads stdin when no prompt given or stdin is piped)")}
-${flag("--json", "with -p: emit NDJSON agent events instead of text")}
-${flag("--acp", "serve the Agent Client Protocol on stdio (for Zed, acpx, ...)")}
+${flag("--json", "with -p: emit NDJSON agent events instead of text (see: fox json)")}
+${flag("--acp", "serve the Agent Client Protocol on stdio (see: fox acp)")}
 ${flag("-c, --continue [n|id]", "continue a session: latest, a 'fox ls' index, or an id", "(no argument + a real terminal opens the picker)")}
-${flag("--no-tui", "plain streaming mode (pipes)")}
+${flag("--no-tui", "plain streaming mode (see: fox mini)")}
 ${flag("--model <id>", "override model")}
 ${flag("--provider <p>", "openai-compatible | anthropic | google | plugin-registered")}
 ${flag("--base-url <u>", "override API base url")}
@@ -47,6 +51,9 @@ ${flag("--config <path>", "config file override")}
 ${flag("--trust", "mark this directory trusted and skip the TUI trust prompt", "(trust = project fox-agent.toml / AGENTS.md may run code as you)")}
 ${flag("ls", "list sessions")}
 ${flag("plugin [on|off|add|rm|info <name>]", "manage plugins without the TUI")}
+${flag("json", "headless NDJSON event stream (use with -p \"prompt\" or piped stdin)")}
+${flag("mini", "plain streaming REPL, no TUI")}
+${flag("acp", "serve the Agent Client Protocol on stdio (for Zed, acpx, ...)")}
 ${flag("upgrade [--beta|<version>]", "self-update from GitHub releases")}
 ${flag("help", "show this")}
 
@@ -88,8 +95,14 @@ function parseArgv(argv: string[]): Parsed {
     else if (a === "-h" || a === "--help") flags.set("help", true);
     else if (a === "--version" || a === "-v") flags.set("version", true);
     else if (VALUED.has(a)) flags.set(a === "-p" ? "print" : a.slice(2), argv[++i] ?? "");
-    else if (!a.startsWith("-")) rest.push(a);
-    else {
+    else if (!a.startsWith("-")) {
+      // subcommand spellings for the headless modes read better than flags
+      // and compose the same way (`fox json -p "..."`); first position only,
+      // so e.g. a plugin literally named "mini" still installs and runs
+      if (rest.length === 0 && (a === "json" || a === "mini" || a === "acp")) {
+        flags.set(a === "json" ? "json" : a === "mini" ? "no-tui" : "acp", true);
+      } else rest.push(a);
+    } else {
       console.error(`fox-agent: unknown flag ${a}`);
       process.exit(1);
     }
@@ -475,7 +488,10 @@ async function pickSession(cwd: string, opts: { interactive: boolean; model: str
   }
 }
 
-function emitHuman(ev: import("./core/events.ts").AgentEvent) {
+function emitHuman(ev: import("./core/events.ts").AgentEvent, color = false) {
+  // color is opt-in per call: the TUI paints its own styles and piped -p
+  // output must stay clean, so only the interactive mini passes true
+  const st = sty(color);
   switch (ev.type) {
     case "text":
       process.stdout.write(ev.delta);
@@ -483,19 +499,21 @@ function emitHuman(ev: import("./core/events.ts").AgentEvent) {
     case "reasoning":
       break;
     case "tool_end":
-      process.stdout.write(`\n  [m${ev.seq}] » ${ev.name}${ev.ok ? "" : " — failed"} → ${ev.output.replace(/\n/g, " ").slice(0, 160)}\n`);
+      process.stdout.write(
+        `\n  [m${ev.seq}] » ${st.cyan(ev.name)}${ev.ok ? "" : st.red(" — failed")} → ${ev.output.replace(/\n/g, " ").slice(0, 160)}\n`,
+      );
       break;
     case "retry":
-      console.error(`\nfox-agent: retry ${ev.attempt}: ${ev.error}`);
+      console.error(st.yellow(`\nfox-agent: retry ${ev.attempt}: ${ev.error}`));
       break;
     case "child_tool":
-      if (ev.done) console.error(`  ${ev.session} · ${ev.name}${ev.ok ? "" : " — failed"}`);
+      if (ev.done) console.error(st.dim(`  ${ev.session} · ${ev.name}${ev.ok ? "" : " — failed"}`));
       break;
     case "compacted":
-      console.error(`\nfox-agent: auto-compacted ${ev.removed.length} messages (${ev.tokens_before} → ${ev.tokens_after} est tok)`);
+      console.error(st.dim(`\nfox-agent: auto-compacted ${ev.removed.length} messages (${ev.tokens_before} → ${ev.tokens_after} est tok)`));
       break;
     case "warn":
-      console.error(`\nfox-agent: ${ev.message}`);
+      console.error(st.yellow(`\nfox-agent: ${ev.message}`));
       break;
     case "steered":
       console.error(`\n❯ ${ev.text.replace(/\n/g, " ").slice(0, 120)}`);
@@ -503,7 +521,7 @@ function emitHuman(ev: import("./core/events.ts").AgentEvent) {
     case "done":
       // headless mode must not exit 0 on a provider/turn failure
       if (ev.reason.startsWith("error") || ev.reason === "aborted") {
-        console.error(`\nfox-agent: turn ended: ${ev.reason}`);
+        console.error(st.red(`\nfox-agent: turn ended: ${ev.reason}`));
         process.exitCode = 1;
       } else process.stdout.write("\n");
       break;
@@ -512,14 +530,22 @@ function emitHuman(ev: import("./core/events.ts").AgentEvent) {
 
 async function plainLoop(state: HarnessState) {
   const { config } = state;
-  console.log("plain mode · type a prompt · ctrl+d exits · /help for commands");
-  process.stdout.write("❯ ");
-  for await (const line of console) {
+  const color = cliColor();
+  const st = sty(color);
+  // mini runtime header: what/where/who at a glance, same sources the TUI
+  // status line reads so the two can never disagree
+  const home = process.env.HOME ?? "";
+  const cwdShort = home && state.cwd.startsWith(home) ? "~" + state.cwd.slice(home.length) : state.cwd;
+  console.log(st.b(`fox-agent v${VERSION} · mini`) + `  ${st.dim(cwdShort)}`);
+  console.log(`model ${st.yellow(state.provider.model)} · ${providerDisplayName(state)}${state.sessionId ? ` · session ${st.cyan(state.sessionId)}` : ""}`);
+  console.log(st.dim("type a prompt · ctrl+d exits · /help for commands · tab completes /commands"));
+
+  let busy = false;
+  const queued: string[] = [];
+  // true when the line asked to leave (only /exit /quit)
+  const dispatchMini = async (line: string): Promise<boolean> => {
     const prompt = line.trim();
-    if (!prompt) {
-      process.stdout.write("❯ ");
-      continue;
-    }
+    if (!prompt) return false;
     if (prompt.startsWith("/")) {
       if (prompt === "/help" || prompt === "/?") console.log(helpText());
       else {
@@ -538,15 +564,35 @@ async function plainLoop(state: HarnessState) {
           await fireSessionEnd(state.sessionId, "switch").catch(() => {});
           state.sessionId = res.newSessionId;
         }
-        if (res?.exit) return;
+        if (res?.exit) return true;
       }
-      process.stdout.write("\n❯ ");
-      continue;
+      return false;
     }
+    if (prompt.startsWith("!")) {
+      // shell escape, same meaning as in the TUI — through the exec tool, so
+      // timeouts, merged output and group-kill behave identically
+      const { execRun } = await import("./tools/exec.ts");
+      const r = await execRun(
+        { cmd: prompt.slice(1).trim() },
+        { sessionId: state.sessionId, cwd: state.cwd } as unknown as import("./tools/types.ts").ToolContext,
+      );
+      console.log(typeof r === "string" ? r : r.output);
+      return false;
+    }
+    // a turn already running: park behind it like the TUI queues, instead of
+    // interleaving two turns on one session
+    if (busy) {
+      queued.push(prompt);
+      console.log(st.dim(`(queued ${queued.length})`));
+      return false;
+    }
+    busy = true;
     try {
       // state.provider is read live — /model and /login REPLACE it, and a
-      // captured copy would keep calling the old model/endpoint/key forever
-      for await (const ev of runTurnCore(state.sessionId, state.provider, prompt, undefined, {
+      // captured copy would keep calling the old model/endpoint/key forever.
+      // @path mentions inline file text, as in the TUI.
+      const text = expandMentions(prompt, state.cwd).text;
+      for await (const ev of runTurnCore(state.sessionId, state.provider, text, undefined, {
         maxSteps: config?.maxSteps,
         retryLimit: config?.retryLimit,
         compactAt: config?.compactAt,
@@ -554,13 +600,45 @@ async function plainLoop(state: HarnessState) {
         config,
         chat: resolveChat,
       })) {
-        emitHuman(ev);
+        emitHuman(ev, color);
       }
     } catch (e) {
       console.error(`\nfox-agent error: ${errMsg(e)}`);
+    } finally {
+      busy = false;
     }
     console.log();
-    process.stdout.write("❯ ");
+    const next = queued.shift();
+    if (next !== undefined) return dispatchMini(next);
+    return false;
+  };
+
+  if (process.stdin.isTTY && process.stdout.isTTY) {
+    // interactive: line editing with slash-command tab completion
+    const { createInterface } = await import("node:readline");
+    const rl = createInterface({
+      input: process.stdin,
+      output: process.stdout,
+      prompt: "❯ ",
+      completer: (line: string): [string[], string] => [completeSlashCommand(line), line],
+    });
+    rl.prompt();
+    rl.on("line", (line: string) => {
+      void dispatchMini(line)
+        .catch((e) => console.error(`fox-agent error: ${errMsg(e)}`))
+        .then((done) => {
+          if (done) rl.close();
+          else rl.prompt();
+        });
+    });
+    await new Promise<void>((resolve) => rl.on("close", () => resolve()));
+    return;
+  }
+  // piped: sequential line reading, same dispatch (mentions, shell, queueing)
+  process.stdout.write("❯ ");
+  for await (const line of console) {
+    if (await dispatchMini(line)) return;
+    process.stdout.write("\n❯ ");
   }
 }
 

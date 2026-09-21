@@ -54,6 +54,24 @@ describe("headless slash commands", () => {
     expect(r.out).toContain("/prune");
   }, 30_000);
 
+  test("fox json -p runs the command as NDJSON, like --json", () => {
+    const r = runCli(["json", "-p", "/usage"]);
+    expect(r.code).toBe(0);
+    const line = r.out
+      .trim()
+      .split("\n")
+      .map((l) => {
+        try {
+          return JSON.parse(l);
+        } catch {
+          return null;
+        }
+      })
+      .find((o) => o?.type === "command");
+    expect(line).toBeTruthy();
+    expect(line.output).toContain("billed");
+  }, 30_000);
+
   test("a non-slash prompt does still reach the provider", () => {
     // the mirror image of the case above: proves the routing is a slash-only
     // branch and not an accidental short-circuit of every -p. Retries off, or
