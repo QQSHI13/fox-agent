@@ -34,7 +34,9 @@ export const TOOL_KIND: Record<string, ToolKind> = {
   exec: "execute",
   pty: "execute",
   fetch: "fetch",
+  ctx: "think",
   ctx_edit: "think",
+  repl: "execute",
   todowrite: "other",
   task: "other",
 };
