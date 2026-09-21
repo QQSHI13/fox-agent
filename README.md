@@ -210,8 +210,12 @@ What each column means, and why `--version` alone is not the story:
 
 - **TUI 1st byte** (the headline metric): a real interactive launch — the binary started under a PTY with no args, timed to its first output byte, best
   of 5. Several tools short-circuit `--version` before loading their bundle, so `--version` flatters them; first byte does not.
+- **TUI 1st input**: the rest of interactivity — same PTY launch, then a probe string is typed the moment the app goes quiet, timed to its appearance
+  on the rendered screen, best of 3. A tool that isn't accepting keys yet (or never echoes) reports n/a rather than a number; tools whose screens
+  suppress echo use their own internal input-ready log marker instead.
 - **`--version`**: the harness floor, best of 4, kept for reference.
-- **Bundle**: full install footprint — the binary itself for native executables, the package directory for script CLIs (weighing only a 2KB loader shim would pretend node and node_modules are free).
+- **Bundle**: full install footprint — the binary itself for native executables (following launcher wrappers to the binary they hand off to, so a
+  500-byte shim never poses as the 128MB binary behind it), the package directory for script CLIs (weighing only a 2KB loader shim would pretend node and node_modules are free).
 - **Idle PSS**: resident cost of the TUI at rest after a 1.5s settle, before any model traffic (which would dominate everything).
 - **Time to first token** (fox-agent only): spawn to first text event of a headless `fox -p … --json` turn against the repo's scripted local provider —
   no API key, no network. Competitors need real credentials for a turn, so there is no honest cross-tool TTFT; it is reported for fox-agent only.

@@ -5,10 +5,13 @@ Measures what `--version` cannot: the cost of actually starting the thing.
 
 Per tool (best effort — anything not installed is recorded as n/a, never
 invented):
-  - disk: on-disk bytes of the resolved executable
+  - disk: on-disk bytes of the resolved executable (following launcher
+    wrappers to the binary they exec)
   - startup: best of 4 `--version` runs (the harness floor, for reference)
   - tui_first_byte: best of 5 PTY launches with no args, time to first output
     byte — the real "time to first char" of an interactive launch
+  - tui_first_input: best of 3 PTY launches typing a probe and waiting for it
+    to render — time to interactive, not just time to paint
 
 Plus fox-agent only (hermetic, no API key, no network):
   - ttft: headless `fox -p … --json` against the repo's scripted fake
@@ -16,7 +19,8 @@ Plus fox-agent only (hermetic, no API key, no network):
   - rss: peak resident set of that same headless turn (`/usr/bin/time -v`)
 
 Outputs (all under bench/):
-  results.json, table.md, snippet.md, bundle.svg, tui-first-char.svg, memory.svg
+  results.json, table.md, snippet.md, bundle.svg, tui-first-char.svg,
+  tui-first-input.svg, memory.svg
 
 snippet.md is the top-of-README block: the bench workflow splices it between
 <!-- bench:start --> and <!-- bench:end --> markers so the graphs and numbers
@@ -31,6 +35,7 @@ import os
 import pty
 import re
 import select
+import shlex
 import shutil
 import signal
 import subprocess
@@ -126,6 +131,52 @@ def is_binary_file(path):
         return False
 
 
+def _exec_target_of_script(path):
+    """Binary a launcher script hands off to, if any.
+
+    Versioned-install launchers (jcode: a 505-byte sh wrapper that execs
+    `$self_dir/jcode-linux-x86_64.bin`) weigh nothing by themselves; the
+    binary they hand off to is the honest cost, and weighing the wrapper
+    reported jcode as 0.0 MB. Only path-form targets are followed (absolute,
+    $var/relative, ./): a bare command (`exec node ...`) is a shared runtime,
+    not this tool's cost, and keeps the package-dir behavior. Variables are
+    NOT evaluated — only their position (script dir) is used.
+    """
+    try:
+        with open(path, "r", errors="replace") as f:
+            lines = [f.readline() for _ in range(40)]
+    except OSError:
+        return None
+    if not lines or not lines[0].startswith("#!"):
+        return None
+    script_dir = os.path.dirname(os.path.realpath(path))
+    for line in lines:
+        s = line.strip()
+        if not s.startswith("exec "):
+            continue
+        try:
+            toks = shlex.split(s, posix=True)
+        except ValueError:
+            continue
+        for tok in toks[1:]:
+            if tok.startswith("-") or tok in ("$@", "$*", "$#", "$$", "$?", "$!", "$-", "$0"):
+                continue
+            if os.path.isabs(tok):
+                cand = tok
+            elif "/" in tok or "$" in tok:
+                cand = re.sub(r"\$\{?[A-Za-z_][A-Za-z0-9_]*\}?", script_dir, tok)
+                if not os.path.isabs(cand):
+                    cand = os.path.normpath(os.path.join(script_dir, cand))
+            else:
+                continue  # bare command: node, env, ... — shared, not followed
+            try:
+                if os.path.isfile(cand) and is_binary_file(cand):
+                    return cand
+            except OSError:
+                continue
+    return None
+
+
 def du_bytes(path):
     """Disk use of a file or tree in bytes. du -sb when present (it sees
     sparse files and dir overhead); a plain walk otherwise."""
@@ -157,7 +208,12 @@ def footprint(path):
     next to a self-contained binary. So for scripts the cost is the enclosing
     install root: the nearest ancestor with package.json (npm), or with
     pyvenv.cfg (a venv console script — the bench venv holds aider only).
-    "entry" is the fallback when no root is found: the file alone, flagged.
+    The exception is a launcher script that execs a real binary by path
+    (jcode's wrapper hands off to its sibling .bin): the binary it names is
+    weighed as "bin", since that file alone is the whole cost. Bare-command
+    execs (`exec node ...`) are never followed — node is shared, not the
+    tool's. "entry" is the fallback when no root is found: the file alone,
+    flagged.
     """
     real = os.path.realpath(path)
     try:
@@ -165,6 +221,13 @@ def footprint(path):
             return os.path.getsize(real) / 1e6, "bin"
     except OSError:
         return None, "entry"
+    # a launcher script is weightless; the binary it execs is the cost
+    target = _exec_target_of_script(real)
+    if target:
+        try:
+            return os.path.getsize(target) / 1e6, "bin"
+        except OSError:
+            pass
     d = os.path.dirname(real)
     for _ in range(5):
         if os.path.isfile(os.path.join(d, "package.json")) or os.path.isfile(os.path.join(d, "pyvenv.cfg")):
@@ -267,6 +330,200 @@ def idle_pss(path, settle=1.5):
     except (ProcessLookupError, ChildProcessError, OSError):
         pass
     return pss
+
+
+PROBE_TEXT = "hello bench"
+
+# Tools whose input readiness cannot be read off the screen: {"log": file to
+# tail, "marker": regex ending the probe}. The motivating case is a sign-in
+# screen that swallows echoed keystrokes while the tool logs its own
+# input-ready marker internally — typing is still sent the same way; only the
+# completion signal differs (internal ack rather than screen echo), which the
+# method strings below say out loud.
+INPUT_MARKERS = {
+    # "antigravity": {"log": "~/.antigravity/input-ready.log", "marker": r"..."},
+}
+
+# Strips terminal control traffic so probe text is matched against what is
+# actually RENDERED: OSC (BEL and ST terminated), CSI (incl. the `$p` form
+# DECRQM-style replies use), DCS/APC (ST terminated), DEC private modes,
+# cursor movement, CR. Without the DCS and `$p` arms, opencode's startup
+# queries leak through as text and a stray "p" could fake a match.
+ANSI_RE = re.compile(
+    rb"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)"  # OSC, BEL or ST terminated
+    rb"|\x1bP.*?\x1b\\"  # DCS ... ST
+    rb"|\x1b_[^\x1b]*\x1b\\"  # APC ... ST
+    rb"|\x1b\[[0-9;?<>=!]*[$\" ]*[a-zA-Z@`]"  # CSI, incl. $p / " p forms
+    rb"|\x1b[()][0-9A-Z]"  # charset selection
+    rb"|\x1b[=>78M]"  # keypad / save cursor / reverse index
+    rb"|\r"
+)
+
+
+def _wait_output(fd, timeout):
+    """First output chunk within timeout, or None (app never came alive)."""
+    end = time.perf_counter() + timeout
+    while time.perf_counter() < end:
+        r, _, _ = select.select([fd], [], [], max(0, end - time.perf_counter()))
+        if not r:
+            return None
+        try:
+            data = os.read(fd, 65536)
+        except OSError:
+            return None
+        if not data:
+            return None
+        return data
+    return None
+
+
+def tui_first_input(path, label, probes=3, timeout=30):
+    """Time from first typed byte to the probe text appearing on screen.
+
+    Launch under a PTY, wait until the app is alive AND quiet (typing into a
+    process still starting up proves nothing), type PROBE_TEXT, then poll
+    until it shows up in the newly rendered output — per-chunk, not the whole
+    stream, because diffing TUIs repaint their input box forever and a
+    whole-stream search would false-positive on any historical occurrence.
+    Best of N; None when it never appears (a tool that drops early keystrokes
+    or never echoes honestly reports n/a rather than a number). Tools are
+    expected to own the terminal in raw mode, like every interactive TUI must
+    to read keys at all.
+    """
+    cfg = INPUT_MARKERS.get(label)
+    samples = []
+    for _ in range(probes):
+        try:
+            pid, fd = pty.fork()
+        except OSError:
+            return None
+        if pid == 0:
+            os.environ["TERM"] = "xterm-256color"
+            try:
+                os.execv(path, [path])
+            except Exception:
+                os._exit(127)
+        logf = None
+        try:
+            if _wait_output(fd, 15) is None:
+                continue
+            # settle twice: once briefly (an app that painted and went quiet
+            # is ready), then a grace window for apps whose first frames keep
+            # coming — typing into a TUI that is still painting swallows the
+            # probe. The long settle is capped so a chatty spinner cannot
+            # stall the probe forever; the retyping round below catches the
+            # rest, so worst case is a slower number, not a wrong one.
+            quiet_end = time.perf_counter() + 0.75
+            init_cap = time.perf_counter() + 8
+            while time.perf_counter() < min(quiet_end, init_cap):
+                r, _, _ = select.select([fd], [], [], max(0, min(quiet_end, init_cap) - time.perf_counter()))
+                if not r:
+                    break
+                try:
+                    if not os.read(fd, 65536):
+                        break
+                except OSError:
+                    break
+            # did the app actually go quiet, or is it still painting? A
+            # spinner re-painting every frame means keys are not being read
+            # yet — wait out the paint (bounded at 6s; a tool that never goes
+            # quiet gets its number from the retype round below, honestly late
+            # rather than dishonestly never).
+            drain_end = time.perf_counter() + 6.0
+            while time.perf_counter() < drain_end:
+                r, _, _ = select.select([fd], [], [], max(0, drain_end - time.perf_counter()))
+                if not r:
+                    break
+                try:
+                    if not os.read(fd, 65536):
+                        break
+                except OSError:
+                    break
+            if cfg:
+                # marker path: seek past stale lines so only this probe's
+                # marker can complete it, then type like everyone else
+                try:
+                    logf = open(os.path.expanduser(cfg["log"]), "rb")
+                    logf.seek(0, os.SEEK_END)
+                except OSError:
+                    logf = None
+            t0 = time.perf_counter()
+            try:
+                os.write(fd, PROBE_TEXT.encode())
+            except OSError:
+                continue
+            deadline = t0 + timeout
+            seen = b""
+            hit = None
+            # up to two typing rounds against one deadline: a tool still
+            # starting up may swallow early keystrokes, and the honest number
+            # for that is "how long until MY input appears", not n/a — but a
+            # tool that never echoes still times out honestly
+            for attempt in (1, 2):
+                if attempt == 2:
+                    quiet_end = time.perf_counter() + 1.0
+                    while time.perf_counter() < min(quiet_end, deadline):
+                        r, _, _ = select.select([fd], [], [], max(0, min(quiet_end, deadline) - time.perf_counter()))
+                        if not r:
+                            break
+                        try:
+                            if not os.read(fd, 65536):
+                                break
+                        except OSError:
+                            break
+                    try:
+                        os.write(fd, PROBE_TEXT.encode())
+                    except OSError:
+                        break
+                while time.perf_counter() < deadline:
+                    if logf is not None:
+                        try:
+                            chunk = logf.read()
+                        except OSError:
+                            break
+                        if chunk:
+                            seen += chunk
+                            if re.search(cfg["marker"], seen.decode("utf-8", "replace")):
+                                hit = time.perf_counter() - t0
+                                break
+                        time.sleep(0.2)
+                        continue
+                    r, _, _ = select.select([fd], [], [], max(0, deadline - time.perf_counter()))
+                    if not r:
+                        continue
+                    try:
+                        data = os.read(fd, 65536)
+                    except OSError:
+                        break
+                    if not data:
+                        break
+                    # per-chunk match, not whole-stream: a diffing TUI repaints
+                    # its input line every frame, so the probe text recurs in
+                    # the full stream and a whole-stream search would match
+                    # stale repaints rather than the first real echo
+                    if PROBE_TEXT.encode() in ANSI_RE.sub(b"", data):
+                        hit = time.perf_counter() - t0
+                        break
+                if hit is not None:
+                    break
+            if hit is not None:
+                samples.append(hit * 1000)
+        finally:
+            try:
+                if logf is not None:
+                    logf.close()
+            except Exception:
+                pass
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            try:
+                os.kill(pid, signal.SIGKILL)
+                os.waitpid(pid, 0)
+            except (ProcessLookupError, ChildProcessError, OSError):
+                pass
+    return min(samples) if samples else None
 
 
 def start_fake_provider():
@@ -410,11 +667,12 @@ def fmt_ms(v):
     return f"{v:,.0f}" if v >= 100 else f"{v:.1f}"
 
 
-def measure(label, path, n_start, n_probes):
+def measure(label, path, n_start, n_probes, n_input):
     ver = version_of(path)
     disk, kind = footprint(path)
     startup = best_startup(path, n_start)
     ttfb = tui_first_byte(path, n_probes)
+    tfin = tui_first_input(path, label, n_input)
     pss = idle_pss(path)
     row = {
         "agent": label,
@@ -425,9 +683,10 @@ def measure(label, path, n_start, n_probes):
         "disk_kind": kind,
         "startup_ms": round(startup, 1) if startup is not None else None,
         "tui_first_byte_ms": round(ttfb, 1) if ttfb is not None else None,
+        "tui_first_input_ms": round(tfin, 1) if tfin is not None else None,
         "idle_pss_mb": round(pss, 1) if pss is not None else None,
     }
-    print(f"{label}: {ver} disk={row['disk_mb']}MB({kind}) startup={row['startup_ms']}ms ttfb={row['tui_first_byte_ms']}ms pss={row['idle_pss_mb']}MB")
+    print(f"{label}: {ver} disk={row['disk_mb']}MB({kind}) startup={row['startup_ms']}ms ttfb={row['tui_first_byte_ms']}ms tfin={row['tui_first_input_ms']}ms pss={row['idle_pss_mb']}MB")
     return row
 
 
@@ -450,6 +709,8 @@ def main():
     os.makedirs(out, exist_ok=True)
     n_start = 2 if quick else 4
     n_probes = 2 if quick else 5
+    # first-input is slower per probe (full launch + typing + echo wait)
+    n_input = 2 if quick else 3
 
     rows = []
     for label, bins in AGENTS:
@@ -458,7 +719,7 @@ def main():
             rows.append({"agent": label, "installed": False})
             print(f"{label}: not installed")
             continue
-        rows.append(measure(label, path, n_start, n_probes))
+        rows.append(measure(label, path, n_start, n_probes, n_input))
 
     # opencode v1+v2: fixed names where upstream gives distinct binaries,
     # version fallback for the shared `opencode` name. Duplicate labels
@@ -484,7 +745,7 @@ def main():
             print(f"{bin_name}: {ver} (duplicate {label}, kept first)")
             continue
         seen_oc.add(label)
-        oc_rows.append(measure(label, path, n_start, n_probes))
+        oc_rows.append(measure(label, path, n_start, n_probes, n_input))
     for want in ("opencode v1", "opencode v2"):
         if want not in seen_oc:
             oc_rows.append({"agent": want, "installed": False})
@@ -509,7 +770,7 @@ def main():
                 fake.kill()
         else:
             print("fox extra: fake provider unavailable")
-    fox_extra["method"] = "headless `fox -p … --json` vs scripted local provider; RSS via /usr/bin/time -v; TUI bytes via PTY"
+    fox_extra["method"] = "headless `fox -p … --json` vs scripted local provider; RSS via /usr/bin/time -v; TUI bytes via PTY; TUI input = first typed byte to probe text on screen (log marker where echo is suppressed)"
 
     import platform
 
@@ -518,7 +779,10 @@ def main():
         "machine": f"{platform.system()} {platform.machine()} ({platform.release()})",
         "method": (
             "best of 4 `--version` runs; best of 5 PTY launches (no args) to first output byte; "
-            "PSS after 1.5s idle from /proc smaps_rollup; bundle = the binary itself, or the package "
+            "best of 3 PTY launches typing a probe and waiting for it on screen (log marker "
+            "where a tool suppresses echo); "
+            "PSS after 1.5s idle from /proc smaps_rollup; bundle = the binary itself, a launcher's "
+            "exec target where a wrapper hands off, or the package "
             "dir for script CLIs (entry shims alone would pretend node_modules are free); "
             "fox TTFT = spawn to first text event of `fox -p … --json` vs the repo's scripted local "
             "provider (no key, no network); fox peak RSS of that turn via /usr/bin/time -v. "
@@ -548,6 +812,14 @@ def main():
         os.path.join(out, "tui-first-char.svg"),
     )
     bars_svg(
+        "time to first input — typed text on screen",
+        "PTY launch, type a probe, wait for it to render, best of 3 · lower is better",
+        [(r["agent"], r.get("tui_first_input_ms"), is_fox(r)) for r in rows],
+        "ms",
+        fmt_ms,
+        os.path.join(out, "tui-first-input.svg"),
+    )
+    bars_svg(
         "idle memory — TUI at rest",
         "PSS after 1.5s idle, before any model traffic · lower is better",
         [(r["agent"], r.get("idle_pss_mb"), is_fox(r)) for r in rows],
@@ -557,10 +829,10 @@ def main():
     )
 
     # markdown table for the README snapshot + job summary
-    T = ["| agent | version | bundle | `--version` | TUI 1st byte | idle PSS |", "|---|---|---|---|---|---|"]
+    T = ["| agent | version | bundle | `--version` | TUI 1st byte | TUI 1st input | idle PSS |", "|---|---|---|---|---|---|---|"]
     for r in rows:
         if not r.get("installed"):
-            T.append(f"| {r['agent']} | n/a (not installed) | — | — | — | — |")
+            T.append(f"| {r['agent']} | n/a (not installed) | — | — | — | — | — |")
             continue
         disk = f"{r['disk_mb']:.1f} MB" if r.get("disk_mb") is not None else "—"
         if r.get("disk_kind") == "pkg":
@@ -569,9 +841,10 @@ def main():
             disk += " (entry)"
         st = f"{r['startup_ms']:.0f} ms" if r.get("startup_ms") is not None else "—"
         tb = f"**{r['tui_first_byte_ms']:.0f} ms**" if r.get("tui_first_byte_ms") is not None else "—"
+        ti = f"**{r['tui_first_input_ms']:.0f} ms**" if r.get("tui_first_input_ms") is not None else "—"
         pss = f"{r['idle_pss_mb']:.0f} MB" if r.get("idle_pss_mb") is not None else "—"
         name = f"**{r['agent']}**" if r["agent"] == "fox-agent" else r["agent"]
-        T.append(f"| {name} | {r['version']} | {disk} | {st} | {tb} | {pss} |")
+        T.append(f"| {name} | {r['version']} | {disk} | {st} | {tb} | {ti} | {pss} |")
     table_md = "\n".join(T) + "\n"
     with open(os.path.join(out, "table.md"), "w") as f:
         f.write(table_md)
@@ -582,6 +855,7 @@ def main():
     S = [
         "![bundle size](bench/bundle.svg)",
         "![time to first char](bench/tui-first-char.svg)",
+        "![time to first input](bench/tui-first-input.svg)",
         "![idle memory](bench/memory.svg)",
         "",
         table_md.rstrip(),
