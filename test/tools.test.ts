@@ -253,12 +253,93 @@ describe("ctx_edit", () => {
     expect(r.ok).toBe(false);
     expect(r.output).toContain("no message m9999");
   });
+
+  test("the alias rejects the new op kinds (delete/replace shape only)", async () => {
+    const { createSession } = await import("../src/store/db.ts");
+    const { ctxEditRun } = await import("../src/tools/ctxedit.ts");
+    const s = createSession(dir, "m1");
+    const r = await ctxEditRun({ ops: [{ op: "stats" }] }, { ...ctx, sessionId: s.id });
+    expect(r.ok).toBe(false);
+    expect(r.output).toContain("unknown op");
+  });
+});
+
+describe("ctx search, stats and query ops", () => {
+  async function seeded() {
+    const { createSession, appendMessage } = await import("../src/store/db.ts");
+    const { ctxRun } = await import("../src/tools/ctxedit.ts");
+    const s = createSession(dir, "m1");
+    const mine = { ...ctx, sessionId: s.id };
+    const run = (ops: any[]) => ctxRun({ ops }, mine);
+    const a = appendMessage(s.id, { parent_id: null, role: "user", content: "how do I paginate?", tokens: 5 });
+    const b = appendMessage(s.id, { parent_id: null, role: "assistant", content: "use cursor pagination", tokens: 5 });
+    const c = appendMessage(s.id, { parent_id: null, role: "tool", content: "Error: timeout after 30s\nat fetch (x:1)", tokens: 10 });
+    return { s, mine, run, a, b, c };
+  }
+
+  test("search returns snippets, never bodies", async () => {
+    const { run, b } = await seeded();
+    const r = await run([{ op: "search", pattern: "cursor" }]);
+    expect(r.ok).toBe(true);
+    expect(r.output).toContain(`[m${b.seq}]`);
+    expect(r.output).toContain("cursor pagination".slice(0, 20));
+    const miss = await run([{ op: "search", pattern: "zzz-no-match" }]);
+    expect(miss.output).toContain("no matches");
+    const bad = await run([{ op: "search", pattern: "(" }]);
+    expect(bad.ok).toBe(false);
+  });
+
+  test("search honors role filter and limit", async () => {
+    const { run } = await seeded();
+    const r = await run([{ op: "search", pattern: ".", role: "tool", limit: 1 }]);
+    expect(r.output).toContain("1 match");
+    expect(r.output).toContain("tool Error");
+  });
+
+  test("stats reports visible/stored and the biggest nodes", async () => {
+    const { run, c } = await seeded();
+    const r = await run([{ op: "stats" }]);
+    expect(r.ok).toBe(true);
+    expect(r.output).toContain("3 visible of 3 stored (0 hidden)");
+    expect(r.output).toContain(`[m${c.seq}] tool`);
+  });
+
+  test("delete_by_query hides matches; matching everything needs all:true", async () => {
+    const { run, c } = await seeded();
+    const r = await run([{ op: "delete_by_query", pattern: "timeout" }]);
+    expect(r.ok).toBe(true);
+    expect(r.output).toContain(`m${c.seq}`);
+    const after = await run([{ op: "stats" }]);
+    expect(after.output).toContain("2 visible of 3 stored (1 hidden)");
+    const all = await run([{ op: "delete_by_query", pattern: "." }]);
+    expect(all.ok).toBe(false);
+    expect(all.output).toContain("all:true");
+    const confirmed = await run([{ op: "delete_by_query", pattern: ".", all: true }]);
+    expect(confirmed.ok).toBe(true);
+  });
+
+  test("restore un-hides nodes", async () => {
+    const { run, a } = await seeded();
+    await run([{ op: "delete", ids: [a.seq] }]);
+    const r = await run([{ op: "restore", ids: [a.seq] }]);
+    expect(r.ok).toBe(true);
+    const after = await run([{ op: "stats" }]);
+    expect(after.output).toContain("3 visible of 3 stored (0 hidden)");
+  });
+
+  test("query and mutation batch in one call", async () => {
+    const { run, c } = await seeded();
+    const r = await run([{ op: "search", pattern: "timeout" }, { op: "delete", ids: [c.seq], reason: "done" }]);
+    expect(r.ok).toBe(true);
+    expect(r.output).toContain("match");
+    expect(r.output).toContain("ctx ok: 1 hidden");
+  });
 });
 
 describe("registry", () => {
   test("base registry exposes the built-in tools", () => {
     const reg = defaultRegistry();
-    for (const name of ["read", "write", "edit", "glob", "grep", "exec", "pty", "ctx_edit", "todowrite", "task", "fetch", "repl"]) {
+    for (const name of ["read", "write", "edit", "glob", "grep", "exec", "pty", "ctx", "ctx_edit", "todowrite", "task", "fetch", "repl"]) {
       expect(reg.has(name)).toBe(true);
     }
   });

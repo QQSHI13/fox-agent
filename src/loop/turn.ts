@@ -326,9 +326,12 @@ export async function* runTurnCore(
     agents = built.agents;
     if (!opts.pluginsOverride) plugins = built.plugins;
   }
-  // markers off = ctx_edit has no addresses to edit; the prompt gates itself on
+  // markers off = ctx has no addresses to edit; the prompt gates itself on
   // the live registry, so removing the tool here removes the doctrine too
-  if (effCfg.contextMarkers === false) tools.delete("ctx_edit");
+  if (effCfg.contextMarkers === false) {
+    tools.delete("ctx");
+    tools.delete("ctx_edit");
+  }
   const toolDefs = [...tools.values()].map((t) => t.def);
   const hooked = plugins.filter((p) => p.hooks);
 

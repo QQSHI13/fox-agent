@@ -7,7 +7,7 @@ import * as F from "./files.ts";
 import { execDef, execRun } from "./exec.ts";
 import { cleanupPty, ptySessionName } from "./pty.ts";
 import { setOutputCap } from "./files.ts";
-import { ctxEditDef, ctxEditRun } from "./ctxedit.ts";
+import { ctxDef, ctxEditDef, ctxRun } from "./ctxedit.ts";
 import { taskDef, taskRun } from "./task.ts";
 import { mcpTools, closeMcp } from "./mcp.ts";
 import { loadPlugins, setActivePlugins } from "../plugins/load.ts";
@@ -34,7 +34,8 @@ export function baseRegistry(): Map<string, Tool> {
   add(F.globDef, F.globRun);
   add(F.grepDef, F.grepRun);
   add(execDef, execRun);
-  add(ctxEditDef, ctxEditRun);
+  add(ctxDef, ctxRun);
+  add(ctxEditDef, ctxRun); // deprecated alias: delete/replace only, same run
   add(taskDef, taskRun);
   return map;
 }

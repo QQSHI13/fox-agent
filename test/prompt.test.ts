@@ -195,7 +195,8 @@ describe("live context figure in the prompt", () => {
   test("past the threshold the agent is told to prune before continuing", async () => {
     const over = await build({ budget: { reported: 120_000, limit: 128_000, ratio: 120_000 / 128_000, over: true } });
     expect(over).toContain("over the compaction threshold");
-    expect(over).toContain("ctx_edit");
+    expect(over).toContain('"op":"search"');
+    expect(over).toContain("one ctx call");
   });
 
   test("without ctx_edit the figure is omitted — nothing to act on it with", async () => {
