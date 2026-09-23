@@ -664,10 +664,13 @@ export function saveProviderProfile(name: string, fields: ProviderProfileFields,
  * Read-modify-write through the TOML library: only the passed top-level keys
  * change, and unknown keys plus all tables round-trip untouched. `""` for
  * reasoningEffort clears the key; absence of a field keeps whatever was saved
- * (so `/theme` alone never erases the provider and key).
+ * (so `/theme` alone never erases the provider and key). `extraSettings`
+ * carries the /settings keys — same line-level rules, validated by the caller.
  */
 export function saveGlobalConfig(
-  fields: { provider?: string; apiKey?: string; baseUrl?: string; model?: string; theme?: string; reasoningEffort?: string },
+  fields: { provider?: string; apiKey?: string; baseUrl?: string; model?: string; theme?: string; reasoningEffort?: string } & {
+    extraSettings?: Record<string, string | number | boolean>;
+  },
   path = effectiveConfigPath(),
 ): string {
   editConfigFile(path, (doc) => {
@@ -680,8 +683,134 @@ export function saveGlobalConfig(
       if (fields.reasoningEffort) doc.reasoningEffort = fields.reasoningEffort;
       else delete doc.reasoningEffort;
     }
+    for (const [k, v] of Object.entries(fields.extraSettings ?? {})) {
+      if (v === "") delete doc[k];
+      else doc[k] = v;
+    }
   });
   return path;
+}
+
+/**
+ * The settings `/settings` exposes: obscure-but-real knobs that have no
+ * dedicated command. `key` is the config key, `def` its default, `validate`
+ * parses/coerces a raw string answer (throw to reject) and `fmt` renders the
+ * current value. Numbers come back as numbers, booleans as booleans — the
+ * TOML writer stores the type.
+ */
+export interface SettingSpec {
+  key: string;
+  desc: string;
+  def: string;
+  validate(raw: string): string | number | boolean;
+  fmt(v: unknown): string;
+}
+
+const num = (lo: number, hi?: number) => (raw: string) => {
+  const n = Number(raw);
+  if (!Number.isFinite(n)) throw new Error(`not a number: ${raw}`);
+  const i = Math.floor(n);
+  if (i < lo || (hi !== undefined && i > hi)) throw new Error(`out of range (${lo}${hi !== undefined ? `..${hi}` : "+"})`);
+  return i;
+};
+const bool = (raw: string) => {
+  const t = raw.trim().toLowerCase();
+  if (["true", "1", "yes", "on"].includes(t)) return true;
+  if (["false", "0", "no", "off"].includes(t)) return false;
+  throw new Error(`not a boolean: ${raw} (true/false)`);
+};
+const showBool = (v: unknown) => (v === undefined ? "unset (default)" : v ? "true" : "false");
+
+export const SETTINGS: SettingSpec[] = [
+  {
+    key: "maxSteps",
+    desc: "tool-call steps per turn (0 = unlimited)",
+    def: "0",
+    validate: num(0),
+    fmt: (v) => (v === undefined ? "0 (unlimited)" : String(v)),
+  },
+  {
+    key: "retryLimit",
+    desc: "provider retry attempts on 429/5xx",
+    def: "3",
+    validate: num(0, 20),
+    fmt: (v) => (v === undefined ? "3" : String(v)),
+  },
+  {
+    key: "compactAt",
+    desc: "auto-compact at this fraction of the context window",
+    def: "0.85",
+    validate: (raw) => {
+      const n = Number(raw);
+      if (!Number.isFinite(n) || n <= 0 || n > 1) throw new Error("must be a fraction in (0, 1], e.g. 0.85");
+      return n;
+    },
+    fmt: (v) => (v === undefined ? "0.85" : String(v)),
+  },
+  {
+    key: "requestTimeoutMs",
+    desc: "abort a provider request silent this long (0 = never)",
+    def: "120000",
+    validate: num(0),
+    fmt: (v) => (v === undefined ? "120000" : String(v)),
+  },
+  {
+    key: "toolOutputCap",
+    desc: "per-tool-result text cap in chars (min 1000)",
+    def: "30000",
+    validate: num(1000),
+    fmt: (v) => (v === undefined ? "30000" : String(v)),
+  },
+  {
+    key: "sessionListLimit",
+    desc: "how many sessions /sessions and fox ls list",
+    def: "50",
+    validate: num(1, 500),
+    fmt: (v) => (v === undefined ? "50" : String(v)),
+  },
+  {
+    key: "tuiCollapsedChars",
+    desc: "collapsed tool output preview length (min 40)",
+    def: "240",
+    validate: num(40),
+    fmt: (v) => (v === undefined ? "240" : String(v)),
+  },
+  {
+    key: "tuiKeptChars",
+    desc: "chars kept in a folded tool result (min 200)",
+    def: "4000",
+    validate: num(200),
+    fmt: (v) => (v === undefined ? "4000" : String(v)),
+  },
+  { key: "tuiRich", desc: "rich markdown: syntax-tinted fences + diff colors", def: "false", validate: bool, fmt: showBool },
+  { key: "diagnostics", desc: "post-edit language-server diagnostics", def: "true", validate: bool, fmt: showBool },
+  {
+    key: "contextMarkers",
+    desc: "[mN] markers + ctx tool (weak models: set false)",
+    def: "true",
+    validate: bool,
+    fmt: showBool,
+  },
+  {
+    key: "acpHistory",
+    desc: 'session/load replay scope: full | last | N nodes',
+    def: "full",
+    validate: (raw) => {
+      const t = raw.trim().toLowerCase();
+      if (t === "full" || t === "last") return t;
+      const n = Number(t);
+      if (Number.isInteger(n) && n >= 1) return Math.floor(n);
+      throw new Error("full | last | a positive integer");
+    },
+    fmt: (v) => (v === undefined ? "full" : String(v)),
+  },
+];
+
+/** Read a setting's current value from the loaded config, rendered for display. */
+export function settingValue(spec: SettingSpec, cfg?: Config): string {
+  if (!cfg) return spec.def;
+  const v = (cfg as unknown as Record<string, unknown>)[spec.key];
+  return v === undefined ? spec.fmt(undefined) : spec.fmt(v);
 }
 
 export function loadConfig(

@@ -28,8 +28,27 @@ import type { UiStep } from "./core/ui.ts";
 import { activePlugins, isPluginPathDisabled, loadPlugins } from "./plugins/load.ts";
 import { bundledDisabled, bundledPlugins } from "./plugins/bundled.ts";
 import { BUNDLED_PROVIDER_PLUGIN_NAMES, bundledProviderPlugins } from "./providers/bundled.ts";
-import { addPluginPath, effectiveConfigPath, globalConfigPath, removePluginPath, setPluginDisabled } from "./core/config.ts";
+import { addPluginPath, effectiveConfigPath, globalConfigPath, removePluginPath, setPluginDisabled, SETTINGS, settingValue } from "./core/config.ts";
 import { dirname } from "node:path";
+
+/**
+ * Apply a just-changed setting to the live process — the same hooks /reload
+ * uses. Dynamic import: commands.ts ← app.ts is already a cycle (app imports
+ * runSlashCommand), and a static tui import here would widen it; the tui
+ * module is only needed in interactive hosts where it is loaded anyway.
+ */
+function applyResultLive(state: HarnessState, key: string): void {
+  void (async () => {
+    try {
+      const app = await import("./tui/app.ts");
+      if (key === "tuiCollapsedChars" || key === "tuiKeptChars") {
+        app.setTuiCaps(state.config?.tuiCollapsedChars ?? 240, state.config?.tuiKeptChars ?? 4_000);
+      } else if (key === "tuiRich") {
+        app.setTuiRich(!!state.config?.tuiRich);
+      }
+    } catch {}
+  })();
+}
 import type { FoxPlugin } from "./plugins/types.ts";
 import type { PluginCommand } from "./plugins/types.ts";
 
@@ -186,6 +205,13 @@ export const COMMANDS: CommandSpec[] = [
     usage: "[on|off|add|rm|info <name>]",
     arg: true,
     help: "bare: interactive wizard in the TUI, printed list elsewhere; on/off flips it live, add/rm installs/uninstalls a file, info details one",
+  },
+  {
+    name: "/settings",
+    desc: "show or change config settings (caps, limits, markers…)",
+    usage: "[key[=value]]",
+    arg: true,
+    help: "bare: all settings with current values; key: show one; key=value: set (empty value resets to default). Saved to the global config, applied live.",
   },
   {
     name: "/upgrade",
@@ -1728,6 +1754,37 @@ export function runSlashCommand(input: string, state: HarnessState): CommandResu
         return { handled: true, output: "usage: /plugin info <name>" };
       }
       return { handled: true, output: "usage: /plugin [on|off|add|rm|info <name>]" };
+    }
+
+    case "/settings": {
+      // Obscure knobs that have no dedicated command. Bare lists everything
+      // with current values; `/settings key=value` sets (validated, saved,
+      // applied live); `/settings key` shows one. Setting an empty value
+      // resets to the default.
+      if (!arg) {
+        const st = sty();
+        const lines = SETTINGS.map((s) => `${s.key.padEnd(20)} ${settingValue(s, state.config)}`);
+        lines.push(st.dim("set: /settings key=value · reset: /settings key= · show: /settings key · saved to global config"));
+        return { handled: true, output: lines.join("\n") };
+      }
+      const eq = arg.indexOf("=");
+      const key = (eq >= 0 ? arg.slice(0, eq) : arg).trim();
+      const spec = SETTINGS.find((s) => s.key === key);
+      if (!spec) return { handled: true, output: `unknown setting '${key}' — settings: ${SETTINGS.map((s) => s.key).join(", ")}` };
+      if (eq < 0) return { handled: true, output: `${spec.key} = ${settingValue(spec, state.config)}\n${spec.desc} (default ${spec.def})` };
+      const raw = arg.slice(eq + 1).trim();
+      try {
+        const value = raw ? spec.validate(raw) : (undefined as unknown as string);
+        const saved = saveGlobalConfig({ extraSettings: { [spec.key]: value } }, state.configPath);
+        if (state.config) (state.config as unknown as Record<string, unknown>)[spec.key] = value;
+        applyResultLive(state, spec.key);
+        return {
+          handled: true,
+          output: `${spec.key} = ${value === undefined ? `(default ${spec.def})` : String(value)} — saved to ${saved}, live now (/reload re-reads it)`,
+        };
+      } catch (e) {
+        return { handled: true, output: `${spec.key}: ${(e as Error).message}` };
+      }
     }
 
     case "/exit":

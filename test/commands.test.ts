@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -655,5 +655,86 @@ describe("bug-hunt regressions", () => {
     // default depth resolves the full list as before
     expect(t.resolveSessionArg("2")).toBe(b.id);
     expect(t.resolveSessionArg(a.id)).toBe(a.id);
+  });
+});
+
+describe("/settings", () => {
+  function mkState(cfgPath: string, sessionId: string, cfg: any) {
+    return {
+      sessionId,
+      cwd: "/w",
+      provider: { baseUrl: "http://x", apiKey: "k", model: "m" } as any,
+      config: cfg,
+      configPath: cfgPath,
+      interactive: true,
+    };
+  }
+  test("bare lists every setting with its current value", async () => {
+    const tt = await setup();
+    const cfgPath = join(dir, "config.toml");
+    writeFileSync(cfgPath, 'model = "m"\n'); // explicit --config paths must exist (loud-missing rule)
+    const { loadConfig } = await import("../src/core/config.ts");
+    const s = tt.createSession("/w", "m1");
+    const state = mkState(cfgPath, s.id, loadConfig({ cwd: "/w", configPath: cfgPath }, {}));
+    const res = tt.runSlashCommand("/settings", state)!;
+    for (const key of ["maxSteps", "retryLimit", "compactAt", "tuiRich", "contextMarkers", "acpHistory"]) {
+      expect(res.output).toContain(key);
+    }
+    expect(res.output).toContain("0.85"); // default shown
+  });
+
+  test("key=value validates, saves and applies live; = resets; junk is refused", async () => {
+    const tt = await setup();
+    const { loadConfig } = await import("../src/core/config.ts");
+    const cfgPath = join(dir, "config.toml");
+    writeFileSync(cfgPath, 'model = "m"\n'); // explicit --config paths must exist (loud-missing rule)
+    const s = tt.createSession("/w", "m1");
+    const state = mkState(cfgPath, s.id, loadConfig({ cwd: "/w", configPath: cfgPath }, {}));
+
+    const set1 = tt.runSlashCommand("/settings compactAt=0.7", state)!;
+    expect(set1.output).toContain("compactAt = 0.7");
+    expect(state.config.compactAt).toBe(0.7); // applied live
+    expect(readFileSync(cfgPath, "utf8")).toContain("compactAt = 0.7"); // persisted
+
+    const set2 = tt.runSlashCommand("/settings tuiRich=true", state)!;
+    expect(state.config.tuiRich).toBe(true);
+
+    const reset = tt.runSlashCommand("/settings compactAt=", state)!;
+    expect(reset.output).toContain("(default 0.85)");
+    expect(state.config.compactAt).toBeUndefined();
+    expect(readFileSync(cfgPath, "utf8")).not.toContain("compactAt");
+
+    expect(tt.runSlashCommand("/settings compactAt=2", state)!.output).toContain("fraction");
+    expect(tt.runSlashCommand("/settings tuiRich=maybe", state)!.output).toContain("not a boolean");
+    expect(tt.runSlashCommand("/settings frobnicate=1", state)!.output).toContain("unknown setting");
+    // rejected writes changed nothing
+    expect(state.config.compactAt).toBeUndefined();
+  });
+
+  test("acpHistory accepts full/last/N and refuses junk", async () => {
+    const tt = await setup();
+    const { loadConfig } = await import("../src/core/config.ts");
+    const cfgPath = join(dir, "config.toml");
+    writeFileSync(cfgPath, 'model = "m"\n'); // explicit --config paths must exist (loud-missing rule)
+    const s = tt.createSession("/w", "m1");
+    const state = mkState(cfgPath, s.id, loadConfig({ cwd: "/w", configPath: cfgPath }, {}));
+    for (const [raw, want] of [["last", "last"], ["12", "12"], ["full", "full"]] as const) {
+      const res = tt.runSlashCommand(`/settings acpHistory=${raw}`, state)!;
+      expect(res.output).toContain(`acpHistory = ${want}`);
+      expect(state.config.acpHistory).toBe(raw === "12" ? 12 : raw);
+    }
+    expect(tt.runSlashCommand("/settings acpHistory=sometimes", state)!.output).toContain("full | last");
+  });
+
+  test("show-one form prints value and description", async () => {
+    const tt = await setup();
+    const { loadConfig } = await import("../src/core/config.ts");
+    const cfgPath = join(dir, "config.toml");
+    writeFileSync(cfgPath, 'model = "m"\n'); // explicit --config paths must exist (loud-missing rule)
+    const s = tt.createSession("/w", "m1");
+    const state = mkState(cfgPath, s.id, loadConfig({ cwd: "/w", configPath: cfgPath }, {}));
+    const res = tt.runSlashCommand("/settings requestTimeoutMs", state)!;
+    expect(res.output).toContain("requestTimeoutMs = 120000");
+    expect(res.output).toContain("abort a provider request");
   });
 });

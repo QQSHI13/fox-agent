@@ -55,7 +55,7 @@ ${flag("json", "headless NDJSON event stream (use with -p \"prompt\" or piped st
 ${flag("mini", "plain streaming REPL, no TUI")}
 ${flag("acp", "serve the Agent Client Protocol on stdio (for Zed, acpx, ...)")}
 ${flag("upgrade [--beta|<version>]", "self-update from GitHub releases")}
-${flag("help", "show this")}
+${flag("help [command]", "show overview, or help for one command")}
 
 slash commands inside a session: /help`;
 }
