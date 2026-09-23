@@ -2,7 +2,7 @@
 import type { Seg } from "./wrap.ts";
 import { liveTheme } from "./themes.ts";
 import { charWidth } from "./screen.ts";
-import { highlightLine } from "./highlight.ts";
+import { highlightLine, diffFenceLine, jsonSegs } from "./highlight.ts";
 
 // live theme lookups: a /theme switch recolors markdown on the next frame
 const MD = liveTheme<"ACCENT" | "CODE_FG" | "HEAD" | "DIM" | "LINK">({
@@ -47,18 +47,23 @@ export function renderMarkdown(src: string, state?: MdState): Seg[][] {
 
   const inline = (text: string, base?: Partial<Seg>): Seg[] => {
     const segs: Seg[] = [];
-    const re = /(\*\*([^*]+)\*\*|__([^_]+)__|\*([^*\s][^*]*)\*|`([^`]+)`|\[([^\]]+)\]\(([^)]+)\))/g;
+    const re = /(\*\*([^*]+)\*\*|__([^_]+)__|\*([^*\s][^*]*)\*|`([^`]+)`|!\[([^\]]*)\]\(([^)\s]+)\)|\[([^\]]+)\]\(([^)]+)\)|~~([^~]+)~~)/g;
     let last = 0;
     let m: RegExpExecArray | null;
     while ((m = re.exec(text))) {
       if (m.index > last) segs.push({ t: text.slice(last, m.index), ...base });
-      if (m[2] || m[3]) segs.push({ t: m[2] ?? m[3]!, bold: true, ...base });
-      else if (m[4]) segs.push({ t: m[4], italic: true, ...base });
+      if (m[2] || m[3]) segs.push(...inline(m[2] ?? m[3]!, { bold: true, ...base }));
+      else if (m[4]) segs.push(...inline(m[4], { italic: true, ...base }));
       else if (m[5]) segs.push({ t: m[5], fg: MD.CODE_FG, ...base });
-      else if (m[6]) {
-        segs.push({ t: m[6], fg: MD.LINK, ...base });
-        segs.push({ t: ` (${m[7]})`, fg: MD.DIM, ...base });
-      }
+      else if (m[6] !== undefined) {
+        // image: a terminal cannot show it — a dim placeholder that still
+        // hyperlinks to the target so a click (or terminal link handler) opens it
+        segs.push({ t: `[image: ${m[6]}]`, fg: MD.DIM, href: m[7], ...base });
+      } else if (m[8]) {
+        // link: label only, the URL rides in an OSC 8 hyperlink instead of
+        // being printed after it
+        segs.push({ t: m[8], fg: MD.LINK, href: m[9], ...base });
+      } else if (m[10]) segs.push({ t: m[10], strike: true, ...base });
       last = re.lastIndex;
     }
     if (last < text.length) segs.push({ t: text.slice(last), ...base });
@@ -82,8 +87,16 @@ export function renderMarkdown(src: string, state?: MdState): Seg[][] {
         hadCode = true;
         if (state) state.hadCode = true;
         // rich mode tints tokens; the gutter bar keeps the flat code color so
-        // the block still reads as one unit
-        out.push(rich ? [{ t: "│ ", fg: MD.CODE_FG }, ...highlightLine(line, fenceLang).map((s) => ({ fg: MD.CODE_FG, ...s }))] : [{ t: "│ " + line, fg: MD.CODE_FG }]);
+        // the block still reads as one unit. A ```diff fence colors by marker
+        // (added/removed/hunk) instead of by syntax; non-marker lines fall
+        // back to the plain code tint.
+        let lineSegs: Seg[] | null = null;
+        if (rich) {
+          if (/^(diff|patch)$/i.test(fenceLang)) lineSegs = diffFenceLine(line) ?? [{ t: line }];
+          else if (/^(json|jsonc)$/i.test(fenceLang)) lineSegs = jsonSegs(line);
+          else lineSegs = highlightLine(line, fenceLang);
+        }
+        out.push(lineSegs ? [{ t: "│ ", fg: MD.CODE_FG }, ...lineSegs.map((s) => ({ fg: MD.CODE_FG, ...s }))] : [{ t: "│ " + line, fg: MD.CODE_FG }]);
       }
       i++;
       continue;

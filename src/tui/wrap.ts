@@ -7,6 +7,10 @@ export interface Seg {
   bg?: string;
   bold?: boolean;
   italic?: boolean;
+  /** strikethrough (~~text~~) — SGR 9/29 at flush time */
+  strike?: boolean;
+  /** hyperlink target: rendered as an OSC 8 hyperlink, never printed as text */
+  href?: string;
 }
 
 export function segWidth(s: string): number {

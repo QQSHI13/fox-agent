@@ -6,6 +6,10 @@ export interface Style {
   bg?: string;
   bold?: boolean;
   italic?: boolean;
+  /** strikethrough: SGR 9 on, 29 off */
+  strike?: boolean;
+  /** OSC 8 hyperlink target; empty string ends a hyperlink */
+  href?: string;
 }
 
 function rgb(hex?: string): number {
@@ -51,6 +55,8 @@ export class Screen {
   private defSty = -1;
   private cursorRow = -1;
   private _lastDirty = false;
+  /** href of the currently open OSC 8 hyperlink ("" = none) */
+  private lastHref = "";
 
   constructor(private term: Term) {}
 
@@ -60,7 +66,7 @@ export class Screen {
   }
 
   sgr(s: Style): number {
-    const key = `${s.fg ?? ""}|${s.bg ?? ""}|${s.bold ? 1 : 0}|${s.italic ? 1 : 0}`;
+    const key = `${s.fg ?? ""}|${s.bg ?? ""}|${s.bold ? 1 : 0}|${s.italic ? 1 : 0}|${s.strike ? 1 : 0}|${s.href ?? ""}`;
     let i = this.styleIdx.get(key);
     if (i === undefined) {
       i = this.styles.push(s) - 1;
@@ -76,6 +82,7 @@ export class Screen {
     this.sty = new Uint16Array(w * h).fill(this.defaultStyle());
     this.prevHash = new Float64Array(h).fill(NaN);
     this.cursorRow = -1;
+    this.lastHref = "";
   }
 
   dims() {
@@ -191,14 +198,20 @@ export class Screen {
           physX = x;
         }
         const s = this.styles[this.sty[base + x]] ?? {};
+        const href = s.href ?? "";
         const sgr = sgrOf(s);
-        if (sgr !== runSgr) {
+        if (sgr !== runSgr || href !== this.lastHref) {
           // sgrOf only ever ADDS attributes — a style that drops bg/bold/italic
           // emits nothing for it, and the terminal would keep the old attribute
           // for the rest of the run (this leaked the selection highlight to
-          // end-of-line). Reset first, then apply.
+          // end-of-line). Reset first, then apply. An href change also closes
+          // the old OSC 8 link before the new one opens — two styles can share
+          // an identical SGR string yet differ only in href.
+          if (this.lastHref && href !== this.lastHref) line += "\x1b]8;;\x1b\\";
           line += runSgr ? `\x1b[0m${sgr}` : sgr;
+          if (href) line += `\x1b]8;;${href}\x1b\\`;
           runSgr = sgr;
+          this.lastHref = href;
         }
         line += ch;
         const cw = Math.max(1, charWidth(ch.codePointAt(0)!));
@@ -206,6 +219,14 @@ export class Screen {
         painted += cw;
       }
       out += line;
+      // every dirty row leaves the terminal clean: close any open hyperlink,
+      // then drop SGR state — the next dirty row re-emits whatever it needs.
+      // lastHref resets to match the terminal, or the next row would assume a
+      // link is still open and skip its opener.
+      if (this.lastHref) {
+        out += "\x1b]8;;\x1b\\";
+        this.lastHref = "";
+      }
       if (runSgr) out += "\x1b[0m";
       if (painted < this.w) out += "\x1b[K";
     }
@@ -261,6 +282,7 @@ function sgrOf(s: Style): string {
   }
   if (s.bold) out += "\x1b[1m";
   if (s.italic) out += "\x1b[3m";
+  if (s.strike) out += "\x1b[9m";
   return out;
 }
 

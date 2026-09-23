@@ -47,7 +47,7 @@ import { debugLog, debugLogPath } from "../core/debuglog.ts";
 import { droppedPath, expandMentions } from "../core/mentions.ts";
 import { liveTheme, setTheme, themeName, type Theme } from "./themes.ts";
 import { setRichMarkdown } from "./markdown.ts";
-import { diffSegs } from "./highlight.ts";
+import { diffSegs, jsonSegs, statusSegs, pathSegs, wordDiff, ansiSegs } from "./highlight.ts";
 
 type ItemKind = "user" | "toolhead" | "toolbody" | "info" | "error" | "md" | "think";
 interface Item {
@@ -2041,6 +2041,34 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     }
   }
 
+  /**
+   * Word-level diff of a paired -/+ line pair. The `+` line shows additions
+   * tinted; the `-` line deletions. Lines with no shared words (a full rewrite)
+   * degrade to whole-line coloring via the caller's diffSegs check.
+   */
+  function wordDiffSegs(line: string, other: string): Seg[] | null {
+    const isAdd = line.startsWith("+");
+    const marker = line[0];
+    const body = line.slice(1);
+    const otherBody = other.slice(1);
+    const d = wordDiff(otherBody, body);
+    const segs = isAdd ? d.add : d.del;
+    // tinted segs present, and the change is not the entire line: a full-line
+    // change reads better as the plain red/green of diffSegs
+    const tinted = segs.filter((s) => s.fg);
+    const tintedChars = tinted.reduce((n, s) => n + s.t.length, 0);
+    if (!tinted.length || tintedChars >= body.length * 0.8) return null;
+    const out: Seg[] = [{ t: marker }];
+    out.push(...segs);
+    return out;
+  }
+
+  /** a line that opens or continues a JSON value — strings, braces, or keys */
+  function looksLikeJson(line: string): boolean {
+    const t = line.trim();
+    return /^[{\[}"]/.test(t) || /^"[^"]*"\s*:/.test(t) || /^\d+[},{]/.test(t);
+  }
+
   function itemRows(it: Item, w: number): { rows: Row[]; gap: boolean } {
     const cached = lineCache.get(it.k);
     if (cached && cached.rev === revs.get(it.k) && cached.w === w) return cached;
@@ -2091,8 +2119,35 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           for (const mline of renderMarkdown(it.text)) rows.push(...wrapSegs(mline, w).map((segs) => ({ segs })));
         } else {
           const lines = it.text.split("\n");
+          // Pair each -/+ run so rich mode can word-diff INSIDE changed lines:
+          // pairOf[i] is the index of the line this one is paired with.
+          const pairOf = new Map<number, number>();
+          for (let li = 0; li + 1 < lines.length; li++) {
+            if (/^-/.test(lines[li]) && /^\+/.test(lines[li + 1]) && !/^---/.test(lines[li]) && !/^\+\+\+/.test(lines[li + 1])) {
+              pairOf.set(li, li + 1);
+              pairOf.set(li + 1, li);
+              li++;
+            }
+          }
           for (let li = 0; li < lines.length; li++) {
-            const colored = RICH ? diffSegs(lines[li]) : null;
+            let colored: Seg[] | null = null;
+            if (RICH) {
+              colored = ansiSegs(lines[li]);
+              const plain = colored.length === 1 && !colored[0].fg && !colored[0].bold && !colored[0].italic && !colored[0].strike;
+              if (plain) {
+                // no ANSI colors in this line: try the structural tinting,
+                // most specific first
+                const line = lines[li];
+                colored =
+                  diffSegs(line) ??
+                  (pairOf.has(li)
+                    ? wordDiffSegs(line, lines[pairOf.get(li)!])
+                    : null) ??
+                  statusSegs(line) ??
+                  pathSegs(line) ??
+                  (looksLikeJson(line) ? jsonSegs(line) : null);
+              }
+            }
             const segs = colored ? [{ t: "  ", fg: C.chrome }, ...colored] : [{ t: `  ${lines[li]}`, ...itemStyle(it.kind) }];
             rows.push(...wrapSegs(segs, w).map((segs) => ({ segs })));
           }
@@ -2561,7 +2616,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
 
   function paint() {
     const st = (seg: Seg, fallback: number): number => {
-      if (!seg.fg && !seg.bg && !seg.bold && !seg.italic) return fallback;
+      if (!seg.fg && !seg.bg && !seg.bold && !seg.italic && !seg.strike && !seg.href) return fallback;
       return screen.sgr(seg);
     };
 
