@@ -1414,6 +1414,17 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     markDirty();
   }
 
+  /**
+   * True when a toolhead's full input is already visible on the head line —
+   * single-line detail that fits the screen width. There is nothing left to
+   * reveal, so the affordance text is noise and a click must not fold/unfold.
+   * Head renders as "▸ " + text + " · " + detail from column 1.
+   */
+  function toolInputFits(it: Item): boolean {
+    if (it.kind !== "toolhead" || !it.detail || it.detail.includes("\n")) return false;
+    return 2 + it.text.length + 3 + it.detail.length <= W;
+  }
+
   // ---- keyboard ----
   /** Floating command output (/help, /todo, /usage…): painted above the dock
    *  like the slash hints, never pushed into the transcript. Dismissed by any
@@ -1995,7 +2006,11 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     const row = y + scrollTop;
     if (y >= vh || row < 0 || row >= rowOwner.length) return;
     const it = items.find((i) => i.k === rowOwner[row]);
-    if (it) toggleExpand(it);
+    if (!it) return;
+    // a toolhead whose input already fits has nothing to reveal: a click is
+    // ignored rather than folding a line that is identical expanded
+    if (it.kind === "toolhead" && !it.expanded && toolInputFits(it)) return;
+    toggleExpand(it);
   }
 
   function isExpanded(it: Item): boolean {
@@ -2055,7 +2070,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
             segs: [
               { t: "▸ ", fg: C.chrome },
               { t: it.text, fg: C.tool },
-              { t: " · input — click or ctrl+t", fg: C.chrome },
+              // the affordance only makes sense when there is something to
+              // reveal: a one-line input that already fits is fully visible
+              ...(toolInputFits(it) ? [] : [{ t: " · input — click or ctrl+t", fg: C.chrome }]),
             ],
           },
         ];
@@ -2371,10 +2388,6 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         rowBuf.push(r);
         rowOwner.push(-1); // one owner per row, or hit-testing drifts below here
       }
-    }
-    if (busy && streamText === null) {
-      rowBuf.push({ segs: [{ t: "◦ working… (esc interrupts)", fg: C.chrome }] });
-      rowOwner.push(-1);
     }
   }
 
