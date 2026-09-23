@@ -96,3 +96,52 @@ describe("tables", () => {
     expect(text).toEqual(["intro", "│ a │", "├───┤", "│ b │"]);
   });
 });
+
+describe("task lists", () => {
+  test("[x] renders a settled check with receded content", () => {
+    const rows = renderMarkdown("- [x] fix the login bug");
+    expect(rows.length).toBe(1);
+    expect(rows[0][0].t).toBe("✔ ");
+    expect(rows[0][0].fg).toBeDefined();
+    const body = rows[0].slice(1).map((s) => s.t).join("");
+    expect(body).toBe("fix the login bug");
+    // done items recede: dimmed content
+    expect(rows[0].some((s) => s.fg !== undefined && s.t === "fix the login bug")).toBe(true);
+  });
+
+  test("[~] renders an in-flight arrow with bold content", () => {
+    const rows = renderMarkdown("- [~] migrating the store");
+    expect(rows[0][0].t).toBe("▸ ");
+    const body = rows[0].slice(1);
+    expect(body.some((s) => s.bold && s.t.includes("migrating the store"))).toBe(true);
+  });
+
+  test("[ ] renders an open box with plain content", () => {
+    const rows = renderMarkdown("- [ ] write tests first");
+    expect(rows[0][0].t).toBe("☐ ");
+    expect(rows[0].slice(1).map((s) => s.t).join("")).toBe("write tests first");
+    expect(rows[0].slice(1).some((s) => s.bold)).toBe(false);
+  });
+
+  test("indentation is preserved and content keeps inline styling", () => {
+    const rows = renderMarkdown("- [ ] plain\n  - [x] **bold nested** `code`");
+    const text = rows.map((r) => r.map((s) => s.t).join(""));
+    expect(text[1]).toBe("  ✔ bold nested code");
+    const nested = rows[1];
+    expect(nested.some((s) => s.bold)).toBe(true);
+    expect(nested.some((s) => s.fg !== undefined && s.t === "code")).toBe(true);
+  });
+
+  test("uppercase [X] counts as done", () => {
+    const rows = renderMarkdown("- [X] capitalized");
+    expect(rows[0][0].t).toBe("✔ ");
+  });
+
+  test("plain list items are unaffected", () => {
+    const rows = renderMarkdown("- [not a status] weird\n- normal");
+    const text = rows.map((r) => r.map((s) => s.t).join(""));
+    // "[not a status]" is not a single-char task marker — stays literal text
+    expect(text[0]).toContain("[not a status]");
+    expect(text[1]).toContain("• normal");
+  });
+});

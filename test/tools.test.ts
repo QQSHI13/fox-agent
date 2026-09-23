@@ -411,3 +411,39 @@ describe("childEnv", () => {
     }
   });
 });
+
+describe("todowrite", () => {
+  test("result is a markdown task list, no emoji markers", async () => {
+    const { todoRun, renderTodosMd, renderTodos } = await import("../src/tools/todo.ts");
+    const r = await todoRun(
+      {
+        todos: [
+          { content: "done thing", status: "done" },
+          { content: "active thing", status: "in_progress" },
+          { content: "later thing", status: "pending" },
+        ],
+      },
+      ctx,
+    );
+    expect(r.ok).toBe(true);
+    // GFM task-list syntax, not ballot-box glyphs
+    expect(r.output).toContain("- [x] done thing");
+    expect(r.output).toContain("- [~] active thing");
+    expect(r.output).toContain("- [ ] later thing");
+    expect(r.output).not.toContain("☑");
+    expect(r.output).not.toContain("☐");
+    // the plain (model-facing) renderer is ASCII too
+    expect(renderTodos([{ content: "x", status: "done" }])).toBe("[x] x");
+    expect(renderTodos([{ content: "x", status: "in_progress" }])).toBe("[~] x");
+    expect(renderTodos([{ content: "x", status: "pending" }])).toBe("[ ] x");
+    // markdown helper matches
+    expect(renderTodosMd([{ content: "x", status: "done" }])).toBe("- [x] x");
+  });
+
+  test("validation still rejects junk", async () => {
+    const { todoRun } = await import("../src/tools/todo.ts");
+    expect((await todoRun({}, ctx)).ok).toBe(false);
+    expect((await todoRun({ todos: [{ content: "", status: "done" }] }, ctx)).ok).toBe(false);
+    expect((await todoRun({ todos: [{ content: "x", status: "paused" as "done" }] }, ctx)).ok).toBe(false);
+  });
+});

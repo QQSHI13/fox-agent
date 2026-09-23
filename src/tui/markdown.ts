@@ -125,6 +125,23 @@ export function renderMarkdown(src: string, state?: MdState): Seg[][] {
 
     const ul = /^(\s*)[-*+]\s+(.*)/.exec(line);
     if (ul) {
+      // GFM task list: [x] done (✔ + receded), [~] in progress (▸ + bold),
+      // [ ] pending (☐). The todo tool emits exactly this syntax, so agent
+      // task lists read as status, not punctuation.
+      const task = /^\[(.)\]\s+(.*)/.exec(ul[2]);
+      if (task) {
+        const mark = task[1].toLowerCase();
+        const content = task[2];
+        if (mark === "x") {
+          out.push([{ t: `${ul[1]}✔ `, fg: MD.CODE_FG }, ...inline(content, { fg: MD.DIM })]);
+        } else if (mark === "~") {
+          out.push([{ t: `${ul[1]}▸ `, fg: MD.ACCENT }, ...inline(content, { bold: true })]);
+        } else {
+          out.push([{ t: `${ul[1]}☐ `, fg: MD.DIM }, ...inline(content)]);
+        }
+        i++;
+        continue;
+      }
       out.push([{ t: `${ul[1]}• `, fg: MD.ACCENT }, ...inline(ul[2])]);
       i++;
       continue;

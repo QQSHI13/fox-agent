@@ -68,6 +68,9 @@ interface Item {
   /** part of the startup block — rebuilt live when config changes, and dropped
    *  (with the block's lifetime) by the next refresh() */
   welcome?: boolean;
+  /** tool result whose body is markdown (todowrite task lists) — expanded
+   *  rendering goes through the markdown parser instead of plain lines */
+  mdBody?: boolean;
 }
 
 /**
@@ -370,8 +373,8 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   }
 
   // ---- item mutations ----
-  function push(kind: ItemKind, text: string, opts?: { ref?: number; expanded?: boolean; ephemeral?: boolean; toolResult?: boolean; detail?: string; welcome?: boolean }) {
-    const it: Item = { k: nk(), kind, text, ref: opts?.ref, expanded: opts?.expanded, ephemeral: opts?.ephemeral, toolResult: opts?.toolResult, detail: opts?.detail, welcome: opts?.welcome };
+  function push(kind: ItemKind, text: string, opts?: { ref?: number; expanded?: boolean; ephemeral?: boolean; toolResult?: boolean; detail?: string; welcome?: boolean; mdBody?: boolean }) {
+    const it: Item = { k: nk(), kind, text, ref: opts?.ref, expanded: opts?.expanded, ephemeral: opts?.ephemeral, toolResult: opts?.toolResult, detail: opts?.detail, welcome: opts?.welcome, mdBody: opts?.mdBody };
     items.push(it);
     touch(it.k);
     markDirty();
@@ -407,12 +410,14 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     const nodes = projectView(state.sessionId).filter((n) => !n.deleted);
     const callLabel = new Map<string, string>();
     const callDetail = new Map<string, string>();
+    const callName = new Map<string, string>();
     for (const n of nodes) {
       if (n.msg.role === "assistant" && n.msg.tool_calls) {
         try {
           for (const c of JSON.parse(n.msg.tool_calls) as { id: string; name: string; arguments: string }[]) {
             callLabel.set(c.id, `${c.name}${argsSummary(c.arguments ?? "")}`);
             callDetail.set(c.id, argsFull(c.arguments ?? ""));
+            callName.set(c.id, c.name);
           }
         } catch {}
       }
@@ -421,6 +426,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       const m = n.msg;
       if (m.role === "user") out.push({ k: nk(), kind: "user", text: `[m${m.seq}] ❯ ${n.content}` });
       else if (m.role === "tool") {
+        // todowrite bodies are markdown task lists — rendered as md, always
+        // visible (a task list hidden behind a click is useless)
+        const isTodo = callName.get(m.tool_call_id ?? "") === "todowrite";
         out.push({ k: nk(), kind: "toolhead", text: `[m${m.seq}] » ${callLabel.get(m.tool_call_id ?? "") ?? "tool"}`, detail: callDetail.get(m.tool_call_id ?? "") });
         // raw text — collapsed/expanded rendering lives in itemRows
         out.push({
@@ -429,8 +437,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           text: n.content.slice(0, KEPT_TOOL_CHARS * 4),
           ref: m.seq,
           toolResult: true,
+          mdBody: isTodo || undefined,
           // collapsed by default, but an explicit expand survives refresh()
-          expanded: expandedRefs.has(m.seq),
+          expanded: isTodo || expandedRefs.has(m.seq),
         });
       } else if (m.role === "think")
         out.push({ k: nk(), kind: "think", text: n.content, ref: m.seq, expanded: expandedRefs.has(m.seq) });
@@ -1147,7 +1156,14 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           push("toolhead", `[m${ev.seq}] » ${callLabels.get(ev.id) ?? `${ev.name}${argsSummary(ev.args)}`}${ev.ok ? "" : " — failed"}`, { detail, expanded: headOpen || undefined });
           const bodyOpenFinal = expandedRefs.has(ev.seq) || bodyOpen;
           if (bodyOpenFinal) expandedRefs.add(ev.seq);
-          push("toolbody", ev.output.slice(0, KEPT_TOOL_CHARS * 4), { ref: ev.seq, expanded: bodyOpenFinal, toolResult: true });
+          // todowrite bodies are markdown task lists — always visible, rendered
+          // as md (see itemRows mdBody); a task list hidden behind a click is
+          // useless and collapsed markdown punctuation looks like garbage
+          if (ev.name === "todowrite") {
+            push("toolbody", ev.output.slice(0, KEPT_TOOL_CHARS * 4), { ref: ev.seq, expanded: true, toolResult: true, mdBody: true });
+          } else {
+            push("toolbody", ev.output.slice(0, KEPT_TOOL_CHARS * 4), { ref: ev.seq, expanded: bodyOpenFinal, toolResult: true });
+          }
           statsRev++;
         } else if (ev.type === "child_tool") {
           // A subagent's progress: ONE line per delegated session, updated in
@@ -2052,11 +2068,17 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         // full output: real lines, no ⏎ one-lining, no ↳ prefix. Rich mode
         // paints unified-diff/git markers in their own colors.
         rows = [];
-        const lines = it.text.split("\n");
-        for (let li = 0; li < lines.length; li++) {
-          const colored = RICH ? diffSegs(lines[li]) : null;
-          const segs = colored ? [{ t: "  ", fg: C.chrome }, ...colored] : [{ t: `  ${lines[li]}`, ...itemStyle(it.kind) }];
-          rows.push(...wrapSegs(segs, w).map((segs) => ({ segs })));
+        if (it.mdBody) {
+          // markdown body (todowrite task lists): through the md parser so
+          // task-list syntax renders as status marks, not punctuation
+          for (const mline of renderMarkdown(it.text)) rows.push(...wrapSegs(mline, w).map((segs) => ({ segs })));
+        } else {
+          const lines = it.text.split("\n");
+          for (let li = 0; li < lines.length; li++) {
+            const colored = RICH ? diffSegs(lines[li]) : null;
+            const segs = colored ? [{ t: "  ", fg: C.chrome }, ...colored] : [{ t: `  ${lines[li]}`, ...itemStyle(it.kind) }];
+            rows.push(...wrapSegs(segs, w).map((segs) => ({ segs })));
+          }
         }
       } else {
         // collapsed: one arrow line, like thinking — no partial preview

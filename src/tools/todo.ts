@@ -31,11 +31,26 @@ export const todoDef: ToolDef = {
   },
 };
 
-const ICON = { pending: "☐", in_progress: "▸", done: "☑" };
+// ASCII markers (AGENTS.md convention — ballot-box glyphs like ☑ render as
+// emoji on some terminals), and [x]/[~]/[ ] matches the markdown task-list
+// syntax the tool result is rendered with.
+const ICON = { pending: "[ ]", in_progress: "[~]", done: "[x]" };
 
+/** Plain rendering — model-facing (runtime header in the system prompt). */
 export function renderTodos(todos: TodoItem[] | null): string {
   if (!todos?.length) return "";
-  return todos.map((t) => `${ICON[t.status] ?? "☐"} ${t.content}`).join("\n");
+  return todos.map((t) => `${ICON[t.status] ?? "[ ]"} ${t.content}`).join("\n");
+}
+
+/**
+ * GFM task-list markdown — display-facing. The TUI renders `[x]` as a
+ * settled ✔, `[~]` as an in-flight ▸ with bold text, `[ ]` as an open ☐.
+ */
+const MD_MARK = { pending: "[ ]", in_progress: "[~]", done: "[x]" };
+
+export function renderTodosMd(todos: TodoItem[] | null): string {
+  if (!todos?.length) return "";
+  return todos.map((t) => `- ${MD_MARK[t.status] ?? "[ ]"} ${t.content}`).join("\n");
 }
 
 export async function todoRun(args: { todos?: TodoItem[] }, ctx: ToolContext): Promise<ToolResult> {
@@ -46,7 +61,7 @@ export async function todoRun(args: { todos?: TodoItem[] }, ctx: ToolContext): P
     if (!["pending", "in_progress", "done"].includes(t.status)) return fail(`error: bad status ${t.status}`);
   }
   kvSet(ctx.sessionId, "todos", todos);
-  return ok(`todo list set (${todos.filter((t) => t.status === "done").length}/${todos.length} done):\n${renderTodos(todos)}`);
+  return ok(`todo list updated (${todos.filter((t) => t.status === "done").length}/${todos.length} done):\n${renderTodosMd(todos)}`);
 }
 
 export function getTodos(sessionId: string): TodoItem[] | null {
