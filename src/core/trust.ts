@@ -117,6 +117,9 @@ async function drainBurst(stdin: NodeJS.ReadStream, quietMs = 150, maxMs = 800):
 }
 
 async function readTrustKey(prompt: string): Promise<string> {
+  // The question ends in ": " on purpose (see readTrustKey's echo): the
+  // deciding key lands right after it, on the same line, so the prompt line
+  // reads "… [c]hange directory: y" and nothing else follows it.
   err(prompt);
   const stdin = process.stdin as NodeJS.ReadStream & { setRawMode?: (mode: boolean) => void };
   if (process.stdin.isTTY && typeof stdin.setRawMode === "function") {
@@ -130,10 +133,12 @@ async function readTrustKey(prompt: string): Promise<string> {
         };
         stdin.on("data", onData);
       });
-      // raw mode echoes nothing — show the deciding key so the terminal
-      // history reads sensibly (first char only: a pasted "yes" decides on y)
+      // raw mode echoes nothing — echo the deciding key + newline so the
+      // terminal history shows the answer on the prompt line and nothing
+      // else follows it (console.error here used to spend an extra line
+      // after the prompt; first char only: a pasted "yes" decides on y)
       const first = key[0] ?? "";
-      err(first === "\r" || first === "\n" ? "(enter)" : first.replace(/[\x00-\x1f\x7f]/g, ""));
+      process.stderr.write(first === "\r" || first === "\n" ? "\n" : `${first.replace(/[\x00-\x1f\x7f]/g, "")}\n`);
       await drainBurst(process.stdin as NodeJS.ReadStream);
       return key;
     } finally {

@@ -5,6 +5,12 @@
  * The current theme is module-level and mutable so `/theme` can switch live
  * without a restart: both consumers hold a proxy that resolves every property
  * access against the active palette.
+ *
+ * Contrast contract: `chrome`/`hint` render the workhorse secondary text
+ * (hints, the slash list, queued rows, tool bodies) and must hold >= 4.5:1
+ * against BOTH `barBg` and `inputBg`; `fg` >= 4.5 against `inputBg`. The
+ * first palettes shipped prettier-but-illegible grays (default's chrome
+ * measured 2.5:1, light's 1.8:1) — keep new palettes honest.
  */
 
 export interface Theme {
@@ -29,9 +35,12 @@ export const THEME_PRESETS: Record<string, Theme> = {
     user: "#7aa2f7",
     tool: "#e0af68",
     info: "#89ddff",
-    hint: "#565f89",
+    // chrome/hint are the workhorse secondary colors (hints, slash list,
+    // queued rows, tool bodies) — kept muted but legible: the old #565f89
+    // measured 2.5:1 on inputBg, below any readability floor
+    hint: "#828ac0",
     error: "#f7768e",
-    chrome: "#565f89",
+    chrome: "#828ac0",
     hintSel: "#c0caf5",
     accent: "#bb9af7",
     ok: "#9ece6a",
@@ -44,9 +53,9 @@ export const THEME_PRESETS: Record<string, Theme> = {
     user: "#2e7de9",
     tool: "#b15c00",
     info: "#007197",
-    hint: "#a1a6c5",
+    hint: "#585e7e",
     error: "#c64343",
-    chrome: "#a1a6c5",
+    chrome: "#585e7e",
     hintSel: "#1f2335",
     accent: "#7847bd",
     ok: "#587539",
@@ -59,9 +68,9 @@ export const THEME_PRESETS: Record<string, Theme> = {
     user: "#ffffff",
     tool: "#b0b0b0",
     info: "#d0d0d0",
-    hint: "#707070",
+    hint: "#9a9a9a",
     error: "#ffffff",
-    chrome: "#707070",
+    chrome: "#9a9a9a",
     hintSel: "#ffffff",
     accent: "#e0e0e0",
     ok: "#c0c0c0",
@@ -70,14 +79,16 @@ export const THEME_PRESETS: Record<string, Theme> = {
     selBg: "#404040",
   },
   "solarized-dark": {
-    fg: "#839496",
+    // base0 body text on base03 measured 4.1:1; base1 keeps the palette and
+    // lifts main text to 5.6
+    fg: "#93a1a1",
     user: "#268bd2",
     tool: "#b58900",
     info: "#2aa198",
-    hint: "#586e75",
+    hint: "#839496",
     error: "#dc322f",
-    chrome: "#586e75",
-    hintSel: "#93a1a1",
+    chrome: "#839496",
+    hintSel: "#eee8d5",
     accent: "#6c71c4",
     ok: "#859900",
     barBg: "#002b36",
@@ -89,9 +100,9 @@ export const THEME_PRESETS: Record<string, Theme> = {
     user: "#8be9fd",
     tool: "#ffb86c",
     info: "#8be9fd",
-    hint: "#6272a4",
+    hint: "#8794cd",
     error: "#ff5555",
-    chrome: "#6272a4",
+    chrome: "#8794cd",
     hintSel: "#f8f8f2",
     accent: "#bd93f9",
     ok: "#50fa7b",

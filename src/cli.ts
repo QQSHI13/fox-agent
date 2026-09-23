@@ -306,6 +306,10 @@ async function main() {
   // asked once per directory. --trust marks + skips the prompt.
   // TUI interactive prompts (and may chdir); every other mode never blocks —
   // untrusted headless/ACP/plain runs restricted (project commands ignored).
+  // No status notes on the TUI path: the prompt already names the directory,
+  // the welcome block repeats it inside the TUI, and an extra stderr line
+  // after the prompt was exactly the noise users flagged. The one exception
+  // is a [c]hange-directory answer — there the switch is worth a line.
   if (tuiMode && !!process.stdin.isTTY && !trustedDir) {
     const trusted = await trustMod.resolveTrustedCwd(cwd, { autoTrust: false });
     if (!trusted) {
@@ -325,9 +329,6 @@ async function main() {
     }
     trustedDir = true;
     configOverrides.trusted = true;
-    note(`working directory (trusted): ${cwd}`);
-  } else if (tuiMode && !!process.stdin.isTTY) {
-    note(`working directory (trusted): ${cwd}`);
   } else if (!trustedDir) {
     // Non-interactive: fail safe, not silent. Project [mcpServers/agents/lsp/
     // providers] are ignored by loadConfig(trusted:false); the warnings surface
