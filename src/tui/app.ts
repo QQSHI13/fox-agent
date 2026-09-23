@@ -2132,17 +2132,15 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           for (let li = 0; li < lines.length; li++) {
             let colored: Seg[] | null = null;
             if (RICH) {
-              colored = ansiSegs(lines[li]);
+              const line = lines[li];
+              const paired = pairOf.has(li) ? wordDiffSegs(line, lines[pairOf.get(li)!]) : null;
+              // word-diff (partial change) beats whole-line diff coloring;
+              // then ANSI passthrough, then the structural tints
+              colored = paired ?? ansiSegs(line);
               const plain = colored.length === 1 && !colored[0].fg && !colored[0].bold && !colored[0].italic && !colored[0].strike;
               if (plain) {
-                // no ANSI colors in this line: try the structural tinting,
-                // most specific first
-                const line = lines[li];
                 colored =
                   diffSegs(line) ??
-                  (pairOf.has(li)
-                    ? wordDiffSegs(line, lines[pairOf.get(li)!])
-                    : null) ??
                   statusSegs(line) ??
                   pathSegs(line) ??
                   (looksLikeJson(line) ? jsonSegs(line) : null);
