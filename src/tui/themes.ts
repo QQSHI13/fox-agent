@@ -27,6 +27,8 @@ export interface Theme {
   barBg: string;
   inputBg: string;
   selBg: string;
+  /** background under tool-call rows (heads + bodies), subtly different from inputBg */
+  toolBg: string;
 }
 
 export const THEME_PRESETS: Record<string, Theme> = {
@@ -47,6 +49,7 @@ export const THEME_PRESETS: Record<string, Theme> = {
     barBg: "#16161e",
     inputBg: "#1f2335",
     selBg: "#364a82",
+    toolBg: "#232433",
   },
   light: {
     fg: "#1f2335",
@@ -62,6 +65,7 @@ export const THEME_PRESETS: Record<string, Theme> = {
     barBg: "#e4e6f0",
     inputBg: "#dde0ec",
     selBg: "#b6bfe2",
+    toolBg: "#d8dccc",
   },
   mono: {
     fg: "#d0d0d0",
@@ -77,6 +81,7 @@ export const THEME_PRESETS: Record<string, Theme> = {
     barBg: "#1a1a1a",
     inputBg: "#242424",
     selBg: "#404040",
+    toolBg: "#2e2e2e",
   },
   "solarized-dark": {
     // base0 body text on base03 measured 4.1:1; base1 keeps the palette and
@@ -94,6 +99,7 @@ export const THEME_PRESETS: Record<string, Theme> = {
     barBg: "#002b36",
     inputBg: "#073642",
     selBg: "#094656",
+    toolBg: "#0a474f",
   },
   dracula: {
     fg: "#f8f8f2",
@@ -109,6 +115,7 @@ export const THEME_PRESETS: Record<string, Theme> = {
     barBg: "#21222c",
     inputBg: "#282a36",
     selBg: "#44475a",
+    toolBg: "#2f3141",
   },
   // Every preset below was tuned to the same contrast contract as above:
   // every foreground >= 4.5:1 on inputBg, chrome/hint also >= 4.5 on barBg
@@ -127,6 +134,7 @@ export const THEME_PRESETS: Record<string, Theme> = {
     barBg: "#242933",
     inputBg: "#2e3440",
     selBg: "#434c5e",
+    toolBg: "#333a4a",
   },
   "catppuccin-mocha": {
     fg: "#cdd6f4",
@@ -142,6 +150,7 @@ export const THEME_PRESETS: Record<string, Theme> = {
     barBg: "#181825",
     inputBg: "#1e1e2e",
     selBg: "#414559",
+    toolBg: "#26253a",
   },
   "gruvbox-dark": {
     fg: "#ebdbb2",
@@ -157,6 +166,7 @@ export const THEME_PRESETS: Record<string, Theme> = {
     barBg: "#282828",
     inputBg: "#32302f",
     selBg: "#504945",
+    toolBg: "#3b3833",
   },
   "rose-pine": {
     fg: "#e0def4",
@@ -172,6 +182,7 @@ export const THEME_PRESETS: Record<string, Theme> = {
     barBg: "#191724",
     inputBg: "#1f1d2e",
     selBg: "#403d52",
+    toolBg: "#26233a",
   },
   "tokyo-day": {
     fg: "#343a55",
@@ -187,6 +198,7 @@ export const THEME_PRESETS: Record<string, Theme> = {
     barBg: "#d5d9e6",
     inputBg: "#e1e4ee",
     selBg: "#c3c9de",
+    toolBg: "#d5d9e2",
   },
   everforest: {
     fg: "#d3c6aa",
@@ -202,6 +214,7 @@ export const THEME_PRESETS: Record<string, Theme> = {
     barBg: "#2b3339",
     inputBg: "#343f44",
     selBg: "#4f585e",
+    toolBg: "#3d484d",
   },
 };
 

@@ -313,6 +313,8 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   let startedAt = 0;
   let flashMsg = "";
   let flashUntil = 0;
+  /** last-seen running tool name for the busy label ("thinking — exec") */
+  let busyMsg: string | null = null;
   let hintSel = 0;
   let stick = true;
   let scrollTop = 0;
@@ -915,18 +917,26 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       head.push(it);
     };
     w("info", `fox-agent v${VERSION} — ${banner}`);
-    w("toolbody", `working directory: ${state.cwd}`);
-    w("toolbody", `session ${state.sessionId || "new — created on first message"} · ${state.cwd}`);
-    if (!state.provider.apiKey)
-      w("error", "no API key configured — /login opens the setup wizard (saved to ~/.config/fox-agent/config.toml)");
+    // one item per BLOCK, not per line: itemRows wraps `\n`s as real new lines
+    // (not markdown paragraphs), and buildRows only blanks BETWEEN items — so
+    // the startup blockpaints without the blank line between every row
     const info = lookupModel(state.provider.model);
     w(
       "toolbody",
-      `model ${state.provider.model} (${Math.round(info.contextWindow / 1000)}k ctx) · ${providerDisplayName(state)}` +
-        `${state.provider.baseUrl && !/api\.openai\.com/.test(state.provider.baseUrl) ? ` · ${state.provider.baseUrl}` : ""}`,
+      [
+        `working directory: ${state.cwd}`,
+        state.sessionId
+          ? `session ${state.sessionId} · ${state.cwd}`
+          : "session new — created on first message",
+        ...(state.provider.apiKey
+          ? []
+          : ["no API key configured — /login opens the setup wizard (saved to ~/.config/fox-agent/config.toml)"]),
+        `model ${state.provider.model} (${Math.round(info.contextWindow / 1000)}k ctx) · ${providerDisplayName(state)}` +
+          (state.provider.baseUrl && !/api\.openai\.com/.test(state.provider.baseUrl) ? ` · ${state.provider.baseUrl}` : ""),
+        "enter send · \\ newline · ! shell · / commands · esc interrupt · ctrl+t expand all · drag/dbl-click select",
+        "/login setup · /model switch · /sessions resume · /usage tokens · /prune context · /upgrade update · /help all",
+      ].join("\n"),
     );
-    w("toolbody", "enter send · \\ newline · ! shell · / commands · esc interrupt · ctrl+t expand all · drag/dbl-click select");
-    w("toolbody", "/login setup · /model switch · /sessions resume · /usage tokens · /prune context · /upgrade update · /help all");
     items = [...head, ...rest];
     statsRev++;
     markDirty();
@@ -1132,7 +1142,8 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     // session label → its one live progress line (child_tool dedupe)
     const childItems = new Map<string, { item: Item; count: number; last: string }>();
     try {
-      for await (const ev of runTurn(state.sessionId, state.provider, raw, ac.signal, state.config, uiBridge)) {        if (ev.type === "reasoning") {
+      for await (const ev of runTurn(state.sessionId, state.provider, raw, ac.signal, state.config, uiBridge)) {
+        if (ev.type === "reasoning") {
           appendToLastThink(ev.delta);
         } else if (ev.type === "text") {
           md += ev.delta;
@@ -1148,6 +1159,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           callArgs.set(ev.id, ev.args);
           liveThink = null; // a tool boundary seals the thinking block before it
           // running header (suggested: `▶ fox — <session> — <tool>`)
+          busyMsg = ev.name;
           term.setTitle(`▶ fox — ${state.sessionId || "new"} — ${ev.name}`);
         } else if (ev.type === "tool_output") {
           // Live output of an in-flight call (exec streaming). Shown as a pair
@@ -1415,6 +1427,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     busy = v;
     if (v) {
       startedAt = Date.now();
+      busyMsg = null;
       // OSC 9;4 indeterminate: the tab/taskbar shows activity from turn start
       // until end, even when the TUI is in the background
       term.progress(3);
@@ -1537,7 +1550,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         moveCaretVertical(up ? -1 : 1, false);
         return;
       }
-      const dir = up ? -3 : 3;
+      const dir = up ? -1 : 1; // one line per wheel tick — granular
       if (stick && dir < 0) stick = false;
       scrollTop += dir;
       clampScroll();
@@ -2070,6 +2083,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   // ---- painting ----
   interface Row {
     segs: Seg[];
+    /** background fill style for the whole row (0 = default) — tool rows use
+     *  the theme's toolBg so calls read as one block in the transcript */
+    bg?: number;
   }
   const lineCache = new Map<number, { rev: number; w: number; rows: Row[]; rich: number }>();
   const LINE_CACHE_MAX = 2_000;
@@ -2131,7 +2147,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       const words = it.text.trim().split(/\s+/).length;
       rows = it.expanded
         ? wrapSegs([{ t: `▾ thinking\n${it.text}`, fg: C.chrome }], w).map((segs) => ({ segs }))
-        : [{ segs: [{ t: `▸ thinking (${words} words) · click or ctrl+t`, fg: C.chrome }] }];
+        : [{ segs: [{ t: `▸ thinking (${words} words)`, fg: C.chrome }] }];
     } else if (it.kind === "toolhead" && it.detail) {
       // a tool call whose input overflowed the head line: collapsed shows the
       // one-liner with a leading arrow (like thinking/output) plus a hint, so
@@ -2147,9 +2163,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
             segs: [
               { t: "▸ ", fg: C.chrome },
               { t: it.text, fg: C.tool },
-              // the affordance only makes sense when there is something to
-              // reveal: a one-line input that already fits is fully visible
-              ...(toolInputFits(it) ? [] : [{ t: " · input — click or ctrl+t", fg: C.chrome }]),
+              // a one-line input that already fits collapses to the same
+              // pixels expanded — folding it would be a no-op surprise
+              ...(toolInputFits(it) ? [] : [{ t: " · input", fg: C.chrome }]),
             ],
           },
         ];
@@ -2206,7 +2222,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         rows = [
           {
             segs: [
-              { t: `  ▸ output (${lines > 1 ? `${lines} lines` : `${chars} chars`}) · click or ctrl+t`, fg: C.chrome },
+              { t: `  ▸ output (${lines > 1 ? `${lines} lines` : `${chars} chars`})`, fg: C.chrome },
             ],
           },
         ];
@@ -2497,10 +2513,22 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       while (rows.length && !rows[0].segs.length) rows.shift();
       while (rows.length && !rows[rows.length - 1].segs.length) rows.pop();
       if (!rows.length) continue; // fully blank item contributes nothing
-      // exactly one blank row between items — except a toolbody stays glued
-      // to its toolhead: output belongs to the call that produced it
-      if (lastHadRows && !(lastKind === "toolhead" && it.kind === "toolbody")) rowBuf.push({ segs: [] });
+      // exactly one blank row between items. Glued pairs (no blank row):
+      //   toolhead→toolbody — output belongs to the call that produced it
+      //   think→toolhead — a thinking block sits directly on the tool it led to
+      //   toolbody→think   — and a FOLLOW-UP thinking block after a tool is
+      //                      part of the same step, so no gap either
+      if (
+        lastHadRows &&
+        !(lastKind === "toolhead" && it.kind === "toolbody") &&
+        !((lastKind === "think" || lastKind === "toolbody") && it.kind === "think") &&
+        !(lastKind === "think" && it.kind === "toolhead")
+      )
+        rowBuf.push({ segs: [] });
       for (const r of rows) {
+        // tool calls (head + result body) get the theme's toolBg row fill;
+        // the head's own fg stays at itemStyle — only the background changes
+        if (it.kind === "toolhead" || it.toolResult) r.bg = S.toolBgRow;
         rowBuf.push(r);
         rowOwner.push(it.k);
       }
@@ -2614,6 +2642,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     hintSel: 0,
     inputBgRow: 0,
     barBgRow: 0,
+    toolBgRow: 0,
     sbThumb: 0,
     overlayRow: 0,
     overlaySel: 0,
@@ -2633,6 +2662,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     S.hintSel = screen.sgr({ fg: C.hintSel, bg: C.barBg });
     S.inputBgRow = screen.sgr({ fg: C.fg, bg: C.inputBg });
     S.barBgRow = screen.sgr({ fg: C.fg, bg: C.barBg });
+    S.toolBgRow = screen.sgr({ fg: C.fg, bg: C.toolBg });
     S.sbThumb = screen.sgr({ bg: C.hint }); // theme's muted tone: visible on both bar and transcript
     S.overlayRow = screen.sgr({ fg: C.fg, bg: C.inputBg });
     S.overlaySel = screen.sgr({ fg: C.hintSel, bg: C.selBg });
@@ -2704,6 +2734,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     let y = 0;
     for (let i = scrollTop; i < rowBuf.length && y < vh; i++, y++) {
       const row = rowBuf[i];
+      // tool rows fill to the full width first, so the text paints over a
+      // background instead of floating in default
+      if (row.bg) screen.fillRow(y, 0, W, row.bg);
       let x = 1;
       for (const seg of row.segs) {
         x = screen.text(x, y, seg.t, st(seg, S.base));
@@ -2885,12 +2918,13 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     // status bar
     screen.fillRow(barY, 0, W, S.barBgRow);
     let lx = 1;
-    if (busy) {
-      // flash rides along while busy, so a mid-turn copy still confirms
-      const fl = Date.now() < flashUntil && flashMsg ? ` · ${flashMsg}` : "";
-      lx = screen.text(lx, barY, clipW(`${SPIN[frameIdx]} ${streamText !== null ? "responding" : "thinking"} ${elapsed()}${fl}`, W - 2), S.accent);
-    } else if (Date.now() < flashUntil && flashMsg) {
-      lx = screen.text(lx, barY, `${flashMsg}`, S.ok);
+    // a fresh flash REPLACES the busy label entirely — "copied", "steering
+    // queued" etc. are the thing the user just did and reads first; the
+    // thinking/responding state returns when the flash expires
+    if (Date.now() < flashUntil && flashMsg) {
+      lx = screen.text(lx, barY, `${flashMsg}`, busy ? S.accent : S.ok);
+    } else if (busy) {
+      lx = screen.text(lx, barY, clipW(`${SPIN[frameIdx]} ${streamText !== null ? "responding" : "thinking"}${busyMsg ? ` — ${busyMsg}` : ""} ${elapsed()}`, W - 2), S.accent);
     } else {
       lx = screen.text(lx, barY, `ready`, S.ok);
     }
