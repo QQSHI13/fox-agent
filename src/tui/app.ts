@@ -90,8 +90,12 @@ export function setTuiCaps(collapsed: number, kept: number): void {
  * fences and diff-colored tool output.
  */
 let RICH = false;
+/** Bumped on every rich-mode flip: cached item rows embed flat vs diff-colored
+ *  lines, so flipping must invalidate them or earlier history keeps the old look. */
+let richRev = 0;
 export function setTuiRich(on: boolean): void {
   RICH = on;
+  richRev++;
   setRichMarkdown(on);
 }
 
@@ -2021,7 +2025,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   interface Row {
     segs: Seg[];
   }
-  const lineCache = new Map<number, { rev: number; w: number; rows: Row[]; gap: boolean }>();
+  const lineCache = new Map<number, { rev: number; w: number; rows: Row[]; rich: number }>();
   const LINE_CACHE_MAX = 2_000;
 
   function itemStyle(kind: ItemKind): Partial<Seg> {
@@ -2041,20 +2045,19 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     }
   }
 
-  function itemRows(it: Item, w: number): { rows: Row[]; gap: boolean } {
+  function itemRows(it: Item, w: number): { rows: Row[] } {
     const cached = lineCache.get(it.k);
-    if (cached && cached.rev === revs.get(it.k) && cached.w === w) return cached;
+    if (cached && cached.rev === revs.get(it.k) && cached.w === w && cached.rich === richRev) return cached;
     let rows: Row[];
     if (it.kind === "md") {
+      // no trailing blank: spacing between items is buildRows' job
       rows = [];
       for (const mline of renderMarkdown(it.text)) rows.push(...wrapSegs(mline, w).map((segs) => ({ segs })));
-      rows.push({ segs: [] });
     } else if (it.kind === "think") {
       const words = it.text.trim().split(/\s+/).length;
       rows = it.expanded
         ? wrapSegs([{ t: `▾ thinking\n${it.text}`, fg: C.chrome }], w).map((segs) => ({ segs }))
         : [{ segs: [{ t: `▸ thinking (${words} words) · click or ctrl+t`, fg: C.chrome }] }];
-      rows.push({ segs: [] });
     } else if (it.kind === "toolhead" && it.detail) {
       // a tool call whose input overflowed the head line: collapsed shows the
       // one-liner with a leading arrow (like thinking/output) plus a hint, so
@@ -2112,7 +2115,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     } else {
       rows = wrapSegs([{ t: it.text, ...itemStyle(it.kind) }], w).map((segs) => ({ segs }));
     }
-    const entry = { rev: revs.get(it.k) ?? 0, w, rows, gap: it.kind === "md" || it.kind === "think" };
+    const entry = { rev: revs.get(it.k) ?? 0, w, rows, rich: richRev };
     lineCache.set(it.k, entry);
     // keys are re-minted on every refresh(), so without eviction this grows
     // unbounded across a long session
@@ -2376,12 +2379,26 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     const w = W;
     rowBuf = [];
     rowOwner = [];
+    let lastKind: ItemKind | null = null;
+    let lastHadRows = false;
     for (const it of items) {
+      // keep interior blanks (markdown paragraphs), strip edge blanks — the
+      // spacing BETWEEN items is decided here, not by the items themselves:
+      // md/think items used to carry a trailing blank, so think→toolhead
+      // showed two blank rows while tool→tool showed none
       const rows = itemRows(it, w).rows;
+      while (rows.length && !rows[0].segs.length) rows.shift();
+      while (rows.length && !rows[rows.length - 1].segs.length) rows.pop();
+      if (!rows.length) continue; // fully blank item contributes nothing
+      // exactly one blank row between items — except a toolbody stays glued
+      // to its toolhead: output belongs to the call that produced it
+      if (lastHadRows && !(lastKind === "toolhead" && it.kind === "toolbody")) rowBuf.push({ segs: [] });
       for (const r of rows) {
         rowBuf.push(r);
         rowOwner.push(it.k);
       }
+      lastKind = it.kind;
+      lastHadRows = true;
     }
     if (streamText !== null) {
       for (const r of streamRows(streamText, w)) {
