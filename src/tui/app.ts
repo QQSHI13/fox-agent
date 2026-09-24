@@ -2224,7 +2224,15 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
 
   function viewportH(): number {
     const n = Math.max(1, Math.min(INPUT_MAX_ROWS, inputLayout().rows.length));
-    return Math.max(3, H - n - 2); // input box + status bar
+    // the queued/steering stack lives above the input dock: reserving its rows
+    // here means every transcript consumer (paint, scroll clamps, click
+    // hit-tests — all derive from viewportH) ends the transcript ABOVE the
+    // stack instead of painting scrollback underneath it. Without this the
+    // stack floats over the newest transcript rows and hides them. Capped so a
+    // long queue can never take the whole screen — extra rows show "… N more".
+    const pend = pendingLines().length;
+    const qH = pend ? Math.min(pend, Math.max(1, H - n - 5)) + (pend > Math.max(1, H - n - 5) ? 1 : 0) : 0;
+    return Math.max(3, H - n - 2 - qH); // input box + status bar (+ queue rows)
   }
 
   // ---- input layout: soft-wrap + flex box + caret mapping ----
@@ -2636,9 +2644,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
    */
   function dockFloats(): { queueH: number; cmdH: number; top: number } {
     const { inputTop } = dockGeom();
-    const pendN = pendingLines().length;
-    const qShown = pendN ? Math.min(pendN, Math.max(1, inputTop - 1)) : 0;
-    const queueH = qShown + (pendN > qShown ? 1 : 0);
+    const queueH = queueStackH();
     const cAvail = cmdOut?.length ? Math.max(1, inputTop - queueH - 1) : 0;
     const cmdH = cmdOut?.length ? Math.min(cmdOut.length, cAvail) + (cmdOut.length > cAvail ? 1 : 0) : 0;
     return { queueH, cmdH, top: inputTop - queueH - cmdH };
@@ -2653,9 +2659,16 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
    */
   function dockTopY(): number {
     const { inputTop } = dockGeom();
-    const pendN = pendingLines().length;
-    const qShown = pendN ? Math.min(pendN, Math.max(1, inputTop - 1)) : 0;
-    return inputTop - (qShown + (pendN > qShown ? 1 : 0));
+    return inputTop - queueStackH();
+  }
+
+  /** Height of the queued/steering stack, exactly as viewportH reserves it. */
+  function queueStackH(): number {
+    const pend = pendingLines();
+    if (!pend.length) return 0;
+    const { inputTop } = dockGeom();
+    const shown = pend.slice(0, Math.max(1, inputTop - 1)).length;
+    return shown + (pend.length > shown ? 1 : 0);
   }
 
   function paint() {
@@ -2801,10 +2814,10 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     let queueRowsH = 0;
     const pend = pendingLines();
     if (pend.length) {
-      // the stack may use every row above the dock except one — the slash-hint
-      // overlay floats above it and needs at least a sliver of room
+      // one height computation, shared with viewportH's reservation — the two
+      // disagreeing meant the stack could drift out of its reserved band
+      queueRowsH = queueStackH();
       const shown = pend.slice(0, Math.max(1, inputTop - 1));
-      queueRowsH = shown.length + (pend.length > shown.length ? 1 : 0);
       const qTop = inputTop - queueRowsH;
       for (let i = 0; i < shown.length; i++) {
         screen.fillRow(qTop + i, 0, W, S.barBgRow);
