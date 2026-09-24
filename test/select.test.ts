@@ -170,6 +170,16 @@ describe("gestureFor: press decides nothing, drag never clicks", () => {
     expect(gestureFor("down", press(10, 4), 10, 4)).toEqual({ kind: "none" });
   });
 
+  test("release within the slop is still a click", () => {
+    expect(gestureFor("up", press(10, 4), 11, 4)).toEqual({ kind: "click" });
+    expect(gestureFor("up", press(10, 4), 10, 3)).toEqual({ kind: "click" });
+  });
+
+  test("release at or beyond the slop is a copy", () => {
+    expect(gestureFor("up", press(10, 4), 12, 4)).toEqual({ kind: "copy" });
+    expect(gestureFor("up", { ...press(10, 4), moved: true }, 10, 4)).toEqual({ kind: "copy" });
+  });
+
   test("release without movement is the click", () => {
     expect(gestureFor("up", press(10, 4), 10, 4)).toEqual({ kind: "click" });
   });

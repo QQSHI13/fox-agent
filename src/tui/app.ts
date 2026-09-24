@@ -1892,7 +1892,15 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         return;
       }
       if (g.kind !== "extend") return;
-      press!.moved = true;
+      // A motion frame does not by itself mean the pointer moved: terminals
+      // (notably Windows Terminal) send btn-32 frames for zero-distance holds,
+      // which would mark every press "moved" and turn its release into a copy
+      // — clicks would never toggle. Only a real position change counts.
+      if (x !== press!.x || y !== press!.y) {
+        press!.moved = true;
+        press!.x = x;
+        press!.y = y;
+      } else return;
       if (!selA) return;
       // Dragging past an edge scrolls, so a selection can outrun the screen.
       if (y < 0 || y >= viewportH()) {
