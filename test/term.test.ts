@@ -147,4 +147,29 @@ describe("term: OSC 9;4 progress + OSC 9 notification", () => {
     // the ESC and BEL inside the message must not survive into the payload
     expect(all).toContain("\x1b]9;done [0m in 12s\x07");
   });
+
+  test("setCwd emits OSC 7 file URL, setTitle emits OSC 0 sanitized", async () => {
+    const { openTerm } = await import("../src/tui/term.ts");
+    stub = stubStdin();
+    const written: string[] = [];
+    const savedWriter = Bun.stdout.writer;
+    (Bun.stdout as unknown as Record<string, unknown>).writer = () => ({
+      write: (s: string) => (written.push(s), 0),
+      flush: () => 0,
+      end: () => {},
+    });
+    try {
+      const term = openTerm();
+      term.setCwd("/home/qq/my dir");
+      term.setTitle("fox — s1\x1b[0m▶");
+      term.end();
+    } finally {
+      (Bun.stdout as unknown as Record<string, unknown>).writer = savedWriter;
+    }
+    const all = written.join("");
+    // OSC 7: file:// URL, space percent-encoded
+    expect(all).toContain("\x1b]7;file:///home/qq/my%20dir\x07");
+    // OSC 0: ESC becomes a space (same sanitize rule as notify), text intact
+    expect(all).toContain("\x1b]0;fox — s1 [0m▶\x07");
+  });
 });

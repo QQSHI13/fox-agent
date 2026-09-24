@@ -168,7 +168,46 @@ export function argsFull(args: string): string {
   return t.replace(/\s+/g, " ").slice(0, 4_000);
 }
 
-async function clipRead(): Promise<string> {
+async function clipRead(term: Term): Promise<string> {
+  // OSC 52 read first: a supporting terminal (kitty, WezTerm, …) answers with
+  // the clipboard in one in-band round trip — no helper process, and it works
+  // over SSH. Terminals decline by staying silent (or by requiring the user to
+  // approve the read), so this is bounded by a timeout and the helper probes
+  // below remain the fallback. Term writes go through term.write, but the
+  // reply arrives on stdin — the caller guarantees this runs while the input
+  // reader is active; the response is matched by its unique terminator.
+  const osc = await new Promise<string>((resolve) => {
+    let buf = "";
+    let done = false;
+    const finish = (v: string) => {
+      if (!done) {
+        done = true;
+        resolve(v);
+      }
+    };
+    const onData = (chunk: Uint8Array) => {
+      buf += new TextDecoder().decode(chunk);
+      // reply is ESC ] 52 ; c ; <b64> ST/BEL — accept both terminators
+      const m = /\x1b\]52;c;([A-Za-z0-9+/=]*)?(\x07|\x1b\\)/.exec(buf);
+      if (m) {
+        off();
+        try {
+          finish(m[1] ? new Buffer(m[1], "base64").toString("utf8") : "");
+        } catch {
+          finish("");
+        }
+      }
+    };
+    const off = term.onDataRaw(onData);
+    term.write("\x1b]52;c;?\x07");
+    term.flush();
+    setTimeout(() => {
+      off();
+      finish("");
+    }, 300);
+  });
+  if (osc) return osc.replace(/\r/g, "");
+
   const cmds = [
     // Windows from WSL: force UTF-8 on the pipe. Without it powershell writes
     // in the console OEM codepage (GBK on a zh-CN machine), and decoding those
@@ -196,16 +235,27 @@ async function clipRead(): Promise<string> {
 /**
  * Copy to the system clipboard, reporting whether anything actually took it.
  *
- * Mirrors `clipRead`'s probe-in-order approach, but the exit code is the only
- * signal available: `powershell.exe` and `wl-copy` both say nothing on success. A
- * command that is missing throws from `Bun.spawn`; one that is present but
- * broken (X11 tools with no DISPLAY) exits non-zero — both fall through to the
- * next candidate, and OSC 52 is the last resort because it is the only one that
- * works over SSH with no local helper installed at all. Many terminals ignore
- * OSC 52 by default, which is why it is last rather than first: when a real
- * helper exists we want its definite success over a write into the void.
+ * OSC 52 goes FIRST: a supporting terminal (kitty, WezTerm, recent Windows
+ * Terminal, tmux with set-clipboard) applies it in-band with no helper process
+ * and it works over SSH. Terminals that ignore the sequence also ignore it
+ * silently, so an OSC 52 write cannot fail loudly — that is exactly why it
+ * used to be last. The ordering trade: on a terminal without OSC 52 support
+ * the helpers still run (one wasted probe order swap, not a lost copy), while
+ * on a supporting terminal we skip spawning powershell/xclip entirely.
  */
 async function clipWrite(text: string, term: Term): Promise<boolean> {
+  // OSC 52: hand the bytes to the terminal itself. Capped because the sequence
+  // travels in-band and a multi-megabyte selection would stall the render loop
+  // mid-frame; a truncated copy beats a frozen UI. The cut is on code points —
+  // slicing a UTF-16 string at 100k can split a surrogate pair, and the lone
+  // half encodes as U+FFFD, corrupting the last character of the copy.
+  try {
+    const b64 = Buffer.from([...text].slice(0, 100_000).join(""), "utf8").toString("base64");
+    term.write(`\x1b]52;c;${b64}\x07`);
+    term.flush();
+    return true;
+  } catch {}
+
   // clip.exe is deliberately absent: it decodes stdin in the console OEM
   // codepage (GBK on a zh-CN machine), so UTF-8 bytes arrived as mojibake —
   // "•" became "鈥?" (measured). The Windows path goes through powershell with
@@ -240,17 +290,6 @@ async function clipWrite(text: string, term: Term): Promise<boolean> {
       if (code === 0) return true;
     } catch {}
   }
-  // OSC 52: hand the bytes to the terminal itself. Capped because the sequence
-  // travels in-band and a multi-megabyte selection would stall the render loop
-  // mid-frame; a truncated copy beats a frozen UI. The cut is on code points —
-  // slicing a UTF-16 string at 100k can split a surrogate pair, and the lone
-  // half encodes as U+FFFD, corrupting the last character of the copy.
-  try {
-    const b64 = Buffer.from([...text].slice(0, 100_000).join(""), "utf8").toString("base64");
-    term.write(`\x1b]52;c;${b64}\x07`);
-    term.flush();
-    return true;
-  } catch {}
   return false;
 }
 
@@ -1104,6 +1143,8 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           callLabels.set(ev.id, `${ev.name}${argsSummary(ev.args)}`);
           callArgs.set(ev.id, ev.args);
           liveThink = null; // a tool boundary seals the thinking block before it
+          // running header (suggested: `▶ fox — <session> — <tool>`)
+          term.setTitle(`▶ fox — ${state.sessionId || "new"} — ${ev.name}`);
         } else if (ev.type === "tool_output") {
           // Live output of an in-flight call (exec streaming). Shown as a pair
           // of items the deltas mutate; tool_end swaps them for the final result.
@@ -1222,6 +1263,8 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         term.notify(errored ? `fox-agent — turn failed (${secs}s)` : `fox-agent — turn done (${secs}s)`);
         term.flush();
       }
+      // title back to the idle header (suggested format: `fox — <session>`)
+      term.setTitle(`fox — ${state.sessionId || "new"}`);
       // reconcile the live user marker with stored seq
       refresh();
       drainQueue();
@@ -1371,6 +1414,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       // OSC 9;4 indeterminate: the tab/taskbar shows activity from turn start
       // until end, even when the TUI is in the background
       term.progress(3);
+      // running header until the first tool_start overrides it (then endTurn
+      // restores the idle title)
+      term.setTitle(`▶ fox — ${state.sessionId || "new"}`);
     } else {
       term.progress(0);
     }
@@ -1578,7 +1624,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       return;
     }
     if (name === "v" && ctrl) {
-      void clipRead().then((p) => {
+      void clipRead(term).then((p) => {
         if (!p) return;
         insertText(p, true);
       });
@@ -2921,6 +2967,11 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       term.begin();
       term.onResize(doResize);
       doResize(term.size().width, term.size().height);
+      // OSC 7 cwd + initial title: the session directory never drifts (exec's
+      // contract), so both are set-once here; the title is refreshed at turn
+      // start/end boundaries instead.
+      term.setCwd(state.cwd);
+      term.setTitle(`fox — ${state.sessionId || "new"}`);
 
       // Stray-output quarantine. Plugins, MCP children and library code that
       // write to stdout/stderr directly would shred the grid mid-frame. While

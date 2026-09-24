@@ -7,6 +7,8 @@ export interface Term {
   size(): { width: number; height: number };
   onResize(cb: (w: number, h: number) => void): void;
   onKey(cb: (data: Uint8Array) => void): void;
+  /** tap raw stdin alongside onKey (OSC 52 read replies); returns an off fn */
+  onDataRaw(cb: (chunk: Uint8Array) => void): () => void;
   /** move the real terminal cursor (1-based internals hidden) and ensure visible */
   setCursor(x: number, y: number): void;
   /** hide the hardware cursor (call before repaint bursts) */
@@ -20,6 +22,20 @@ export interface Term {
   progress(state: 0 | 1 | 2 | 3, pct?: number): void;
   /** OSC 9 desktop notification (works over SSH, no helper installed) */
   notify(msg: string): void;
+  /**
+   * OSC 7: report the working directory as a file:// URL so the terminal can
+   * spawn new tabs/windows in the same directory (iTerm2, WezTerm, GNOME
+   * Terminal). Ignored by terminals that do not know the sequence.
+   */
+  setCwd(dir: string): void;
+  /**
+   * OSC 0/2: set the window/tab title. Suggested header formats:
+   *   idle:    `fox — <session label>`
+   *   running: `▶ fox — <session label> — <tool or 'working'>`
+   *   failed:  `✗ fox — <session label>`
+   * Keep it one line, no control characters (sanitized like notify).
+   */
+  setTitle(title: string): void;
   begin(): void;
   end(): void;
 }
@@ -128,6 +144,19 @@ export function openTerm(): Term {
       const clean = msg.replace(/[\x00-\x1f\x07\x7f]/g, " ").slice(0, 200);
       out.write(`\x1b]9;${clean}\x07`);
     },
+    setCwd(dir) {
+      // OSC 7 — file:// URL, hostname empty ("file://hostname/path" with no
+      // host is the form terminals accept; they fill in their own view)
+      try {
+        out.write(`\x1b]7;file://${encodeURI(dir)}\x07`);
+      } catch {}
+    },
+    setTitle(title) {
+      // OSC 0 sets icon+window title (universally supported); same sanitize
+      // rule as notify — control chars would truncate the sequence
+      const clean = title.replace(/[\x00-\x1f\x07\x7f]/g, " ").slice(0, 120);
+      out.write(`\x1b]0;${clean}\x07`);
+    },
     onResize(cb) {
       const handler = () => {
         const s = safeSize();
@@ -144,6 +173,19 @@ export function openTerm(): Term {
       stdin.resume();
       onData = (chunk: Uint8Array) => cb(chunk);
       stdin.on("data", onData);
+    },
+    /**
+     * Tap raw stdin bytes alongside onKey (OSC 52 read replies arrive here —
+     * they are not keystrokes, and intercepting them in the key parser would
+     * smear binary clipboard content through the escape-sequence state machine).
+     * Returns an off function. No-op-safe when called before onKey.
+     */
+    onDataRaw(cb: (chunk: Uint8Array) => void): () => void {
+      const handler = (chunk: Uint8Array) => cb(chunk);
+      stdin.on("data", handler);
+      return () => {
+        stdin.off("data", handler);
+      };
     },
     begin() {
       // alt screen, hide cursor, bracketed paste, mouse press + BUTTON-MOTION
