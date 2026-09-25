@@ -2497,7 +2497,6 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     for (const mline of renderMarkdown(text.slice(c.cut), { ...c.md })) {
       rows.push(...wrapSegs(mline, w).map((segs) => ({ segs })));
     }
-    rows.push({ segs: [] });
     return rows;
   }
 
