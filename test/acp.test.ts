@@ -57,6 +57,7 @@ const cfg = (): Config => ({
   tuiCollapsedChars: 240,
   tuiKeptChars: 4_000,
   tuiRich: false,
+  tuiScrollbar: true,
   theme: "default",
   contextMarkers: true,
   acpHistory: "full",

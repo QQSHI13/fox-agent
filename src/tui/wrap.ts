@@ -14,9 +14,7 @@ export interface Seg {
 }
 
 export function segWidth(s: string): number {
-  let w = 0;
-  for (const ch of s) w += charWidth(ch.codePointAt(0)!);
-  return w;
+  return Bun.stringWidth(s);
 }
 
 export function wrapSegs(segs: Seg[], width: number): Seg[][] {

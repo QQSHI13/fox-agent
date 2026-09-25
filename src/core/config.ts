@@ -1,7 +1,6 @@
 import { dirname, isAbsolute, join } from "node:path";
 import { homedir } from "node:os";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { execSync } from "node:child_process";
 import { parse as parseTomlLib, stringify as stringifyToml } from "smol-toml";
 import { ConfigError } from "./errors.ts";
 import { setConfiguredModels } from "../providers/models.ts";
@@ -133,6 +132,8 @@ export interface Config {
   tuiKeptChars: number;
   /** TUI rich mode: syntax-tinted code fences + diff-colored tool output (default off) */
   tuiRich: boolean;
+  /** TUI scrollbar: dedicated track column at the right edge of the transcript (default on) */
+  tuiScrollbar: boolean;
   /** reasoning effort: "low" | "medium" | "high" — unset lets the provider default rule */
   reasoningEffort?: "low" | "medium" | "high";
   /** TUI color theme: a preset name or a plugin-registered one (default "default") */
@@ -206,6 +207,7 @@ const DEFAULTS: Omit<Config, "projectInstructions"> = {
   tuiCollapsedChars: 240,
   tuiKeptChars: 4_000,
   tuiRich: false,
+  tuiScrollbar: true,
   theme: "default",
   contextMarkers: true,
   trusted: true,
@@ -215,6 +217,25 @@ const DEFAULTS: Omit<Config, "projectInstructions"> = {
   acpHistory: "full",
   warnings: [],
 };
+
+/**
+ * A full Config from DEFAULTS + a partial override. The shared table objects
+ * (mcpServers/agents/lsp/providers) are fresh per call — DEFAULTS must never
+ * leak a shared reference (see loadConfig's merge note).
+ */
+export function defaultConfig(partial: Partial<Config> = {}): Config {
+  return {
+    ...DEFAULTS,
+    mcpServers: {},
+    agents: {},
+    lsp: {},
+    plugins: [],
+    disabledPlugins: [],
+    providers: {},
+    ...partial,
+    projectInstructions: partial.projectInstructions ?? "",
+  };
+}
 
 /**
  * Parse a TOML config, or return null if the file simply isn't there.
@@ -351,7 +372,7 @@ const KNOWN_KEYS = new Set([
   "model", "baseUrl", "apiKey", "provider", "maxSteps", "retryLimit", "compactAt",
   "requestTimeoutMs", "diagnostics", "mcpServers", "agents", "lsp", "plugins",
   "providers", "disabledPlugins", "toolOutputCap", "sessionListLimit",
-  "tuiCollapsedChars", "tuiKeptChars", "tuiRich", "theme", "contextMarkers", "acpHistory",
+  "tuiCollapsedChars", "tuiKeptChars", "tuiRich", "tuiScrollbar", "theme", "contextMarkers", "acpHistory",
   "reasoningEffort",
 ]);
 
@@ -432,6 +453,7 @@ function applyTable(cfg: Config, t: Record<string, unknown> | null, scope: "glob
   if (typeof t.tuiCollapsedChars === "number" && t.tuiCollapsedChars >= 40) cfg.tuiCollapsedChars = Math.floor(t.tuiCollapsedChars);
   if (typeof t.tuiKeptChars === "number" && t.tuiKeptChars >= 200) cfg.tuiKeptChars = Math.floor(t.tuiKeptChars);
   if (typeof t.tuiRich === "boolean") cfg.tuiRich = t.tuiRich;
+  if (typeof t.tuiScrollbar === "boolean") cfg.tuiScrollbar = t.tuiScrollbar;
   if (t.reasoningEffort === "low" || t.reasoningEffort === "medium" || t.reasoningEffort === "high") cfg.reasoningEffort = t.reasoningEffort;
   if (typeof t.theme === "string" && t.theme.trim()) cfg.theme = t.theme.trim();
   if (typeof t.contextMarkers === "boolean") cfg.contextMarkers = t.contextMarkers;
@@ -893,7 +915,8 @@ export function resolveValue(v: string | undefined, env: Record<string, string |
     const hit = cmdCache.get(cmd);
     if (hit !== undefined) return hit;
     try {
-      const out = execSync(cmd, { encoding: "utf8", timeout: 10_000, stdio: ["ignore", "pipe", "ignore"] }).trim();
+      const p = Bun.spawnSync(["/bin/sh", "-c", cmd], { stdout: "pipe", stderr: "ignore", timeout: 10_000 });
+    const out = p.stdout.toString().trim();
       cmdCache.set(cmd, out);
       return out;
     } catch {

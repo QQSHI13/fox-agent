@@ -56,6 +56,9 @@ interface ExecJob {
   cursor: number;
   startedAt: number;
   exitCode: number | null;
+  /** set when the log was unlinked (final poll / kill / session end) — the
+   *  stream pump must not append after it, or an empty log file is resurrected */
+  reaped: boolean;
 }
 
 const jobs = new Map<string, Map<string, ExecJob>>(); // sessionId -> id -> job
@@ -95,14 +98,17 @@ function startJob(args: { cmd: string; workdir?: string }, ctx: ToolContext): To
   const logPath = `${dir}/${id}.log`;
   appendFileSync(logPath, ""); // create, so a fast-exiting job still polls clean
   const proc = spawnShell(args.cmd, cwd);
-  const job: ExecJob = { id, pid: proc.pid, cmd: args.cmd, cwd, logPath, cursor: 0, startedAt: Date.now(), exitCode: null };
+  const job: ExecJob = { id, pid: proc.pid, cmd: args.cmd, cwd, logPath, cursor: 0, startedAt: Date.now(), exitCode: null, reaped: false };
   sessionJobs(ctx.sessionId).set(id, job);
 
   // pump both streams to the log for the job's whole life; the model only ever
   // sees what it explicitly polls, so a chatty job cannot flood the context
   const pump = async (stream: ReadableStream) => {
     try {
-      for await (const chunk of stream as any) appendFileSync(logPath, chunk as Uint8Array);
+      for await (const chunk of stream as any) {
+        if (job.reaped) return; // log was unlinked; appending would resurrect it
+        appendFileSync(logPath, chunk as Uint8Array);
+      }
     } catch {}
   };
   void pump(proc.stdout as ReadableStream);
@@ -118,6 +124,7 @@ function pollJob(args: { job: string; signal?: string; full?: boolean }, ctx: To
   const job = sessionJobs(ctx.sessionId).get(args.job);
   if (!job) return fail(`error: no job ${args.job} in this session`);
   const reap = () => {
+    job.reaped = true;
     sessionJobs(ctx.sessionId).delete(args.job);
     try {
       rmSync(job.logPath, { force: true });

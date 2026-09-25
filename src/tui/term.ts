@@ -71,14 +71,15 @@ function ttySize(): { width: number; height: number } | null {
         }
       } catch {}
     }
-    // node-style API fallback
-    try {
-      const ws = (process.stdout as any).getWindowSize?.();
-      if (ws && ws[0] > 0) return { width: ws[0], height: ws[1] };
-    } catch {}
-    if (process.stdout.columns && process.stdout.rows)
-      return { width: process.stdout.columns, height: process.stdout.rows };
   }
+  // node-style API fallback (same answer every iteration — kept after the fd
+  // loop, so ioctl on any fd gets first refusal)
+  try {
+    const ws = (process.stdout as any).getWindowSize?.();
+    if (ws && ws[0] > 0) return { width: ws[0], height: ws[1] };
+  } catch {}
+  if (process.stdout.columns && process.stdout.rows)
+    return { width: process.stdout.columns, height: process.stdout.rows };
   return null;
 }
 
@@ -104,6 +105,9 @@ export function openTerm(): Term {
   let onData: ((chunk: Uint8Array) => void) | null = null;
 
   let cached = safeSize() ?? { width: 80, height: 24 };
+  /** the resize poll interval, cleared in end() — an uncleared handle kept the
+   *  event loop alive after the TUI was gone */
+  let resizeTimer: ReturnType<typeof setInterval> | null = null;
 
   return {
     write(s: string) {
@@ -166,7 +170,8 @@ export function openTerm(): Term {
         }
       };
       (process.stdout as any).on?.("resize", handler);
-      setInterval(handler, 1000).unref?.();
+      resizeTimer = setInterval(handler, 1000);
+      resizeTimer.unref?.();
     },
     onKey(cb) {
       stdin.setRawMode(true);
@@ -207,6 +212,10 @@ export function openTerm(): Term {
       out.write("\x1b[0m\x1b[?7h\x1b[?1006l\x1b[?1002l\x1b[?1000l\x1b[?2004l\x1b[?25h\x1b[?1049l\x1b[0m");
       try {
         stdin.setRawMode(wasRaw);
+      } catch {}
+      try {
+        if (resizeTimer) clearInterval(resizeTimer);
+        resizeTimer = null;
       } catch {}
       /**
        * Release stdin, or the process outlives the TUI.

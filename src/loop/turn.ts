@@ -6,9 +6,10 @@ import type { AgentEvent } from "../core/events.ts";
 import type { Tool, ToolContext, ToolResult, PtyState } from "../tools/types.ts";
 import { outCap } from "../tools/files.ts";
 import { buildRegistry } from "../tools/index.ts";
-import { drainSteer } from "./steer.ts";
+import { drainSteer, peekSteer } from "./steer.ts";
 import { VERSION } from "../core/version.ts";
 import type { Config } from "../core/config.ts";
+import { defaultConfig } from "../core/config.ts";
 import type { FoxPlugin } from "../plugins/types.ts";
 import { loadPlugins } from "../plugins/load.ts";
 import type { UiBridge } from "../core/ui.ts";
@@ -50,7 +51,6 @@ interface StepOutcome {
   reasoning: string;
 }
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const estTok = (s: string) => Math.ceil(s.length / 4);
 
 /**
@@ -132,6 +132,7 @@ async function* drainStep(
 
   for (let n = 0; ; n++) {
     try {
+      if (n > 0) acc.text = "", (acc.calls = []), (acc.usage = null), (acc.finish = ""), (acc.reasoning = ""); // a retry re-streams from zero — a kept accumulator duplicated reasoning into the persisted think node
       for await (const ev of attempt()) yield ev;
       return acc;
     } catch (e) {
@@ -158,13 +159,15 @@ async function* drainStep(
       // whole delay before the interrupt is honored
       if (signal) {
         await new Promise<void>((resolve) => {
-          const t = setTimeout(resolve, delay);
-          signal.addEventListener("abort", () => {
+          const onAbort = () => {
             clearTimeout(t);
+            signal.removeEventListener("abort", onAbort); // a completed backoff must not leave the listener attached
             resolve();
-          }, { once: true });
+          };
+          const t = setTimeout(onAbort, delay);
+          signal.addEventListener("abort", onAbort, { once: true });
         });
-      } else await sleep(delay);
+      } else await Bun.sleep(delay);
     }
   }
 }
@@ -222,7 +225,7 @@ async function execToolCall(call: ToolCall, tools: Map<string, Tool>, tctx: Tool
 }
 
 function fallbackConfig(cfg: ProviderConfig, opts: TurnOptions): Config {
-  return {
+  return defaultConfig({
     model: cfg.model,
     baseUrl: cfg.baseUrl,
     apiKey: cfg.apiKey,
@@ -231,26 +234,8 @@ function fallbackConfig(cfg: ProviderConfig, opts: TurnOptions): Config {
     retryLimit: opts.retryLimit ?? 3,
     compactAt: opts.compactAt ?? 0.85,
     requestTimeoutMs: cfg.requestTimeoutMs ?? 120_000,
-    mcpServers: {},
-    agents: {},
-    lsp: {},
-    diagnostics: true,
-    toolOutputCap: 30_000,
-    sessionListLimit: 50,
-    tuiCollapsedChars: 240,
-    tuiKeptChars: 4_000,
-    tuiRich: false,
-    theme: "default",
-    contextMarkers: true,
-    // a caller that passed only a ProviderConfig has no config file in play, so
-    // there is nothing to load plugins from — an override is the way in
-    plugins: [],
-    disabledPlugins: [],
-    providers: {},
-    acpHistory: "full",
-    warnings: [],
     projectInstructions: "",
-  };
+  });
 }
 
 /**
@@ -540,6 +525,15 @@ export async function* runTurnCore(
     if (outcome.usage && !quiet) yield { type: "usage", ...outcome.usage };
 
     if (!prepared.length) {
+      // A steer parked during this final provider call (ctrl+s, or a background
+      // task finishing) would sit undelivered if the turn ended here — the
+      // drain at the top of the loop only runs when there IS a next step. Peek
+      // instead: steered text deserves an answer, so fall through to one more
+      // step (the top-of-loop drain persists it and emits `steered`). The cap
+      // is still honored — an over-cap turn ends without consuming the steer.
+      const steeredWaiting = peekSteer(sessionId).length > 0;
+      const capOk = maxSteps <= 0 || step + 1 <= maxSteps;
+      if (steeredWaiting && capOk) continue;
       yield await endTurn(outcome.finish.startsWith("error") ? outcome.finish : outcome.finish || "stop", step);
       return;
     }
