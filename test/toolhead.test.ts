@@ -1,14 +1,13 @@
 /**
  * The tool head's "what actually ran" summaries.
  *
- * `argsSummary` is the one-liner on the head; `argsFull` is what the expanded
- * view shows. The expanded view is the only place a tool call's payload
- * (write's new text, edit's old/new strings) is visible at all, so it must
- * include those fields, not just the path — that was the reported "tool call
- * content doesn't display" bug. Pure string functions, testable directly.
+ * `argsSummary` is the one-liner on the head; `argsJson` is what the expanded
+ * view shows — the model's actual call, pretty-printed verbatim (not a
+ * reconstruction: auditing "what did it send" wants ground truth). Pure string
+ * functions, testable directly.
  */
 import { describe, expect, test } from "bun:test";
-import { argsSummary, argsFull } from "../src/tui/app.ts";
+import { argsSummary, argsJson } from "../src/tui/app.ts";
 
 describe("argsSummary", () => {
   test("the meaningful field, flattened", () => {
@@ -26,30 +25,33 @@ describe("argsSummary", () => {
   });
 });
 
-describe("argsFull", () => {
-  test("a single-field call is the whole field", () => {
-    expect(argsFull(JSON.stringify({ cmd: "echo hi" }))).toBe("echo hi");
+describe("argsJson", () => {
+  test("pretty-printed verbatim: keys, nesting, order preserved", () => {
+    const call = { path: "/w/x.ts", content: "hello\nworld", opts: { recursive: true } };
+    expect(argsJson(JSON.stringify(call))).toBe(JSON.stringify(call, null, 2));
   });
 
-  test("a content-bearing call shows the payload after the target", () => {
-    const full = argsFull(JSON.stringify({ path: "/w/x.ts", content: "hello\nworld" }));
-    expect(full).toContain("/w/x.ts");
-    expect(full).toContain("content: hello world");
+  test("key order preserved (no re-sorting)", () => {
+    const raw = '{"z":1,"a":2}';
+    expect(argsJson(raw)).toBe('{\n  "z": 1,\n  "a": 2\n}');
   });
 
-  test("edit's old/new strings are both named", () => {
-    const full = argsFull(JSON.stringify({ path: "/w/x.ts", old_string: "a", new_string: "b" }));
-    expect(full).toContain("old_string: a");
-    expect(full).toContain("new_string: b");
+  test("multi-line payloads survive intact", () => {
+    const out = argsJson(JSON.stringify({ path: "/w/x.ts", content: "line1\nline2" }));
+    expect(out).toContain('"content": "line1\\nline2"');
   });
 
-  test("non-string fields survive as JSON", () => {
-    const full = argsFull(JSON.stringify({ cmd: "x", ids: [3, 5] }));
-    expect(full).toContain("ids: [3,5]");
+  test("capped at 8000 chars", () => {
+    const big = JSON.stringify({ content: "x".repeat(20_000) });
+    expect(argsJson(big).length).toBeLessThanOrEqual(8000);
   });
 
-  test("empty args are empty", () => {
-    expect(argsFull("")).toBe("");
-    expect(argsFull("{}")).toBe("");
+  test("unparseable args degrade to the raw string", () => {
+    expect(argsJson("not json {")).toBe("not json {");
+  });
+
+  test("empty args render as {}", () => {
+    expect(argsJson("")).toBe("{}");
+    expect(argsJson("{}")).toBe("{}");
   });
 });

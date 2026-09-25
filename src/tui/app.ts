@@ -182,6 +182,21 @@ export function argsFull(args: string): string {
   return t.replace(/\s+/g, " ").slice(0, 4_000);
 }
 
+/**
+ * The tool call's arguments as pretty-printed JSON — what the expandable head
+ * reveals on click. This is the model's actual call verbatim (2-space
+ * indented, key order preserved), not a reconstruction: auditing "what did it
+ * send" wants ground truth. Unparseable args degrade to the raw string.
+ */
+export function argsJson(args: string): string {
+  const t = (args ?? "").trim();
+  if (!t || t === "{}") return "{}";
+  try {
+    return JSON.stringify(JSON.parse(t), null, 2).slice(0, 8_000);
+  } catch {}
+  return t.slice(0, 8_000);
+}
+
 async function clipRead(term: Term): Promise<string> {
   // OSC 52 read first: a supporting terminal (kitty, WezTerm, …) answers with
   // the clipboard in one in-band round trip — no helper process, and it works
@@ -479,7 +494,10 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         try {
           for (const c of JSON.parse(n.msg.tool_calls) as { id: string; name: string; arguments: string }[]) {
             callLabel.set(c.id, `${c.name}${argsSummary(c.arguments ?? "")}`);
-            callDetail.set(c.id, argsFull(c.arguments ?? ""));
+            // the expanded view shows the FULL JSON call, pretty-printed —
+            // not a reconstructed summary. What the model actually sent is
+            // the ground truth, and it is what you want when auditing.
+            callDetail.set(c.id, argsJson(c.arguments ?? ""));
             callName.set(c.id, c.name);
           }
         } catch {}
@@ -1207,7 +1225,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           if (!live) {
             live = {
               head: push("toolhead", `» ${callLabels.get(ev.id) ?? "exec"} — running`, {
-                detail: argsFull(callArgs.get(ev.id) ?? "") || undefined,
+                detail: argsJson(callArgs.get(ev.id) ?? ""),
               }),
               body: push("toolbody", "", { toolResult: true, expanded: true }), // live output streams in full
               text: "",
@@ -1239,7 +1257,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           }
           // raw text, newlines intact: collapsed rendering shows an arrow line,
           // the expanded view gets the real lines (see itemRows)
-          const detail = argsFull(ev.args) || undefined;
+          const detail = argsJson(ev.args);
           push("toolhead", `[m${ev.seq}] » ${callLabels.get(ev.id) ?? `${ev.name}${argsSummary(ev.args)}`}${ev.ok ? "" : " — failed"}`, { detail, expanded: headOpen || undefined });
           const bodyOpenFinal = expandedRefs.has(ev.seq) || bodyOpen;
           if (bodyOpenFinal) expandedRefs.add(ev.seq);
@@ -2642,7 +2660,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         : "ctx —";
       const home = process.env.HOME ?? "";
       const cwdShort = home && state.cwd.startsWith(home) ? "~" + state.cwd.slice(home.length) : state.cwd;
-      return `${cwdShort} · ${providerDisplayName(state)} · ${state.provider.model} · ${ctx}${state.readOnly ? " · read-only" : ""}`;
+      return `${cwdShort} · ${providerDisplayName(state)} · ${state.provider.model} · ${ctx}`;
     } catch {
       return state.cwd;
     }
@@ -2974,15 +2992,21 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       lx = screen.text(lx, barY, `${flashMsg}`, displayBusy() ? S.accent : S.ok);
     } else if (displayBusy()) {
       // a viewer mirrors the owner's turn here: same spinner, same label, same
-      // elapsed clock (startedAt arrived over the live channel)
-      lx = screen.text(lx, barY, clipW(`${SPIN[frameIdx]} ${streamText !== null ? "responding" : "thinking"}${busyMsg ? ` — ${busyMsg}` : ""} ${elapsed()}${remoteBusy && !busy ? " · other session" : ""}`, W - 2), S.accent);
+      // elapsed clock (startedAt arrived over the live channel). No "other
+      // session" suffix — the read-only flag at the right already says whose
+      // session this is.
+      lx = screen.text(lx, barY, clipW(`${SPIN[frameIdx]} ${streamText !== null ? "responding" : "thinking"}${busyMsg ? ` — ${busyMsg}` : ""} ${elapsed()}`, W - 2), S.accent);
     } else {
       lx = screen.text(lx, barY, `ready`, S.ok);
     }
+    // right side: context stats, then the read-only flag when this process
+    // doesn't own the session — it belongs by the stats, the far edge
     const stats = cachedStats();
-    const statsW = Math.min(Bun.stringWidth(stats), W - lx - 2);
-    if (statsW > 0) {
-      const acc = clipW(stats, statsW);
+    const ro = state.readOnly ? " · read-only" : "";
+    const right = stats + ro;
+    const rightW = Math.min(Bun.stringWidth(right), W - lx - 2);
+    if (rightW > 0) {
+      const acc = clipW(right, rightW);
       screen.text(W - 1 - Bun.stringWidth(acc), barY, acc, S.chromeOnBar);
     }
   }
