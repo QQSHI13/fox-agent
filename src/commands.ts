@@ -92,8 +92,10 @@ export interface HarnessState {
 /**
  * What a read-only viewer may run. Everything else either sends to the agent
  * or writes to the session/config, both owned by the process holding the lock.
+ * /new and /fork are allowed: both target a NEW session (which this process
+ * then owns via switchSession -> attachLock); they never write the locked one.
  */
-export const READONLY_COMMANDS = new Set(["/help", "/?", "/todo", "/todos", "/sessions", "/usage", "/exit", "/quit"]);
+export const READONLY_COMMANDS = new Set(["/help", "/?", "/todo", "/todos", "/sessions", "/usage", "/exit", "/quit", "/new", "/fork"]);
 
 /** A front end that set `interactive` is asked to open one of these. */
 export type PickerRequest = { kind: "sessions"; cwd?: string };
