@@ -919,7 +919,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     w("info", `fox-agent v${VERSION} — ${banner}`);
     // one item per BLOCK, not per line: itemRows wraps `\n`s as real new lines
     // (not markdown paragraphs), and buildRows only blanks BETWEEN items — so
-    // the startup blockpaints without the blank line between every row
+    // the startup block paints without the blank line between every row
     const info = lookupModel(state.provider.model);
     w(
       "toolbody",
