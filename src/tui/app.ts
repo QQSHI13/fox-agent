@@ -998,10 +998,13 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     state.readOnly = !!holder;
     if (holder) {
       statsRev++;
+      // ephemeral: the state it describes is transient (the other holder may
+      // close at any moment), and it paints as a boxed notice over the
+      // transcript — one keypress acknowledges it
       push(
         "info",
-        `session ${id} is open in ${holder.kind} (pid ${holder.pid}) — read-only view: ` +
-          `drafting works, /todo /sessions /usage /help work, but nothing sends or writes`,
+        `session ${id} is open in ${holder.kind} (pid ${holder.pid}) — read-only view: drafting works, /todo /sessions /usage /help work, but nothing sends or writes`,
+        { ephemeral: true },
       );
     }
   }
@@ -2237,6 +2240,21 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       // no trailing blank: spacing between items is buildRows' job
       rows = [];
       for (const mline of renderMarkdown(it.text)) rows.push(...wrapSegs(mline, w).map((segs) => ({ segs })));
+    } else if (it.ephemeral) {
+      // Ephemeral notice: a boxed, uniformly-colored block that dies on the
+      // next keypress/click. The box keeps it physically separate from the
+      // transcript it floats over (it used to render as a bare info line,
+      // blending into neighboring md rows); one style id for every line keeps
+      // it uniform instead of inheriting whatever colors it wrapped.
+      const inner = Math.max(20, w - 4);
+      rows = [{ segs: [{ t: `╭${"─".repeat(inner)}╮`, fg: C.info }] }];
+      const lines = it.text.split("\n");
+      for (const l of lines) {
+        const clipped = clipW(l, inner);
+        const pad = " ".repeat(Math.max(0, inner - Bun.stringWidth(clipped)));
+        rows.push({ segs: [{ t: `│ ${clipped}${pad} │`, fg: C.info }] });
+      }
+      rows.push({ segs: [{ t: `╰${"─".repeat(inner)}╯`, fg: C.info }] });
     } else if (it.kind === "think") {
       const words = it.text.trim().split(/\s+/).length;
       rows = it.expanded
