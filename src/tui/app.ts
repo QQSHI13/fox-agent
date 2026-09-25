@@ -1843,7 +1843,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     if (action === "down") {
       // Scrollbar strip at the right edge: press jumps, drag scrubs.
       const vh = viewportH();
-      if (x >= W - 2 && y < vh && rowBuf.length > vh) {
+      if (x >= W - 1 && y < vh && rowBuf.length > vh) {
         press = { x, y, moved: false, scrollbar: true };
         stick = false;
         scrollTop = Math.round((y / Math.max(1, vh - 1)) * Math.max(0, rowBuf.length - vh));
@@ -2506,8 +2506,12 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     return rowBuf.length;
   }
 
+  /** last frame had scroll overflow (scrollbar visible) — buildRows wraps
+   *  one column short while set, so text never flows under the thumb */
+  let sbShowing = false;
+
   function buildRows() {
-    const w = W;
+    const w = sbShowing ? W - 1 : W;
     rowBuf = [];
     rowOwner = [];
     let lastKind: ItemKind | null = null;
@@ -2760,12 +2764,15 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       }
     }
 
-    // scrollbar (right edge of transcript area)
-    if (rowBuf.length > vh && W >= 12) {
+    // scrollbar (LAST column of the screen — see fillRow bounds below)
+    sbShowing = rowBuf.length > vh && W >= 12;
+    if (sbShowing) {
       const th = Math.max(1, Math.floor((vh * vh) / rowBuf.length));
       const maxScroll = rowBuf.length - vh;
       const ty = maxScroll > 0 ? Math.floor((scrollTop / maxScroll) * (vh - th)) : 0;
-      for (let i = 0; i < th && ty + i < vh; i++) screen.fillRow(ty + i, W - 2, W - 1, S.sbThumb);
+      // x from W-1 (exclusive) paints ONLY the last column — W-2 was the
+      // second-to-last text cell, which is why the strip covered text
+      for (let i = 0; i < th && ty + i < vh; i++) screen.fillRow(ty + i, W - 1, W, S.sbThumb);
     }
 
     // bottom dock geometry — input box flexes with wrapped visual rows
