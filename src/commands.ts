@@ -417,18 +417,39 @@ export function formatSessionList(items: SessionListItem[], opts: { color?: bool
 }
 
 /**
- * Accept either a session id or a 1-based index into `/sessions`, returning null
- * if neither resolves. Shared so `/sessions <n>`, `/delete <n>` and `fox -c <n>`
+ * Accept a session id, a 1-based index into `/sessions`, or a SEARCH TERM, returning
+ * null if none resolves. Shared so `/sessions <x>`, `/delete <x>` and `fox -c <x>`
  * cannot disagree about what "2" means — a mismatch there would delete or resume
  * a different session than the one the list showed. `limit` must be the same
  * sessionListLimit the listing used: indices past a shorter page would resolve
  * to sessions the user was never shown. Both resolve against the same
  * recency-ordered list the picker shows.
+ *
+ * Search terms (anything not numeric, not an exact id) match the SAME text the
+ * picker's type-to-filter searches — id, title, cwd, model, preview —
+ * case-insensitive substring. `fox -c gesp` finds the session titled "GESP
+ * prep". A unique match resolves; several matches return null WITHOUT saying
+ * which (the caller's `no session` error would mislead), so the caller can
+ * print the candidates — use resolveSessionArgMatches for that.
  */
+export function sessionSearchText(s: { id: string; title?: string | null; cwd: string; model: string; preview?: string | null }): string {
+  return `${s.id} ${s.title ?? ""} ${s.cwd} ${s.model} ${s.preview ?? ""}`.toLowerCase();
+}
+
+export function resolveSessionArgMatches(arg: string, limit = 50): SessionListItem[] {
+  const q = arg.toLowerCase();
+  return sessionList({ limit })
+    .filter((s) => sessionSearchText(s).includes(q))
+    .slice(0, 8);
+}
+
 export function resolveSessionArg(arg: string, limit = 50): string | null {
   const n = Number(arg);
   if (Number.isInteger(n) && n >= 1) return listSessions(limit)[n - 1]?.id ?? null;
-  return getSession(arg) ? arg : null;
+  if (getSession(arg)) return arg;
+  // not an id, not an index: treat as a search term
+  const hits = resolveSessionArgMatches(arg, limit);
+  return hits.length === 1 ? hits[0].id : null;
 }
 
 interface LoginFields {
@@ -1366,9 +1387,15 @@ export function runSlashCommand(input: string, state: HarnessState): CommandResu
         const id = resolveSessionArg(arg, state.config?.sessionListLimit ?? 50);
         if (!id) {
           const n = Number(arg);
+          if (Number.isInteger(n) && n >= 1)
+            return { handled: true, output: `no session at index ${n}` };
+          // a search term: ambiguous (or no hit) — show what it COULD be
+          const hits = resolveSessionArgMatches(arg, state.config?.sessionListLimit ?? 50);
           return {
             handled: true,
-            output: Number.isInteger(n) && n >= 1 ? `no session at index ${n}` : `unknown session ${arg}`,
+            output: hits.length
+              ? `several sessions match "${arg}" — narrow it or use the index:\n${hits.map((h) => `  ${h.index}  ${h.label}`).join("\n")}`
+              : `unknown session ${arg}`,
           };
         }
         if (id === state.sessionId) return { handled: true, output: `already in ${id}` };
