@@ -4,6 +4,7 @@
 import { openTerm, type Term } from "./term.ts";
 import { appendFileSync } from "node:fs";
 import { Screen } from "./screen.ts";
+import { computeFrame, scrollbarScrollTop, viewportHeight, type Frame, type FrameInput, type Row } from "./layout.ts";
 import { createDecoder, type Key } from "./keys.ts";
 import { graphemeBack, graphemeForward, type Ch } from "./edit.ts";
 import {
@@ -16,7 +17,7 @@ import {
   type PressState,
 } from "./select.ts";
 import { renderMarkdown, type MdState } from "./markdown.ts";
-import { wrapSegs, segWidth, type Seg } from "./wrap.ts";
+import { wrapSegs, type Seg } from "./wrap.ts";
 import { charWidth } from "./screen.ts";
 import { Picker, type PickerRow } from "./picker.ts";
 import { sessionRows } from "./pickerui.ts";
@@ -25,7 +26,7 @@ import { steer, peekSteer, withdrawSteer } from "../loop/steer.ts";
 import { projectView } from "../context/view.ts";
 import { lookupModel } from "../providers/models.ts";
 import { listSessions } from "../store/db.ts";
-import { createSession, getSession, lastPromptTokens as storedPromptTokens, pinSession, unpinSession } from "../store/db.ts";
+import { createSession, getSession, kvGet, kvSet, lastPromptTokens as storedPromptTokens, pinSession, unpinSession } from "../store/db.ts";
 import { acquireLock, releaseLock } from "../store/lock.ts";
 import {
   runSlashCommand,
@@ -97,6 +98,15 @@ export function setTuiRich(on: boolean): void {
   RICH = on;
   richRev++;
   setRichMarkdown(on);
+}
+
+/**
+ * Scrollbar on/off (config `tuiScrollbar`, default on). When off there is no
+ * reserved column: buildRows wraps at full width and the mouse scrub is dead.
+ */
+let SCROLLBAR = true;
+export function setTuiScrollbar(on: boolean): void {
+  SCROLLBAR = on;
 }
 
 // Live palette: resolves against the active theme on every access, so a
@@ -196,7 +206,7 @@ async function clipRead(term: Term): Promise<string> {
       if (m) {
         off();
         try {
-          finish(m[1] ? new Buffer(m[1], "base64").toString("utf8") : "");
+          finish(m[1] ? Buffer.from(m[1], "base64").toString("utf8") : "");
         } catch {
           finish("");
         }
@@ -323,6 +333,8 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   // returns normally and the caller can clean up tools
   let exiting = false;
   let exitCode = 0;
+  /** the read-only viewer's live-status poll (created in run(), cleared here) */
+  let mirrorTimer: ReturnType<typeof setInterval> | null = null;
   let finish: (() => void) | null = null;
   const queued: { raw: string; lit: boolean }[] = [];
   /**
@@ -339,6 +351,12 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   // provider-reported usage for the CURRENT turn's last step (real numbers,
   // not estimates) — the only token figure the status bar is willing to show
   let lastPromptTokens = 0;
+  /** a read-only viewer's mirror of the owner's live status (see the poll in
+   *  run()); local `busy` stays false so the viewer can still type/queue */
+  let remoteBusy = false;
+  /** what the status bar + spinner + title treat as "a turn is running" — the
+   *  owner's own turn locally, or the mirrored owner turn in a viewer */
+  const displayBusy = () => busy || remoteBusy;
 
   const revs = new Map<number, number>();
   const touch = (k: number) => revs.set(k, (revs.get(k) ?? 0) + 1);
@@ -872,6 +890,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       const r = applyConfig();
       setTuiCaps(state.config?.tuiCollapsedChars ?? 240, state.config?.tuiKeptChars ?? 4_000);
       setTuiRich(!!state.config?.tuiRich);
+      setTuiScrollbar(state.config?.tuiScrollbar ?? true);
       const wantTheme = state.config?.theme ?? "default";
       // plugin themes register on first buildRegistry, so an unknown name here
       // may just be a plugin theme that has not loaded yet — fall back silently
@@ -971,6 +990,12 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
 
   function switchSession(id: string) {
     if (id === state.sessionId) return;
+    if (busy) {
+      // a running turn still writes to the old session's store handle and its
+      // events are mid-flight — unpinning/releasing here would orphan it
+      flash("busy — esc interrupts first");
+      return;
+    }
     if (state.sessionId) {
       // the old session's resources belong to it — onSessionEnd lets every plugin
       // release what it holds (the bundled pty plugin kills its tmux session here),
@@ -996,11 +1021,13 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     sessAllDirs = false;
     overlay = new Picker(currentSessionRows(), {
       title: "sessions — most recently used first",
-      // a read-only viewer may leave for another session, but may not create,
-      // fork or delete — those write
-      allowNew: !state.readOnly,
+      // a read-only viewer may create and fork: both write to a NEW session,
+      // never the one locked by the owner — after the switch this TUI owns the
+      // target and sheds read-only (switchSession -> attachLock). Delete stays
+      // owner-only: removing the session another process is live in is its call.
+      allowNew: true,
       allowDelete: !state.readOnly,
-      allowFork: !state.readOnly,
+      allowFork: true,
       allowAll: true,
     });
     markDirty();
@@ -1145,10 +1172,12 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       for await (const ev of runTurn(state.sessionId, state.provider, raw, ac.signal, state.config, uiBridge)) {
         if (ev.type === "reasoning") {
           appendToLastThink(ev.delta);
+          publishLive(); // think deltas markDirty anyway; piggyback the status
         } else if (ev.type === "text") {
           md += ev.delta;
           if (streamText !== md) {
             streamText = md;
+            publishLive(); // viewers mirror the streaming text
             markDirty();
           }
         } else if (ev.type === "usage") {
@@ -1160,6 +1189,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           liveThink = null; // a tool boundary seals the thinking block before it
           // running header (suggested: `▶ fox — <session> — <tool>`)
           busyMsg = ev.name;
+          publishLive(true); // tool flips are sparse enough to write unthrottled
           term.setTitle(`▶ fox — ${state.sessionId || "new"} — ${ev.name}`);
         } else if (ev.type === "tool_output") {
           // Live output of an in-flight call (exec streaming). Shown as a pair
@@ -1396,6 +1426,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       term.end();
     } catch {}
     try {
+      if (mirrorTimer) clearInterval(mirrorTimer); // viewer's live-status poll
+    } catch {}
+    try {
       restoreOutputRef?.(); // replay anything captured while the grid was up
     } catch {}
     // leave a resume hint on the shell — the session is one id away. the
@@ -1437,7 +1470,41 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     } else {
       term.progress(0);
     }
+    // read-only viewers poll this — publish what the status bar shows
+    publishLive();
     markDirty();
+  }
+
+  // ---- live status channel (owner publishes, read-only viewers poll) ----
+  /**
+   * What the owner TUI currently shows in its status bar, written to the
+   * session kv so a read-only viewer (second terminal) can mirror it: same
+   * spinner, same "thinking — exec" label, same streaming text. A fired-and-
+   * forgotten write — a viewer that misses one poll just shows one stale
+   * frame until the next.
+   */
+  interface LiveStatus {
+    busy: boolean;
+    busyMsg: string | null;
+    streaming: string | null;
+    startedAt: number;
+    at: number;
+  }
+  let lastPublishAt = 0;
+  function publishLive(force = false) {
+    if (!state.sessionId) return;
+    const now = Date.now();
+    if (!force && now - lastPublishAt < 250) return; // throttle stream writes
+    lastPublishAt = now;
+    try {
+      kvSet(state.sessionId, "live", {
+        busy,
+        busyMsg,
+        streaming: streamText,
+        startedAt,
+        at: now,
+      } satisfies LiveStatus);
+    } catch {}
   }
 
   // ---- input helpers (cursor-aware) ----
@@ -1485,7 +1552,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
    */
   function toolInputFits(it: Item): boolean {
     if (it.kind !== "toolhead" || !it.detail || it.detail.includes("\n")) return false;
-    return 2 + it.text.length + 3 + it.detail.length <= W;
+    return 2 + Bun.stringWidth(it.text) + 3 + it.detail.length <= W;
   }
 
   // ---- keyboard ----
@@ -1554,10 +1621,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       if (stick && dir < 0) stick = false;
       scrollTop += dir;
       clampScroll();
-      if (dir > 0) {
-        const max = Math.max(0, totalRows() - viewportH());
-        if (scrollTop >= max) stick = true; // rode to the bottom -> re-stick
-      }
+      // re-stick at the bottom is paint()'s job now (scrollTop >= max)
       markDirty();
       return;
     }
@@ -1668,12 +1732,15 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       }
       return;
     }
-    // Page/home/end keys carry no position, so they route by where the
-    // pointer sits: in the dock they move the input caret, otherwise they
-    // scroll the transcript as before.
-    const inDock = () => lastMouse.y >= dockTopY();
+    // Page/home/end keys are transcript-first: they scroll (pgup/pgdn by a
+    // viewport page, home to the oldest row, end re-sticks to the live bottom).
+    // They used to route by where the MOUSE last sat — a pointer that happened
+    // to rest over the dock silently turned them into input-caret keys, which
+    // is the "pgup/pgdn/home/end don't scroll" report. Ctrl+pgup/pgdn and
+    // ctrl+home/end still move the input caret (a deliberate chord, not an
+    // accident of pointer position); the wheel already routes by real position.
     if (name === "pageup" || name === "pagedown") {
-      if (inDock()) {
+      if (ctrl) {
         const dir = name === "pageup" ? -1 : 1;
         const n = Math.max(1, dockGeom().shownCount);
         for (let i = 0; i < n; i++) moveCaretVertical(dir, false);
@@ -1688,13 +1755,12 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       }
       scrollTop += Math.floor(viewportH() * 0.8);
       clampScroll();
-      const max = Math.max(0, totalRows() - viewportH());
-      if (scrollTop >= max) stick = true;
+      // re-stick at the bottom is paint()'s job now (scrollTop >= max)
       markDirty();
       return;
     }
     if (name === "home") {
-      if (inDock()) {
+      if (ctrl) {
         cur = 0;
         inSelAnchor = null;
         markDirty();
@@ -1706,7 +1772,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       return;
     }
     if (name === "end") {
-      if (inDock()) {
+      if (ctrl) {
         cur = buf.length;
         inSelAnchor = null;
         markDirty();
@@ -1816,10 +1882,13 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   // ---- mouse ----
   /** the transcript row under screen row y, or null if y is not the transcript */
   function transcriptRow(y: number): number | null {
-    if (y < 0 || y >= viewportH()) return null;
-    const row = y + scrollTop;
-    buildRows();
-    return row >= 0 && row < rowBuf.length ? row : null;
+    // the PAINTED frame, not a rebuild: mid-stream a fresh layout can shift
+    // rows (scrollbar flip, queue rows), and a row off is click drift
+    const fr = painted;
+    if (!fr) return null;
+    if (y < 0 || y >= fr.vh) return null;
+    const row = y + fr.scrollTop;
+    return row >= 0 && row < fr.rowCount ? row : null;
   }
 
   /** the cell column a click at screen x lands on within a transcript row */
@@ -1841,12 +1910,13 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     lastMouse = { x, y };
     const g = gestureFor(action, press, x, y);
     if (action === "down") {
-      // Scrollbar strip at the right edge: press jumps, drag scrubs.
-      const vh = viewportH();
-      if (x >= W - 1 && y < vh && rowBuf.length > vh) {
+      // Scrollbar strip at the right edge: press jumps, drag scrubs. Dead when
+      // tuiScrollbar is off — no strip is painted, so no dead click zone either.
+      const fr = painted;
+      if (SCROLLBAR && fr?.sbShowing && x >= W - 1 && y < fr.vh) {
         press = { x, y, moved: false, scrollbar: true };
         stick = false;
-        scrollTop = Math.round((y / Math.max(1, vh - 1)) * Math.max(0, rowBuf.length - vh));
+        scrollTop = scrollbarScrollTop(fr.rowCount, fr.vh, y);
         clampScroll();
         markDirty();
         return;
@@ -1874,10 +1944,12 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     }
     if (action === "drag") {
       if (press?.scrollbar) {
-        const vh = viewportH();
-        stick = false;
-        scrollTop = Math.round((Math.max(0, Math.min(vh - 1, y)) / Math.max(1, vh - 1)) * Math.max(0, rowBuf.length - vh));
-        clampScroll();
+        const fr = painted;
+        if (fr) {
+          stick = false;
+          scrollTop = scrollbarScrollTop(fr.rowCount, fr.vh, y);
+          clampScroll();
+        }
         press.moved = true;
         markDirty();
         return;
@@ -1947,8 +2019,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       const phase = (clickStreak.count - 2) % 3;
       const row = transcriptRow(y);
       if (phase === 2 || row === null) return; // quad-click: no selection, no toggle
-      buildRows();
-      const cells = rowCells(rowBuf[row].segs);
+      const fr = painted;
+      if (!fr) return;
+      const cells = rowCells(fr.rows[row].segs);
       if (phase === 0) {
         const w = wordRangeAt(cells, transcriptCol(x));
         if (!w) return;
@@ -1968,8 +2041,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
 
   async function copySelection() {
     if (!selA || !selB) return;
-    buildRows();
-    const text = extractSelection(rowBuf.map((r) => r.segs), selA, selB);
+    const fr = painted;
+    if (!fr) return;
+    const text = extractSelection(fr.rows.map((r) => r.segs), selA, selB);
     if (!text) return;
     await copyText(text);
   }
@@ -2055,14 +2129,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       if (!vr) return;
       const targetW = Math.max(0, x - 3) + vr.startCol;
       const line = g.layout.logical[vr.logical];
-      let w = 0;
-      let idx = 0;
-      for (const ch of line) {
-        const cw = charWidth(ch.codePointAt(0)!);
-        if (w + cw > targetW) break;
-        w += cw;
-        idx++;
-      }
+      const idx = indexAtWidth(line, targetW);
       cur = Math.min(g.layout.lineStarts[vr.logical] + idx, buf.length);
       inputRev++; // caret moved -> layout/caret recompute is a no-op but keep rev honest
       markDirty();
@@ -2073,10 +2140,11 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     // overlay (see above): without the guard the same click both cleared the
     // float and flipped something it never touched.
     if (dismissedCmd) return;
-    buildRows();
-    const row = y + scrollTop;
-    if (y >= vh || row < 0 || row >= rowOwner.length) return;
-    const it = items.find((i) => i.k === rowOwner[row]);
+    const fr = painted;
+    if (!fr) return;
+    const row = y + fr.scrollTop;
+    if (y >= vh || row < 0 || row >= fr.owner.length) return;
+    const it = items.find((i) => i.k === fr.owner[row]);
     if (!it) return;
     // a toolhead whose input already fits has nothing to reveal: a click is
     // ignored rather than folding a line that is identical expanded
@@ -2249,18 +2317,6 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     return entry;
   }
 
-  function viewportH(): number {
-    const n = Math.max(1, Math.min(INPUT_MAX_ROWS, inputLayout().rows.length));
-    // the queued/steering stack lives above the input dock: reserving its rows
-    // here means every transcript consumer (paint, scroll clamps, click
-    // hit-tests — all derive from viewportH) ends the transcript ABOVE the
-    // stack instead of painting scrollback underneath it. Without this the
-    // stack floats over the newest transcript rows and hides them. Capped so a
-    // long queue can never take the whole screen — extra rows show "… N more".
-    const pend = pendingLines().length;
-    const qH = pend ? Math.min(pend, Math.max(1, H - n - 5)) + (pend > Math.max(1, H - n - 5) ? 1 : 0) : 0;
-    return Math.max(3, H - n - 2 - qH); // input box + status bar (+ queue rows)
-  }
 
   // ---- input layout: soft-wrap + flex box + caret mapping ----
   const INPUT_MAX_ROWS = 8;
@@ -2391,17 +2447,8 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     if (y < inputTop || y >= inputTop + shownCount) return null;
     const v = Math.min(firstShown + (y - inputTop), layout.rows.length - 1);
     const [s, e] = rowBufRange(layout, v);
-    const chars = [...inputText()];
     const targetW = Math.max(0, x - 3); // 1 margin + 2 for the "❯ " prefix
-    let i = s;
-    let w = 0;
-    while (i < e) {
-      const cw = charWidth(chars[i].codePointAt(0)!);
-      if (w + cw > targetW) break;
-      w += cw;
-      i++;
-    }
-    return i;
+    return s + indexAtWidth(inputText().slice(s, e), targetW);
   }
 
   /** up/down inside a multi-line input, keeping the display column. */
@@ -2415,16 +2462,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     else if (tv >= layout.rows.length) cur = buf.length;
     else {
       const [s, e] = rowBufRange(layout, tv);
-      const chars = [...inputText()];
-      let i = s;
-      let w = 0;
-      while (i < e) {
-        const cw = charWidth(chars[i].codePointAt(0)!);
-        if (w + cw > pos.colW) break;
-        w += cw;
-        i++;
-      }
-      cur = i;
+      cur = s + indexAtWidth(inputText().slice(s, e), pos.colW);
     }
     markDirty();
   }
@@ -2432,9 +2470,6 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   function clampScroll() {
     scrollTop = Math.max(0, Math.min(scrollTop, Math.max(0, totalRows() - viewportH())));
   }
-
-  let rowBuf: Row[] = [];
-  let rowOwner: number[] = []; // rowBuf index -> item key (for click hit-testing)
 
   /**
    * Incremental stream rendering.
@@ -2500,58 +2535,56 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     return rows;
   }
 
+  /** total transcript rows: the painted frame's count, or a one-off compute
+   *  when no frame is up yet (scroll keys can fire before the first paint) */
   function totalRows(): number {
-    buildRows();
-    return rowBuf.length;
+    if (painted) return painted.rowCount;
+    return computeFrame(frameInput()).rowCount;
   }
 
-  /** last frame had scroll overflow (scrollbar visible) — buildRows wraps
-   *  one column short while set, so text never flows under the thumb */
-  let sbShowing = false;
+  /**
+   * The wrap width this frame's rows are built at, and whether the scrollbar
+   * strip is reserved, decided from THIS frame's data.
+   *
+   * The old code keyed the decision off the previous frame's sbShowing, so
+   * content sitting at the overflow boundary flipped the flag (and the wrap
+   * width) every frame while streaming — the "scrollbar flickers and jumps"
+   * bug. Two passes fix it: build at full width; only if that overflows do we
+   * rebuild one column short and show the strip. The extra pass runs once on
+   * the flip frame, not per frame.
+   */
+  // ---- frame: compute via layout.ts, keep as THE geometry of record ----
+  /**
+   * The frame ON SCREEN. paint() computes a fresh one each pass and stamps the
+   * grid from it; every hit-test (click, scrub, select) reads THIS object —
+   * never rebuilds. One source of truth, so a click can't drift off the pixels
+   * the way separate recomputation allowed.
+   */
+  let painted: Frame | null = null;
 
-  function buildRows() {
-    const w = sbShowing ? W - 1 : W;
-    rowBuf = [];
-    rowOwner = [];
-    let lastKind: ItemKind | null = null;
-    let lastHadRows = false;
-    for (const it of items) {
-      // keep interior blanks (markdown paragraphs), strip edge blanks — the
-      // spacing BETWEEN items is decided here, not by the items themselves:
-      // md/think items used to carry a trailing blank, so think→toolhead
-      // showed two blank rows while tool→tool showed none
-      const rows = itemRows(it, w).rows;
-      while (rows.length && !rows[0].segs.length) rows.shift();
-      while (rows.length && !rows[rows.length - 1].segs.length) rows.pop();
-      if (!rows.length) continue; // fully blank item contributes nothing
-      // exactly one blank row between items. Glued pairs (no blank row):
-      //   toolhead→toolbody — output belongs to the call that produced it
-      //   think→toolhead — a thinking block sits directly on the tool it led to
-      //   toolbody→think   — and a FOLLOW-UP thinking block after a tool is
-      //                      part of the same step, so no gap either
-      if (
-        lastHadRows &&
-        !(lastKind === "toolhead" && it.kind === "toolbody") &&
-        !((lastKind === "think" || lastKind === "toolbody") && it.kind === "think") &&
-        !(lastKind === "think" && it.kind === "toolhead")
-      )
-        rowBuf.push({ segs: [] });
-      for (const r of rows) {
-        // tool calls (head + result body) get the theme's toolBg row fill;
-        // the head's own fg stays at itemStyle — only the background changes
-        if (it.kind === "toolhead" || it.toolResult) r.bg = S.toolBgRow;
-        rowBuf.push(r);
-        rowOwner.push(it.k);
-      }
-      lastKind = it.kind;
-      lastHadRows = true;
-    }
-    if (streamText !== null) {
-      for (const r of streamRows(streamText, w)) {
-        rowBuf.push(r);
-        rowOwner.push(-1); // one owner per row, or hit-testing drifts below here
-      }
-    }
+  function frameInput(): FrameInput {
+    const layout = inputLayout();
+    const caret = caretPos(layout);
+    return {
+      W,
+      H,
+      scrollTop,
+      stick,
+      scrollbar: SCROLLBAR,
+      items,
+      streamText,
+      renderItem: (it, w) => itemRows(it, w).rows.map((r) => ({ ...r, bg: it.kind === "toolhead" || it.toolResult ? S.toolBgRow : r.bg })),
+      renderStream: (text, w) => streamRows(text, w),
+      inputRows: layout.rows.length,
+      caretRow: caret.visRow,
+      INPUT_MAX_ROWS,
+      pendingCount: pendingLines().length,
+    };
+  }
+
+  /** Scroll-key arithmetic before a frame exists; matches computeFrame's vh. */
+  function viewportH(): number {
+    return viewportHeight(frameInput());
   }
 
   /**
@@ -2655,6 +2688,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     barBgRow: 0,
     toolBgRow: 0,
     sbThumb: 0,
+    sbTrack: 0,
     overlayRow: 0,
     overlaySel: 0,
   };
@@ -2675,6 +2709,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     S.barBgRow = screen.sgr({ fg: C.fg, bg: C.barBg });
     S.toolBgRow = screen.sgr({ fg: C.fg, bg: C.toolBg });
     S.sbThumb = screen.sgr({ bg: C.hint }); // theme's muted tone: visible on both bar and transcript
+    S.sbTrack = screen.sgr({ bg: C.barBg }); // the gutter line the thumb rides
     S.overlayRow = screen.sgr({ fg: C.fg, bg: C.inputBg });
     S.overlaySel = screen.sgr({ fg: C.hintSel, bg: C.selBg });
   }
@@ -2684,6 +2719,10 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   function dockGeom() {
     const layout = inputLayout();
     const caret = caretPos(layout);
+    // dock geometry from the PAINTED frame when one is up (hit-tests must not
+    // disagree with the pixels); before the first paint, compute directly
+    const fr = painted;
+    if (fr) return { layout, caret, shownCount: fr.shownCount, firstShown: fr.firstShown, inputTop: fr.inputTop };
     const totalVis = layout.rows.length;
     const shownCount = Math.max(1, Math.min(INPUT_MAX_ROWS, totalVis));
     let firstShown = 0;
@@ -2702,7 +2741,8 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
    */
   function dockFloats(): { queueH: number; cmdH: number; top: number } {
     const { inputTop } = dockGeom();
-    const queueH = queueStackH();
+    // painted frame's stack height when one is up (hit-tests match pixels)
+    const queueH = painted ? painted.queueH : queueStackH();
     const cAvail = cmdOut?.length ? Math.max(1, inputTop - queueH - 1) : 0;
     const cmdH = cmdOut?.length ? Math.min(cmdOut.length, cAvail) + (cmdOut.length > cAvail ? 1 : 0) : 0;
     return { queueH, cmdH, top: inputTop - queueH - cmdH };
@@ -2717,7 +2757,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
    */
   function dockTopY(): number {
     const { inputTop } = dockGeom();
-    return inputTop - queueStackH();
+    return inputTop - (painted ? painted.queueH : queueStackH());
   }
 
   /** Height of the queued/steering stack, exactly as viewportH reserves it. */
@@ -2736,15 +2776,15 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     };
 
     screen.clear();
-    buildRows();
-    const vh = viewportH();
-    if (stick) scrollTop = Math.max(0, rowBuf.length - vh);
-    scrollTop = Math.max(0, Math.min(scrollTop, Math.max(0, rowBuf.length - vh)));
+    const fr = computeFrame(frameInput());
+    scrollTop = fr.scrollTop; // computeFrame owns the clamp/stick rule
+    stick = fr.stick;
+    painted = fr; // THE geometry of record until the next frame
 
     // transcript
     let y = 0;
-    for (let i = scrollTop; i < rowBuf.length && y < vh; i++, y++) {
-      const row = rowBuf[i];
+    for (let i = fr.scrollTop; i < fr.rowCount && y < fr.vh; i++, y++) {
+      const row = fr.rows[i];
       // tool rows fill to the full width first, so the text paints over a
       // background instead of floating in default
       if (row.bg) screen.fillRow(y, 0, W, row.bg);
@@ -2763,19 +2803,16 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       }
     }
 
-    // scrollbar (LAST column of the screen — see fillRow bounds below)
-    sbShowing = rowBuf.length > vh && W >= 12;
-    if (sbShowing) {
-      const th = Math.max(1, Math.floor((vh * vh) / rowBuf.length));
-      const maxScroll = rowBuf.length - vh;
-      const ty = maxScroll > 0 ? Math.floor((scrollTop / maxScroll) * (vh - th)) : 0;
-      // x from W-1 (exclusive) paints ONLY the last column — W-2 was the
-      // second-to-last text cell, which is why the strip covered text
-      for (let i = 0; i < th && ty + i < vh; i++) screen.fillRow(ty + i, W - 1, W, S.sbThumb);
+    // scrollbar — dedicated track column when the frame shows it; full-height
+    // line with the thumb stamped on top
+    if (fr.sbShowing) {
+      for (let sy = 0; sy < fr.vh; sy++)
+        screen.fillRow(sy, W - 1, W, sy >= fr.sb.ty && sy < fr.sb.ty + fr.sb.th ? S.sbThumb : S.sbTrack);
     }
 
-    // bottom dock geometry — input box flexes with wrapped visual rows
-    const { layout, caret, shownCount, firstShown, inputTop } = dockGeom();
+    // bottom dock geometry — straight from the frame (already computed there)
+    const { layout, caret } = dockGeom();
+    const { shownCount, firstShown, inputTop } = fr;
     const barY = H - 1;
     let pendingCaret: { x: number; y: number } | null = null;
 
@@ -2817,16 +2854,14 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       // input selection: same restyle-over-cells trick as the transcript
       const ir = inSelRange();
       if (ir) {
-        const chars = [...inputText()];
+        const it = inputText();
         for (let v = firstShown; v < Math.min(totalVis, firstShown + shownCount); v++) {
           const [rs, re] = rowBufRange(layout, v);
           const a = Math.max(rs, ir[0]);
           const b = Math.min(re, ir[1]);
           if (a >= b) continue;
-          let wa = 0;
-          for (let i = rs; i < a; i++) wa += charWidth(chars[i].codePointAt(0)!);
-          let wb = wa;
-          for (let i = a; i < b; i++) wb += charWidth(chars[i].codePointAt(0)!);
+          const wa = widthOf(it, a) - widthOf(it, rs);
+          const wb = widthOf(it, b) - widthOf(it, a);
           screen.restyle(inputTop + (v - firstShown), 3 + wa, 3 + wb, C.selBg);
         }
       }
@@ -2936,24 +2971,19 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     // queued" etc. are the thing the user just did and reads first; the
     // thinking/responding state returns when the flash expires
     if (Date.now() < flashUntil && flashMsg) {
-      lx = screen.text(lx, barY, `${flashMsg}`, busy ? S.accent : S.ok);
-    } else if (busy) {
-      lx = screen.text(lx, barY, clipW(`${SPIN[frameIdx]} ${streamText !== null ? "responding" : "thinking"}${busyMsg ? ` — ${busyMsg}` : ""} ${elapsed()}`, W - 2), S.accent);
+      lx = screen.text(lx, barY, `${flashMsg}`, displayBusy() ? S.accent : S.ok);
+    } else if (displayBusy()) {
+      // a viewer mirrors the owner's turn here: same spinner, same label, same
+      // elapsed clock (startedAt arrived over the live channel)
+      lx = screen.text(lx, barY, clipW(`${SPIN[frameIdx]} ${streamText !== null ? "responding" : "thinking"}${busyMsg ? ` — ${busyMsg}` : ""} ${elapsed()}${remoteBusy && !busy ? " · other session" : ""}`, W - 2), S.accent);
     } else {
       lx = screen.text(lx, barY, `ready`, S.ok);
     }
     const stats = cachedStats();
-    const statsW = Math.min(segWidth(stats), W - lx - 2);
+    const statsW = Math.min(Bun.stringWidth(stats), W - lx - 2);
     if (statsW > 0) {
-      let acc = "";
-      let wAcc = 0;
-      for (const ch of stats) {
-        const cw = charWidth(ch.codePointAt(0)!);
-        if (wAcc + cw > statsW) break;
-        acc += ch;
-        wAcc += cw;
-      }
-      screen.text(W - 1 - wAcc, barY, acc, S.chromeOnBar);
+      const acc = clipW(stats, statsW);
+      screen.text(W - 1 - Bun.stringWidth(acc), barY, acc, S.chromeOnBar);
     }
   }
 
@@ -2994,6 +3024,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
 
   /** Truncate to `cols` display columns (wide chars count as two). */
   function clipW(s: string, cols: number): string {
+    if (Bun.stringWidth(s) <= cols) return s;
     let out = "";
     let w = 0;
     for (const ch of s) {
@@ -3003,6 +3034,31 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       w += cw;
     }
     return out;
+  }
+
+  /** Buffer index of the first char whose cell would start past `targetW` display columns. */
+  function indexAtWidth(s: string, targetW: number): number {
+    let w = 0;
+    let i = 0;
+    for (const ch of s) {
+      const cw = charWidth(ch.codePointAt(0)!);
+      if (w + cw > targetW) break;
+      w += cw;
+      i++;
+    }
+    return i;
+  }
+
+  /** Display width of the first `upto` buffer indices of `s` (inverse of indexAtWidth). */
+  function widthOf(s: string, upto: number): number {
+    let w = 0;
+    let i = 0;
+    for (const ch of s) {
+      if (i >= upto) break;
+      w += charWidth(ch.codePointAt(0)!);
+      i++;
+    }
+    return w;
   }
 
   // ---- loop ----
@@ -3032,7 +3088,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   let lastSpinAt = 0;
   function tickSpinner() {
     rethemeIfNeeded();
-    if (!busy) return;
+    if (!displayBusy()) return; // a viewer's spinner mirrors the owner's turn
     const now = Date.now();
     if (now - lastSpinAt < 140) return;
     lastSpinAt = now;
@@ -3090,8 +3146,14 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       // corrupt the grid, so surface it as a transcript item instead.
       process.on("unhandledRejection", (reason) => {
         reportError("internal error", reason);
-        setBusy(false);
-        drainQueue();
+        // only stand the spinner down when no turn is actually running — the
+        // rejection may have come from an unrelated floating promise, and
+        // resetting a live turn's busy flag here would let a queued message
+        // dispatch into it
+        if (!busy) {
+          setBusy(false);
+          drainQueue();
+        } else debugLog("unhandledRejection during running turn", String(reason));
       });
 
       if (state.sessionId) getSession(state.sessionId);
@@ -3123,6 +3185,59 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       if (state.pendingSession) welcomeBlock();
       // Second opener of the same session becomes the read-only viewer.
       if (state.sessionId && !state.pendingSession) attachLock(state.sessionId);
+
+      // ---- read-only viewer: mirror the owner's live status ----
+      /**
+       * A viewer has no run() driving local state, so the status bar would
+       * read "ready" while the owner is mid-turn and streaming text would
+       * never appear until the turn settled. Poll the session kv the owner
+       * publishes to ("live") plus the message log tail, and feed the SAME
+       * local variables paint() and the status bar already render — the
+       * viewer's frame loop needs no special casing beyond this poll. The
+       * input dock stays fully usable (drafting works); only sending is
+       * blocked, which submit() already enforces.
+       */
+      let lastSeq = -1;
+      let lastLiveAt = 0;
+      const pinnedMirrorId = state.sessionId;
+      if (state.readOnly && state.sessionId) {
+        const mirror = () => {
+          try {
+            // the viewer may /new or /fork its way out of read-only mode
+            // (both write a NEW session this process then owns) — the mirror
+            // only makes sense while this process is still a viewer here
+            if (!state.readOnly || state.sessionId !== pinnedMirrorId) {
+              if (mirrorTimer) clearInterval(mirrorTimer);
+              mirrorTimer = null;
+              return;
+            }
+            const live = kvGet<LiveStatus>(state.sessionId!, "live");
+            if (live && live.at !== lastLiveAt) {
+              lastLiveAt = live.at;
+              remoteBusy = live.busy;
+              busyMsg = live.busyMsg;
+              const st = live.streaming;
+              if (st !== streamText) {
+                streamText = st;
+                streamCache = null; // width may differ; rebuild is cheap and rare
+              }
+              startedAt = live.startedAt;
+              markDirty();
+            }
+            // new transcript rows (tool results, settled messages) — refresh()
+            // rebuilds items from the log and re-seals nothing (viewers never
+            // own liveThink, it is null here)
+            const nodes = projectView(state.sessionId!);
+            let seq = lastSeq;
+            for (const n of nodes) if (!n.deleted) seq = Math.max(seq, n.msg.seq);
+            if (lastSeq >= 0 && seq > lastSeq) refresh();
+            lastSeq = seq;
+          } catch {}
+        };
+        mirror(); // seed lastSeq before the first frame, so history is not "new"
+        mirrorTimer = setInterval(mirror, 500);
+        mirrorTimer.unref?.();
+      }
 
       let lastCaretKey: string | null = null;
       const frameTimer = setInterval(() => {
