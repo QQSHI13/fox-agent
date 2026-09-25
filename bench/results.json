@@ -1,5 +1,5 @@
 {
-  "generated": "2026-09-25T04:10:57Z",
+  "generated": "2026-09-25T05:11:46Z",
   "machine": "Linux x86_64 (6.17.0-1022-azure)",
   "method": "best of 4 `--version` runs; best of 5 PTY launches (no args) to first output byte; best of 3 PTY launches typing a probe and waiting for it on screen (log marker where a tool suppresses echo); PSS after 1.5s idle from /proc smaps_rollup; bundle = the binary itself, a launcher's exec target where a wrapper hands off, or the package dir for script CLIs (entry shims alone would pretend node_modules are free); fox TTFT = spawn to first text event of `fox -p \u2026 --json` vs the repo's scripted local provider (no key, no network); fox peak RSS of that turn via /usr/bin/time -v. Missing tools are n/a, never estimated.",
   "rows": [
@@ -10,10 +10,10 @@
       "version": "0.5.0-beta.1",
       "disk_mb": 89.2,
       "disk_kind": "bin",
-      "startup_ms": 10.7,
-      "tui_first_byte_ms": 12.5,
+      "startup_ms": 9.1,
+      "tui_first_byte_ms": 11.7,
       "tui_first_input_ms": null,
-      "idle_pss_mb": 32.8
+      "idle_pss_mb": 32.4
     },
     {
       "agent": "claude code",
@@ -22,10 +22,10 @@
       "version": "2.1.282 (Claude Code)",
       "disk_mb": 238.8,
       "disk_kind": "bin",
-      "startup_ms": 9.9,
-      "tui_first_byte_ms": 127.6,
+      "startup_ms": 6.7,
+      "tui_first_byte_ms": 151.5,
       "tui_first_input_ms": null,
-      "idle_pss_mb": 173.5
+      "idle_pss_mb": 173.6
     },
     {
       "agent": "codex",
@@ -34,8 +34,8 @@
       "version": "codex-cli 0.157.0",
       "disk_mb": 391.2,
       "disk_kind": "pkg",
-      "startup_ms": 30.9,
-      "tui_first_byte_ms": 32.0,
+      "startup_ms": 34.4,
+      "tui_first_byte_ms": 35.7,
       "tui_first_input_ms": null,
       "idle_pss_mb": 49.0
     },
@@ -46,10 +46,10 @@
       "version": "1.18.32",
       "disk_mb": 185.2,
       "disk_kind": "bin",
-      "startup_ms": 387.8,
-      "tui_first_byte_ms": 644.5,
-      "tui_first_input_ms": 29.9,
-      "idle_pss_mb": 355.7
+      "startup_ms": 483.8,
+      "tui_first_byte_ms": 823.9,
+      "tui_first_input_ms": 37.8,
+      "idle_pss_mb": 358.9
     },
     {
       "agent": "opencode v2",
@@ -58,10 +58,10 @@
       "version": "opencode2 v0.0.0-beta-19271",
       "disk_mb": 207.4,
       "disk_kind": "bin",
-      "startup_ms": 61.0,
-      "tui_first_byte_ms": 92.6,
-      "tui_first_input_ms": 40.2,
-      "idle_pss_mb": 123.1
+      "startup_ms": 64.5,
+      "tui_first_byte_ms": 110.4,
+      "tui_first_input_ms": 56.2,
+      "idle_pss_mb": 125.7
     },
     {
       "agent": "jcode",
@@ -70,10 +70,10 @@
       "version": "jcode v0.88.0 (ee4cd3db3)",
       "disk_mb": 130.1,
       "disk_kind": "bin",
-      "startup_ms": 7.0,
-      "tui_first_byte_ms": 9.0,
+      "startup_ms": 6.5,
+      "tui_first_byte_ms": 8.3,
       "tui_first_input_ms": null,
-      "idle_pss_mb": 23.6
+      "idle_pss_mb": 23.7
     },
     {
       "agent": "pi",
@@ -82,10 +82,10 @@
       "version": "0.87.1",
       "disk_mb": 403.5,
       "disk_kind": "pkg",
-      "startup_ms": 146.3,
-      "tui_first_byte_ms": 183.5,
-      "tui_first_input_ms": 4.7,
-      "idle_pss_mb": 143.8
+      "startup_ms": 178.9,
+      "tui_first_byte_ms": 231.1,
+      "tui_first_input_ms": 6.2,
+      "idle_pss_mb": 148.0
     },
     {
       "agent": "gemini cli",
@@ -94,8 +94,8 @@
       "version": "0.61.0",
       "disk_mb": 102.1,
       "disk_kind": "pkg",
-      "startup_ms": 933.7,
-      "tui_first_byte_ms": 991.0,
+      "startup_ms": 1166.1,
+      "tui_first_byte_ms": 1242.3,
       "tui_first_input_ms": 0.1,
       "idle_pss_mb": null
     },
@@ -106,8 +106,8 @@
       "version": "GitHub Copilot CLI 1.0.88.",
       "disk_mb": 169.6,
       "disk_kind": "pkg",
-      "startup_ms": 389.0,
-      "tui_first_byte_ms": 456.2,
+      "startup_ms": 486.6,
+      "tui_first_byte_ms": 582.1,
       "tui_first_input_ms": null,
       "idle_pss_mb": 47.4
     },
@@ -118,10 +118,10 @@
       "version": "crush version v0.96.1",
       "disk_mb": 123.7,
       "disk_kind": "pkg",
-      "startup_ms": 101.0,
-      "tui_first_byte_ms": 488.3,
+      "startup_ms": 116.6,
+      "tui_first_byte_ms": 417.6,
       "tui_first_input_ms": null,
-      "idle_pss_mb": 67.9
+      "idle_pss_mb": 68.2
     },
     {
       "agent": "goose",
@@ -130,9 +130,9 @@
       "version": "1.52.0",
       "disk_mb": 300.8,
       "disk_kind": "bin",
-      "startup_ms": 6.8,
-      "tui_first_byte_ms": 6.8,
-      "tui_first_input_ms": 0.0,
+      "startup_ms": 4.8,
+      "tui_first_byte_ms": 5.0,
+      "tui_first_input_ms": 0.1,
       "idle_pss_mb": null
     },
     {
@@ -142,10 +142,10 @@
       "version": "aider 0.86.2",
       "disk_mb": 642.8,
       "disk_kind": "pkg",
-      "startup_ms": 609.3,
-      "tui_first_byte_ms": 476.2,
-      "tui_first_input_ms": 6.5,
-      "idle_pss_mb": 66.8
+      "startup_ms": 595.0,
+      "tui_first_byte_ms": 540.0,
+      "tui_first_input_ms": 8.1,
+      "idle_pss_mb": 66.9
     },
     {
       "agent": "amp",
@@ -162,10 +162,10 @@
       "version": "0.24.5",
       "disk_mb": 155.0,
       "disk_kind": "pkg",
-      "startup_ms": 26.8,
-      "tui_first_byte_ms": 738.9,
+      "startup_ms": 29.0,
+      "tui_first_byte_ms": 895.2,
       "tui_first_input_ms": null,
-      "idle_pss_mb": 23.4
+      "idle_pss_mb": 23.5
     },
     {
       "agent": "codebuff",
@@ -178,15 +178,15 @@
       "version": "7.7.9",
       "disk_mb": 542.5,
       "disk_kind": "pkg",
-      "startup_ms": 705.7,
-      "tui_first_byte_ms": 1184.1,
-      "tui_first_input_ms": 30.9,
-      "idle_pss_mb": 46.2
+      "startup_ms": 864.1,
+      "tui_first_byte_ms": 1477.0,
+      "tui_first_input_ms": 40.9,
+      "idle_pss_mb": 46.1
     }
   ],
   "fox": {
-    "ttft_ms": 40.1,
-    "headless_peak_rss_mb": 58.5,
+    "ttft_ms": 45.7,
+    "headless_peak_rss_mb": 58.4,
     "method": "headless `fox -p \u2026 --json` vs scripted local provider; RSS via /usr/bin/time -v; TUI bytes via PTY; TUI input = first typed byte to probe text on screen (log marker where echo is suppressed)"
   }
 }
