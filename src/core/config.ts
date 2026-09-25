@@ -277,12 +277,20 @@ export function findUpAll(cwd: string, names: string[]): string[] {
  * ./scripts/x" mean the file's own directory, and a bare concatenation leaves
  * the model guessing which directory that is — or even whether the file came
  * from cwd at all.
+ *
+ * Files with byte-identical content are included once: the common
+ * AGENTS.md-symlinked-to-CLAUDE.md (or copied) pairing would otherwise inject
+ * the same text twice. The first (root-most) occurrence wins, and its label is
+ * the correct one for relative paths.
  */
 function loadProjectInstructions(cwd: string): string {
+  const seen = new Set<string>();
   return findUpAll(cwd, ["AGENTS.md", "CLAUDE.md"])
     .map((p) => {
       const text = readTextFile(p);
-      return text ? `From ${p} (relative paths in it resolve against ${dirname(p)}):\n${text}` : "";
+      if (!text || seen.has(text)) return "";
+      seen.add(text);
+      return `From ${p} (relative paths in it resolve against ${dirname(p)}):\n${text}`;
     })
     .filter(Boolean)
     .join("\n\n");

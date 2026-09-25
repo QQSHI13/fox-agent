@@ -242,6 +242,22 @@ extensions = [".ex"]
     expect(cfg.projectInstructions.indexOf("root rules")).toBeLessThan(cfg.projectInstructions.indexOf("package rules"));
   });
 
+  test("byte-identical files are included once (AGENTS.md/CLAUDE.md pairing)", async () => {
+    writeFileSync(join(projectDir, "AGENTS.md"), "shared rules");
+    const sub = join(projectDir, "pkg");
+    mkdirSync(sub, { recursive: true });
+    writeFileSync(join(sub, "AGENTS.md"), "package rules");
+    writeFileSync(join(sub, "CLAUDE.md"), "shared rules");
+    const { loadConfig } = await import("../src/core/config.ts");
+    const cfg = loadConfig({ cwd: sub }, { FOX_AGENT_API_KEY: "k" });
+    // root-most copy wins and keeps its (correct) provenance label
+    expect(cfg.projectInstructions).toContain(join(projectDir, "AGENTS.md"));
+    expect(cfg.projectInstructions).not.toContain(join(sub, "CLAUDE.md"));
+    expect(cfg.projectInstructions.split("shared rules").length - 1).toBe(1);
+    // a genuinely different file at the same level still loads
+    expect(cfg.projectInstructions).toContain("package rules");
+  });
+
   test("invalid values are rejected safely", async () => {
     writeFileSync(join(projectDir, "fox-agent.toml"), "maxSteps = -5\n");
     const { loadConfig } = await import("../src/core/config.ts");
