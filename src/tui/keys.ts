@@ -155,10 +155,13 @@ export function createDecoder(emit: (k: Key) => void) {
     if (code === 127 || code === 8) return void emit({ type: "named", name: "backspace" });
     if (code === 9) return void emit({ type: "named", name: "tab" });
     if (code < 27) {
-      const names: Record<number, string> = { 3: "c", 4: "d", 14: "t", 19: "s", 22: "v" };
-      const n = names[code];
-      if (n) return void emit({ type: "named", name: n, ctrl: true });
-      return void emit({ type: "named", name: `ctrl-${String.fromCharCode(96 + code)}`, ctrl: true });
+      // ctrl+<letter> arrives as byte 64+letter (a=1 … z=26): emit the BARE
+      // letter with ctrl so the app's per-chord handlers (`name === "x" &&
+      // ctrl`) match uniformly — a new chord in the app needs no decoder
+      // change. A lookup table used to live here; it mislabeled ctrl+n as
+      // "t" (14 is n) and left every unlisted chord as "ctrl-x", which the
+      // app never matched.
+      return void emit({ type: "named", name: String.fromCharCode(96 + code), ctrl: true });
     }
     if (code >= 32) emit({ type: "char", ch: c });
   }

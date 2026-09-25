@@ -36,6 +36,16 @@ export function charWidth(cp: number): number {
     (cp >= 0xfe30 && cp <= 0xfe4f) ||
     (cp >= 0xff00 && cp <= 0xff60) ||
     (cp >= 0xffe0 && cp <= 0xffe6) ||
+    // true emoji planes ONLY. 0x2600-0x27BF (misc symbols/dingbats: ✗ ✆ ❯ ❨
+    // …) was tried here and is WRONG: those are East-Asian-AMBIGUOUS — most
+    // terminals render them narrow, so counting them wide desyncs the grid
+    // (the "❯ " prompt prefix collapsed and every dock x was off by one).
+    (cp >= 0x1f1e6 && cp <= 0x1f1ff) || // regional indicators (flags)
+    (cp >= 0x1f300 && cp <= 0x1f5ff) || // misc symbols and pictographs
+    (cp >= 0x1f600 && cp <= 0x1f64f) || // emoticons
+    (cp >= 0x1f680 && cp <= 0x1f6ff) || // transport + map
+    (cp >= 0x1f900 && cp <= 0x1f9ff) || // supplemental symbols
+    (cp >= 0x1fa70 && cp <= 0x1faff) || // extended-A symbols
     (cp >= 0x20000 && cp <= 0x2fffd) ||
     (cp >= 0x30000 && cp <= 0x3fffd)
   )
@@ -53,7 +63,6 @@ export class Screen {
   private styleIdx = new Map<string, number>();
   /** interned id of the empty style, so cleared cells never inherit a stale one */
   private defSty = -1;
-  private cursorRow = -1;
   private _lastDirty = false;
   /** href of the currently open OSC 8 hyperlink ("" = none) */
   private lastHref = "";
@@ -81,7 +90,6 @@ export class Screen {
     this.chars = new Array(w * h).fill(undefined);
     this.sty = new Uint16Array(w * h).fill(this.defaultStyle());
     this.prevHash = new Float64Array(h).fill(NaN);
-    this.cursorRow = -1;
     this.lastHref = "";
   }
 
@@ -178,7 +186,6 @@ export class Screen {
       dirty = true;
       this.prevHash[y] = hash;
       out += `\x1b[${y + 1};1H`;
-      this.cursorRow = y;
       let runSgr = "";
       let line = "";
       let painted = 0;
@@ -264,6 +271,38 @@ export class Screen {
   forceRepaintAll() {
     this.prevHash.fill(NaN);
   }
+}
+
+/**
+ * Scrollbar geometry for a transcript of `rows` lines in a viewport of `vh`.
+ *
+ * Single source of truth for paint() (where the thumb goes) and the mouse
+ * scrub (which row maps to which scroll position) — the two used to compute
+ * independently and could drift. Pure so it can be tested without a terminal.
+ */
+export interface ScrollbarGeom {
+  showing: boolean;
+  /** thumb top row (0-based, within the viewport) */
+  ty: number;
+  /** thumb height in rows (>= 1) */
+  th: number;
+}
+export function scrollbarGeom(rows: number, vh: number, scrollTop: number): ScrollbarGeom {
+  if (rows <= vh || vh < 4) return { showing: false, ty: 0, th: vh };
+  const th = Math.max(1, Math.floor((vh * vh) / rows));
+  const maxScroll = rows - vh;
+  const ty = maxScroll > 0 ? Math.floor((Math.max(0, Math.min(scrollTop, maxScroll)) / maxScroll) * (vh - th)) : 0;
+  return { showing: true, ty, th };
+}
+
+/**
+ * Inverse of scrollbarGeom for the mouse: a press at viewport row `y` maps to
+ * a scroll offset. Only meaningful when showing; returns 0 otherwise.
+ */
+export function scrollbarScrollTop(rows: number, vh: number, y: number): number {
+  const g = scrollbarGeom(rows, vh, 0);
+  if (!g.showing || rows <= vh) return 0;
+  return Math.round((Math.max(0, Math.min(vh - 1, y)) / Math.max(1, vh - 1)) * (rows - vh));
 }
 
 function sgrOf(s: Style): string {
