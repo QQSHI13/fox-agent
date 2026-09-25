@@ -29,6 +29,8 @@ export interface Theme {
   selBg: string;
   /** background under tool-call rows (heads + bodies), subtly different from inputBg */
   toolBg: string;
+  /** thinking/reasoning blocks — a distinct cool tone, not the tool amber */
+  think: string;
 }
 
 export const THEME_PRESETS: Record<string, Theme> = {
@@ -49,7 +51,8 @@ export const THEME_PRESETS: Record<string, Theme> = {
     barBg: "#16161e",
     inputBg: "#1f2335",
     selBg: "#364a82",
-    toolBg: "#232433",
+    toolBg: "#2a2530",
+    think: "#7d8cc4",
   },
   light: {
     fg: "#1f2335",
@@ -65,7 +68,8 @@ export const THEME_PRESETS: Record<string, Theme> = {
     barBg: "#e4e6f0",
     inputBg: "#dde0ec",
     selBg: "#b6bfe2",
-    toolBg: "#d8dccc",
+    toolBg: "#e8ddc8",
+    think: "#6a6fb8",
   },
   mono: {
     fg: "#d0d0d0",
@@ -81,7 +85,8 @@ export const THEME_PRESETS: Record<string, Theme> = {
     barBg: "#1a1a1a",
     inputBg: "#242424",
     selBg: "#404040",
-    toolBg: "#2e2e2e",
+    toolBg: "#383028",
+    think: "#a0a0a0",
   },
   "solarized-dark": {
     // base0 body text on base03 measured 4.1:1; base1 keeps the palette and
@@ -99,7 +104,8 @@ export const THEME_PRESETS: Record<string, Theme> = {
     barBg: "#002b36",
     inputBg: "#073642",
     selBg: "#094656",
-    toolBg: "#0a474f",
+    toolBg: "#0f4a45",
+    think: "#6c71c4",
   },
   dracula: {
     fg: "#f8f8f2",
@@ -115,7 +121,8 @@ export const THEME_PRESETS: Record<string, Theme> = {
     barBg: "#21222c",
     inputBg: "#282a36",
     selBg: "#44475a",
-    toolBg: "#2f3141",
+    toolBg: "#3a2f3a",
+    think: "#8f9cf0",
   },
   // Every preset below was tuned to the same contrast contract as above:
   // every foreground >= 4.5:1 on inputBg, chrome/hint also >= 4.5 on barBg
@@ -134,7 +141,8 @@ export const THEME_PRESETS: Record<string, Theme> = {
     barBg: "#242933",
     inputBg: "#2e3440",
     selBg: "#434c5e",
-    toolBg: "#333a4a",
+    toolBg: "#3a3648",
+    think: "#88a0c8",
   },
   "catppuccin-mocha": {
     fg: "#cdd6f4",
@@ -150,7 +158,8 @@ export const THEME_PRESETS: Record<string, Theme> = {
     barBg: "#181825",
     inputBg: "#1e1e2e",
     selBg: "#414559",
-    toolBg: "#26253a",
+    toolBg: "#33283a",
+    think: "#9399d8",
   },
   "gruvbox-dark": {
     fg: "#ebdbb2",
@@ -166,7 +175,8 @@ export const THEME_PRESETS: Record<string, Theme> = {
     barBg: "#282828",
     inputBg: "#32302f",
     selBg: "#504945",
-    toolBg: "#3b3833",
+    toolBg: "#453628",
+    think: "#a89984",
   },
   "rose-pine": {
     fg: "#e0def4",
@@ -182,7 +192,8 @@ export const THEME_PRESETS: Record<string, Theme> = {
     barBg: "#191724",
     inputBg: "#1f1d2e",
     selBg: "#403d52",
-    toolBg: "#26233a",
+    toolBg: "#31283f",
+    think: "#9ccfd8",
   },
   "tokyo-day": {
     fg: "#343a55",
@@ -198,7 +209,8 @@ export const THEME_PRESETS: Record<string, Theme> = {
     barBg: "#d5d9e6",
     inputBg: "#e1e4ee",
     selBg: "#c3c9de",
-    toolBg: "#d5d9e2",
+    toolBg: "#e6dcd0",
+    think: "#5a6296",
   },
   everforest: {
     fg: "#d3c6aa",
@@ -214,7 +226,8 @@ export const THEME_PRESETS: Record<string, Theme> = {
     barBg: "#2b3339",
     inputBg: "#343f44",
     selBg: "#4f585e",
-    toolBg: "#3d484d",
+    toolBg: "#4a4438",
+    think: "#8fa8a0",
   },
 };
 

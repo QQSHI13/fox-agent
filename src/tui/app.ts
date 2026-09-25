@@ -2240,8 +2240,8 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     } else if (it.kind === "think") {
       const words = it.text.trim().split(/\s+/).length;
       rows = it.expanded
-        ? wrapSegs([{ t: `▾ thinking\n${it.text}`, fg: C.chrome }], w).map((segs) => ({ segs }))
-        : [{ segs: [{ t: `▸ thinking (${words} words)`, fg: C.chrome }] }];
+        ? wrapSegs([{ t: `▾ thinking\n${it.text}`, fg: C.think }], w).map((segs) => ({ segs }))
+        : [{ segs: [{ t: `▸ thinking (${words} words)`, fg: C.think }] }];
     } else if (it.kind === "toolhead" && it.detail) {
       // a tool call whose input overflowed the head line: collapsed shows the
       // one-liner with a leading arrow (like thinking/output) plus a hint, so
@@ -2705,6 +2705,8 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     inputBgRow: 0,
     barBgRow: 0,
     toolBgRow: 0,
+    hintOnBase: 0,
+    think: 0,
     sbThumb: 0,
     sbTrack: 0,
     overlayRow: 0,
@@ -2726,6 +2728,8 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     S.inputBgRow = screen.sgr({ fg: C.fg, bg: C.inputBg });
     S.barBgRow = screen.sgr({ fg: C.fg, bg: C.barBg });
     S.toolBgRow = screen.sgr({ fg: C.fg, bg: C.toolBg });
+    S.hintOnBase = screen.sgr({ fg: C.hint }); // floats over the transcript's own background
+    S.think = screen.sgr({ fg: C.think }); // thinking blocks: distinct from tool/toolbody
     S.sbThumb = screen.sgr({ bg: C.hint }); // theme's muted tone: visible on both bar and transcript
     S.sbTrack = screen.sgr({ bg: C.barBg }); // the gutter line the thumb rides
     S.overlayRow = screen.sgr({ fg: C.fg, bg: C.inputBg });
@@ -2823,9 +2827,14 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
 
     // scrollbar — dedicated track column when the frame shows it; full-height
     // line with the thumb stamped on top
-    if (fr.sbShowing) {
+    // scrollbar strip: a DEDICATED column whenever tuiScrollbar is on — track
+    // fill top to bottom of the viewport, nothing else ever paints there (rows
+    // wrap W-2 so text can't reach it). The thumb rides on the track; both are
+    // solid background fills, so flush()'s row-hash sees their cells change
+    // and the thumb repaints reliably.
+    if (SCROLLBAR) {
       for (let sy = 0; sy < fr.vh; sy++)
-        screen.fillRow(sy, W - 1, W, sy >= fr.sb.ty && sy < fr.sb.ty + fr.sb.th ? S.sbThumb : S.sbTrack);
+        screen.fillRow(sy, W - 1, W, fr.sbShowing && sy >= fr.sb.ty && sy < fr.sb.ty + fr.sb.th ? S.sbThumb : S.sbTrack);
     }
 
     // bottom dock geometry — straight from the frame (already computed there)
@@ -2936,13 +2945,13 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       queueRowsH = queueStackH();
       const shown = pend.slice(0, Math.max(1, inputTop - 1));
       const qTop = inputTop - queueRowsH;
+      // SEAMLESS with the transcript: no background fill — the rows read as
+      // the content's continuation, not a bar bolted above the dock
       for (let i = 0; i < shown.length; i++) {
-        screen.fillRow(qTop + i, 0, W, S.barBgRow);
-        screen.text(1, qTop + i, clipW(shown[i], W - 2), S.hintDim);
+        screen.text(1, qTop + i, clipW(shown[i], W - 2), S.hintOnBase);
       }
       if (pend.length > shown.length) {
-        screen.fillRow(qTop + shown.length, 0, W, S.barBgRow);
-        screen.text(1, qTop + shown.length, clipW(`… ${pend.length - shown.length} more — ctrl+up withdraws last`, W - 2), S.hintDim);
+        screen.text(1, qTop + shown.length, clipW(`… ${pend.length - shown.length} more — ctrl+up withdraws last`, W - 2), S.hintOnBase);
       }
     }
 
@@ -2956,12 +2965,10 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       cmdRowsH = shown.length + (cmdOut.length > avail ? 1 : 0);
       const cTop = inputTop - queueRowsH - cmdRowsH;
       for (let i = 0; i < shown.length; i++) {
-        screen.fillRow(cTop + i, 0, W, S.barBgRow);
-        screen.text(1, cTop + i, clipW(shown[i], W - 2), S.hintDim);
+        screen.text(1, cTop + i, clipW(shown[i], W - 2), S.hintOnBase);
       }
       if (cmdOut.length > avail) {
-        screen.fillRow(cTop + shown.length, 0, W, S.barBgRow);
-        screen.text(1, cTop + shown.length, clipW(`… ${cmdOut.length - avail} more lines`, W - 2), S.hintDim);
+        screen.text(1, cTop + shown.length, clipW(`… ${cmdOut.length - avail} more lines`, W - 2), S.hintOnBase);
       }
     }
 
