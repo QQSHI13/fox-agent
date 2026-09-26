@@ -2247,14 +2247,14 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       // blending into neighboring md rows); one style id for every line keeps
       // it uniform instead of inheriting whatever colors it wrapped.
       const inner = Math.max(20, w - 4);
-      rows = [{ segs: [{ t: `╭${"─".repeat(inner)}╮`, fg: C.info }] }];
+      rows = [{ segs: [{ t: `╭${"─".repeat(inner)}╮`, fg: C.info, bg: C.barBg }] }];
       const lines = it.text.split("\n");
       for (const l of lines) {
         const clipped = clipW(l, inner);
         const pad = " ".repeat(Math.max(0, inner - Bun.stringWidth(clipped)));
-        rows.push({ segs: [{ t: `│ ${clipped}${pad} │`, fg: C.info }] });
+        rows.push({ segs: [{ t: `│ ${clipped}${pad} │`, fg: C.info, bg: C.barBg }] });
       }
-      rows.push({ segs: [{ t: `╰${"─".repeat(inner)}╯`, fg: C.info }] });
+      rows.push({ segs: [{ t: `╰${"─".repeat(inner)}╯`, fg: C.info, bg: C.barBg }] });
     } else if (it.kind === "think") {
       const words = it.text.trim().split(/\s+/).length;
       rows = it.expanded
@@ -2809,6 +2809,12 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     return shown + (pend.length > shown ? 1 : 0);
   }
 
+  /** queued+steering stack height as the FRAME computed it (paint consumes
+   *  this; re-deriving differs when dockGeom's inputTop moved mid-turn) */
+  function queueRowsInFrame(fr: Frame): number {
+    return fr.queueH;
+  }
+
   function paint() {
     const st = (seg: Seg, fallback: number): number => {
       if (!seg.fg && !seg.bg && !seg.bold && !seg.italic && !seg.strike && !seg.href) return fallback;
@@ -2825,9 +2831,11 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     let y = 0;
     for (let i = fr.scrollTop; i < fr.rowCount && y < fr.vh; i++, y++) {
       const row = fr.rows[i];
-      // tool rows fill to the full width first, so the text paints over a
-      // background instead of floating in default
-      if (row.bg) screen.fillRow(y, 0, W, row.bg);
+      // tool rows fill the background first, so the text paints over it
+      // instead of floating in default. NEVER the last column — that cell
+      // belongs to the scrollbar strip (the strip's track/thumb must show
+      // through even on tool rows)
+      if (row.bg) screen.fillRow(y, 0, SCROLLBAR ? W - 1 : W, row.bg);
       let x = 1;
       for (const seg of row.segs) {
         x = screen.text(x, y, seg.t, st(seg, S.base));
@@ -2959,9 +2967,12 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     const pend = pendingLines();
     if (pend.length) {
       // one height computation, shared with viewportH's reservation — the two
-      // disagreeing meant the stack could drift out of its reserved band
-      queueRowsH = queueStackH();
-      const shown = pend.slice(0, Math.max(1, inputTop - 1));
+      // disagreeing meant the stack could drift out of its reserved band.
+      // The stack claims the frame's queueH (top-down paint must consume the
+      // same rows the viewport reserved, or the hints above get double-
+      // shifted by the stack)
+      queueRowsH = fr.queueH;
+      const shown = pend.slice(0, queueRowsH);
       const qTop = inputTop - queueRowsH;
       // SEAMLESS with the transcript: no background fill — the rows read as
       // the content's continuation, not a bar bolted above the dock
