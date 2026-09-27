@@ -1,11 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { computeFrame, scrollbarGeom, scrollbarScrollTop, viewportHeight, type FrameInput } from "/home/qq/.openclaw/workspace/projects/fox-agent/src/tui/layout.ts";
+import { computeFrame, scrollbarGeom, scrollbarScrollTop, viewportHeight, type FrameInput } from "../src/tui/layout.ts";
 
 const base: FrameInput = {
   W: 100, H: 30, scrollTop: 0, stick: true, scrollbar: true,
   items: [], streamText: null,
-  renderItem: (it: any, w) => [{ segs: [{ t: `x`.repeat(Math.min(20, w)) }] }],
-  renderStream: (text, w) => text.split("\n").map((l) => ({ segs: [{ t: l.slice(0, w) }] })),
+  renderItem: (it: any, w: number) => [{ segs: [{ t: `x`.repeat(Math.min(20, w)) }] }],
+  renderStream: (text: string, w: number) => text.split("\n").map((l: string) => ({ segs: [{ t: l.slice(0, w) }] })),
   inputRows: 1, caretRow: 0, INPUT_MAX_ROWS: 8, pendingCount: 0,
 };
 
