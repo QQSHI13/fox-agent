@@ -1667,15 +1667,19 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         clearSel();
         return;
       }
-      if (busy) {
-        ac?.abort();
-        return;
-      }
+      // Text in the box wins over abort: ctrl+c first clears the draft (the
+      // universal "get my line back" gesture), and only an EMPTY box means
+      // "stop the turn". Previously a busy turn ate the keystroke and a typed
+      // draft could not be cleared without also killing the agent.
       if (buf.length) {
         buf = [];
         cur = 0;
         inputRev++;
         flash("cleared");
+        return;
+      }
+      if (busy) {
+        ac?.abort();
         return;
       }
       // `return` matters: without it this fell through to the ctrl+d branch
