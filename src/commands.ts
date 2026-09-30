@@ -675,10 +675,9 @@ function modelPrompt(state: HarnessState): PromptRequest {
     presetIds.push(preset.id);
     providers.push({ value: `x:${preset.id}`, label: `${preset.name} — ${preset.api ?? preset.format}` });
   }
-  // Custom endpoints are always offered, one entry per API format — each is a
-  // real provider choice with its own base-url step, not a hidden fallback.
-  const customFormats = ["openai-compatible", "openai-responses", "anthropic", "google"];
-  for (const f of customFormats) providers.push({ value: `u:${f}`, label: `custom — ${f} endpoint` });
+  // Custom endpoints are NOT offered here — they have no credentials until
+  // /login collects them; that flow owns ad-hoc endpoints. Adding a provider
+  // = /login; switching between logged-in ones = /model.
 
   // Step 2 choices, from the provider picked in step 1.
   const modelOptions = (a: Record<string, string>) => {
@@ -1173,11 +1172,15 @@ function loginModelAnswer(answers: Record<string, string>): string | undefined {
  * scroll, and hiding providers behind typing made them undiscoverable.
  */
 function loginProviderOptions(state: HarnessState): { value: string; label: string }[] {
-  const profiles = Object.entries(state.config?.providers ?? {}).map(([name, prof]) => ({
-    value: `profile:${name}`,
-    label: `${name} — profile · ${prof.format ?? "openai-compatible"}${prof.baseUrl ? ` · ${prof.baseUrl}` : ""}`,
-    baseUrl: prof.baseUrl,
-  }));
+  // The currently-active profile is already logged in — selecting it again
+  // would just rewrite the same config. It stays available via /model.
+  const profiles = Object.entries(state.config?.providers ?? {})
+    .filter(([name]) => !(name === state.config?.provider && state.provider.label === name))
+    .map(([name, prof]) => ({
+      value: `profile:${name}`,
+      label: `${name} — profile · ${prof.format ?? "openai-compatible"}${prof.baseUrl ? ` · ${prof.baseUrl}` : ""}`,
+      baseUrl: prof.baseUrl,
+    }));
   const claimed = new Set(profiles.map((x) => x.baseUrl).filter(Boolean));
   const presetOpts = providerPresets()
     .filter((x) => !x.api || !claimed.has(x.api))
