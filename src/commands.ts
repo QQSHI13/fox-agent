@@ -1314,15 +1314,20 @@ function loginPrompt(state: HarnessState, pre: LoginFields = {}): PromptRequest 
         },
       },
       {
+        // a custom endpoint is a REAL provider: it always gets a name and
+        // lands as a first-class profile (own row in /model, pretty label,
+        // its model list). No one-off flat-slot logins for customs — those
+        // were invisible in /model and unswitchable.
         key: "saveProfile",
-        label: "remember as profile",
+        label: "provider name",
         kind: "text",
-        allowEmpty: true,
+        allowEmpty: false,
         initial: (a) => {
           const pr = presetOf(a);
-          return pr && a.provider !== "custom" ? pr.id : "";
+          if (a.provider === "custom") return "";
+          return pr?.id ?? "";
         },
-        hint: "empty = one-off login in the flat slot; a name keeps this provider beside your others",
+        hint: "short id for this provider (e.g. zhipu, work-gateway) — shows in /model",
         skipIf: (a) => (a.provider ?? "").startsWith("profile:"),
       },
     ],
@@ -1348,8 +1353,12 @@ function loginPrompt(state: HarnessState, pre: LoginFields = {}): PromptRequest 
       // a name keeps this login as a profile next to the others; empty stays
       // a one-off in the flat slot, exactly as before
       const saveName = (answers.saveProfile ?? "").trim();
+      const isCustom = answers.provider === "custom";
+      if (isCustom && !saveName) {
+        return { handled: true, output: "a custom endpoint needs a provider name — it becomes a real profile" };
+      }
       if (saveName) {
-        const format = answers.provider === "custom" ? "openai-compatible" : (preset?.format ?? fields.provider!);
+        const format = isCustom ? "openai-compatible" : (preset?.format ?? fields.provider!);
         if (!availableProviders().includes(format)) {
           return { handled: true, output: `unknown provider "${format}" — available: ${availableProviders().join(", ")}, or a /login preset` };
         }
@@ -1358,9 +1367,8 @@ function loginPrompt(state: HarnessState, pre: LoginFields = {}): PromptRequest 
           {
             model: fields.model,
             format,
-            // an empty baseUrl keeps the current endpoint for custom logins,
-            // but a preset names its own endpoint when nothing was typed
-            baseUrl: fields.baseUrl ?? (answers.provider === "custom" ? undefined : preset?.api),
+            // a custom provider names its own endpoint — that IS its identity
+            baseUrl: fields.baseUrl ?? (isCustom ? undefined : preset?.api),
             apiKey: fields.apiKey,
             writeProfile: true,
           },

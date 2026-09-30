@@ -596,16 +596,20 @@ describe("bug-hunt regressions", () => {
       sessionId: s.id,
       cwd: "/w",
       provider: { baseUrl: "http://127.0.0.1:1", apiKey: "", model: "m" } as any,
+      config: { providers: {} } as any,
       configPath: cfgPath,
       interactive: true,
     };
     // a custom endpoint lists nothing, so the model select is skipped and
     // answers.model is never committed — only modelCustom holds the typed id,
-    // which the run used to discard, saving the stale model with success
+    // which the run used to discard, saving the stale model with success.
+    // Custom endpoints now REQUIRE a profile name (they are real providers);
+    // this test logs one in under a name and checks the typed model lands.
     const wiz = t.runSlashCommand("/login", state)!.prompt!;
-    const res = wiz.run({ provider: "custom", apiKey: "", baseUrl: "http://127.0.0.1:1", modelCustom: "m-x", saveProfile: "" }, state);
+    const res = wiz.run({ provider: "custom", apiKey: "", baseUrl: "http://127.0.0.1:1", modelCustom: "m-x", saveProfile: "testgw" }, state);
     expect(res.output).toContain("saved");
     expect(state.provider.model).toBe("m-x");
+    expect(state.config?.providers["testgw"]).toBeTruthy();
   });
 
   test("bare /fork with an empty answer forks at the tip instead of looping", async () => {
