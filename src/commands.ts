@@ -662,7 +662,9 @@ function modelPrompt(state: HarnessState): PromptRequest {
     if (creds(baseUrl, [p.apiKey]) === null) continue; // logged out — hidden
     if (state.provider.label === name) continue; // this profile is the current row
     profileNames.push(name);
-    providers.push({ value: `p:${name}`, label: `${name} — ${p.format ?? "openai-compatible"} · ${baseUrl}` });
+    // pretty label where the profile maps to a known preset; bare id otherwise
+    const pretty = presetById(name)?.name;
+    providers.push({ value: `p:${name}`, label: `${pretty ?? name} — ${p.format ?? "openai-compatible"} · ${baseUrl}` });
   }
   const presetIds: string[] = [];
   for (const preset of providerPresets()) {
@@ -1162,6 +1164,31 @@ function loginModelAnswer(answers: Record<string, string>): string | undefined {
  * endpoint, names the env var an empty key falls back to, and turns the model
  * step into a list of what that provider actually serves.
  */
+/**
+ * The /login provider menu: configured profiles first, then catalog presets.
+ * A preset is SKIPPED when a configured profile already claims the same
+ * endpoint (the profile is the more specific choice, and listing both made
+ * the menu show near-duplicate rows). The bare filter string never appears —
+ * only real providers. All of them, always: the menu is short enough to
+ * scroll, and hiding providers behind typing made them undiscoverable.
+ */
+function loginProviderOptions(state: HarnessState): { value: string; label: string }[] {
+  const profiles = Object.entries(state.config?.providers ?? {}).map(([name, prof]) => ({
+    value: `profile:${name}`,
+    label: `${name} — profile · ${prof.format ?? "openai-compatible"}${prof.baseUrl ? ` · ${prof.baseUrl}` : ""}`,
+    baseUrl: prof.baseUrl,
+  }));
+  const claimed = new Set(profiles.map((x) => x.baseUrl).filter(Boolean));
+  const presetOpts = providerPresets()
+    .filter((x) => !x.api || !claimed.has(x.api))
+    .map((x) => ({ value: x.id, label: x.api ? `${x.name} — ${x.api}` : x.name }));
+  return [
+    ...profiles,
+    ...presetOpts,
+    { value: "custom", label: "custom (any provider format fox-agent speaks)" },
+  ];
+}
+
 function loginPrompt(state: HarnessState, pre: LoginFields = {}): PromptRequest {
   const p = state.provider;
   ensureFreshCatalog();
@@ -1230,14 +1257,7 @@ function loginPrompt(state: HarnessState, pre: LoginFields = {}): PromptRequest 
         key: "provider",
         label: "provider",
         kind: "select",
-        options: [
-          ...Object.entries(state.config?.providers ?? {}).map(([name, prof]) => ({
-            value: `profile:${name}`,
-            label: `${name} — profile · ${prof.format ?? "openai-compatible"}${prof.baseUrl ? ` · ${prof.baseUrl}` : ""}`,
-          })),
-          ...presets.map((x) => ({ value: x.id, label: x.api ? `${x.name} — ${x.api}` : x.name })),
-          { value: "custom", label: "custom (any provider format fox-agent speaks)" },
-        ],
+        options: loginProviderOptions(state),
         initial: preProfile ?? pre.provider ?? (currentProfile ? `profile:${currentProfile}` : currentPreset),
       },
       {

@@ -2933,9 +2933,10 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       const st = prompt.steps[prompt.idx];
       const hint = resolveField(st.hint, prompt.answers);
       const stepPos = prompt.steps.length > 1 ? ` ${prompt.idx + 1}/${prompt.steps.length}` : "";
-      const filterNote = st.kind === "select" && prompt.filter ? ` — filter: "${prompt.filter}"` : "";
+      // the filter lives in the dock caret line already — echoing it here too
+      // double-printed it and read like a bogus list entry
       const rows: { text: string; sel: boolean }[] = [
-        { text: `${prompt.title}${stepPos} — ${st.label}${hint ? ` (${hint})` : ""}${filterNote} · esc cancels`, sel: false },
+        { text: `${prompt.title}${stepPos} — ${st.label}${hint ? ` (${hint})` : ""} · esc cancels`, sel: false },
       ];
       // rows above the dock floats (see dockFloats) — the menu must clear the
       // queue and command-output rows or it paints over them
