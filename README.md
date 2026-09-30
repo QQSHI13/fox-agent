@@ -187,7 +187,7 @@ Two things to know:
 
 ## Features
 
-- **Tools**: read/write/edit (whitespace-tolerant patch engine)/glob/grep (ripgrep when present)/exec (process-group kill, `full:true` uncapped)/pty (tmux pipe-pane, resize-proof)/repl (in-process JS scratchpad, persistent vars, direct tool calls)/ctx (search/stats/hide/rewrite your own context; `ctx_edit` stays as a deprecated alias)/todowrite/task (delegation over ACP or A2A)/fetch/MCP client. `read` attaches images, audio and video as media when the active model accepts them (gemini: all three; gpt/claude families: images).
+- **Tools**: read/write/edit (whitespace-tolerant patch engine)/glob/grep (ripgrep when present)/exec (process-group kill, `full:true` uncapped)/pty (tmux pipe-pane, resize-proof)/repl (in-process JS scratchpad, persistent vars, direct tool calls)/ctx (search/stats/hide/rewrite your own context; `ctx_edit` stays as a deprecated alias)/todo/task (delegation over ACP or A2A)/fetch/MCP client. `read` attaches images, audio and video as media when the active model accepts them (gemini: all three; gpt/claude families: images).
 - **ACP both ways**: `fox --acp` serves the Agent Client Protocol to Zed/acpx, and fox drives other ACP agents as a client (that is what `task` is built on). Agents configured with a `url` are reached over **A2A** (HTTP/JSON-RPC, SSE streaming when offered).
 - **Plugins**: one module adds tools, lifecycle hooks (`onSessionStart`/`beforeLLMCall`/`afterTool`) and custom providers. Global config only, and a broken one costs a warning rather than the run.
 - **200+ providers** via the models.dev catalog -- `/login` presets prefill endpoint, env var and real model lists. Any OpenAI-compatible/Responses, Anthropic or Gemini endpoint works too.

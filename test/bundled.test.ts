@@ -65,7 +65,7 @@ describe("bundled plugins", () => {
   test("pty/todo/fetch come from bundled plugins in a default registry build", async () => {
     const { buildRegistry } = await import("../src/tools/index.ts");
     const { tools, plugins } = await buildRegistry(await cfg());
-    for (const t of ["pty", "todowrite", "fetch"]) expect(tools.has(t)).toBe(true);
+    for (const t of ["pty", "todo", "fetch"]) expect(tools.has(t)).toBe(true);
     expect(plugins.map((p) => p.name)).toContain("bundled:pty");
   });
 
@@ -75,7 +75,7 @@ describe("bundled plugins", () => {
     c.disabledPlugins = ["pty"];
     const { tools, plugins } = await buildRegistry(c);
     expect(tools.has("pty")).toBe(false);
-    expect(tools.has("todowrite")).toBe(true);
+    expect(tools.has("todo")).toBe(true);
     expect(plugins.map((p) => p.name)).not.toContain("bundled:pty");
   });
 

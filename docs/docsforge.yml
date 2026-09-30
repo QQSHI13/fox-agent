@@ -1,0 +1,64 @@
+site_name: fox-agent
+site_author: QQ
+site_description: >-
+  A light coding harness with agent-controlled context.
+  Full machine control, zero permission prompts.
+repo_name: QQSHI13/fox-agent
+repo_url: https://github.com/QQSHI13/fox-agent
+edit_uri: edit/main/docs/
+
+copyright: Copyright © 2026 — Apache-2.0
+
+nav:
+  - Home: index.md
+  - Getting Started:
+      - Quickstart: index.md
+      - Configuration: configuration/index.md
+      - Environment variables: configuration/environment-variables.md
+      - Providers & profiles: configuration/providers.md
+  - Tools:
+      - Overview: tools/index.md
+      - File tools: tools/files.md
+      - exec & pty: tools/exec-pty.md
+      - fetch & repl: tools/fetch-repl.md
+      - Context editing (ctx): tools/ctx.md
+      - Delegation (task): tools/task.md
+      - MCP: tools/mcp.md
+  - TUI: tui/index.md
+  - Plugins: plugins/index.md
+  - Sessions: sessions/index.md
+  - Protocols:
+      - protocols/index.md
+      - ACP: protocols/acp.md
+      - A2A: protocols/a2a.md
+  - Architecture: architecture/index.md
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.top
+    - navigation.sections
+    - navigation.indexes
+    - navigation.tracking
+    - navigation.instant
+    - content.action.view
+    - content.code.copy
+    - search.highlight
+    - search.share
+    - search.suggest
+    - toc.follow

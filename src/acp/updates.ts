@@ -37,7 +37,7 @@ export const TOOL_KIND: Record<string, ToolKind> = {
   ctx: "think",
   ctx_edit: "think",
   repl: "execute",
-  todowrite: "other",
+  todo: "other",
   task: "other",
 };
 

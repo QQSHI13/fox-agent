@@ -9,7 +9,7 @@ export interface TodoItem {
 }
 
 export const todoDef: ToolDef = {
-  name: "todowrite",
+  name: "todo",
   description:
     "Maintain your task list for the current session. Replaces the whole list each call. Current list is shown in your runtime header every step.",
   parameters: {

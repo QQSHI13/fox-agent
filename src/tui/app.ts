@@ -69,7 +69,7 @@ interface Item {
   /** part of the startup block — rebuilt live when config changes, and dropped
    *  (with the block's lifetime) by the next refresh() */
   welcome?: boolean;
-  /** tool result whose body is markdown (todowrite task lists) — expanded
+  /** tool result whose body is markdown (todo task lists) — expanded
    *  rendering goes through the markdown parser instead of plain lines */
   mdBody?: boolean;
 }
@@ -507,9 +507,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       const m = n.msg;
       if (m.role === "user") out.push({ k: nk(), kind: "user", text: `[m${m.seq}] ❯ ${n.content}` });
       else if (m.role === "tool") {
-        // todowrite bodies are markdown task lists — rendered as md, always
+        // todo bodies are markdown task lists — rendered as md, always
         // visible (a task list hidden behind a click is useless)
-        const isTodo = callName.get(m.tool_call_id ?? "") === "todowrite";
+        const isTodo = callName.get(m.tool_call_id ?? "") === "todo";
         out.push({ k: nk(), kind: "toolhead", text: `[m${m.seq}] » ${callLabel.get(m.tool_call_id ?? "") ?? "tool"}`, detail: callDetail.get(m.tool_call_id ?? "") });
         // raw text — collapsed/expanded rendering lives in itemRows
         out.push({
@@ -1264,10 +1264,10 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           push("toolhead", `[m${ev.seq}] » ${callLabels.get(ev.id) ?? `${ev.name}${argsSummary(ev.args)}`}${ev.ok ? "" : " — failed"}`, { detail, expanded: headOpen || undefined });
           const bodyOpenFinal = expandedRefs.has(ev.seq) || bodyOpen;
           if (bodyOpenFinal) expandedRefs.add(ev.seq);
-          // todowrite bodies are markdown task lists — always visible, rendered
+          // todo bodies are markdown task lists — always visible, rendered
           // as md (see itemRows mdBody); a task list hidden behind a click is
           // useless and collapsed markdown punctuation looks like garbage
-          if (ev.name === "todowrite") {
+          if (ev.name === "todo") {
             push("toolbody", ev.output.slice(0, KEPT_TOOL_CHARS * 4), { ref: ev.seq, expanded: true, toolResult: true, mdBody: true });
           } else {
             push("toolbody", ev.output.slice(0, KEPT_TOOL_CHARS * 4), { ref: ev.seq, expanded: bodyOpenFinal, toolResult: true });
@@ -2295,7 +2295,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         // paints unified-diff/git markers in their own colors.
         rows = [];
         if (it.mdBody) {
-          // markdown body (todowrite task lists): through the md parser so
+          // markdown body (todo task lists): through the md parser so
           // task-list syntax renders as status marks, not punctuation
           for (const mline of renderMarkdown(it.text)) rows.push(...wrapSegs(mline, w).map((segs) => ({ segs })));
         } else {

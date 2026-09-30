@@ -339,7 +339,7 @@ describe("ctx search, stats and query ops", () => {
 describe("registry", () => {
   test("base registry exposes the built-in tools", () => {
     const reg = defaultRegistry();
-    for (const name of ["read", "write", "edit", "glob", "grep", "exec", "pty", "ctx", "ctx_edit", "todowrite", "task", "fetch", "repl"]) {
+    for (const name of ["read", "write", "edit", "glob", "grep", "exec", "pty", "ctx", "ctx_edit", "todo", "task", "fetch", "repl"]) {
       expect(reg.has(name)).toBe(true);
     }
   });
@@ -412,7 +412,7 @@ describe("childEnv", () => {
   });
 });
 
-describe("todowrite", () => {
+describe("todo", () => {
   test("result is a markdown task list, no emoji markers", async () => {
     const { todoRun, renderTodosMd, renderTodos } = await import("../src/tools/todo.ts");
     const r = await todoRun(
