@@ -606,7 +606,7 @@ describe("bug-hunt regressions", () => {
     // Custom endpoints now REQUIRE a profile name (they are real providers);
     // this test logs one in under a name and checks the typed model lands.
     const wiz = t.runSlashCommand("/login", state)!.prompt!;
-    const res = wiz.run({ provider: "custom", apiKey: "", baseUrl: "http://127.0.0.1:1", modelCustom: "m-x", saveProfile: "testgw" }, state);
+    const res = wiz.run({ provider: "custom:openai-compatible", apiKey: "", baseUrl: "http://127.0.0.1:1", modelCustom: "m-x", saveProfile: "testgw" }, state);
     expect(res.output).toContain("saved");
     expect(state.provider.model).toBe("m-x");
     expect(state.config?.providers["testgw"]).toBeTruthy();

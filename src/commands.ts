@@ -1188,7 +1188,12 @@ function loginProviderOptions(state: HarnessState): { value: string; label: stri
   return [
     ...profiles,
     ...presetOpts,
-    { value: "custom", label: "custom (any provider format fox-agent speaks)" },
+    // one row PER FORMAT: "custom" is not a protocol — the format is. Each
+    // row carries its format explicitly, so the wizard never guesses.
+    ...["openai-compatible", "openai-responses", "anthropic", "google"].map((f) => ({
+      value: `custom:${f}`,
+      label: `custom — ${f}`,
+    })),
   ];
 }
 
@@ -1324,7 +1329,7 @@ function loginPrompt(state: HarnessState, pre: LoginFields = {}): PromptRequest 
         allowEmpty: false,
         initial: (a) => {
           const pr = presetOf(a);
-          if (a.provider === "custom") return "";
+          if ((a.provider ?? "").startsWith("custom:")) return "";
           return pr?.id ?? "";
         },
         hint: "short id for this provider (e.g. zhipu, work-gateway) — shows in /model",
@@ -1337,10 +1342,14 @@ function loginPrompt(state: HarnessState, pre: LoginFields = {}): PromptRequest 
       if (sel.startsWith("profile:")) {
         return applyProfileLogin(sel.slice("profile:".length), { model: loginModelAnswer(answers) }, s);
       }
-      // "custom" means an arbitrary openai-compatible endpoint; other formats
-      // can still be named explicitly via kv args (/login provider=anthropic …)
+      // "custom:<format>" means an arbitrary endpoint speaking that format;
+      // preset ids and bare formats still arrive via kv args
       const preset = presetOf(answers);
-      const fields: LoginFields = { provider: answers.provider === "custom" ? "openai-compatible" : answers.provider };
+      const fields: LoginFields = {
+        provider: (answers.provider ?? "").startsWith("custom:")
+          ? answers.provider!.slice("custom:".length)
+          : answers.provider,
+      };
       for (const k of ["apiKey", "baseUrl"] as const) {
         const v = answers[k]?.trim();
         if (v) fields[k] = v;
@@ -1353,12 +1362,13 @@ function loginPrompt(state: HarnessState, pre: LoginFields = {}): PromptRequest 
       // a name keeps this login as a profile next to the others; empty stays
       // a one-off in the flat slot, exactly as before
       const saveName = (answers.saveProfile ?? "").trim();
-      const isCustom = answers.provider === "custom";
+      const isCustom = (answers.provider ?? "").startsWith("custom:");
+  const customFormat = isCustom ? answers.provider!.slice("custom:".length) : undefined;
       if (isCustom && !saveName) {
         return { handled: true, output: "a custom endpoint needs a provider name — it becomes a real profile" };
       }
       if (saveName) {
-        const format = isCustom ? "openai-compatible" : (preset?.format ?? fields.provider!);
+        const format = isCustom ? customFormat! : (preset?.format ?? fields.provider!);
         if (!availableProviders().includes(format)) {
           return { handled: true, output: `unknown provider "${format}" — available: ${availableProviders().join(", ")}, or a /login preset` };
         }
