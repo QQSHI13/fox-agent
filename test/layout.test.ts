@@ -5,7 +5,9 @@ const base: FrameInput = {
   W: 100, H: 30, scrollTop: 0, stick: true, scrollbar: true,
   items: [], streamText: null,
   renderItem: (it: any, w: number) => [{ segs: [{ t: `x`.repeat(Math.min(20, w)) }] }],
+  countItem: (it: any, _w: number) => 1,
   renderStream: (text: string, w: number) => text.split("\n").map((l: string) => ({ segs: [{ t: l.slice(0, w) }] })),
+  countStream: (text: string) => text.split("\n").length,
   inputRows: 1, caretRow: 0, INPUT_MAX_ROWS: 8, pendingCount: 0,
 };
 
@@ -16,7 +18,7 @@ describe("computeFrame", () => {
     expect(fr.contentWidth).toBe(100);
     // 3 content rows + one blank between each pair; blanks own -1 so the
     // owner array stays aligned to rows (hit-test rows never desync)
-    expect(fr.rowCount).toBe(5);
+    expect(fr.total).toBe(5);
     expect(fr.owner.length).toBe(fr.rows.length);
     expect(fr.owner).toEqual([1, -1, 2, -1, 3]);
   });
@@ -26,9 +28,11 @@ describe("computeFrame", () => {
     const fr = computeFrame({ ...base, items });
     expect(fr.sbShowing).toBe(true);
     expect(fr.contentWidth).toBe(98);
-    expect(fr.rowCount).toBe(100 + 99); // one blank between each pair
+    expect(fr.total).toBe(100 + 99); // one blank between each pair
     expect(fr.stick).toBe(true);
     expect(fr.scrollTop).toBe(199 - fr.vh);
+    // window: only ~3 viewports of rows built, not 199
+    expect(fr.rowCount).toBeLessThan(199);
   });
 
   test("disabled scrollbar never reserves a column", () => {
@@ -48,7 +52,7 @@ describe("computeFrame", () => {
     const fr = computeFrame({ ...base, items });
     // rows: md / blank / head / body / blank / md — head->body glued (no blank)
     // rows: md / blank / head / body / blank / md — head->body glued (no blank)
-    expect(fr.rowCount).toBe(6);
+    expect(fr.total).toBe(6);
     expect(fr.owner).toEqual([1, -1, 2, 3, -1, 4]);
   });
 

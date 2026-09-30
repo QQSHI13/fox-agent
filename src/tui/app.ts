@@ -1913,7 +1913,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     if (!fr) return null;
     if (y < 0 || y >= fr.vh) return null;
     const row = y + fr.scrollTop;
-    return row >= 0 && row < fr.rowCount ? row : null;
+    return row >= 0 && row < fr.total ? row : null;
   }
 
   /** the cell column a click at screen x lands on within a transcript row */
@@ -1941,7 +1941,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       if (SCROLLBAR && fr?.sbShowing && x >= W - 1 && y < fr.vh) {
         press = { x, y, moved: false, scrollbar: true };
         stick = false;
-        scrollTop = scrollbarScrollTop(fr.rowCount, fr.vh, y);
+        scrollTop = scrollbarScrollTop(fr.total, fr.vh, y);
         clampScroll();
         markDirty();
         return;
@@ -1972,7 +1972,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         const fr = painted;
         if (fr) {
           stick = false;
-          scrollTop = scrollbarScrollTop(fr.rowCount, fr.vh, y);
+          scrollTop = scrollbarScrollTop(fr.total, fr.vh, y);
           clampScroll();
         }
         press.moved = true;
@@ -2046,7 +2046,10 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       if (phase === 2 || row === null) return; // quad-click: no selection, no toggle
       const fr = painted;
       if (!fr) return;
-      const cells = rowCells(fr.rows[row].segs);
+      const winBase2 = Math.max(0, fr.scrollTop - fr.vh);
+      const winIdx = row - winBase2;
+      if (winIdx < 0 || winIdx >= fr.rows.length) return;
+      const cells = rowCells(fr.rows[winIdx].segs);
       if (phase === 0) {
         const w = wordRangeAt(cells, transcriptCol(x));
         if (!w) return;
@@ -2068,7 +2071,11 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     if (!selA || !selB) return;
     const fr = painted;
     if (!fr) return;
-    const text = extractSelection(fr.rows.map((r) => r.segs), selA, selB);
+    // selection rows are ABSOLUTE; the window base shifts the built slice
+    const winBase = Math.max(0, fr.scrollTop - fr.vh);
+    const selA2 = { row: selA!.row - winBase, col: selA!.col };
+    const selB2 = { row: selB!.row - winBase, col: selB!.col };
+    const text = extractSelection(fr.rows.map((r) => r.segs), selA2, selB2);
     if (!text) return;
     await copyText(text);
   }
@@ -2168,8 +2175,11 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     const fr = painted;
     if (!fr) return;
     const row = y + fr.scrollTop;
-    if (y >= vh || row < 0 || row >= fr.owner.length) return;
-    const it = items.find((i) => i.k === fr.owner[row]);
+    if (y >= vh || row < 0 || row >= fr.total) return;
+    const winBase = Math.max(0, fr.scrollTop - fr.vh);
+    const winIdx = row - winBase;
+    if (winIdx < 0 || winIdx >= fr.owner.length) return;
+    const it = items.find((i) => i.k === fr.owner[winIdx]);
     if (!it) return;
     // a toolhead whose input already fits has nothing to reveal: a click is
     // ignored rather than folding a line that is identical expanded
@@ -2578,8 +2588,8 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   /** total transcript rows: the painted frame's count, or a one-off compute
    *  when no frame is up yet (scroll keys can fire before the first paint) */
   function totalRows(): number {
-    if (painted) return painted.rowCount;
-    return computeFrame(frameInput()).rowCount;
+    if (painted) return painted.total;
+    return computeFrame(frameInput()).total;
   }
 
   /**
@@ -2614,7 +2624,16 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       items,
       streamText,
       renderItem: (it, w) => itemRows(it, w).rows.map((r) => ({ ...r, bg: it.kind === "toolhead" || it.toolResult ? S.toolBgRow : r.bg })),
+      countItem: (it, w) => {
+        // edge-stripped count: cache hit only, the rows were just built
+        const rows = itemRows(it, w).rows;
+        let a = 0, b = rows.length;
+        while (a < b && !rows[a].segs.length) a++;
+        while (b > a && !rows[b - 1].segs.length) b--;
+        return b - a;
+      },
       renderStream: (text, w) => streamRows(text, w),
+      countStream: (text, w) => streamRows(text, w).length,
       inputRows: layout.rows.length,
       caretRow: caret.visRow,
       INPUT_MAX_ROWS,
@@ -2831,10 +2850,14 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     stick = fr.stick;
     painted = fr; // THE geometry of record until the next frame
 
-    // transcript
+    // transcript — fr.rows is the WINDOW built around scrollTop (total is the
+    // real length); window base = scrollTop - vh (layout's margin), so the
+    // absolute index of rows[0] is winBase
+    const winBase = Math.max(0, fr.scrollTop - fr.vh);
     let y = 0;
-    for (let i = fr.scrollTop; i < fr.rowCount && y < fr.vh; i++, y++) {
+    for (let i = 0; i < fr.rowCount && y < fr.vh; i++, y++) {
       const row = fr.rows[i];
+      const absolute = winBase + i;
       // tool rows fill the background first, so the text paints over it
       // instead of floating in default. NEVER the last column — that cell
       // belongs to the scrollbar strip (the strip's track/thumb must show
@@ -2850,7 +2873,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       // hasSel(), not selA&&selB: a staged press anchors a single cell, and
       // painting it flashed a phantom highlight on every click.
       if (hasSel()) {
-        const range = selRangeForRow(i, selA!, selB!, rowCells(row.segs));
+        const range = selRangeForRow(absolute, selA!, selB!, rowCells(row.segs));
         if (range) screen.restyle(y, 1 + range.from, 2 + range.to, C.selBg);
       }
     }

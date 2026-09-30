@@ -28,10 +28,15 @@ export interface FrameInput {
   scrollbar: boolean;
   items: { kind: string; k: number; toolResult?: boolean }[];
   streamText: string | null;
-  /** render one item's rows at width w (app-side: theme + markdown live there) */
+  /** render one item's rows at width w (app-side: theme + markdown live there).
+   *  MUST return edge-stripped rows (layout's spacing contract). */
   renderItem: (it: any, w: number) => Row[];
+  /** cheap row count for one item at width w — lineCache hits app-side */
+  countItem: (it: any, w: number) => number;
   /** render the streaming tail at width w */
   renderStream: (text: string, w: number) => Row[];
+  /** cheap row count for the streaming tail */
+  countStream: (text: string, w: number) => number;
   /** input dock: how many visual rows the editor buffer wraps to, and where
    *  the caret sits among them (for the flex-window firstShown choice) */
   inputRows: number;
@@ -56,7 +61,10 @@ export interface Frame {
   vh: number;
   rows: Row[];
   owner: number[];
+  /** window rows actually built (a prefix-anchored slice of the transcript) */
   rowCount: number;
+  /** TOTAL transcript rows — real scroll length without building everything */
+  total: number;
   // dock
   inputTop: number;
   shownCount: number;
@@ -75,11 +83,11 @@ export interface Frame {
 export function computeFrame(inp: FrameInput): Frame {
   const vh0 = viewportHeight(inp);
   const wantSb = inp.scrollbar;
-  let { rows, owner } = assemble(inp, inp.W);
+  let { rows, owner, total: grand } = assemble(inp, inp.W);
   let contentWidth = inp.W;
   let sbShowing = false;
-  if (wantSb && inp.W >= 12 && rows.length > vh0) {
-    ({ rows, owner } = assemble(inp, inp.W - 2));
+  if (wantSb && inp.W >= 12 && grand > vh0) {
+    ({ rows, owner, total: grand } = assemble(inp, inp.W - 2));
     contentWidth = inp.W - 2;
     sbShowing = true;
   }
@@ -103,61 +111,98 @@ export function computeFrame(inp: FrameInput): Frame {
 
   // scroll position: clamp first, then "at the bottom" IS stuck — every scroll
   // path (scrub, wheel, pgdn, drag-past-edge) inherits follow-for-free
-  let scrollTop = Math.max(0, Math.min(inp.scrollTop, Math.max(0, rows.length - vh)));
-  const stick = scrollTop >= Math.max(0, rows.length - vh) ? true : inp.stick;
-  if (stick) scrollTop = Math.max(0, rows.length - vh);
+  let scrollTop = Math.max(0, Math.min(inp.scrollTop, Math.max(0, grand - vh)));
+  const stick = scrollTop >= Math.max(0, grand - vh) ? true : inp.stick;
+  if (stick) scrollTop = Math.max(0, grand - vh);
 
-  const sb = scrollbarGeom(rows.length, vh, scrollTop);
-  return { contentWidth, sbShowing, sb, scrollTop, stick, vh, rows, owner, rowCount: rows.length, inputTop, shownCount, firstShown, queueH };
+  const sb = scrollbarGeom(grand, vh, scrollTop);
+  return { contentWidth, sbShowing, sb, scrollTop, stick, vh, rows, owner, rowCount: rows.length, total: grand, inputTop, shownCount, firstShown, queueH };
 }
 
 /** Build the transcript row array at one width, with the spacing rules.
  *  Returns rows plus the parallel owner array (item key per row, -1 for the
  *  streaming tail) so hit-testing has one consistent map. */
-function assemble(inp: FrameInput, w: number): { rows: Row[]; owner: number[] } {
+function assemble(inp: FrameInput, w: number): { rows: Row[]; owner: number[]; total: number } {
+  // ---- pass 1: cheap row counts (windowing needs the item->row offsets) ----
+  // renderItem is cached app-side (lineCache), so calling it twice per item
+  // costs ~a map lookup. The arrays returned are SHARED — never mutate them,
+  // which is why the old code copied before stripping edges. Estimated counts
+  // also carry the +1 blank BETWEEN items so offsets stay exact.
+  const counts: number[] = [];
+  let total = 0;
+  let prevKind: string | null = null;
+  for (let i = 0; i < inp.items.length; i++) {
+    const it = inp.items[i];
+    let n = inp.countItem(it, w);
+    // interior blanks kept: countItem reports the POST-strip count via
+    // countItem; edges already excluded there
+    if (i > 0 && n > 0 && !glued(prevKind, it.kind)) n += 1; // blank between
+    counts.push(n);
+    if (n > 0) prevKind = it.kind;
+    total += n;
+  }
+  let streamCount = 0;
+  if (inp.streamText !== null) streamCount = inp.countStream(inp.streamText, w);
+  const grand = total + streamCount;
+
+  // ---- pass 2: render only the window [from, to) ----
+  // The caller (paint) scrolls; everything outside the window is estimated
+  // rows — never rendered, so a 100k-row session scrolls as fast as a 50-row
+  // one. The window covers the viewport plus a screenful of margin so wheel
+  // and pgdn land inside already-rendered rows.
+  const vh = viewportHeight(inp);
+  const from = Math.max(0, inp.scrollTop - vh);
+  const to = Math.min(grand, inp.scrollTop + vh * 2);
   const owner: number[] = [];
   const rows: Row[] = [];
-  let lastKind: string | null = null;
-  let lastHadRows = false;
-  for (const it of inp.items) {
-    // keep interior blanks (markdown paragraphs), strip edge blanks — the
-    // spacing BETWEEN items is decided here, not by the items themselves
-    const itemRows = [...inp.renderItem(it, w)];
-    while (itemRows.length && !itemRows[0].segs.length) itemRows.shift();
-    while (itemRows.length && !itemRows[itemRows.length - 1].segs.length) itemRows.pop();
-    if (!itemRows.length) continue; // fully blank item contributes nothing
-    // exactly one blank row between items. Glued pairs (no blank row):
-    //   toolhead→toolbody — output belongs to the call that produced it
-    //   think→toolhead — a thinking block sits directly on the tool it led to
-    //   toolbody→think   — and a FOLLOW-UP thinking block after a tool is
-    //                      part of the same step, so no gap either
-    if (
-      lastHadRows &&
-      !(lastKind === "toolhead" && it.kind === "toolbody") &&
-      !((lastKind === "think" || lastKind === "toolbody") && it.kind === "think") &&
-      !(lastKind === "think" && it.kind === "toolhead")
-    ) {
-      rows.push({ segs: [] });
-      owner.push(-1); // blank spacing row: owned by nothing, keeps owner aligned to rows
+  const skipAbove = from; // rows before the window: represented but not built
+
+  let idx = 0; // absolute row counter
+  let prevKind2: string | null = null;
+  for (let i = 0; i < inp.items.length; i++) {
+    const it = inp.items[i];
+    let n = counts[i];
+    if (n === 0) continue;
+    const blankHere = idx > 0 && n > counts[i] - (glued(prevKind2, it.kind) ? 0 : 1) && !glued(prevKind2, it.kind) && idx > 0;
+    // blank row occupies one absolute row; render it if inside window
+    const hasBlank = idx > 0 && !glued(prevKind2, it.kind);
+    if (hasBlank) {
+      if (idx >= from && idx < to) {
+        rows.push({ segs: [] });
+        owner.push(-1);
+      }
+      idx++;
     }
+    prevKind2 = it.kind;
+    const itemRows = inp.renderItem(it, w);
     for (const r of itemRows) {
-      // tool calls (head + result body) get the theme's toolBg row fill;
-      // the head's own fg stays at itemStyle — only the background changes.
-      // The fill itself is applied by the app's renderItem (theme access lives
-      // there); layout only forwards the rows.
-      rows.push(r);
-      owner.push(it.k);
+      if (idx >= from && idx < to) {
+        rows.push(r);
+        owner.push(it.k);
+      }
+      idx++;
     }
-    lastKind = it.kind;
-    lastHadRows = true;
   }
   if (inp.streamText !== null) {
-    for (const r of inp.renderStream(inp.streamText, w)) {
-      rows.push(r);
-      owner.push(-1); // one owner per row, or hit-testing drifts below here
+    const streamRows = inp.renderStream(inp.streamText, w);
+    for (const r of streamRows) {
+      if (idx >= from && idx < to) {
+        rows.push(r);
+        owner.push(-1);
+      }
+      idx++;
     }
   }
-  return { rows, owner };
+  void skipAbove;
+  return { rows, owner, total: grand };
+}
+
+/** toolhead->toolbody and think/toolbody->think and think->toolhead stay glued */
+function glued(a: string | null, b: string): boolean {
+  if (a === "toolhead" && b === "toolbody") return true;
+  if ((a === "think" || a === "toolbody") && b === "think") return true;
+  if (a === "think" && b === "toolhead") return true;
+  return false;
 }
 
 /** Scrollbar geometry for `rows` lines in a viewport of `vh`. */
