@@ -173,37 +173,46 @@ function assemble(inp: FrameInput, w: number): { rows: Row[]; owner: number[]; t
   let prevKind2: string | null = null;
   for (let i = 0; i < inp.items.length; i++) {
     const it = inp.items[i];
-    let n = counts[i];
+    const n = counts[i];
     if (n === 0) continue;
-    const blankHere = idx > 0 && n > counts[i] - (glued(prevKind2, it.kind) ? 0 : 1) && !glued(prevKind2, it.kind) && idx > 0;
-    // blank row occupies one absolute row; render it if inside window
     const hasBlank = idx > 0 && !glued(prevKind2, it.kind);
+    const blankAt = hasBlank ? idx : -1;
+    const bodyStart = idx + (hasBlank ? 1 : 0);
+    const bodyEnd = bodyStart + n; // exclusive
+    prevKind2 = it.kind;
+    // WHOLE-ITEM skip: the [blank..body] block ends before the window starts —
+    // renderItem (which allocates) is never called for it. This is what keeps
+    // frame cost O(window), not O(session).
+    if (bodyEnd < from || (blankAt >= 0 && blankAt >= to)) {
+      idx = bodyEnd;
+      continue;
+    }
     if (hasBlank) {
-      if (idx >= from && idx < to) {
+      if (blankAt >= from && blankAt < to) {
         rows.push({ segs: [] });
         owner.push(-1);
       }
       idx++;
     }
-    prevKind2 = it.kind;
+    // only materialize rows that can land in the window
     const itemRows = inp.renderItem(it, w);
-    for (const r of itemRows) {
-      if (idx >= from && idx < to) {
-        rows.push(r);
-        owner.push(it.k);
-      }
-      idx++;
+    const sliceFrom = Math.max(0, from - idx);
+    const sliceTo = Math.min(itemRows.length, to - idx);
+    for (let r = sliceFrom; r < sliceTo; r++) {
+      rows.push(itemRows[r]);
+      owner.push(it.k);
     }
+    idx += itemRows.length;
   }
   if (inp.streamText !== null) {
     const streamRows = inp.renderStream(inp.streamText, w);
-    for (const r of streamRows) {
-      if (idx >= from && idx < to) {
-        rows.push(r);
-        owner.push(-1);
-      }
-      idx++;
+    const sFrom = Math.max(0, from - idx);
+    const sTo = Math.min(streamRows.length, to - idx);
+    for (let r = sFrom; r < sTo; r++) {
+      rows.push(streamRows[r]);
+      owner.push(-1);
     }
+    idx += streamRows.length;
   }
   void skipAbove;
   return { rows, owner, total: grand, winOffset };
