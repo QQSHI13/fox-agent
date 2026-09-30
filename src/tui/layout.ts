@@ -61,8 +61,11 @@ export interface Frame {
   vh: number;
   rows: Row[];
   owner: number[];
-  /** window rows actually built (a prefix-anchored slice of the transcript) */
+  /** window rows actually built */
   rowCount: number;
+  /** absolute row index of rows[0]: the viewport starts at winOffset inside
+   *  the slice (rows before it are scroll-up margin) */
+  winOffset: number;
   /** TOTAL transcript rows — real scroll length without building everything */
   total: number;
   // dock
@@ -83,11 +86,13 @@ export interface Frame {
 export function computeFrame(inp: FrameInput): Frame {
   const vh0 = viewportHeight(inp);
   const wantSb = inp.scrollbar;
-  let { rows, owner, total: grand } = assemble(inp, inp.W);
+  let assembled = assemble(inp, inp.W);
+  let { rows, owner, total: grand, winOffset: rawWinOffset } = assembled;
   let contentWidth = inp.W;
   let sbShowing = false;
   if (wantSb && inp.W >= 12 && grand > vh0) {
-    ({ rows, owner, total: grand } = assemble(inp, inp.W - 2));
+    assembled = assemble(inp, inp.W - 2);
+    ({ rows, owner, total: grand, winOffset: rawWinOffset } = assembled);
     contentWidth = inp.W - 2;
     sbShowing = true;
   }
@@ -115,14 +120,17 @@ export function computeFrame(inp: FrameInput): Frame {
   const stick = scrollTop >= Math.max(0, grand - vh) ? true : inp.stick;
   if (stick) scrollTop = Math.max(0, grand - vh);
 
+  // the clamp moved scrollTop: the margin above shrinks by the same amount,
+  // so winOffset tracks it (window base = scrollTop - winOffset must hold)
+  const winOffset = rawWinOffset - (inp.scrollTop - scrollTop);
   const sb = scrollbarGeom(grand, vh, scrollTop);
-  return { contentWidth, sbShowing, sb, scrollTop, stick, vh, rows, owner, rowCount: rows.length, total: grand, inputTop, shownCount, firstShown, queueH };
+  return { contentWidth, sbShowing, sb, scrollTop, stick, winOffset, vh, rows, owner, rowCount: rows.length, total: grand, inputTop, shownCount, firstShown, queueH };
 }
 
 /** Build the transcript row array at one width, with the spacing rules.
  *  Returns rows plus the parallel owner array (item key per row, -1 for the
  *  streaming tail) so hit-testing has one consistent map. */
-function assemble(inp: FrameInput, w: number): { rows: Row[]; owner: number[]; total: number } {
+function assemble(inp: FrameInput, w: number): { rows: Row[]; owner: number[]; total: number; winOffset: number } {
   // ---- pass 1: cheap row counts (windowing needs the item->row offsets) ----
   // renderItem is cached app-side (lineCache), so calling it twice per item
   // costs ~a map lookup. The arrays returned are SHARED — never mutate them,
@@ -153,6 +161,10 @@ function assemble(inp: FrameInput, w: number): { rows: Row[]; owner: number[]; t
   const vh = viewportHeight(inp);
   const from = Math.max(0, inp.scrollTop - vh);
   const to = Math.min(grand, inp.scrollTop + vh * 2);
+  // rows[0] is absolute row `from`; the viewport begins at scrollTop, i.e.
+  // winOffset rows INTO the built slice. Paint reads this — drawing rows[0]
+  // at screen y=0 would show the margin as content.
+  const winOffset = inp.scrollTop - from;
   const owner: number[] = [];
   const rows: Row[] = [];
   const skipAbove = from; // rows before the window: represented but not built
@@ -194,7 +206,7 @@ function assemble(inp: FrameInput, w: number): { rows: Row[]; owner: number[]; t
     }
   }
   void skipAbove;
-  return { rows, owner, total: grand };
+  return { rows, owner, total: grand, winOffset };
 }
 
 /** toolhead->toolbody and think/toolbody->think and think->toolhead stay glued */

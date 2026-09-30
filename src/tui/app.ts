@@ -2046,7 +2046,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       if (phase === 2 || row === null) return; // quad-click: no selection, no toggle
       const fr = painted;
       if (!fr) return;
-      const winBase2 = Math.max(0, fr.scrollTop - fr.vh);
+      const winBase2 = fr.scrollTop - fr.winOffset;
       const winIdx = row - winBase2;
       if (winIdx < 0 || winIdx >= fr.rows.length) return;
       const cells = rowCells(fr.rows[winIdx].segs);
@@ -2072,7 +2072,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     const fr = painted;
     if (!fr) return;
     // selection rows are ABSOLUTE; the window base shifts the built slice
-    const winBase = Math.max(0, fr.scrollTop - fr.vh);
+    const winBase = fr.scrollTop - fr.winOffset;
     const selA2 = { row: selA!.row - winBase, col: selA!.col };
     const selB2 = { row: selB!.row - winBase, col: selB!.col };
     const text = extractSelection(fr.rows.map((r) => r.segs), selA2, selB2);
@@ -2176,7 +2176,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     if (!fr) return;
     const row = y + fr.scrollTop;
     if (y >= vh || row < 0 || row >= fr.total) return;
-    const winBase = Math.max(0, fr.scrollTop - fr.vh);
+    const winBase = fr.scrollTop - fr.winOffset;
     const winIdx = row - winBase;
     if (winIdx < 0 || winIdx >= fr.owner.length) return;
     const it = items.find((i) => i.k === fr.owner[winIdx]);
@@ -2851,11 +2851,12 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     painted = fr; // THE geometry of record until the next frame
 
     // transcript — fr.rows is the WINDOW built around scrollTop (total is the
-    // real length); window base = scrollTop - vh (layout's margin), so the
-    // absolute index of rows[0] is winBase
-    const winBase = Math.max(0, fr.scrollTop - fr.vh);
+    // real length). rows[0] is absolute row fr.scrollTop - fr.winOffset; the
+    // viewport itself starts at winOffset rows INTO the slice (rows before it
+    // are scroll-up margin, never on screen)
+    const winBase = fr.scrollTop - fr.winOffset;
     let y = 0;
-    for (let i = 0; i < fr.rowCount && y < fr.vh; i++, y++) {
+    for (let i = fr.winOffset; i < fr.rowCount && y < fr.vh; i++, y++) {
       const row = fr.rows[i];
       const absolute = winBase + i;
       // tool rows fill the background first, so the text paints over it
