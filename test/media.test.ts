@@ -59,6 +59,42 @@ describe("media routing: user-fallback (openai-compatible / openai-responses)", 
     expect(user.content[2].mediaType).toBe("video/mp4");
   });
 
+  test("media from CONSECUTIVE tool results batches into ONE user message", () => {
+    // the opencode refinement: one assistant making two media tools -> both
+    // results are back-to-back tool messages -> ONE attachment message,
+    // not two (each synthetic message costs a turn in the provider window)
+    const msgs: ChatMessage[] = [
+      { role: "user", content: "look" },
+      {
+        role: "assistant",
+        content: "",
+        tool_calls: [
+          { id: "call_1", name: "read", arguments: "{}" },
+          { id: "call_2", name: "fetch", arguments: "{}" },
+        ],
+      },
+      toolMsg([PNG]),
+      { ...toolMsg([MP3]), tool_call_id: "call_2" },
+    ];
+    const out = toModelMessages(msgs, "user-fallback");
+    const users = out.filter((m) => m.role === "user");
+    expect(users).toHaveLength(2); // the real "look" + ONE batched attachment message
+    const batched = users[1] as any;
+    expect(batched.content[1].mediaType).toBe("image/png");
+    expect(batched.content[2].mediaType).toBe("audio/mpeg");
+  });
+
+  test("media flushes BEFORE the next user message, not after it", () => {
+    const msgs: ChatMessage[] = [
+      ...withAssistant(toolMsg([PNG])),
+      { role: "user", content: "now what?" },
+    ];
+    const out = toModelMessages(msgs, "user-fallback");
+    // order: user(look), assistant, tool, user(attachments), user(now what?)
+    expect(out.map((m) => m.role)).toEqual(["user", "assistant", "tool", "user", "user"]);
+    expect(((out[3] as any).content[0] as any).text).toContain("attachment");
+  });
+
   test("no media -> no synthetic user message", () => {
     const out = toModelMessages(withAssistant(toolMsg([])), "user-fallback");
     expect(out).toHaveLength(3);

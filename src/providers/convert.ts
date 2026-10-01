@@ -56,14 +56,13 @@ function toolOutput(m: ChatMessage, routing: MediaRouting): ToolResultPart["outp
  * user-fallback providers. The text note marks it harness-generated so the
  * model never reads it as something the person typed.
  */
-function mediaUserMessage(toolContent: string, media: MediaPart[]): ModelMessage {
-  const names = media.map((p) => `${p.filename ?? "attachment"} (${p.mimeType})`).join(", ");
+function mediaUserMessage(names: string[], media: MediaPart[]): ModelMessage {
   return {
     role: "user",
     content: [
       {
         type: "text",
-        text: `[attachment] tool result above returned media: ${names} — shown below as attached files`,
+        text: `[attachment] tool results above returned media: ${names.join(", ")} — shown below as attached files`,
       },
       ...media.map((p) => mediaFilePart(p)),
     ],
@@ -77,12 +76,26 @@ export function toModelMessages(messages: ChatMessage[], routing: MediaRouting =
   for (const m of messages) for (const c of m.tool_calls ?? []) names.set(c.id, c.name);
 
   const out: ModelMessage[] = [];
+  // user-fallback media from tool results queues here and flushes as ONE
+  // user message before the next non-tool message (or at the end) — a turn
+  // with three media-producing tools sends one attachment message, not three.
+  // (Same shape opencode-v2's lowerToolMessages/flushAttachments uses.)
+  const pendingMedia: { names: string[]; parts: MediaPart[] } = { names: [], parts: [] };
+  const flushMedia = () => {
+    if (!pendingMedia.parts.length) return;
+    out.push(mediaUserMessage(pendingMedia.names, pendingMedia.parts));
+    pendingMedia.names = [];
+    pendingMedia.parts = [];
+  };
+
   for (const m of messages) {
     if (m.role === "system" || m.role === "user") {
+      flushMedia();
       out.push({ role: m.role, content: m.content });
       continue;
     }
     if (m.role === "assistant") {
+      flushMedia();
       if (!m.tool_calls?.length) {
         out.push({ role: "assistant", content: m.content });
         continue;
@@ -108,15 +121,17 @@ export function toModelMessages(messages: ChatMessage[], routing: MediaRouting =
           toolCallId: m.tool_call_id!,
           toolName: names.get(m.tool_call_id!) ?? "unknown",
           // Media rides as file parts next to the text note — natively where
-          // the SDK maps them, or moved to a user message where stringifying
-          // would feed the model raw base64 (see MediaRouting).
+          // the SDK maps them, or queued for the deferred user message where
+          // stringifying would feed the model raw base64 (see MediaRouting).
           output: toolOutput(m, routing),
         },
       ],
     });
     if (routing === "user-fallback" && m.media?.length) {
-      out.push(mediaUserMessage(m.content, m.media));
+      pendingMedia.names.push(...m.media.map((p) => `${p.filename ?? "attachment"} (${p.mimeType})`));
+      pendingMedia.parts.push(...m.media);
     }
   }
+  flushMedia();
   return out;
 }
