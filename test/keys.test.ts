@@ -25,16 +25,16 @@ describe("key decoder", () => {
     // tap from a drag, and the thinking box toggled on button-DOWN.
     const ks = feedKeys("\x1b[<0;12;7M\x1b[<32;15;7M\x1b[<0;15;7m");
     expect(ks).toEqual([
-      { type: "mouse", action: "down", x: 11, y: 6 },
-      { type: "mouse", action: "drag", x: 14, y: 6 },
-      { type: "mouse", action: "up", x: 14, y: 6 },
+      { type: "mouse", action: "down", x: 11, y: 6, button: 0 },
+      { type: "mouse", action: "drag", x: 14, y: 6, button: 0 },
+      { type: "mouse", action: "up", x: 14, y: 6, button: 0 },
     ]);
   });
 
   test("a release is reported wherever the button comes up, button code and all", () => {
     // xterm sends the button code on release too; ?1002h drags carry code+32.
     // A release must be an `up` regardless of which code it names.
-    expect(feedKeys("\x1b[<32;4;2m")).toEqual([{ type: "mouse", action: "up", x: 3, y: 1 }]);
+    expect(feedKeys("\x1b[<32;4;2m")).toEqual([{ type: "mouse", action: "up", x: 3, y: 1, button: 0 }]);
   });
 
   test("a wheel release scrolls nothing — the notch already scrolled on press", () => {
@@ -102,6 +102,33 @@ describe("key decoder", () => {
     expect(out).toEqual([]);
     dec.feed(new TextEncoder().encode("5C"));
     expect(out).toEqual([{ type: "named", name: "right", ctrl: true }]);
+  });
+
+  test("a two-byte split at ESC [ or ESC O waits, not three keystrokes", async () => {
+    // the regression: a pty split right after the prefix decoded ESC O as
+    // escape + literal O, and ESC [ fell into skipUnparsed which ate the head
+    // so the final byte arrived as a bare character — three keystrokes per
+    // arrow press
+    const out: Key[] = [];
+    const dec = createDecoder((k) => out.push(k));
+    dec.feed(new TextEncoder().encode("\x1b["));
+    await Bun.sleep(30); // past the 12ms quiet window AND a re-drive tick
+    expect(out).toEqual([]); // still waiting — the prefix is not a decision
+    dec.feed(new TextEncoder().encode("A"));
+    await Bun.sleep(30);
+    expect(out).toEqual([{ type: "named", name: "up" }]);
+  });
+
+  test("ESC O split then a non-SS3 byte degrades to alt+char, never escape", async () => {
+    // `ESC O` followed by something no SS3 table maps: the chord must not
+    // decode as escape (clears the whole input) + typed letters
+    const out: Key[] = [];
+    const dec = createDecoder((k) => out.push(k));
+    dec.feed(new TextEncoder().encode("\x1bO"));
+    await Bun.sleep(30);
+    dec.feed(new TextEncoder().encode("z"));
+    await Bun.sleep(30);
+    expect(out.map((k) => (k.type === "named" ? k.name : k.type === "char" ? k.ch : k.type))).toEqual(["z"]);
   });
 });
 
@@ -281,6 +308,63 @@ describe("one glyph is one key, whatever its byte length", () => {
     dec.feed(bytes.slice(0, 2));
     dec.feed(bytes.slice(2));
     expect(out).toEqual([{ type: "char", ch: "😀" }]);
+  });
+
+  test("modified clicks decode with button and modifiers — plugins can see chords", () => {
+    // shift adds 4, alt 8, ctrl 16 to the SGR button code; the old decoder
+    // matched only bare 0/32, so modifier+click produced NOTHING — no press,
+    // no drag anchor, no release
+    expect(feedKeys("\x1b[<4;5;6M")).toEqual([{ type: "mouse", action: "down", x: 4, y: 5, button: 0, shift: true }]);
+    expect(feedKeys("\x1b[<16;5;6M")).toEqual([{ type: "mouse", action: "down", x: 4, y: 5, button: 0, ctrl: true }]);
+    expect(feedKeys("\x1b[<8;5;6M")).toEqual([{ type: "mouse", action: "down", x: 4, y: 5, button: 0, meta: true }]);
+    // middle (1) and right (2) buttons now name themselves
+    expect(feedKeys("\x1b[<1;5;6M")).toEqual([{ type: "mouse", action: "down", x: 4, y: 5, button: 1 }]);
+    expect(feedKeys("\x1b[<2;5;6M")).toEqual([{ type: "mouse", action: "down", x: 4, y: 5, button: 2 }]);
+    // a modified release keeps its identity too (20 = shift 4 + ctrl 16)
+    expect(feedKeys("\x1b[<20;5;6m")).toEqual([{ type: "mouse", action: "up", x: 4, y: 5, button: 0, shift: true, ctrl: true }]);
+  });
+
+  test("right-button drag and release decode (button 2, motion bit)", () => {
+    // 34 = button 2 + motion bit 32; 66 would be the WHEEL bit (64) + 2
+    const ks = feedKeys("\x1b[<2;1;1M\x1b[<34;4;1M\x1b[<2;4;1m");
+    expect(ks).toEqual([
+      { type: "mouse", action: "down", x: 0, y: 0, button: 2 },
+      { type: "mouse", action: "drag", x: 3, y: 0, button: 2 },
+      { type: "mouse", action: "up", x: 3, y: 0, button: 2 },
+    ]);
+  });
+
+  test("X10 mouse fallback (no SGR) decodes presses", () => {
+    // ESC [ M cb cx cy, each byte +32: 0x20=0. Press at (4,6) = bytes 0x20,0x25,0x27
+    expect(feedKeys("\x1b[M %'")).toEqual([{ type: "mouse", action: "down", x: 4, y: 6, button: 0 }]);
+    // drag (motion bit 32 => cb byte 0x40) and wheel (bit 64 => 0x60/0x61)
+    expect(feedKeys("\x1b[M@%'")).toEqual([{ type: "mouse", action: "drag", x: 4, y: 6, button: 0 }]);
+    expect(feedKeys("\x1b[M`%'")).toEqual([{ type: "named", name: "wheelup", x: 4, y: 6 }]);
+    expect(feedKeys("\x1b[Ma%'")).toEqual([{ type: "named", name: "wheeldown", x: 4, y: 6 }]);
+  });
+
+  test("function keys decode in both CSI-tilde and SS3 dialects", () => {
+    expect(feedKeys("\x1b[15~")).toEqual([{ type: "named", name: "f5" }]);
+    expect(feedKeys("\x1b[24~")).toEqual([{ type: "named", name: "f12" }]);
+    expect(feedKeys("\x1bOP")).toEqual([{ type: "named", name: "f1" }]);
+    expect(feedKeys("\x1bOS")).toEqual([{ type: "named", name: "f4" }]);
+  });
+
+  test("keypad keys decode when a previous program left application-keypad on", () => {
+    // undecoded, a numpad type arrived as escape (clears the input!) + a stray digit
+    expect(feedKeys("\x1bOq")).toEqual([{ type: "named", name: "kp1" }]);
+    expect(feedKeys("\x1bOM")).toEqual([{ type: "named", name: "kpenter" }]);
+  });
+
+  test("rxvt ctrl+arrow (SS3 lowercase) decodes", () => {
+    expect(feedKeys("\x1bOa")).toEqual([{ type: "named", name: "up", ctrl: true }]);
+    expect(feedKeys("\x1bOd")).toEqual([{ type: "named", name: "left", ctrl: true }]);
+  });
+
+  test("a CSI cursor-position report is not mistaken for an SS3 key", () => {
+    // `ESC [ 6 n` reports through the CSI path; the SS3 table is separate so
+    // its final byte never turns into a phantom keypad press
+    expect(feedKeys("\x1b[6n")).toEqual([]);
   });
 
   test("CJK still decodes as a single char", () => {
