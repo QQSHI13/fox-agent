@@ -231,36 +231,12 @@ describe("task background mode", () => {
   });
 });
 
-describe("ctx_edit", () => {
-  test("nodes from the current turn are editable too", async () => {
-    // regression: the old guard refused any seq >= the turn's first node, so a
-    // big output from THIS turn could not be pruned until a turn later
-    const { createSession, appendMessage, getMessage } = await import("../src/store/db.ts");
-    const { ctxEditRun } = await import("../src/tools/ctxedit.ts");
-    const s = createSession(dir, "m1");
-    const mine = { ...ctx, sessionId: s.id };
-    const m = appendMessage(s.id, { parent_id: null, role: "tool", content: "huge dump", tokens: 10 });
-    const r = await ctxEditRun({ ops: [{ op: "delete", ids: [m.seq] }] }, mine);
-    expect(r.ok).toBe(true);
-    expect(getMessage(s.id, m.seq)).toBeTruthy(); // view-only: storage untouched
-  });
-
-  test("unknown ids are still refused", async () => {
-    const { createSession } = await import("../src/store/db.ts");
-    const { ctxEditRun } = await import("../src/tools/ctxedit.ts");
-    const s = createSession(dir, "m1");
-    const r = await ctxEditRun({ ops: [{ op: "delete", ids: [9999] }] }, { ...ctx, sessionId: s.id });
-    expect(r.ok).toBe(false);
-    expect(r.output).toContain("no message m9999");
-  });
-
-  test("the alias rejects the new op kinds (delete/replace shape only)", async () => {
-    const { createSession } = await import("../src/store/db.ts");
-    const { ctxEditRun } = await import("../src/tools/ctxedit.ts");
-    const s = createSession(dir, "m1");
-    const r = await ctxEditRun({ ops: [{ op: "stats" }] }, { ...ctx, sessionId: s.id });
-    expect(r.ok).toBe(false);
-    expect(r.output).toContain("unknown op");
+describe("ctx_edit (retired alias)", () => {
+  test("the tool is gone from the registry — ctx is the one context tool", async () => {
+    const { baseRegistry } = await import("../src/tools/index.ts");
+    const tools = baseRegistry();
+    expect(tools.has("ctx")).toBe(true);
+    expect(tools.has("ctx_edit")).toBe(false);
   });
 });
 
@@ -339,7 +315,7 @@ describe("ctx search, stats and query ops", () => {
 describe("registry", () => {
   test("base registry exposes the built-in tools", () => {
     const reg = defaultRegistry();
-    for (const name of ["read", "write", "edit", "glob", "grep", "exec", "pty", "ctx", "ctx_edit", "todo", "task", "fetch", "repl"]) {
+    for (const name of ["read", "write", "edit", "glob", "grep", "exec", "pty", "ctx", "todo", "task", "fetch", "repl"]) {
       expect(reg.has(name)).toBe(true);
     }
   });
@@ -366,15 +342,15 @@ describe("registry", () => {
     expect(tools.has("read")).toBe(true);
   });
 
-  test("a delegated agent gets the full registry, ctx_edit/pty/task included", async () => {
+  test("a delegated agent gets the full registry, ctx/pty/task included", async () => {
     // The inverse of a measured defect: subagents used to be built with
-    // RESTRICTED = {task, ctx_edit, pty} removed while the system prompt still
+    // RESTRICTED = {task, ctx, pty} removed while the system prompt still
     // described all three, so a child was told about tools it could not call.
     // Delegation is now a separate `fox --acp` process (src/tools/task.ts), which
     // reaches this same unexcluded path — nothing in fox-agent passes `exclude` at all;
     // it survives only as a facility for an embedder that wants a reduced set.
     const { tools } = await buildRegistry({ mcpServers: {} } as any);
-    for (const name of ["task", "ctx_edit", "pty"]) expect(tools.has(name)).toBe(true);
+    for (const name of ["task", "ctx", "pty"]) expect(tools.has(name)).toBe(true);
     expect([...tools.keys()].sort()).toEqual([...defaultRegistry().keys()].sort());
   });
 });

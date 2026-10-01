@@ -54,7 +54,7 @@ export function buildSystemPrompt(
   if (have.has("repl")) roster.push(`- repl is an in-process JS scratchpad with persistent vars; reach tools from code as tools.call(name, args) — direct calls bypass beforeTool/afterTool hooks.`);
   sections.push(roster.join("\n"));
 
-  if (have.has("ctx") || have.has("ctx_edit")) {
+  if (have.has("ctx")) {
     const lines = [
       `## Context window management (your core ability)\n` +
         `Every message in your view carries a stable marker [mN]. Large old tool outputs are dead weight — query, don't re-read:\n` +

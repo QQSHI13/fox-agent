@@ -12,7 +12,7 @@ const STATS_MAX_TOP = 20;
 export const ctxDef: ToolDef = {
   name: "ctx",
   description:
-    "Your own context window: view, search and surgically edit what you see (view only — storage is never touched). Messages appear as [mN] markers. search finds nodes by pattern and shows snippets instead of whole bodies — query instead of reading; stats shows sizes and the biggest nodes; delete hides nodes (optional summary keeps a tiny note); delete_by_query hides by pattern; replace rewrites text; restore un-hides. Batch multiple ops in one call.",
+    "Your own context window: view, search and surgically edit what you see (view only — storage is never touched). Messages appear as [mN] markers (ctx_edit, the old delete/replace-only tool, is an alias of this one). search finds nodes by pattern and shows snippets instead of whole bodies — query instead of reading; stats shows sizes and the biggest nodes; delete hides nodes (optional summary keeps a tiny note); delete_by_query hides by pattern; replace rewrites text; restore un-hides. Batch multiple ops in one call.",
   parameters: {
     type: "object",
     properties: {
@@ -41,32 +41,6 @@ export const ctxDef: ToolDef = {
   },
 };
 
-/** Deprecated alias for ctx (delete/replace only) — use ctx. */
-export const ctxEditDef: ToolDef = {
-  name: "ctx_edit",
-  description: "Deprecated alias for ctx — same delete/replace ops; prefer ctx (adds search, stats, restore, delete_by_query).",
-  parameters: {
-    type: "object",
-    properties: {
-      ops: {
-        type: "array",
-        items: {
-          type: "object",
-          properties: {
-            op: { type: "string", enum: ["delete", "replace"] },
-            ids: { type: "array", items: { type: "number" }, description: "delete: message seqs ([mN] -> N)" },
-            summary: { type: "string", description: "delete: optional one-line summary kept in place of content" },
-            id: { type: "number", description: "replace: message seq" },
-            content: { type: "string", description: "replace: new content" },
-          },
-          required: ["op"],
-        },
-      },
-      reason: { type: "string" },
-    },
-    required: ["ops"],
-  },
-};
 
 function validateSeq(ctx: ToolContext, seq: number): string | null {
   if (typeof seq !== "number" || !Number.isInteger(seq)) return `error: invalid id ${seq}`;
@@ -189,9 +163,3 @@ export async function ctxRun(args: { ops?: any[]; reason?: string }, ctx: ToolCo
 }
 
 /** Deprecated alias entry point — delete/replace only; anything else names ctx. */
-export async function ctxEditRun(args: { ops?: any[]; reason?: string }, ctx: ToolContext): Promise<ToolResult> {
-  for (const o of args.ops ?? []) {
-    if (o?.op !== "delete" && o?.op !== "replace") return fail(`error: unknown op ${o?.op} (ctx_edit supports delete/replace — use ctx)`);
-  }
-  return ctxRun(args, ctx);
-}

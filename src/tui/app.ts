@@ -1349,8 +1349,12 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     // whitespace is still a message the user chose to send
     if (!raw) return;
     const t = raw.trim();
-    if (!lit && t.startsWith("!")) return void runShell(t.slice(1).trim());
-    if (!lit && t.startsWith("/")) return runSlash(t);
+    // "!" / "/" only dispatch when they are the FIRST character of the raw
+    // buffer: "  !ls hello" is a message that happens to start with spaces
+    // (leading whitespace is significant content), not a shell command. The
+    // old code trimmed first, so an indented line silently executed.
+    if (!lit && raw.startsWith("!")) return void runShell(t.slice(1).trim());
+    if (!lit && raw.startsWith("/")) return runSlash(t);
     // @path mentions inline the file's text so the model reads it directly
     await runAgent(expandMentions(raw, state.cwd).text);
   }

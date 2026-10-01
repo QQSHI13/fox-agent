@@ -315,7 +315,6 @@ export async function* runTurnCore(
   // the live registry, so removing the tool here removes the doctrine too
   if (effCfg.contextMarkers === false) {
     tools.delete("ctx");
-    tools.delete("ctx_edit");
   }
   const toolDefs = [...tools.values()].map((t) => t.def);
   const hooked = plugins.filter((p) => p.hooks);
