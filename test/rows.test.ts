@@ -76,16 +76,30 @@ describe("rows kernel: golden equivalence with the legacy stream renderer", () =
 
   test("PERF: 200KB no-newline stream, 30 feeds — kernel stays O(delta), legacy explodes", () => {
     const doc = "streaming response word with **bold** and `code` and more prose. ".repeat(1500); // ~100KB
-    let t = performance.now();
-    const kernel = createStreamRows(98);
     const step = Math.floor(doc.length / 30);
-    for (let i = step; i <= doc.length; i += step) kernel.feed(doc.slice(i - step, i));
-    const kernelMs = performance.now() - t;
-    t = performance.now();
-    const legacy = { cut: 0, md: { inFence: false, hadCode: false } as any, prefix: [] as Row[], text: "" };
-    for (let i = step; i <= doc.length; i += step) legacyStreamRows(doc.slice(0, i), 98, legacy);
-    const legacyMs = performance.now() - t;
-    expect(rowsText(kernel.rows as Row[])).toBe(rowsText(legacyStreamRows(doc, 98, legacy)));
+    // warm both paths (JIT) with a small doc first — a cold-first-kernel
+    // comparison is unfair by hundreds of ms
+    const warm = "warm up the jit ".repeat(200);
+    const wk = createStreamRows(98);
+    for (let i = 100; i <= warm.length; i += 100) wk.feed(warm.slice(i - 100, i));
+    const wl = { cut: 0, md: { inFence: false, hadCode: false } as any, prefix: [] as Row[], text: "" };
+    for (let i = 100; i <= warm.length; i += 100) legacyStreamRows(warm.slice(0, i), 98, wl);
+    // interleave rounds and take the best-of-3 per side: scheduler noise
+    let kernelMs = Infinity;
+    let legacyMs = Infinity;
+    let kernelRows: Row[] = [];
+    for (let round = 0; round < 3; round++) {
+      let t = performance.now();
+      const k = createStreamRows(98);
+      for (let i = step; i <= doc.length; i += step) k.feed(doc.slice(i - step, i));
+      kernelMs = Math.min(kernelMs, performance.now() - t);
+      if (round === 0) kernelRows = k.rows as Row[];
+      t = performance.now();
+      const legacy = { cut: 0, md: { inFence: false, hadCode: false } as any, prefix: [] as Row[], text: "" };
+      for (let i = step; i <= doc.length; i += step) legacyStreamRows(doc.slice(0, i), 98, legacy);
+      legacyMs = Math.min(legacyMs, performance.now() - t);
+    }
+    expect(rowsText(kernelRows)).toBe(rowsText(legacyStreamRows(doc, 98, { cut: 0, md: { inFence: false, hadCode: false }, prefix: [], text: "" })));
     console.log(`kernel ${kernelMs.toFixed(0)}ms vs legacy ${legacyMs.toFixed(0)}ms for 30 feeds of a 100KB paragraph`);
     // Equivalence is the hard assertion above. The speed assertion lands with
     // the wrap-reuse optimization (kernel must not re-wrap the stable head);
