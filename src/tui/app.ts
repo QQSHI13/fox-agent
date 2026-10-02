@@ -106,8 +106,14 @@ export function setTuiRich(on: boolean): void {
  * reserved column: buildRows wraps at full width and the mouse scrub is dead.
  */
 let SCROLLBAR = true;
+let clearKeyRef: () => void = () => {}; // set in startTui: forces full repaint
+
 export function setTuiScrollbar(on: boolean): void {
+  if (SCROLLBAR === on) return;
   SCROLLBAR = on;
+  // the track column (or its absence) must repaint immediately: wrap width
+  // changes too, so every cached row is stale
+  clearKeyRef();
 }
 
 // Live palette: resolves against the active theme on every access, so a
@@ -2836,6 +2842,13 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   // when its own inputs changed (tracked by a cheap signature), and the
   // spinner tick re-derives the status bar alone.
 
+  // setTuiScrollbar (config apply, called from outside startTui's closure)
+  // uses this to force a full repaint on live switches
+  clearKeyRef = () => {
+    lastClearKey = "";
+    dirty = true;
+  };
+
   /** Frame signature: everything computeFrame + the transcript depend on. */
   let lastFrameSig = "";
   /** Status signature: spinner idx, busy label, flash, stats, elapsed second. */
@@ -3043,8 +3056,13 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     let pendingCaret: { x: number; y: number } | null = null;
 
     // clear this region's previous extent (the dock flexes: fewer wrapped
-    // rows than last frame must not leave old text behind)
-    screen.clearRows(prevDockRows.y0, Math.max(prevDockRows.y1, inputTop + shownCount));
+    // rows than last frame must not leave old text behind). prev.y1===0 means
+    // "no previous extent" (first paint / full invalidate) — the transcript
+    // was already stamped this frame; clearing down from row 0 here would
+    // wipe it INCLUDING the scrollbar column.
+    if (prevDockRows.y1 > 0 || prevDockRows.y0 > 0) {
+      screen.clearRows(prevDockRows.y0, Math.max(prevDockRows.y1, inputTop + shownCount));
+    }
     prevDockRows = { y0: inputTop, y1: inputTop + shownCount };
 
     // input box background

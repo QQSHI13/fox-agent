@@ -132,7 +132,11 @@ export interface Config {
   tuiKeptChars: number;
   /** TUI rich mode: syntax-tinted code fences + diff-colored tool output (default off) */
   tuiRich: boolean;
-  /** TUI scrollbar: dedicated track column at the right edge of the transcript (default on) */
+  /**
+   * TUI scrollbar: dedicated track column at the right edge of the transcript
+   * (default on). Set false to hide the scrollbar entirely — text then wraps
+   * at the full width and the column is not reserved.
+   */
   tuiScrollbar: boolean;
   /**
    * TUI frame loop interval in ms (default 33). Lower = smoother spinner and
