@@ -58,6 +58,7 @@ const cfg = (): Config => ({
   tuiKeptChars: 4_000,
   tuiRich: false,
   tuiScrollbar: true,
+  tuiFrameMs: 33,
   theme: "default",
   contextMarkers: true,
   acpHistory: "full",

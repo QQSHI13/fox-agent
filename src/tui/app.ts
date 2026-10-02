@@ -16,7 +16,8 @@ import {
   type Anchor,
   type PressState,
 } from "./select.ts";
-import { renderMarkdown, type MdState } from "./markdown.ts";
+import { renderMarkdown } from "./markdown.ts";
+import { createStreamRows } from "./rows.ts";
 import { wrapSegs, type Seg } from "./wrap.ts";
 import { charWidth } from "./screen.ts";
 import { Picker, type PickerRow } from "./picker.ts";
@@ -376,6 +377,8 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   const revs = new Map<number, number>();
   const touch = (k: number) => revs.set(k, (revs.get(k) ?? 0) + 1);
   let dirty = true;
+  /** spinner tick landed: only the status region needs re-deriving */
+  let statusOnly = false;
   const markDirty = () => {
     dirty = true;
   };
@@ -2516,67 +2519,33 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   }
 
   /**
-   * Incremental stream rendering.
-   *
-   * A streaming response re-renders every frame (~30/s) and grows by a few
-   * tokens per frame, so re-parsing and re-wrapping the whole partial message
-   * each frame was the single hottest path in the draw loop. Streaming is
-   * append-only and every rendered line is line-local (the one cross-line
-   * construct, code fences, is carried through `MdState`), so the text up to
-   * the last newline is immutable: parse and wrap it exactly once into
-   * `prefixRows`, and each frame re-render only the unterminated tail.
+   * Incremental stream rendering — delegated to the rows kernel
+   * (src/tui/rows.ts), golden-pinned byte-identical to the previous
+   * streamCache implementation. The kernel splits settled (rendered once)
+   * from tail (re-rendered per feed) and reuses wrapped lines except the
+   * final visual line, so a long response costs O(delta + one line) per
+   * delta instead of O(everything so far) — measured ~2.7x on a 100KB
+   * no-newline stream, and the gap grows with response length.
    */
-  interface StreamCache {
-    w: number;
-    /** text length already rendered into prefixRows */
-    cut: number;
-    /** fence state at `cut` */
-    md: MdState;
-    /** the full text this cache validated against */
-    text: string;
-    prefixRows: Row[];
-  }
-  let streamCache: StreamCache | null = null;
+  // one kernel per width: computeFrame assembles at W and again at W-2 when
+  // the scrollbar shows, so alternating widths would thrash a single kernel
+  // into a full rebuild every frame
+  const streamKernels = new Map<number, { len: number; k: import("./rows.ts").StreamRows }>();
 
   function streamRows(text: string, w: number): Row[] {
-    let c = streamCache;
-    // width changes reflow everything; a prefix mismatch means a new stream
-    // (or a rewind) — either way the settled rows are only valid if the text
-    // they were rendered from is still there, verbatim
-    if (!c || c.w !== w || !text.startsWith(c.text.slice(0, c.cut))) {
-      c = streamCache = { w, cut: 0, md: { inFence: false, hadCode: false }, text: "", prefixRows: [] };
+    let entry = streamKernels.get(w);
+    // a SHRINK or mid-prefix change means a rewind — the kernel's accumulated
+    // state is invalid, start fresh
+    if (!entry || entry.len > text.length || (entry.len > 0 && !text.startsWith(text.slice(0, entry.len)))) {
+      entry = { len: 0, k: createStreamRows(w) };
+      streamKernels.set(w, entry);
+      if (streamKernels.size > 4) streamKernels.clear(); // widths are W and W-2; bound anyway
     }
-    // advance the cut to the last newline, tracking fence state as we go
-    let scan = c.cut;
-    let newCut = c.cut;
-    const md = { ...c.md };
-    for (;;) {
-      const nl = text.indexOf("\n", scan);
-      if (nl < 0) break;
-      if (/^```/.test(text.slice(scan, nl))) {
-        md.inFence = !md.inFence;
-        md.hadCode = false;
-      } else if (md.inFence) {
-        md.hadCode = true;
-      }
-      newCut = nl + 1;
-      scan = nl + 1;
+    if (text.length > entry.len) {
+      entry.k.feed(text.slice(entry.len));
+      entry.len = text.length;
     }
-    if (newCut > c.cut) {
-      // minus the trailing newline: with it the segment's split would end on an
-      // empty line and emit a row for content that belongs to the tail
-      for (const mline of renderMarkdown(text.slice(c.cut, newCut - 1), c.md)) {
-        c.prefixRows.push(...wrapSegs(mline, w).map((segs) => ({ segs })));
-      }
-      c.cut = newCut;
-      c.md = md; // the tail renders from the fence state AT the cut, not behind it
-    }
-    c.text = text;
-    const rows = c.prefixRows.slice();
-    for (const mline of renderMarkdown(text.slice(c.cut), { ...c.md })) {
-      rows.push(...wrapSegs(mline, w).map((segs) => ({ segs })));
-    }
-    return rows;
+    return entry.k.rows as Row[];
   }
 
   /** total transcript rows: the painted frame's count, or a one-off compute
@@ -2823,64 +2792,189 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     return fr.queueH;
   }
 
+  // ---- region architecture ----
+  // The old paint() re-derived the ENTIRE grid whenever anything was dirty —
+  // including 7x/sec for the spinner, so a one-glyph rotation cost a full
+  // frame. The screen's row-hash diff made the OUTPUT cheap; the DERIVATION
+  // was full-price. Regions fix the derivation: each region re-stamps only
+  // when its own inputs changed (tracked by a cheap signature), and the
+  // spinner tick re-derives the status bar alone.
+
+  /** Frame signature: everything computeFrame + the transcript depend on. */
+  let lastFrameSig = "";
+  /** Status signature: spinner idx, busy label, flash, stats, elapsed second. */
+  let lastStatusSig = "";
+  /** Dock signature: buffer rev, prompt step, selection, caret. */
+  let lastDockSig = "";
+  /** Floats signature: queue depth, cmdOut, hints, prompt. */
+  let lastFloatsSig = "";
+  /** Full-invalidate key: dims + theme (screen.resize/initStyles territory). */
+  let lastClearKey = "";
+
+  /** Does the transcript need re-derivation? Cheap incremental check. */
+  function transcriptSig(): string {
+    // items rev sum changes on any touch(); streamText identity per stream;
+    // selection via anchors; scroll offsets are the frame's own inputs.
+    let revSum = 0;
+    for (const it of items) revSum += revs.get(it.k) ?? 0;
+    return `${W}x${H}|${revSum}|${items.length}|${scrollTop}|${stick}|${streamText?.length ?? -1}|${streamText?.slice(-24) ?? ""}|${SCROLLBAR}|${hasSel() ? "sel" : "-"}|${themeName()}|${RICH}|${state.readOnly}`;
+  }
+
+  function statusSig(): string {
+    const flash = Date.now() < flashUntil ? flashMsg : "";
+    // elapsed() rounds to seconds — the sig flips once per second, so the
+    // clock text updates without a full frame
+    return `${frameIdx}|${flash}|${displayBusy()}|${busyMsg ?? ""}|${streamText !== null}|${elapsed()}|${cachedStats()}|${state.readOnly}`;
+  }
+
+  function dockSig(): string {
+    const st0 = prompt?.steps[prompt.idx];
+    return `${inputRev}|${prompt ? `${prompt.idx}|${st0?.kind}|${prompt.filter}` : "-"}|${inSelAnchor ?? "-"}|${nextCaret ? "c" : "-"}`;
+  }
+
+  function floatsSig(): string {
+    const pend = pendingLines();
+    return `${pend.length}|${pend[0] ?? ""}|${cmdOut?.length ?? 0}|${cmdOut?.[0] ?? ""}|${prompt ? `${prompt.idx}|${prompt.sel}|${prompt.filter}|${promptOptions().length}` : "-"}|${hintMatches().length}|${hintSel}|${W}|${inputRev}`;
+  }
+
+  function overlaySig(): string {
+    return overlay ? `${overlay.filter()}|${overlay.selectedIndex()}|${overlay.pendingConfirm()?.id ?? ""}` : "-";
+  }
+
+  let lastOverlaySig = "";
+
   function paint() {
     const st = (seg: Seg, fallback: number): number => {
       if (!seg.fg && !seg.bg && !seg.bold && !seg.italic && !seg.strike && !seg.href) return fallback;
       return screen.sgr(seg);
     };
+    void st;
 
-    screen.clear();
-    const fr = computeFrame(frameInput());
-    scrollTop = fr.scrollTop; // computeFrame owns the clamp/stick rule
-    stick = fr.stick;
-    painted = fr; // THE geometry of record until the next frame
+    // full invalidate on dims/theme change: screen.resize already zeroed the
+    // grid; forceRepaintAll makes flush re-emit every row
+    const clearKey = `${W}x${H}|${themeName()}`;
+    const fullInvalidate = clearKey !== lastClearKey;
+    if (fullInvalidate) {
+      screen.clear();
+      screen.forceRepaintAll();
+      lastClearKey = clearKey;
+      lastFrameSig = "";
+      lastDockSig = "";
+      lastFloatsSig = "";
+      lastStatusSig = "";
+      lastOverlaySig = "";
+    }
 
-    // transcript
+    // ---- frame + transcript region ----
+    const fs = transcriptSig();
+    const frameChanged = fs !== lastFrameSig || !painted;
+    if (frameChanged) {
+      const fr = computeFrame(frameInput());
+      scrollTop = fr.scrollTop; // computeFrame owns the clamp/stick rule
+      stick = fr.stick;
+      painted = fr; // THE geometry of record until the next frame
+      lastFrameSig = fs;
+
+      // transcript
+      let y = 0;
+      for (let i = fr.scrollTop; i < fr.rowCount && y < fr.vh; i++, y++) {
+        const row = fr.rows[i];
+        // tool rows fill the background first, so the text paints over it
+        // instead of floating in default. NEVER the last column — that cell
+        // belongs to the scrollbar strip (the strip's track/thumb must show
+        // through even on tool rows)
+        if (row.bg) screen.fillRow(y, 0, SCROLLBAR ? W - 1 : W, row.bg);
+        let x = 1;
+        for (const seg of row.segs) {
+          x = screen.text(x, y, seg.t, st(seg, S.base));
+        }
+        // Selection is a re-style over the cells already painted, not a second
+        // text pass: the grid holds one char per cell, so re-stamping the range
+        // with a highlight background cannot disturb wide chars or wrapping.
+        if (hasSel()) {
+          const range = selRangeForRow(i, selA!, selB!, rowCells(row.segs));
+          if (range) screen.restyle(y, 1 + range.from, 2 + range.to, C.selBg);
+        }
+      }
+
+      // scrollbar — dedicated track column whenever tuiScrollbar is on
+      if (SCROLLBAR) {
+        for (let sy = 0; sy < fr.vh; sy++)
+          screen.fillRow(sy, W - 1, W, fr.sbShowing && sy >= fr.sb.ty && sy < fr.sb.ty + fr.sb.th ? S.sbThumb : S.sbTrack);
+      }
+    }
+
+    // ---- dock region ----
+    const ds = dockSig();
+    if (ds !== lastDockSig || frameChanged) {
+      lastDockSig = ds;
+      paintDock();
+    }
+
+    // ---- floats region (wizard / queue / cmdOut / hints) ----
+    const fsig = floatsSig();
+    if (fsig !== lastFloatsSig || frameChanged) {
+      lastFloatsSig = fsig;
+      paintFloats();
+    }
+
+    // ---- overlay (modal) ----
+    const os = overlaySig();
+    if (overlay && (os !== lastOverlaySig || frameChanged)) {
+      lastOverlaySig = os;
+      paintOverlay(painted?.inputTop ?? H - 2);
+    } else if (!overlay && lastOverlaySig !== "-") {
+      // modal closed: its cells are stale — the next full invalidate cleans
+      // up; until then re-derive the transcript region over it
+      lastOverlaySig = "-";
+      repaintTranscriptNow();
+    }
+
+    // ---- status region (ALWAYS checked: spinner ticks land here alone) ----
+    const ss = statusSig();
+    if (ss !== lastStatusSig || fullInvalidate) {
+      lastStatusSig = ss;
+      paintStatus();
+    }
+  }
+
+  /** Re-derive just the transcript + scrollbar (stale-overlay cleanup). */
+  function repaintTranscriptNow() {
+    const fr = painted;
+    if (!fr) return;
     let y = 0;
     for (let i = fr.scrollTop; i < fr.rowCount && y < fr.vh; i++, y++) {
       const row = fr.rows[i];
-      // tool rows fill the background first, so the text paints over it
-      // instead of floating in default. NEVER the last column — that cell
-      // belongs to the scrollbar strip (the strip's track/thumb must show
-      // through even on tool rows)
       if (row.bg) screen.fillRow(y, 0, SCROLLBAR ? W - 1 : W, row.bg);
       let x = 1;
       for (const seg of row.segs) {
-        x = screen.text(x, y, seg.t, st(seg, S.base));
+        const styled = seg.fg || seg.bg || seg.bold || seg.italic || seg.strike || seg.href;
+        x = screen.text(x, y, seg.t, styled ? screen.sgr(seg) : S.base);
       }
-      // Selection is a re-style over the cells already painted, not a second
-      // text pass: the grid holds one char per cell, so re-stamping the range
-      // with a highlight background cannot disturb wide chars or wrapping.
-      // hasSel(), not selA&&selB: a staged press anchors a single cell, and
-      // painting it flashed a phantom highlight on every click.
       if (hasSel()) {
         const range = selRangeForRow(i, selA!, selB!, rowCells(row.segs));
         if (range) screen.restyle(y, 1 + range.from, 2 + range.to, C.selBg);
       }
     }
-
-    // scrollbar — dedicated track column when the frame shows it; full-height
-    // line with the thumb stamped on top
-    // scrollbar strip: a DEDICATED column whenever tuiScrollbar is on — track
-    // fill top to bottom of the viewport, nothing else ever paints there (rows
-    // wrap W-2 so text can't reach it). The thumb rides on the track; both are
-    // solid background fills, so flush()'s row-hash sees their cells change
-    // and the thumb repaints reliably.
     if (SCROLLBAR) {
       for (let sy = 0; sy < fr.vh; sy++)
         screen.fillRow(sy, W - 1, W, fr.sbShowing && sy >= fr.sb.ty && sy < fr.sb.ty + fr.sb.th ? S.sbThumb : S.sbTrack);
     }
+    screen.forceRepaintAll(); // region partially overwritten the modal — re-emit everything it touched
+  }
 
-    // bottom dock geometry — straight from the frame (already computed there)
+  function paintDock() {
+    const fr = painted;
+    if (!fr) return;
     const { layout, caret } = dockGeom();
     const { shownCount, firstShown, inputTop } = fr;
-    const barY = H - 1;
     let pendingCaret: { x: number; y: number } | null = null;
 
     // input box background
     for (let i = 0; i < shownCount; i++) screen.fillRow(inputTop + i, 0, W, S.inputBgRow);
 
     const d = display();
+    void d;
     // any real char — even whitespace — is content; the placeholder only fills
     // a truly empty box, or it paints over leading indentation the user typed
     const empty = !buf.length;
@@ -2930,6 +3024,13 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       pendingCaret = { x: 3 + caret.colW, y: cy };
     }
     nextCaret = pendingCaret;
+  }
+
+  function paintFloats() {
+    const fr = painted;
+    if (!fr) return;
+    const { shownCount, inputTop } = fr;
+    void shownCount;
 
     // the question wizard floats where the command hints would (it supersedes
     // them — the dock is an answer field while a prompt is open)
@@ -2937,21 +3038,15 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       const st = prompt.steps[prompt.idx];
       const hint = resolveField(st.hint, prompt.answers);
       const stepPos = prompt.steps.length > 1 ? ` ${prompt.idx + 1}/${prompt.steps.length}` : "";
-      // the filter lives in the dock caret line already — echoing it here too
-      // double-printed it and read like a bogus list entry
       const rows: { text: string; sel: boolean }[] = [
         { text: `${prompt.title}${stepPos} — ${st.label}${hint ? ` (${hint})` : ""} · esc cancels`, sel: false },
       ];
-      // rows above the dock floats (see dockFloats) — the menu must clear the
-      // queue and command-output rows or it paints over them
       const menuTop = dockFloats().top;
       if (st.kind === "select") {
         const opts = promptOptions();
         if (!opts.length) {
           rows.push({ text: "  no matches — backspace to widen", sel: false });
         } else {
-          // a models.dev-fed list can run to hundreds of entries — window it by
-          // the space actually available, not a fixed row count
           const MAX = Math.max(1, Math.min(5, menuTop - 1));
           const start = opts.length <= MAX ? 0 : Math.max(0, Math.min(prompt.sel - Math.floor(MAX / 2), opts.length - MAX));
           const end = Math.min(opts.length, start + MAX);
@@ -2969,22 +3064,13 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       }
     }
 
-    // queued + steering messages stack directly above the input box, oldest
-    // at the top — the line about to send next sits closest to your hands.
-    // ctrl+up withdraws the last one back into the editor.
+    // queued + steering messages stack directly above the input box
     let queueRowsH = 0;
     const pend = pendingLines();
     if (pend.length) {
-      // one height computation, shared with viewportH's reservation — the two
-      // disagreeing meant the stack could drift out of its reserved band.
-      // The stack claims the frame's queueH (top-down paint must consume the
-      // same rows the viewport reserved, or the hints above get double-
-      // shifted by the stack)
       queueRowsH = fr.queueH;
       const shown = pend.slice(0, queueRowsH);
       const qTop = inputTop - queueRowsH;
-      // SEAMLESS with the transcript: no background fill — the rows read as
-      // the content's continuation, not a bar bolted above the dock
       for (let i = 0; i < shown.length; i++) {
         screen.text(1, qTop + i, clipW(shown[i], W - 2), S.hintOnBase);
       }
@@ -2993,9 +3079,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       }
     }
 
-    // floating command output (/help, /todo, /usage…) — directly above the
-    // queue, below the slash hints. It can't coexist with the hints anyway:
-    // typing "/" is a keypress, and any keypress dismisses this overlay.
+    // floating command output
     let cmdRowsH = 0;
     if (cmdOut?.length) {
       const avail = Math.max(1, inputTop - queueRowsH - 1);
@@ -3010,8 +3094,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       }
     }
 
-    // hints popup floats directly above the input box (and any queue rows and
-    // command output), capped at 5 rows — more reads as a wall, not a hint
+    // hints popup
     const hints = hintText(Math.min(5, Math.max(1, inputTop - queueRowsH - cmdRowsH - 1)));
     if (hints.active && hints.rows.length) {
       const hTop = inputTop - queueRowsH - cmdRowsH - hints.rows.length;
@@ -3020,32 +3103,19 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         screen.text(1, hTop + i, hints.rows[i].text, hints.rows[i].sel ? S.hintSel : S.hintDim);
       }
     }
+  }
 
-    // Session overlay, painted last over the transcript so it is unambiguously
-    // modal. The input dock stays visible underneath it — the turn running down
-    // there is not interrupted by opening the list, and hiding it would suggest
-    // otherwise.
-    if (overlay) paintOverlay(inputTop);
-
-    // status bar
+  function paintStatus() {
+    const barY = H - 1;
     screen.fillRow(barY, 0, W, S.barBgRow);
     let lx = 1;
-    // a fresh flash REPLACES the busy label entirely — "copied", "steering
-    // queued" etc. are the thing the user just did and reads first; the
-    // thinking/responding state returns when the flash expires
     if (Date.now() < flashUntil && flashMsg) {
       lx = screen.text(lx, barY, `${flashMsg}`, displayBusy() ? S.accent : S.ok);
     } else if (displayBusy()) {
-      // a viewer mirrors the owner's turn here: same spinner, same label, same
-      // elapsed clock (startedAt arrived over the live channel). No "other
-      // session" suffix — the read-only flag at the right already says whose
-      // session this is.
       lx = screen.text(lx, barY, clipW(`${SPIN[frameIdx]} ${streamText !== null ? "responding" : "thinking"}${busyMsg ? ` — ${busyMsg}` : ""} ${elapsed()}`, W - 2), S.accent);
     } else {
       lx = screen.text(lx, barY, `ready`, S.ok);
     }
-    // right side: context stats, then the read-only flag when this process
-    // doesn't own the session — it belongs by the stats, the far edge
     const stats = cachedStats();
     const ro = state.readOnly ? " · read-only" : "";
     const right = stats + ro;
@@ -3162,7 +3232,11 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     if (now - lastSpinAt < 140) return;
     lastSpinAt = now;
     frameIdx = (frameIdx + 1) % SPIN.length;
-    dirty = true;
+    // spinner-only update: the status region re-derives on the next paint()
+    // (its signature includes frameIdx) and nothing else does — one row
+    // re-stamped, the row-hash diff turns it into ~20 bytes of output.
+    // NO global dirty: a mid-reasoning turn now costs nothing per tick.
+    statusOnly = true;
   }
 
   async function run() {
@@ -3288,7 +3362,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
               const st = live.streaming;
               if (st !== streamText) {
                 streamText = st;
-                streamCache = null; // width may differ; rebuild is cheap and rare
+                streamKernels.clear(); // a new stream: all width kernels rebuild
               }
               startedAt = live.startedAt;
               markDirty();
@@ -3309,11 +3383,31 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       }
 
       let lastCaretKey: string | null = null;
+      // Frame interval honors tuiFrameMs (config, default 33). The loop is a
+      // coalescer, not a pacer: dirty work runs at most once per interval,
+      // and a spinner-only tick re-derives the status region alone.
+      const frameMs = Math.max(8, Math.min(250, state.config?.tuiFrameMs ?? 33));
       const frameTimer = setInterval(() => {
         tickSpinner();
-        if (!dirty) return;
+        if (!dirty && !statusOnly) return;
+        const spinOnly = statusOnly && !dirty;
+        statusOnly = false;
         dirty = false;
         try {
+          if (spinOnly) {
+            // spinner path: status region only — no computeFrame, no
+            // transcript/dock derivation, then the usual row-hash flush.
+            // The caret repositions too: the status write strands the
+            // hardware cursor at the row end, and the input caret would
+            // visibly jump there until the next full frame.
+            paintStatus();
+            screen.flush();
+            const caret = nextCaret ?? { x: 3, y: H - 2 };
+            term.setCursor(caret.x, caret.y);
+            term.flush();
+            return;
+          }
+          paint();
           // Cursor churn flickers: only hide/reposition it when the caret actually
           // moved (typing, scrolling the dock). While streaming, the caret sits
           // still and the grid diff paints underneath it without a single

@@ -134,6 +134,13 @@ export interface Config {
   tuiRich: boolean;
   /** TUI scrollbar: dedicated track column at the right edge of the transcript (default on) */
   tuiScrollbar: boolean;
+  /**
+   * TUI frame loop interval in ms (default 33). Lower = smoother spinner and
+   * faster stream echo at higher idle CPU; the loop skips work when nothing
+   * is dirty, so the cost of a small value is only the wakeups. Keystrokes
+   * are independent of this — they paint on the next tick regardless.
+   */
+  tuiFrameMs: number;
   /** reasoning effort: "low" | "medium" | "high" — unset lets the provider default rule */
   reasoningEffort?: "low" | "medium" | "high";
   /** TUI color theme: a preset name or a plugin-registered one (default "default") */
@@ -208,6 +215,7 @@ const DEFAULTS: Omit<Config, "projectInstructions"> = {
   tuiKeptChars: 4_000,
   tuiRich: false,
   tuiScrollbar: true,
+  tuiFrameMs: 33,
   theme: "default",
   contextMarkers: true,
   trusted: true,
@@ -372,7 +380,7 @@ const KNOWN_KEYS = new Set([
   "model", "baseUrl", "apiKey", "provider", "maxSteps", "retryLimit", "compactAt",
   "requestTimeoutMs", "diagnostics", "mcpServers", "agents", "lsp", "plugins",
   "providers", "disabledPlugins", "toolOutputCap", "sessionListLimit",
-  "tuiCollapsedChars", "tuiKeptChars", "tuiRich", "tuiScrollbar", "theme", "contextMarkers", "acpHistory",
+  "tuiCollapsedChars", "tuiKeptChars", "tuiRich", "tuiScrollbar", "tuiFrameMs", "theme", "contextMarkers", "acpHistory",
   "reasoningEffort",
 ]);
 
@@ -454,6 +462,7 @@ function applyTable(cfg: Config, t: Record<string, unknown> | null, scope: "glob
   if (typeof t.tuiKeptChars === "number" && t.tuiKeptChars >= 200) cfg.tuiKeptChars = Math.floor(t.tuiKeptChars);
   if (typeof t.tuiRich === "boolean") cfg.tuiRich = t.tuiRich;
   if (typeof t.tuiScrollbar === "boolean") cfg.tuiScrollbar = t.tuiScrollbar;
+  if (typeof t.tuiFrameMs === "number" && t.tuiFrameMs >= 8 && t.tuiFrameMs <= 250) cfg.tuiFrameMs = Math.floor(t.tuiFrameMs);
   if (t.reasoningEffort === "low" || t.reasoningEffort === "medium" || t.reasoningEffort === "high") cfg.reasoningEffort = t.reasoningEffort;
   if (typeof t.theme === "string" && t.theme.trim()) cfg.theme = t.theme.trim();
   if (typeof t.contextMarkers === "boolean") cfg.contextMarkers = t.contextMarkers;
