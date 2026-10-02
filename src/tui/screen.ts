@@ -205,6 +205,7 @@ export class Screen {
       let line = "";
       let painted = 0;
       let physX = 0; // terminal cursor column within this row (cells can be sparse!)
+      let lastEmitX = -1; // x of the last cell actually written
       const base = y * this.w;
       for (let x = 0; x < this.w; x++) {
         const ch = this.chars[base + x];
@@ -239,6 +240,7 @@ export class Screen {
         const cw = Math.max(1, charWidth(ch.codePointAt(0)!));
         physX += cw;
         painted += cw;
+        lastEmitX = x;
       }
       out += line;
       // every dirty row leaves the terminal clean: close any open hyperlink,
@@ -250,7 +252,21 @@ export class Screen {
         this.lastHref = "";
       }
       if (runSgr) out += "\x1b[0m";
-      if (painted < this.w) out += "\x1b[K";
+      // Trailing erase fires ONLY when undefined cells exist AFTER the last
+      // written cell — stale content to clean. `painted < w` was wrong: on a
+      // sparse row (plain text + scrollbar cell at W-1, gap undefined between)
+      // it fired AFTER the scrollbar cell and erased the track/thumb we had
+      // just drawn. Tool-filled rows painted [0,W-1) fully, hit painted==w,
+      // skipped the K — which is why the scrollbar showed over tool rows and
+      // nowhere else.
+      let staleTail = false;
+      for (let x = lastEmitX + 1; x < this.w; x++) {
+        if (this.chars[base + x] === undefined) {
+          staleTail = true;
+          break;
+        }
+      }
+      if (staleTail) out += "\x1b[K";
     }
     if (dirty) {
       this.term.write(out);

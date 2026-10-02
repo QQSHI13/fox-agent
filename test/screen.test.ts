@@ -174,3 +174,44 @@ describe("Screen compositing: text over fills, and SGR transitions", () => {
     expect(term.buf).not.toContain("48;2;31;35;53");
   });
 });
+
+describe("Screen.flush: sparse row with trailing styled cell (scrollbar)", () => {
+  test("trailing \\x1b[K does not erase the scrollbar cell", async () => {
+    const { Screen } = await import("../src/tui/screen.ts");
+    const term = new FakeTerm();
+    const scr = new Screen(term as any);
+    scr.resize(20, 1);
+    const base = scr.sgr({ fg: "#ffffff" });
+    const track = scr.sgr({ bg: "#2e3350" });
+    // text cols 1..5, scrollbar cell col 19, gap 6..18 undefined
+    scr.text(1, 0, "hello", base);
+    scr.fillRow(0, 19, 20, track);
+    term.buf = "";
+    scr.flush();
+    // the row must END with the track cell write — no trailing \x1b[K after
+    // it (the gap K before the CUP is correct: it clears stale cells, and the
+    // track is drawn AFTER it). The old code emitted a trailing K AFTER the
+    // track, erasing what it had just drawn.
+    const tail = term.buf.slice(term.buf.lastIndexOf("hello") + 5);
+    expect(tail).toContain("\x1b[1;20H");     // explicit CUP to the track column
+    expect(tail).toContain("48;2;46;51;80m"); // the track cell's background
+    expect(tail.endsWith("\x1b[K")).toBe(false); // and NO trailing erase after it
+  });
+
+  test("stale tail IS erased when undefined cells follow the last write", async () => {
+    const { Screen } = await import("../src/tui/screen.ts");
+    const term = new FakeTerm();
+    const scr = new Screen(term as any);
+    scr.resize(20, 1);
+    const base = scr.sgr({ fg: "#ffffff" });
+    // frame 1: long text
+    scr.text(0, 0, "abcdefghijklmnop", base);
+    scr.flush();
+    // frame 2: short text only — trailing K must clear the stale tail
+    scr.clear();
+    scr.text(0, 0, "hi", base);
+    term.buf = "";
+    scr.flush();
+    expect(term.buf).toContain("\x1b[K");
+  });
+});
