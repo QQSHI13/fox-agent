@@ -2759,7 +2759,10 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     S.hintOnBase = screen.sgr({ fg: C.hint }); // floats over the transcript's own background
     S.think = screen.sgr({ fg: C.think }); // thinking blocks: distinct from tool/toolbody
     S.sbThumb = screen.sgr({ bg: C.hint }); // theme's muted tone: visible on both bar and transcript
-    S.sbTrack = screen.sgr({ bg: C.barBg }); // the gutter line the thumb rides
+    // the gutter line the thumb rides — its own slot (see Theme.sbTrack):
+    // barBg is near-black and vanished against the default background on
+    // plain-text rows, showing only over toolBg/think fills
+    S.sbTrack = screen.sgr({ bg: C.sbTrack ?? C.inputBg });
     S.overlayRow = screen.sgr({ fg: C.fg, bg: C.inputBg });
     S.overlaySel = screen.sgr({ fg: C.hintSel, bg: C.selBg });
   }
@@ -2864,7 +2867,14 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     // selection: FULL anchors, not a boolean — a boolean makes drag-extension
     // invisible (hasSel stays true while the drag grows; frameChanged never
     // fires; the highlight freezes at where it first appeared)
-    return `${W}x${H}|${revSum}|${items.length}|${scrollTop}|${stick}|${streamText?.length ?? -1}|${streamText?.slice(-24) ?? ""}|${SCROLLBAR}|${hasSel() ? `${selA!.row},${selA!.col},${selB!.row},${selB!.col}` : "-"}|${themeName()}|${RICH}|${state.readOnly}|${pendingLines().length}`;
+    // inputRev + dock caret: the input layout (wrapped row count) is a
+    // computeFrame INPUT — it sets shownCount/inputTop, i.e. where the
+    // transcript ends and the dock begins. Without it the box never flexed:
+    // typing past a line re-wrapped the buffer but the frame kept the old
+    // dock height, and paintDock stamped into the stale geometry.
+    const layout = inputLayout();
+    const caret = caretPos(layout);
+    return `${W}x${H}|${revSum}|${items.length}|${scrollTop}|${stick}|${streamText?.length ?? -1}|${streamText?.slice(-24) ?? ""}|${SCROLLBAR}|${hasSel() ? `${selA!.row},${selA!.col},${selB!.row},${selB!.col}` : "-"}|${themeName()}|${RICH}|${state.readOnly}|${pendingLines().length}|${inputRev}|${layout.rows.length}|${caret.visRow}`;
   }
 
   function statusSig(): string {
@@ -3175,7 +3185,6 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       }
     }
 
-    // hints popup
     const hints = hintText(Math.min(5, Math.max(1, inputTop - queueRowsH - cmdRowsH - 1)));
     if (hints.active && hints.rows.length) {
       const hTop = inputTop - queueRowsH - cmdRowsH - hints.rows.length;
@@ -3184,6 +3193,14 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         screen.fillRow(hTop + i, 0, W, S.barBgRow);
         screen.text(1, hTop + i, hints.rows[i].text, hints.rows[i].sel ? S.hintSel : S.hintDim);
       }
+    }
+
+    // floats cleared/restamped full-width rows that overlap the transcript
+    // band — the scrollbar column they wiped must be re-stamped or the
+    // track/thumb vanish whenever hints/queue/wizard change height
+    if (SCROLLBAR && painted) {
+      for (let sy = 0; sy < Math.min(painted.vh, inputTop); sy++)
+        screen.fillRow(sy, W - 1, W, painted.sbShowing && sy >= painted.sb.ty && sy < painted.sb.ty + painted.sb.th ? S.sbThumb : S.sbTrack);
     }
   }
 
@@ -3296,6 +3313,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     initStyles();
     paintedTheme = themeName();
     lineCache.clear();
+    layoutCache = null; // the input wrap is width-keyed — a stale wrap kept
+    // the dock at the old width's row breaks until the next edit
+    streamKernels.clear(); // stream rows are width-keyed too
     dirty = true;
   }
 
@@ -3305,6 +3325,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     initStyles();
     paintedTheme = themeName();
     lineCache.clear();
+    streamKernels.clear(); // cached stream rows carry old-theme seg colors
     dirty = true;
   }
 

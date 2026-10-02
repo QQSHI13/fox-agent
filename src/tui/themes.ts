@@ -31,6 +31,13 @@ export interface Theme {
   toolBg: string;
   /** thinking/reasoning blocks — a distinct cool tone, not the tool amber */
   think: string;
+  /**
+   * Scrollbar track color (optional — falls back to a blend toward fg).
+   * barBg was tried and is wrong: it is near-black on every theme, so the
+   * track vanished against the terminal's default background wherever rows
+   * had no fill (plain text), while showing only over toolBg/think rows.
+   */
+  sbTrack?: string;
 }
 
 export const THEME_PRESETS: Record<string, Theme> = {
@@ -53,6 +60,7 @@ export const THEME_PRESETS: Record<string, Theme> = {
     selBg: "#364a82",
     toolBg: "#2a2530",
     think: "#7d8cc4",
+    sbTrack: "#2e3350",
   },
   light: {
     fg: "#1f2335",
@@ -70,6 +78,7 @@ export const THEME_PRESETS: Record<string, Theme> = {
     selBg: "#b6bfe2",
     toolBg: "#e8ddc8",
     think: "#6a6fb8",
+    sbTrack: "#c3c9de",
   },
   mono: {
     fg: "#d0d0d0",
@@ -87,6 +96,7 @@ export const THEME_PRESETS: Record<string, Theme> = {
     selBg: "#404040",
     toolBg: "#383028",
     think: "#a0a0a0",
+    sbTrack: "#3a3a3a",
   },
   "solarized-dark": {
     // base0 body text on base03 measured 4.1:1; base1 keeps the palette and
@@ -106,6 +116,7 @@ export const THEME_PRESETS: Record<string, Theme> = {
     selBg: "#094656",
     toolBg: "#0f4a45",
     think: "#6c71c4",
+    sbTrack: "#1f4a52",
   },
   dracula: {
     fg: "#f8f8f2",
@@ -123,6 +134,7 @@ export const THEME_PRESETS: Record<string, Theme> = {
     selBg: "#44475a",
     toolBg: "#3a2f3a",
     think: "#8f9cf0",
+    sbTrack: "#3c425e",
   },
   // Every preset below was tuned to the same contrast contract as above:
   // every foreground >= 4.5:1 on inputBg, chrome/hint also >= 4.5 on barBg
@@ -143,6 +155,7 @@ export const THEME_PRESETS: Record<string, Theme> = {
     selBg: "#434c5e",
     toolBg: "#3a3648",
     think: "#88a0c8",
+    sbTrack: "#3b4252",
   },
   "catppuccin-mocha": {
     fg: "#cdd6f4",
@@ -160,6 +173,7 @@ export const THEME_PRESETS: Record<string, Theme> = {
     selBg: "#414559",
     toolBg: "#33283a",
     think: "#9399d8",
+    sbTrack: "#363a4e",
   },
   "gruvbox-dark": {
     fg: "#ebdbb2",
@@ -177,6 +191,7 @@ export const THEME_PRESETS: Record<string, Theme> = {
     selBg: "#504945",
     toolBg: "#453628",
     think: "#a89984",
+    sbTrack: "#454033",
   },
   "rose-pine": {
     fg: "#e0def4",
@@ -194,6 +209,7 @@ export const THEME_PRESETS: Record<string, Theme> = {
     selBg: "#403d52",
     toolBg: "#31283f",
     think: "#9ccfd8",
+    sbTrack: "#2f2c44",
   },
   "tokyo-day": {
     fg: "#343a55",
@@ -211,6 +227,7 @@ export const THEME_PRESETS: Record<string, Theme> = {
     selBg: "#c3c9de",
     toolBg: "#e6dcd0",
     think: "#5a6296",
+    sbTrack: "#c3c9de",
   },
   everforest: {
     fg: "#d3c6aa",
@@ -228,6 +245,7 @@ export const THEME_PRESETS: Record<string, Theme> = {
     selBg: "#4f585e",
     toolBg: "#4a4438",
     think: "#8fa8a0",
+    sbTrack: "#414b3c",
   },
 };
 
