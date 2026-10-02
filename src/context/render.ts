@@ -3,18 +3,20 @@ import { estimateTokens } from "../providers/models.ts";
 import { projectView, parseToolCalls, type ViewNode } from "./view.ts";
 
 function marker(seq: number): string {
-  return `[m${seq}]`;
+  return `[${seq}]`;
 }
 
 /**
- * Marker echo stripper. Weak models see `[mN]` on every message and start
+ * Marker echo stripper. Weak models see `[N]` on every message and start
  * "predicting" one at the top of their own reply; stored verbatim, the next
  * render shows `[m13] [m12] …` and the echo compounds. Applied at store time
  * only (turn.ts) — rendering stays verbatim, so the transcript is the truth
  * and a pre-fix poisoned session is the agent's to ctx_edit away.
  */
 export function stripEchoedMarkers(text: string): string {
-  return text.replace(/^\s*(?:\[m\d+\][ \t]*)+/, "");
+  // accepts BOTH dialects: sessions poisoned before the [mN] -> [N] rename
+  // still strip, and new [N] echoes strip identically
+  return text.replace(/^\s*(?:\[m?\d+\][ \t]*)+/, "");
 }
 
 /**
@@ -35,7 +37,7 @@ interface RenderedNode {
   summary?: string;
   /** kept tool_call ids joined — the only part of an assistant entry that depends on other nodes */
   callsKey: string;
-  /** whether [mN] prefixes were rendered — part of the memo key, /reload can flip it */
+  /** whether [N] prefixes were rendered — part of the memo key, /reload can flip it */
   markers: boolean;
   /** the message to emit, or undefined when the node renders to nothing */
   msg?: ChatMessage;

@@ -470,7 +470,7 @@ export async function* runTurnCore(
       return;
     }
 
-    // weak models open their reply by echoing the [mN] marker they saw on every
+    // weak models open their reply by echoing the [N] marker they saw on every
     // message; storing it would render "[m13] [m12] …" next step and feed the loop
     if (outcome.text) outcome.text = stripEchoedMarkers(outcome.text);
 

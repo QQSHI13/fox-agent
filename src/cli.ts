@@ -552,7 +552,7 @@ function emitHuman(ev: import("./core/events.ts").AgentEvent, color = false) {
       break;
     case "tool_end":
       process.stdout.write(
-        `\n  [m${ev.seq}] » ${st.cyan(ev.name)}${ev.ok ? "" : st.red(" — failed")} → ${ev.output.replace(/\n/g, " ").slice(0, 160)}\n`,
+        `\n  [${ev.seq}] » ${st.cyan(ev.name)}${ev.ok ? "" : st.red(" — failed")} → ${ev.output.replace(/\n/g, " ").slice(0, 160)}\n`,
       );
       break;
     case "retry":

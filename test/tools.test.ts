@@ -257,7 +257,7 @@ describe("ctx search, stats and query ops", () => {
     const { run, b } = await seeded();
     const r = await run([{ op: "search", pattern: "cursor" }]);
     expect(r.ok).toBe(true);
-    expect(r.output).toContain(`[m${b.seq}]`);
+    expect(r.output).toContain(`[${b.seq}]`);
     expect(r.output).toContain("cursor pagination".slice(0, 20));
     const miss = await run([{ op: "search", pattern: "zzz-no-match" }]);
     expect(miss.output).toContain("no matches");
@@ -277,14 +277,14 @@ describe("ctx search, stats and query ops", () => {
     const r = await run([{ op: "stats" }]);
     expect(r.ok).toBe(true);
     expect(r.output).toContain("3 visible of 3 stored (0 hidden)");
-    expect(r.output).toContain(`[m${c.seq}] tool`);
+    expect(r.output).toContain(`[${c.seq}] tool`);
   });
 
   test("delete_by_query hides matches; matching everything needs all:true", async () => {
     const { run, c } = await seeded();
     const r = await run([{ op: "delete_by_query", pattern: "timeout" }]);
     expect(r.ok).toBe(true);
-    expect(r.output).toContain(`m${c.seq}`);
+    expect(r.output).toContain(`${c.seq}`);
     const after = await run([{ op: "stats" }]);
     expect(after.output).toContain("2 visible of 3 stored (1 hidden)");
     const all = await run([{ op: "delete_by_query", pattern: "." }]);

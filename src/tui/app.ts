@@ -514,12 +514,12 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     }
     for (const n of nodes) {
       const m = n.msg;
-      if (m.role === "user") out.push({ k: nk(), kind: "user", text: `[m${m.seq}] ❯ ${n.content}` });
+      if (m.role === "user") out.push({ k: nk(), kind: "user", text: `[${m.seq}] ❯ ${n.content}` });
       else if (m.role === "tool") {
         // todo bodies are markdown task lists — rendered as md, always
         // visible (a task list hidden behind a click is useless)
         const isTodo = callName.get(m.tool_call_id ?? "") === "todo";
-        out.push({ k: nk(), kind: "toolhead", text: `[m${m.seq}] » ${callLabel.get(m.tool_call_id ?? "") ?? "tool"}`, detail: callDetail.get(m.tool_call_id ?? "") });
+        out.push({ k: nk(), kind: "toolhead", text: `[${m.seq}] » ${callLabel.get(m.tool_call_id ?? "") ?? "tool"}`, detail: callDetail.get(m.tool_call_id ?? "") });
         // raw text — collapsed/expanded rendering lives in itemRows
         out.push({
           k: nk(),
@@ -1270,7 +1270,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           // raw text, newlines intact: collapsed rendering shows an arrow line,
           // the expanded view gets the real lines (see itemRows)
           const detail = argsJson(ev.args);
-          push("toolhead", `[m${ev.seq}] » ${callLabels.get(ev.id) ?? `${ev.name}${argsSummary(ev.args)}`}${ev.ok ? "" : " — failed"}`, { detail, expanded: headOpen || undefined });
+          push("toolhead", `[${ev.seq}] » ${callLabels.get(ev.id) ?? `${ev.name}${argsSummary(ev.args)}`}${ev.ok ? "" : " — failed"}`, { detail, expanded: headOpen || undefined });
           const bodyOpenFinal = expandedRefs.has(ev.seq) || bodyOpen;
           if (bodyOpenFinal) expandedRefs.add(ev.seq);
           // todo bodies are markdown task lists — always visible, rendered

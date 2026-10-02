@@ -57,7 +57,7 @@ export function buildSystemPrompt(
   if (have.has("ctx")) {
     const lines = [
       `## Context window management (your core ability)\n` +
-        `Every message in your view carries a stable marker [mN]. Large old tool outputs are dead weight — query, don't re-read:\n` +
+        `Every message in your view carries a stable marker [N]. Large old tool outputs are dead weight — query, don't re-read:\n` +
         `- find nodes first: {"op":"search","pattern":"error"} shows snippets, never bodies\n` +
         `- after using a big result, hide it: {"op":"delete","ids":[3,5],"summary":"ran build; fixed 2 errors"}\n` +
         `- rewrite stale/wrong nodes: {"op":"replace","id":7,"content":"…"}\n` +

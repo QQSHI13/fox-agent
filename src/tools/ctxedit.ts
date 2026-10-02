@@ -12,7 +12,7 @@ const STATS_MAX_TOP = 20;
 export const ctxDef: ToolDef = {
   name: "ctx",
   description:
-    "Your own context window: view, search and surgically edit what you see (view only — storage is never touched). Messages appear as [mN] markers (ctx_edit, the old delete/replace-only tool, is an alias of this one). search finds nodes by pattern and shows snippets instead of whole bodies — query instead of reading; stats shows sizes and the biggest nodes; delete hides nodes (optional summary keeps a tiny note); delete_by_query hides by pattern; replace rewrites text; restore un-hides. Batch multiple ops in one call.",
+    "Your own context window: view, search and surgically edit what you see (view only — storage is never touched). Messages appear as [N] markers (ctx_edit, the old delete/replace-only tool, is an alias of this one). search finds nodes by pattern and shows snippets instead of whole bodies — query instead of reading; stats shows sizes and the biggest nodes; delete hides nodes (optional summary keeps a tiny note); delete_by_query hides by pattern; replace rewrites text; restore un-hides. Batch multiple ops in one call.",
   parameters: {
     type: "object",
     properties: {
@@ -22,7 +22,7 @@ export const ctxDef: ToolDef = {
           type: "object",
           properties: {
             op: { type: "string", enum: ["delete", "replace", "restore", "search", "delete_by_query", "stats"] },
-            ids: { type: "array", items: { type: "number" }, description: "delete/restore: message seqs ([mN] -> N)" },
+            ids: { type: "array", items: { type: "number" }, description: "delete/restore: message seqs ([N] -> N)" },
             summary: { type: "string", description: "delete: optional one-line summary kept in place of content" },
             id: { type: "number", description: "replace: message seq" },
             content: { type: "string", description: "replace: new content" },
@@ -124,7 +124,7 @@ export async function ctxRun(args: { ops?: any[]; reason?: string }, ctx: ToolCo
       if ("error" in found) return fail(found.error);
       out.push(
         found.hits.length
-          ? `search ${JSON.stringify(o.pattern)}: ${found.hits.length} match(es)\n${found.hits.map((h) => `[m${h.seq}] ${h.role} ${h.snippet}`).join("\n")}`
+          ? `search ${JSON.stringify(o.pattern)}: ${found.hits.length} match(es)\n${found.hits.map((h) => `[${h.seq}] ${h.role} ${h.snippet}`).join("\n")}`
           : `search ${JSON.stringify(o.pattern)}: no matches`,
       );
     } else if (o.op === "delete_by_query") {
@@ -150,7 +150,7 @@ export async function ctxRun(args: { ops?: any[]; reason?: string }, ctx: ToolCo
         .slice(0, top);
       out.push(
         `context: ${nodes.length} visible of ${stored} stored (${stored - nodes.length} hidden)\n` +
-          biggest.map((b) => `[m${b.seq}] ${b.role} ${b.chars} chars: ${b.preview}`).join("\n"),
+          biggest.map((b) => `[${b.seq}] ${b.role} ${b.chars} chars: ${b.preview}`).join("\n"),
       );
     } else {
       return fail(`error: unknown op ${o.op}`);

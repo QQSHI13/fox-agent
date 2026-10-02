@@ -88,7 +88,7 @@ export async function compactIfNeeded(
   const candidates = vis.slice(0, boundary).filter((n) => n.msg.role !== "user" || n.content.length > 0);
 
   const segment = candidates
-    .map((n) => `[m${n.msg.seq}] ${n.msg.role}: ${n.content.slice(0, 2000)}`)
+    .map((n) => `[${n.msg.seq}] ${n.msg.role}: ${n.content.slice(0, 2000)}`)
     .join("\n\n")
     .slice(-120_000); // cap the summarizer input itself
 

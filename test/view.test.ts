@@ -136,9 +136,9 @@ describe("render roles", () => {
     // tell that note apart from something the person typed, and anything
     // imperative inside it then arrives with a user instruction's authority.
     expect(note.role).toBe("assistant");
-    expect(note.content).toContain(`(ctx: [m${a.seq}] summarized away)`);
+    expect(note.content).toContain(`(ctx: [${a.seq}] summarized away)`);
     // and it must not be mistaken for a real turn
-    expect(msgs.filter((m) => m.role === "user").map((m) => m.content)).toEqual([`[m2] new question`]);
+    expect(msgs.filter((m) => m.role === "user").map((m) => m.content)).toEqual([`[2] new question`]);
   });
 
   test("a summary never lands between an assistant's tool call and its result", async () => {
@@ -196,8 +196,10 @@ describe("render roles", () => {
   test("stripEchoedMarkers removes only a leading echo", async () => {
     const { renderContext, stripEchoedMarkers } = await import("../src/context/render.ts");
 
-    expect(stripEchoedMarkers("[m12] sure, doing that")).toBe("sure, doing that");
+    expect(stripEchoedMarkers("[m12] sure, doing that")).toBe("sure, doing that"); // old dialect
+    expect(stripEchoedMarkers("[12] sure, doing that")).toBe("sure, doing that"); // current
     expect(stripEchoedMarkers("  [m3] [m4] ok")).toBe("ok");
+    expect(stripEchoedMarkers("  [3] [4] ok")).toBe("ok");
     expect(stripEchoedMarkers("plain reply")).toBe("plain reply");
     // mid-text mentions survive — only the leading echo is stripped
     expect(stripEchoedMarkers("hiding [m3] now")).toBe("hiding [m3] now");
@@ -209,7 +211,7 @@ describe("render roles", () => {
     appendMessage(s.id, { parent_id: null, role: "user", content: "hi", tokens: 1 });
     const a = appendMessage(s.id, { parent_id: null, role: "assistant", content: "[m1] hello there", tokens: 2 });
     const rendered = renderContext(s.id, "SYS").find((m) => m.role === "assistant")!;
-    expect(rendered.content).toBe(`[m${a.seq}] [m1] hello there`);
+    expect(rendered.content).toBe(`[${a.seq}] [m1] hello there`);
   });
 
   test("markers: false renders no [mN] anywhere, summaries included", async () => {
@@ -222,12 +224,12 @@ describe("render roles", () => {
     appendOps(s.id, [{ kind: "delete", ids: [old.seq], summary: "recap" }]);
 
     const msgs = renderContext(s.id, "SYS", { markers: false });
-    for (const m of msgs.slice(1)) expect(m.content).not.toMatch(/\[m\d+\]/);
+    for (const m of msgs.slice(1)) expect(m.content).not.toMatch(/\[m?\d+\]/);
     expect(msgs.find((m) => m.role === "assistant" && m.content === "answer")).toBeTruthy();
     expect(msgs.some((m) => m.content.includes("(ctx: summarized away) recap"))).toBe(true);
     // flipping the flag re-renders (the memo key includes it), no stale cache
     const withMarkers = renderContext(s.id, "SYS", { markers: true });
-    expect(withMarkers.find((m) => m.role === "assistant" && !m.content.includes("recap"))!.content).toMatch(/^\[m\d+\] answer$/);
+    expect(withMarkers.find((m) => m.role === "assistant" && !m.content.includes("recap"))!.content).toMatch(/^\[\d+\] answer$/);
   });
 });
 
@@ -240,12 +242,12 @@ describe("renderContext node memo", () => {
     const b = db.appendMessage(s.id, { parent_id: a.id, role: "assistant", content: "world", tokens: 2 });
 
     const first = renderContext(s.id, "sys");
-    expect(first.map((m) => m.content)).toEqual(["sys", `[m${a.seq}] hello`, `[m${b.seq}] world`]);
+    expect(first.map((m) => m.content)).toEqual(["sys", `[${a.seq}] hello`, `[${b.seq}] world`]);
 
     // a replace op rewrites the view content; the memo must not serve the old text
     db.appendOps(s.id, [{ kind: "replace", id: b.seq, content: "WORLD" }]);
     const second = renderContext(s.id, "sys");
-    expect(second[2].content).toBe(`[m${b.seq}] WORLD`);
+    expect(second[2].content).toBe(`[${b.seq}] WORLD`);
 
     // a delete-with-summary hides the node and emits the summary note instead
     db.appendOps(s.id, [{ kind: "delete", ids: [b.seq], summary: "greeting done" }]);

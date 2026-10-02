@@ -7,7 +7,7 @@
  *
  * The subtlety that makes this more than a DELETE: a compaction's summary is
  * stored on the op, but `renderContext` only emits it while the *first message
- * row of the hidden span* still exists (it hangs the "(ctx: [mN] summarized
+ * row of the hidden span* still exists (it hangs the "(ctx: [N] summarized
  * away)" line off that node). Deleting every hidden row therefore drops the
  * summary from the prompt and silently loses the context the compaction was
  * meant to preserve. So each summarized span keeps its anchor row as an empty

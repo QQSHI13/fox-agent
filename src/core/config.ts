@@ -150,7 +150,7 @@ export interface Config {
   /** TUI color theme: a preset name or a plugin-registered one (default "default") */
   theme: string;
   /**
-   * Render [mN] markers on messages and give the agent ctx_edit (default true).
+   * Render [N] markers on messages and give the agent ctx_edit (default true).
    * Weak models echo the markers instead of acting on them — set false for
    * them; the render and store paths strip echoed markers regardless.
    */
@@ -829,7 +829,7 @@ export const SETTINGS: SettingSpec[] = [
   { key: "diagnostics", desc: "post-edit language-server diagnostics", def: "true", validate: bool, fmt: showBool },
   {
     key: "contextMarkers",
-    desc: "[mN] markers + ctx tool (weak models: set false)",
+    desc: "[N] markers + ctx tool (weak models: set false)",
     def: "true",
     validate: bool,
     fmt: showBool,
