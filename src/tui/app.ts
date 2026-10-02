@@ -1650,7 +1650,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       scrollTop += dir;
       clampScroll();
       // re-stick at the bottom is paint()'s job now (scrollTop >= max)
-      markDirty();
+      paintNow(); // scroll must land THIS frame — a wheel notch waiting 33ms feels rubber-banded
       return;
     }
     if (name === "c" && ctrl) {
@@ -1782,13 +1782,13 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         stick = false;
         scrollTop -= Math.floor(viewportH() * 0.8);
         clampScroll();
-        markDirty();
+        paintNow();
         return;
       }
       scrollTop += Math.floor(viewportH() * 0.8);
       clampScroll();
       // re-stick at the bottom is paint()'s job now (scrollTop >= max)
-      markDirty();
+      paintNow();
       return;
     }
     if (name === "home") {
@@ -1800,7 +1800,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       }
       stick = false;
       scrollTop = 0;
-      markDirty();
+      paintNow();
       return;
     }
     if (name === "end") {
@@ -1811,7 +1811,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         return;
       }
       stick = true;
-      markDirty();
+      paintNow();
       return;
     }
     if (name === "return") {
@@ -1938,9 +1938,42 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
    * release that `gestureFor` classified as a click. There is no path from a
    * button-down to a toggle any more, which is the reported bug.
    */
+  /**
+   * Paint + flush synchronously, outside the frame interval.
+   *
+   * Pointer interactions (drag-select, scrollbar scrub, wheel) and scroll
+   * keys paint immediately: coalescing them through the 33ms poll made a
+   * fast drag rubber-band and a scroll feel like it moved "one tick late" —
+   * motion events arrive every few ms and the poller folded them into one
+   * frame a full interval after the pointer had already moved on. Input
+   * events are the one place latency beats batching; the coalescer remains
+   * for stream/spinner work.
+   */
+  let paintScheduled = false;
+  function paintNow() {
+    if (paintScheduled) return; // re-entered from a sync event storm: one paint
+    paintScheduled = true;
+    try {
+      paint();
+      const caret = nextCaret ?? { x: 3, y: H - 2 };
+      screen.flush();
+      term.setCursor(caret.x, caret.y);
+      term.flush();
+      dirty = false;
+      statusOnly = false;
+    } catch (e) {
+      debugLog("tui sync paint error", e);
+    } finally {
+      paintScheduled = false;
+    }
+  }
+
   function onMouse(action: "down" | "drag" | "up", x: number, y: number) {
     lastMouse = { x, y };
     const g = gestureFor(action, press, x, y);
+    // every mouse path below ends in syncPaint(); pointer feedback paints
+    // NOW (see paintNow) instead of waiting for the frame interval
+    const syncPaint = () => paintNow();
     if (action === "down") {
       // Scrollbar strip at the right edge: press jumps, drag scrubs. Dead when
       // tuiScrollbar is off — no strip is painted, so no dead click zone either.
@@ -1950,7 +1983,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         stick = false;
         scrollTop = scrollbarScrollTop(fr.rowCount, fr.vh, y);
         clampScroll();
-        markDirty();
+        syncPaint();
         return;
       }
       // Press inside the input dock: position the caret there; a following drag
@@ -1960,7 +1993,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         cur = ii;
         inSelAnchor = ii;
         press = { x, y, moved: false, input: true };
-        markDirty();
+        syncPaint();
         return;
       }
       const row = transcriptRow(y);
@@ -1983,7 +2016,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           clampScroll();
         }
         press.moved = true;
-        markDirty();
+        syncPaint();
         return;
       }
       if (press?.input) {
@@ -1991,7 +2024,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         if (ii !== null && ii !== cur) {
           cur = ii; // anchor stays where the press landed
           press.moved = true;
-          markDirty();
+          syncPaint();
         }
         return;
       }
@@ -2015,7 +2048,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       const row = transcriptRow(Math.max(0, Math.min(viewportH() - 1, y)));
       if (row === null) return;
       selB = { row, col: transcriptCol(x) };
-      markDirty();
+        syncPaint();
       return;
     }
     const wasInput = press?.input;
@@ -2026,7 +2059,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     // just moved the caret, so drop the zero-width anchor.
     if (wasInput) {
       if (inSelAnchor === cur) inSelAnchor = null; // a tap, not a drag
-      markDirty();
+      syncPaint();
       return;
     }
     // A drag selects and copies; it must never also toggle what it passed over.
@@ -2065,7 +2098,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         selA = { row, col: 0 };
         selB = { row, col: width - 1 };
       }
-      markDirty();
+      syncPaint();
       return;
     }
     onClick(x, y);
@@ -2828,7 +2861,10 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     // pendingCount drives viewportHeight (queue rows reserve transcript rows),
     // so it belongs in the frame signature — a queue change shifts every
     // transcript row and must re-derive the region
-    return `${W}x${H}|${revSum}|${items.length}|${scrollTop}|${stick}|${streamText?.length ?? -1}|${streamText?.slice(-24) ?? ""}|${SCROLLBAR}|${hasSel() ? "sel" : "-"}|${themeName()}|${RICH}|${state.readOnly}|${pendingLines().length}`;
+    // selection: FULL anchors, not a boolean — a boolean makes drag-extension
+    // invisible (hasSel stays true while the drag grows; frameChanged never
+    // fires; the highlight freezes at where it first appeared)
+    return `${W}x${H}|${revSum}|${items.length}|${scrollTop}|${stick}|${streamText?.length ?? -1}|${streamText?.slice(-24) ?? ""}|${SCROLLBAR}|${hasSel() ? `${selA!.row},${selA!.col},${selB!.row},${selB!.col}` : "-"}|${themeName()}|${RICH}|${state.readOnly}|${pendingLines().length}`;
   }
 
   function statusSig(): string {
@@ -2840,7 +2876,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
 
   function dockSig(): string {
     const st0 = prompt?.steps[prompt.idx];
-    return `${inputRev}|${prompt ? `${prompt.idx}|${st0?.kind}|${prompt.filter}` : "-"}|${inSelAnchor ?? "-"}|${nextCaret ? "c" : "-"}`;
+    // cur rides the sig: input drag-selection moves cur without bumping
+    // inputRev, and the highlight range is (inSelAnchor, cur)
+    return `${inputRev}|${cur}|${prompt ? `${prompt.idx}|${st0?.kind}|${prompt.filter}` : "-"}|${inSelAnchor ?? "-"}|${nextCaret ? "c" : "-"}`;
   }
 
   function floatsSig(): string {
@@ -3453,7 +3491,6 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
             term.flush();
             return;
           }
-          paint();
           // Cursor churn flickers: only hide/reposition it when the caret actually
           // moved (typing, scrolling the dock). While streaming, the caret sits
           // still and the grid diff paints underneath it without a single
