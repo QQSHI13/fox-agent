@@ -2297,14 +2297,18 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       // blending into neighboring md rows); one style id for every line keeps
       // it uniform instead of inheriting whatever colors it wrapped.
       const inner = Math.max(20, w - 4);
-      rows = [{ segs: [{ t: `╭${"─".repeat(inner)}╮`, fg: C.info, bg: C.barBg }] }];
+      // SOLID box: every row sets row.bg so the transcript region fillRows the
+      // full width BEFORE stamping (segs-level bg only covers the glyph cells;
+      // the margins around the box stayed default)
+      const boxFill = (segs: Seg[]): { segs: Seg[]; bg: number } => ({ segs, bg: S.barBgRow });
+      rows = [boxFill([{ t: `╭${"─".repeat(inner)}╮`, fg: C.info, bg: C.barBg }])];
       const lines = it.text.split("\n");
       for (const l of lines) {
         const clipped = clipW(l, inner);
         const pad = " ".repeat(Math.max(0, inner - Bun.stringWidth(clipped)));
-        rows.push({ segs: [{ t: `│ ${clipped}${pad} │`, fg: C.info, bg: C.barBg }] });
+        rows.push(boxFill([{ t: `│ ${clipped}${pad} │`, fg: C.info, bg: C.barBg }]));
       }
-      rows.push({ segs: [{ t: `╰${"─".repeat(inner)}╯`, fg: C.info, bg: C.barBg }] });
+      rows.push(boxFill([{ t: `╰${"─".repeat(inner)}╯`, fg: C.info, bg: C.barBg }]));
     } else if (it.kind === "think") {
       const words = it.text.trim().split(/\s+/).length;
       rows = it.expanded
