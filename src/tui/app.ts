@@ -2997,7 +2997,13 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     // ---- floats region (wizard / queue / cmdOut / hints) ----
     const fsig = floatsSig();
     if (fsig !== lastFloatsSig || frameChanged) {
+      // floats clear the rows they painted (hints/wizard are opaque full-width
+      // bars OVER the transcript) — after wiping, the transcript content that
+      // was under them must re-derive, or closing the hints leaves blank rows
+      // where the popup used to be
+      const hadFloats = floatPainted.length > 0;
       lastFloatsSig = fsig;
+      if (hadFloats) lastFrameSig = ""; // transcript re-derives this frame
       paintFloats();
     }
 
