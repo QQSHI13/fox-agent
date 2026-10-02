@@ -104,6 +104,21 @@ export class Screen {
     this.sty.fill(this.defaultStyle());
   }
 
+  /** Clear rows [y0, y1) to the default style — the region-paint primitive:
+   *  a region re-derives into a CLEANED range, or shrunken content leaves
+   *  stale cells that the row-hash diff happily reports as "unchanged". */
+  clearRows(y0: number, y1: number) {
+    const lo = Math.max(0, y0);
+    const hi = Math.min(this.h, y1);
+    for (let y = lo; y < hi; y++) {
+      const base = y * this.w;
+      for (let x = 0; x < this.w; x++) {
+        this.chars[base + x] = undefined;
+        this.sty[base + x] = this.defaultStyle();
+      }
+    }
+  }
+
   private rowHash(y: number): number {
     let h = 2166136261;
     const base = y * this.w;

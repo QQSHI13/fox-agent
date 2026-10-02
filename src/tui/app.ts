@@ -2810,6 +2810,14 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   let lastFloatsSig = "";
   /** Full-invalidate key: dims + theme (screen.resize/initStyles territory). */
   let lastClearKey = "";
+  /** Row ranges each region occupied LAST frame — a region clears its old
+   *  range plus its new one before stamping, or shrunken content leaves
+   *  stale cells the row-hash diff reports as "unchanged" (the ghosting
+   *  bug: every region shrinks constantly while scrolling). */
+  let prevTranscriptRows: { y0: number; y1: number } = { y0: 0, y1: 0 };
+  let prevDockRows: { y0: number; y1: number } = { y0: 0, y1: 0 };
+  let prevFloatsRows: { y0: number; y1: number } = { y0: 0, y1: 0 };
+  let prevOverlayRows: { y0: number; y1: number } = { y0: 0, y1: 0 };
 
   /** Does the transcript need re-derivation? Cheap incremental check. */
   function transcriptSig(): string {
@@ -2817,7 +2825,10 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     // selection via anchors; scroll offsets are the frame's own inputs.
     let revSum = 0;
     for (const it of items) revSum += revs.get(it.k) ?? 0;
-    return `${W}x${H}|${revSum}|${items.length}|${scrollTop}|${stick}|${streamText?.length ?? -1}|${streamText?.slice(-24) ?? ""}|${SCROLLBAR}|${hasSel() ? "sel" : "-"}|${themeName()}|${RICH}|${state.readOnly}`;
+    // pendingCount drives viewportHeight (queue rows reserve transcript rows),
+    // so it belongs in the frame signature — a queue change shifts every
+    // transcript row and must re-derive the region
+    return `${W}x${H}|${revSum}|${items.length}|${scrollTop}|${stick}|${streamText?.length ?? -1}|${streamText?.slice(-24) ?? ""}|${SCROLLBAR}|${hasSel() ? "sel" : "-"}|${themeName()}|${RICH}|${state.readOnly}|${pendingLines().length}`;
   }
 
   function statusSig(): string {
@@ -2863,6 +2874,10 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       lastFloatsSig = "";
       lastStatusSig = "";
       lastOverlaySig = "";
+      prevTranscriptRows = { y0: 0, y1: 0 };
+      prevDockRows = { y0: 0, y1: 0 };
+      floatPainted = [];
+      prevOverlayRows = { y0: 0, y1: 0 };
     }
 
     // ---- frame + transcript region ----
@@ -2875,7 +2890,10 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       painted = fr; // THE geometry of record until the next frame
       lastFrameSig = fs;
 
-      // transcript
+      // transcript — clear LAST frame's range first: scrolled content
+      // shrinks/moves, and uncleared old cells are the ghosting bug
+      screen.clearRows(prevTranscriptRows.y0, Math.max(prevTranscriptRows.y1, fr.vh));
+      prevTranscriptRows = { y0: 0, y1: fr.vh };
       let y = 0;
       for (let i = fr.scrollTop; i < fr.rowCount && y < fr.vh; i++, y++) {
         const row = fr.rows[i];
@@ -2924,9 +2942,15 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       lastOverlaySig = os;
       paintOverlay(painted?.inputTop ?? H - 2);
     } else if (!overlay && lastOverlaySig !== "-") {
-      // modal closed: its cells are stale — the next full invalidate cleans
-      // up; until then re-derive the transcript region over it
+      // modal closed: wipe the band it occupied and re-derive every other
+      // region over it (the overlay covered transcript AND possibly floats)
+      screen.clearRows(prevOverlayRows.y0, prevOverlayRows.y1);
+      prevOverlayRows = { y0: 0, y1: 0 };
       lastOverlaySig = "-";
+      lastFrameSig = ""; // transcript re-derives over the wiped band
+      lastFloatsSig = "";
+      lastDockSig = "";
+      floatPainted = [];
       repaintTranscriptNow();
     }
 
@@ -2969,6 +2993,11 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     const { layout, caret } = dockGeom();
     const { shownCount, firstShown, inputTop } = fr;
     let pendingCaret: { x: number; y: number } | null = null;
+
+    // clear this region's previous extent (the dock flexes: fewer wrapped
+    // rows than last frame must not leave old text behind)
+    screen.clearRows(prevDockRows.y0, Math.max(prevDockRows.y1, inputTop + shownCount));
+    prevDockRows = { y0: inputTop, y1: inputTop + shownCount };
 
     // input box background
     for (let i = 0; i < shownCount; i++) screen.fillRow(inputTop + i, 0, W, S.inputBgRow);
@@ -3026,11 +3055,21 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     nextCaret = pendingCaret;
   }
 
+  /** Row ranges floats actually painted last frame — ONLY these may be
+   *  cleaned on re-derive (queue rows are transparent over the transcript;
+   *  clearing the whole band would wipe transcript content under it). */
+  let floatPainted: { y0: number; y1: number }[] = [];
+
+  function clearOldFloats() {
+    for (const r of floatPainted) screen.clearRows(r.y0, r.y1);
+    floatPainted = [];
+  }
+
   function paintFloats() {
     const fr = painted;
     if (!fr) return;
-    const { shownCount, inputTop } = fr;
-    void shownCount;
+    const { inputTop } = fr;
+    clearOldFloats();
 
     // the question wizard floats where the command hints would (it supersedes
     // them — the dock is an answer field while a prompt is open)
@@ -3058,6 +3097,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         }
       }
       const hTop = menuTop - rows.length;
+      floatPainted.push({ y0: hTop, y1: hTop + rows.length });
       for (let i = 0; i < rows.length; i++) {
         screen.fillRow(hTop + i, 0, W, S.barBgRow);
         screen.text(1, hTop + i, clipW(rows[i].text, W - 2), rows[i].sel ? S.hintSel : S.hintDim);
@@ -3071,10 +3111,12 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       queueRowsH = fr.queueH;
       const shown = pend.slice(0, queueRowsH);
       const qTop = inputTop - queueRowsH;
+      const extra = pend.length > shown.length ? 1 : 0;
+      floatPainted.push({ y0: qTop, y1: qTop + shown.length + extra });
       for (let i = 0; i < shown.length; i++) {
         screen.text(1, qTop + i, clipW(shown[i], W - 2), S.hintOnBase);
       }
-      if (pend.length > shown.length) {
+      if (extra) {
         screen.text(1, qTop + shown.length, clipW(`… ${pend.length - shown.length} more — ctrl+up withdraws last`, W - 2), S.hintOnBase);
       }
     }
@@ -3086,6 +3128,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       const shown = cmdOut.slice(0, avail);
       cmdRowsH = shown.length + (cmdOut.length > avail ? 1 : 0);
       const cTop = inputTop - queueRowsH - cmdRowsH;
+      floatPainted.push({ y0: cTop, y1: cTop + cmdRowsH });
       for (let i = 0; i < shown.length; i++) {
         screen.text(1, cTop + i, clipW(shown[i], W - 2), S.hintOnBase);
       }
@@ -3098,6 +3141,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     const hints = hintText(Math.min(5, Math.max(1, inputTop - queueRowsH - cmdRowsH - 1)));
     if (hints.active && hints.rows.length) {
       const hTop = inputTop - queueRowsH - cmdRowsH - hints.rows.length;
+      floatPainted.push({ y0: hTop, y1: hTop + hints.rows.length });
       for (let i = 0; i < hints.rows.length; i++) {
         screen.fillRow(hTop + i, 0, W, S.barBgRow);
         screen.text(1, hTop + i, hints.rows[i].text, hints.rows[i].sel ? S.hintSel : S.hintDim);
@@ -3141,6 +3185,8 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     const top = Math.max(0, inputTop - bodyH - 2);
     const win = p.window(bodyH);
     const q = p.filter();
+    prevOverlayRows = { y0: top, y1: top + bodyH + 2 }; // close-time wipe range
+
 
     screen.fillRow(top, 0, W, S.barBgRow);
     screen.text(1, top, clipW(`sessions ${q ? `· filter: ${q}` : "· type to filter"}`, W - 2), S.accent);
