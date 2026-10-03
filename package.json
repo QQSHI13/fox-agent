@@ -27,7 +27,7 @@
     "@ai-sdk/anthropic": "^4.0.46",
     "@ai-sdk/google": "^4.0.58",
     "@ai-sdk/openai": "^4.0.52",
-    "@ai-sdk/openai-compatible": "^3.0.41",
+    "@ai-sdk/openai-compatible": "^3.0.60",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "ai": "^7.0.85",
     "smol-toml": "^1.8.0"
