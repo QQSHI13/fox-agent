@@ -13,7 +13,7 @@ import { defaultConfig } from "../core/config.ts";
 import type { FoxPlugin } from "../plugins/types.ts";
 import { loadPlugins } from "../plugins/load.ts";
 import type { UiBridge } from "../core/ui.ts";
-import { buildSystemPrompt } from "./prompt.ts";
+import { buildSystemPrompt, buildRuntimeHeader } from "./prompt.ts";
 import { renderContext, stripEchoedMarkers } from "../context/render.ts";
 import { compactIfNeeded } from "../context/compact.ts";
 import { checkBudget } from "../context/budget.ts";
@@ -431,17 +431,27 @@ export async function* runTurnCore(
     // model to prune again. Suppress it for exactly that step; the next step
     // reads this step's fresh report.
     const budget = checkBudget(sessionId, cfg.model, 0, compactAt, compactAtTokens);
+    // Step-stable by construction: identity, project instructions, tool roster
+    // and doctrine. Nothing in here moves between steps, which is what lets the
+    // provider cache it (loop/prompt.ts buildSystemPrompt).
     const sysPrompt = buildSystemPrompt({
-      sessionId,
-      cwd: session.cwd,
-      model: cfg.model,
       tools: toolDefs,
       projectInstructions: opts.projectInstructions ?? "",
-      // the agent manages its own window, so it gets the same number the status
-      // bar shows: the provider's own report, never an estimate
-      budget: cEv?.type === "compacted" ? { ...budget, over: false } : budget,
     });
-    const messages = renderContext(sessionId, sysPrompt, { markers: effCfg.contextMarkers !== false });
+    const messages = renderContext(sessionId, sysPrompt, {
+      markers: effCfg.contextMarkers !== false,
+      // everything that moves — cwd, date, model, version, todos, and the
+      // budget figure, which moves EVERY step — rides in the tail
+      trailing: buildRuntimeHeader({
+        sessionId,
+        cwd: session.cwd,
+        model: cfg.model,
+        tools: toolDefs,
+        // the agent manages its own window, so it gets the same number the status
+        // bar shows: the provider's own report, never an estimate
+        budget: cEv?.type === "compacted" ? { ...budget, over: false } : budget,
+      }),
+    });
 
     // `beforeLLMCall`: additive only. The patch appends to the system message
     // rather than replacing the array, so `renderContext`'s invariant — every

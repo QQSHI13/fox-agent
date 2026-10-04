@@ -36,8 +36,10 @@ export async function* streamChat(
     const rest = toModelMessages(messages.filter((m) => m.role !== "system"));
     if (!rest.length) rest.push({ role: "user", content: "(begin)" });
 
-    // cache breakpoints: system + last two messages (conversation tail moves
-    // each turn; everything before it stays a cached prefix)
+    // cache breakpoints: system + the last two messages. The final one is the
+    // ephemeral runtime tail, rebuilt every step, so the entry that actually
+    // gets reused is the one below it — the last stable history message.
+    // Everything up to there stays a cached prefix.
     if (!CACHE_OFF && sysText) {
       (rest[rest.length - 1] as { providerOptions?: Record<string, unknown> }).providerOptions = {
         anthropic: { cacheControl: { type: "ephemeral" } },

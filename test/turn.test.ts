@@ -391,3 +391,47 @@ describe("request identity", () => {
     expect(seen.headers["x-opencode-session"]).toBe(s.id);
   });
 });
+
+describe("prompt cache prefix", () => {
+  test("the system message does not move and the runtime tail rides last", async () => {
+    const t = await setup();
+    const s = t.createSession("/w", "m1");
+    const registry = new Map([echoTool()]);
+    const mock = mockChat([
+      [{ type: "tool_call", call: { id: "t1", name: "echo", arguments: '{"say":"yo"}' } }, { type: "done", reason: "tool_calls" }],
+      textDone("done"),
+    ]);
+    await collect(
+      t.runTurnCore(s.id, cfg(), "use the tool", undefined, { chat: mock.fn as any, registryOverride: registry, quiet: true }),
+    );
+    expect(mock.count()).toBe(2);
+    const first = mock.calls[0].messages as any[];
+    const second = mock.calls[1].messages as any[];
+
+    // position 0, byte-identical between steps
+    expect(first[0].role).toBe("system");
+    expect(second[0]).toEqual(first[0]);
+    expect(first[0].content).not.toContain("<runtime>");
+    expect(first[0].content).not.toContain("Context used at your last step");
+
+    // everything step 1 sent ahead of its tail is still at the head of step 2,
+    // unchanged — that shared run is what a provider prefix cache hits on, and
+    // a volatile byte anywhere inside it would have missed the whole thing
+    expect(second.slice(0, first.length - 1)).toEqual(first.slice(0, -1));
+
+    // the tail is last, and it is the runtime header
+    expect(first.at(-1)).toEqual({
+      role: "user",
+      content: expect.stringContaining("<runtime>"),
+    });
+    expect(second.at(-1)).toEqual({
+      role: "user",
+      content: expect.stringContaining("<runtime>"),
+    });
+
+    // ephemeral: it is rebuilt per request and never written to storage, so it
+    // cannot become a stale middle-of-history message later
+    const stored = t.allMessages(s.id);
+    expect(stored.some((m: any) => typeof m.content === "string" && m.content.includes("<runtime>"))).toBe(false);
+  });
+});

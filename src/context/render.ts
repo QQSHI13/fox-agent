@@ -85,7 +85,23 @@ function renderNode(n: ViewNode, callsKey: string, visibleToolIds: Set<string>, 
   return base; // think + system: storage-only
 }
 
-export function renderContext(sessionId: string, systemPrompt: string, opts: { markers?: boolean } = {}): ChatMessage[] {
+/**
+ * Build the request messages: system prompt, then history, then optionally an
+ * ephemeral tail.
+ *
+ * `trailing` is the per-step slot (see loop/prompt.ts buildRuntimeHeader). It
+ * is appended AFTER `flush()` and is never persisted, so the prefix
+ * [system … history] stays byte-identical from step to step and only the tail
+ * pays for changing bytes. It must therefore always be the LAST message — a
+ * volatile block sitting anywhere earlier changes the sequence from that point
+ * on and re-bills every message behind it, which is exactly what the live
+ * figure inside the system prompt did to every step.
+ */
+export function renderContext(
+  sessionId: string,
+  systemPrompt: string,
+  opts: { markers?: boolean; trailing?: string } = {},
+): ChatMessage[] {
   const markers = opts.markers ?? true;
   const out: ChatMessage[] = [{ role: "system", content: systemPrompt }];
   const view = projectView(sessionId);
@@ -148,6 +164,10 @@ export function renderContext(sessionId: string, systemPrompt: string, opts: { m
     out.push(r.msg);
   }
   flush();
+  // Ephemeral and last: rebuilt every step, never written to storage. Only the
+  // bytes after this point may vary, and there are none — so the whole prefix
+  // [system … history] above keeps its provider cache breakpoint intact.
+  if (opts.trailing) out.push({ role: "user", content: opts.trailing });
   return out;
 }
 

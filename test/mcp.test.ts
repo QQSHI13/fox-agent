@@ -168,16 +168,9 @@ describe.skipIf(!CAN_RUN)("mcp bridge against a live server", () => {
     expect(tools.has("read")).toBe(true); // built-ins still there
     expect(tools.has("mcp__fix__echo")).toBe(true);
     // and the prompt roster is derived from this map, so an MCP tool is described
-    // to the model with no prompt-side work (src/loop/prompt.ts:45)
+    // to the model with no prompt-side work
     const { buildSystemPrompt } = await import("../src/loop/prompt.ts");
-    const { createSession } = await import("../src/store/db.ts");
-    const s = createSession(home, "test-model");
-    const prompt = buildSystemPrompt({
-      sessionId: s.id,
-      cwd: home,
-      model: "test-model",
-      tools: [...tools.values()].map((t) => t.def),
-    });
+    const prompt = buildSystemPrompt({ tools: [...tools.values()].map((t) => t.def) });
     expect(prompt).toContain("mcp__fix__echo");
   }, 30_000);
 });

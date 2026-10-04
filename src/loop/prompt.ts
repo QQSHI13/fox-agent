@@ -18,22 +18,34 @@ function toolNames(tools: ToolDef[]): Set<string> {
   return new Set(tools.map((t) => t.name));
 }
 
+/** Provider-reported context size, see checkBudget. */
+export interface RuntimeBudget {
+  reported: number;
+  limit: number;
+  ratio: number;
+  over: boolean;
+}
+
+/**
+ * The cache prefix: identity, project instructions, tool roster, doctrine,
+ * style — and nothing else.
+ *
+ * A provider's automatic prefix cache (and our Anthropic cache_control
+ * breakpoints) match from byte 0 forward, so a single changed byte in this
+ * string re-bills the system block AND every message behind it. That makes
+ * step-stability a correctness requirement, not an optimization: the only
+ * things allowed in here are those that change when the toolset or the project
+ * instructions change. The clock, the todo list, cwd, the model name and the
+ * live budget figure used to live here — the last one moves on *every* step —
+ * which is why a 1.6k system prompt cost a fresh 1.6k re-read 5,157 times in a
+ * row. Those all travel in buildRuntimeHeader() at the message tail instead.
+ */
 export function buildSystemPrompt(
   opts: {
-    sessionId: string;
-    cwd: string;
-    model: string;
     tools: ToolDef[];
     projectInstructions?: string;
-    /**
-     * Provider-reported context size (see checkBudget). When present and the
-     * agent has ctx_edit, the context section reports the live figure and, past
-     * the compactAt threshold, tells the agent to prune before its next step.
-     */
-    budget?: { reported: number; limit: number; ratio: number; over: boolean };
   },
 ): string {
-  const info = lookupModel(opts.model);
   const have = toolNames(opts.tools);
   const sections: string[] = [];
 
@@ -55,26 +67,16 @@ export function buildSystemPrompt(
   sections.push(roster.join("\n"));
 
   if (have.has("ctx")) {
-    const lines = [
-      `## Context window management (your core ability)\n` +
-        `Every message in your view carries a stable marker [N]. Large old tool outputs are dead weight — query, don't re-read:\n` +
-        `- find nodes first: {"op":"search","pattern":"error"} shows snippets, never bodies\n` +
-        `- after using a big result, hide it: {"op":"delete","ids":[3,5],"summary":"ran build; fixed 2 errors"}\n` +
-        `- rewrite stale/wrong nodes: {"op":"replace","id":7,"content":"…"}\n` +
-        `Batch multiple ops in one ctx call. Any node is editable, including ones from the current turn. Edits apply from your NEXT step; storage is permanent — nothing is ever lost, ops are revertible (/undo).`,
-    ];
-    if (opts.budget && opts.budget.reported > 0) {
-      const pct = Math.round(opts.budget.ratio * 100);
-      lines.push(
-        `Context used at your last step: ${opts.budget.reported}/${opts.budget.limit} tokens (${pct}%), provider-reported. This figure updates every step — check it before starting another large read.`,
-      );
-      if (opts.budget.over) {
-        lines.push(
-          `You are over the compaction threshold. Before doing anything else, use ctx to hide or rewrite the stale nodes you no longer need — that is cheaper and lossless compared to the automatic compaction that otherwise fires.`,
-        );
-      }
-    }
-    sections.push(lines.join("\n"));
+    sections.push(
+      [
+        `## Context window management (your core ability)\n` +
+          `Every message in your view carries a stable marker [N]. Large old tool outputs are dead weight — query, don't re-read:\n` +
+          `- find nodes first: {"op":"search","pattern":"error"} shows snippets, never bodies\n` +
+          `- after using a big result, hide it: {"op":"delete","ids":[3,5],"summary":"ran build; fixed 2 errors"}\n` +
+          `- rewrite stale/wrong nodes: {"op":"replace","id":7,"content":"…"}\n` +
+          `Batch multiple ops in one ctx call. Any node is editable, including ones from the current turn. Edits apply from your NEXT step; storage is permanent — nothing is ever lost, ops are revertible (/undo).`,
+      ].join("\n"),
+    );
   }
 
   const style = [
@@ -85,20 +87,61 @@ export function buildSystemPrompt(
   ];
   sections.push(style.join(" "));
 
-  // runtime header stays at the BOTTOM of the system prompt (locked decision)
-  const todos = renderTodos(getTodos(opts.sessionId));
-  sections.push(
-    [
-      "<runtime>",
-      `cwd: ${opts.cwd}`,
-      `os: ${process.platform} shell=/bin/bash`,
-      `date: ${new Date().toISOString().slice(0, 10)}`,
-      `model: ${opts.model} ctx=${info.contextWindow} out=${info.maxOutput}`,
-      `fox-agent: v${VERSION}`,
-      ...(todos ? [`todos:\n${todos}`] : []),
-      "</runtime>",
-    ].join("\n"),
-  );
-
   return sections.join("\n\n");
+}
+
+/**
+ * The step-varying facts, sent as the LAST message of every request.
+ *
+ * Position is the whole point. Prefix caches match from the start forward, so
+ * volatile content may only live where nothing follows it: the system prompt is
+ * followed by the entire conversation (one changed byte there invalidates all
+ * of it), while the tail is followed by nothing at all. This block is rebuilt
+ * each step and re-appended after the history — it is deliberately NOT
+ * persisted, so each request keeps [system … history] byte-identical and only
+ * pays for the handful of tokens that actually changed.
+ *
+ * It rides as a `user` message rather than a second `system` one because the
+ * Anthropic adapter hoists every system message into the leading `system`
+ * parameter — a trailing system block would land back at position 0 and break
+ * exactly the prefix it exists to protect.
+ */
+export function buildRuntimeHeader(opts: {
+  sessionId: string;
+  cwd: string;
+  model: string;
+  tools: ToolDef[];
+  budget?: RuntimeBudget;
+}): string {
+  const info = lookupModel(opts.model);
+  const have = toolNames(opts.tools);
+  const todos = renderTodos(getTodos(opts.sessionId));
+
+  const lines = [
+    `[harness metadata — refreshed every step, not something the person typed]`,
+    `<runtime>`,
+    `cwd: ${opts.cwd}`,
+    `os: ${process.platform} shell=/bin/bash`,
+    `date: ${new Date().toISOString().slice(0, 10)}`,
+    `model: ${opts.model} ctx=${info.contextWindow} out=${info.maxOutput}`,
+    `fox-agent: v${VERSION}`,
+    ...(todos ? [`todos:\n${todos}`] : []),
+    `</runtime>`,
+  ];
+
+  // gated on ctx exactly like the doctrine above: a figure the agent has no
+  // tool to act on is noise, and this one costs real tokens every step
+  if (have.has("ctx") && opts.budget && opts.budget.reported > 0) {
+    const pct = Math.round(opts.budget.ratio * 100);
+    lines.push(
+      `Context used at your last step: ${opts.budget.reported}/${opts.budget.limit} tokens (${pct}%), provider-reported. This figure updates every step — check it before starting another large read.`,
+    );
+    if (opts.budget.over) {
+      lines.push(
+        `You are over the compaction threshold. Before doing anything else, use ctx to hide or rewrite the stale nodes you no longer need — that is cheaper and lossless compared to the automatic compaction that otherwise fires.`,
+      );
+    }
+  }
+
+  return lines.join("\n");
 }
