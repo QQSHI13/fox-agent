@@ -15,7 +15,7 @@ import {
 import { projectView } from "./context/view.ts";
 import { formatPruneReport, pruneSession } from "./store/prune.ts";
 import { viewTokenEstimate } from "./context/render.ts";
-import { checkBudget } from "./context/budget.ts";
+import { checkBudget, triggerTokens } from "./context/budget.ts";
 import type { ProviderConfig } from "./providers/types.ts";
 import { renderTodos, getTodos } from "./tools/todo.ts";
 import { resolveProfile, resolveValue, saveGlobalConfig, saveProviderProfile, type Config } from "./core/config.ts";
@@ -1593,13 +1593,17 @@ export function runSlashCommand(input: string, state: HarnessState): CommandResu
           : row
             ? backfillUsage(state.sessionId) // pre-index-totals session: fill once
             : { prompt: 0, completion: 0 };
-      const b = checkBudget(state.sessionId, state.provider.model, 0, state.config?.compactAt);
+      const b = checkBudget(state.sessionId, state.provider.model, 0, state.config?.compactAt, state.config?.compactAtTokens);
       const pct = Math.round(b.ratio * 100);
+      // the percentage is of the window, which the registry may overstate — so
+      // the number it is racing toward is shown too, not just the fraction
+      const trig = triggerTokens(state.provider.model, state.config?.compactAt, state.config?.compactAtTokens);
       return {
         handled: true,
         output:
           `billed: ↑${t.prompt} ↓${t.completion} = ${t.prompt + t.completion} tok (provider-reported)\n` +
-          `context: ${b.reported ? `${b.reported}/${b.limit} tok (${pct}%)` : "no provider report yet"}${b.over ? " — over compaction threshold" : ""}`,
+          `context: ${b.reported ? `${b.reported}/${b.limit} tok (${pct}%)` : "no provider report yet"}${b.over ? " — over compaction threshold" : ""}\n` +
+          `compaction triggers at ${trig} tok`,
       };
     }
 

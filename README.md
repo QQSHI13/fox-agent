@@ -254,7 +254,7 @@ Cascade (later wins): defaults <- `~/.config/fox-agent/config.toml` <- project `
 
 TOML is the only config format -- a malformed file fails loudly, naming the file and the parser error, rather than being silently ignored. (Pre-1.0 `.fox.json` is rejected with a message telling you what to rename.)
 
-Don't want to edit TOML? `/settings` lists the scalar knobs with current values, `/settings key=value` changes one (validated, saved to the global config, applied live), `/settings key=` resets to the default. Covers `maxSteps`, `retryLimit`, `compactAt`, `requestTimeoutMs`, `toolOutputCap`, `sessionListLimit`, `tuiCollapsedChars`, `tuiKeptChars`, `tuiRich`, `diagnostics`, `contextMarkers` and `acpHistory`.
+Don't want to edit TOML? `/settings` lists the scalar knobs with current values, `/settings key=value` changes one (validated, saved to the global config, applied live), `/settings key=` resets to the default. Covers `maxSteps`, `retryLimit`, `compactAt`, `compactAtTokens`, `requestTimeoutMs`, `toolOutputCap`, `sessionListLimit`, `tuiCollapsedChars`, `tuiKeptChars`, `tuiRich`, `diagnostics`, `contextMarkers` and `acpHistory`.
 
 Project instructions are loaded from every `AGENTS.md` / `CLAUDE.md` on the path from the filesystem root down to cwd, each labeled with its own path so relative paths in it resolve against the right directory.
 
@@ -267,7 +267,8 @@ Project instructions are loaded from every `AGENTS.md` / `CLAUDE.md` on the path
 | `FOX_AGENT_API_KEY` | API key |
 | `FOX_AGENT_PROVIDER` | `openai-compatible` / `openai-responses` / `anthropic` / `google` / plugin name |
 | `FOX_AGENT_MAX_STEPS` | Turn step cap (0 = unlimited) |
-| `FOX_AGENT_COMPACT_AT` | Context compaction threshold |
+| `FOX_AGENT_COMPACT_AT` | Context compaction threshold (fraction of the window) |
+| `FOX_AGENT_COMPACT_AT_TOKENS` | Absolute prompt-token compaction ceiling (0 = window fraction only) |
 | `FOX_AGENT_RETRY_LIMIT` | Retry count on 429/5xx |
 | `FOX_AGENT_REQUEST_TIMEOUT_MS` | Timeout without progress (default 120000, 0 disables) |
 | `FOX_AGENT_DIAGNOSTICS` | `0`/`false`/`no` turns off post-edit diagnostics |
@@ -316,6 +317,7 @@ model = "kimi-k2"
 provider = "openrouter"   # a [providers.*] profile name, or a bare API format
 maxSteps = 0              # turn step cap; 0 (the default) = unlimited
 compactAt = 0.85
+compactAtTokens = 131072  # absolute token ceiling on top of compactAt (0 = window fraction only)
 retryLimit = 3
 requestTimeoutMs = 120000
 diagnostics = true          # report type errors after each edit (default true)

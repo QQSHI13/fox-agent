@@ -22,6 +22,8 @@ export interface TurnOptions {
   maxSteps?: number;
   retryLimit?: number;
   compactAt?: number;
+  /** absolute prompt-token compaction ceiling; absent = the config's value (0 = window fraction only) */
+  compactAtTokens?: number;
   /** suppress step/retry/compaction chatter (subagents) */
   quiet?: boolean;
   /** dependency injection — tests mock the provider here */
@@ -331,6 +333,11 @@ export async function* runTurnCore(
   // a counter runs out. The guard below only fires for a positive limit.
   const maxSteps = opts.maxSteps ?? 0;
   const quiet = opts.quiet ?? false;
+  // Compaction policy resolves config-first, option-second, so a host that
+  // passes `config` (every host does) cannot silently lose the ceiling by
+  // forgetting to forward one field alongside `compactAt`.
+  const compactAt = opts.compactAt ?? effCfg.compactAt;
+  const compactAtTokens = opts.compactAtTokens ?? effCfg.compactAtTokens;
 
   // Every provider request identifies itself and its conversation: gateways
   // (opencode's among them) route and cache on these. The user's own
@@ -413,12 +420,17 @@ export async function* runTurnCore(
 
     // compaction is not chatter — subagents need it too or they hard-fail on
     // a full window. Only the *event* is suppressed when quiet.
-    const cEv = await compactIfNeeded(sessionId, reqCfg, chat, { compactAt: opts.compactAt, signal }).catch(() => null);
+    const cEv = await compactIfNeeded(sessionId, reqCfg, chat, { compactAt, compactAtTokens, signal }).catch(() => null);
     if (!quiet) {
       if (cEv && cEv.type === "compacted" && cEv.removed.length) yield cEv;
       yield { type: "step", n: step };
     }
 
+    // The budget reads last step's provider report, which a compaction does not
+    // update — so the step that just pruned would still read `over` and nag the
+    // model to prune again. Suppress it for exactly that step; the next step
+    // reads this step's fresh report.
+    const budget = checkBudget(sessionId, cfg.model, 0, compactAt, compactAtTokens);
     const sysPrompt = buildSystemPrompt({
       sessionId,
       cwd: session.cwd,
@@ -427,7 +439,7 @@ export async function* runTurnCore(
       projectInstructions: opts.projectInstructions ?? "",
       // the agent manages its own window, so it gets the same number the status
       // bar shows: the provider's own report, never an estimate
-      budget: checkBudget(sessionId, cfg.model, 0, opts.compactAt ?? 0.85),
+      budget: cEv?.type === "compacted" ? { ...budget, over: false } : budget,
     });
     const messages = renderContext(sessionId, sysPrompt, { markers: effCfg.contextMarkers !== false });
 

@@ -1,17 +1,27 @@
-// Host-driven auto-compaction. When the projected view approaches the
-// model's context window, the oldest span (up to a protected tail) is
-// summarized by the model itself and hidden with a single delete+summary op
-// — the same machinery ctx_edit uses, so /undo reverts it too.
+// Host-driven auto-compaction. When the last provider-reported prompt size
+// reaches the compaction trigger (see budget.ts), the oldest span — everything
+// above a protected tail of the newest KEEP_TOKENS — is summarized by the model
+// itself and hidden with a single delete+summary op — the same machinery
+// ctx_edit uses, so /undo reverts it too.
 import { appendOps, lastPromptTokens } from "../store/db.ts";
 import type { ChatMessage, ChatFn } from "../providers/types.ts";
 import { estimateTokens } from "../providers/models.ts";
 import { projectView, visibleNodes } from "./view.ts";
 import { viewTokenEstimate } from "./render.ts";
-import { modelBudget } from "./budget.ts";
+import { DEFAULT_COMPACT_AT_TOKENS, triggerTokens } from "./budget.ts";
 import type { AgentEvent } from "../core/events.ts";
 
-const PROTECTED_TAIL_FRACTION = 0.35; // never compact the newest ~35% of the window
-const TARGET_AFTER_FRACTION = 0.55;
+/**
+ * Newest history a compaction leaves visible, in tokens.
+ *
+ * This used to be a fraction of the window (55% of it, plus a 35% tail that was
+ * never compactable at all), which on a window the registry overstates means
+ * "keep half a million tokens". A keep-size is the only form that is correct
+ * no matter what the window turns out to be — and it is what every other harness
+ * does (opencode keeps 15_000). Bounded by half the trigger below, so a
+ * compaction always frees something.
+ */
+const KEEP_TOKENS = 32_000;
 
 function summarizePrompt(): ChatMessage[] {
   return [
@@ -43,38 +53,44 @@ export async function compactIfNeeded(
   sessionId: string,
   cfg: Parameters<ChatFn>[0],
   chat: ChatFn,
-  opts: { compactAt?: number; signal?: AbortSignal } = {},
+  opts: { compactAt?: number; compactAtTokens?: number; signal?: AbortSignal } = {},
 ): Promise<AgentEvent | null> {
-  const info = modelBudget(cfg.model);
-  const at = opts.compactAt ?? 0.85;
   /**
    * The trigger is the provider's own last-reported prompt size — the one
    * number that is definitionally the truth about how full the window is. A
    * chars/4 estimate used to drive this, which both over-fired on dense
    * Unicode and under-fired on chatty English. No report yet means no
    * completed call yet, which means the window cannot be full.
+   *
+   * `triggerTokens` additionally caps the report against an absolute number,
+   * because the window it would be measured against is a best-effort guess
+   * (see DEFAULT_COMPACT_AT_TOKENS): a report *below* `0.85 * window` is not
+   * evidence that the window is really that large.
    */
+  const trigger = triggerTokens(cfg.model, opts.compactAt ?? 0.85, opts.compactAtTokens ?? DEFAULT_COMPACT_AT_TOKENS);
   const reported = lastPromptTokens(sessionId);
-  if (!reported || reported < info.contextWindow * at) return null;
+  if (!reported || reported < trigger) return null;
   const before = reported;
+  // half the trigger at most: a compaction that frees nothing is a billable
+  // summarization call that leaves the next step just as expensive
+  const keep = Math.min(KEEP_TOKENS, Math.floor(trigger / 2));
 
   const nodes = projectView(sessionId);
 
   // pick oldest-span candidates up to the protected tail boundary
   const vis = visibleNodes(nodes);
-  // the newest PROTECTED_TAIL_FRACTION of the window is never compacted; the
-  // 6-node floor keeps very short sessions coherent
+  // the newest `keep` tokens are never compacted; the 6-node floor keeps very
+  // short sessions coherent
   let tail = Math.min(vis.length, 6);
   let tailTok = 0;
-  const tailBudget = info.contextWindow * PROTECTED_TAIL_FRACTION;
-  for (let i = vis.length - 1; i >= 0 && tailTok < tailBudget; i--) {
+  for (let i = vis.length - 1; i >= 0 && tailTok < keep; i--) {
     tailTok += estimateTokens(vis[i].content) + 8;
     tail = Math.max(tail, vis.length - i);
   }
   const maxBoundary = vis.length - tail;
   if (maxBoundary <= 1) return null;
 
-  const protectFrom = before - Math.floor(info.contextWindow * TARGET_AFTER_FRACTION);
+  const protectFrom = before - keep;
   // Per-node numbers below ARE chars/4 estimates — but they only decide *where*
   // to cut, never *whether* to cut, so an inaccurate node size costs a
   // slightly different boundary, not a wrong compaction.

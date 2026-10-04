@@ -42,6 +42,7 @@ const cfg = (): Config => ({
   maxSteps: 10,
   retryLimit: 0,
   compactAt: 0.85,
+  compactAtTokens: 131_072,
   requestTimeoutMs: 0,
   mcpServers: {},
   agents: {},
