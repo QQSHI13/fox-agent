@@ -44,6 +44,7 @@ import {
 } from "../commands.ts";
 import { resolveField, type UiBridge, type UiStep } from "../core/ui.ts";
 import { childEnv } from "../core/childenv.ts";
+import { shellPath } from "../core/shell.ts";
 import { killTree } from "../tools/exec.ts";
 import { debugLog, debugLogPath } from "../core/debuglog.ts";
 import { droppedPath, expandMentions } from "../core/mentions.ts";
@@ -543,20 +544,19 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     setBusy(true);
     push("toolhead", `$ ${cmd}`);
     try {
-      // setsid + group kill, same as the exec tool: proc.kill(9) leaves
+      // detached + group kill, same as the exec tool: proc.kill(9) leaves
       // grandchildren (pipelines, background jobs) running
-      const useSetsid = !!Bun.which("setsid");
-      const proc = Bun.spawn([...(useSetsid ? ["setsid"] : []), "/bin/bash", "-c", cmd], {
+      const proc = Bun.spawn([shellPath(), "-c", cmd], {
         cwd: state.cwd,
         stdout: "pipe",
         stderr: "pipe",
         stdin: "ignore",
+        detached: true,
         env: childEnv(),
       });
       const kill: { cancel: (() => void) | null } = { cancel: null };
       const timer = setTimeout(() => {
-        if (useSetsid) kill.cancel = killTree(proc.pid);
-        else proc.kill(9);
+        kill.cancel = killTree(proc.pid);
       }, 120_000);
       const [out, err] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
       clearTimeout(timer);

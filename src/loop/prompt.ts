@@ -2,6 +2,7 @@ import { lookupModel } from "../providers/models.ts";
 import type { ToolDef } from "../providers/types.ts";
 import { renderTodos, getTodos } from "../tools/todo.ts";
 import { VERSION } from "../core/version.ts";
+import { shellPath } from "../core/shell.ts";
 import os from "node:os";
 
 export { VERSION };
@@ -103,9 +104,9 @@ function machineFacts(): { host: string; os: string; runtime: string } {
   machine = {
     host: os.hostname(),
     // one line rather than four keys: platform/kernel/arch, parallelism (so
-    // the agent can decide how much to fan out) and the shell the box names —
-    // all of "what box am I on" in a dozen tokens
-    os: `${process.platform} ${os.release()} ${os.arch()} · ${os.cpus().length} cpu · shell=${process.env.SHELL || "/bin/bash"}`,
+    // the agent can decide how much to fan out) and the shell that exec and
+    // pty actually run in — all of "what box am I on" in a dozen tokens
+    os: `${process.platform} ${os.release()} ${os.arch()} · ${os.cpus().length} cpu · shell=${shellPath()}`,
     runtime: versions.bun ? `bun ${versions.bun}` : `node ${process.version}`,
   };
   return machine;

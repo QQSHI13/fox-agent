@@ -112,8 +112,8 @@ export function buildClient(cwd: string): acp.ClientApp {
  * Environment for a child agent.
  *
  * Note what this does NOT use: `childEnv()`, which is now a plain passthrough
- * (no credential stripping — secrets live in bashrc/exported env and the agent
- * can read those files directly). An ACP agent is a peer harness whose entire
+ * (no credential stripping — secrets live in shell rc files / exported env and
+ * the agent can read those files directly). An ACP agent is a peer harness whose entire
  * job is to call a model, so it needs the full env by design, and today's
  * in-process subagent already runs with the key by virtue of sharing the process.
  *
