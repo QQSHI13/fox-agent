@@ -1631,19 +1631,26 @@ export function runSlashCommand(input: string, state: HarnessState): CommandResu
       const row = getSession(state.sessionId);
       const t =
         row && row.prompt_tokens !== null && row.completion_tokens !== null
-          ? { prompt: row.prompt_tokens, completion: row.completion_tokens }
+          ? { prompt: row.prompt_tokens, completion: row.completion_tokens, cached: row.cached_tokens ?? 0 }
           : row
             ? backfillUsage(state.sessionId) // pre-index-totals session: fill once
-            : { prompt: 0, completion: 0 };
+            : { prompt: 0, completion: 0, cached: 0 };
       const b = checkBudget(state.sessionId, state.provider.model, 0, state.config?.compactAt, state.config?.compactAtTokens);
       const pct = Math.round(b.ratio * 100);
       // the percentage is of the window, which the registry may overstate — so
       // the number it is racing toward is shown too, not just the fraction
       const trig = triggerTokens(state.provider.model, state.config?.compactAt, state.config?.compactAtTokens);
+      // hit rate over everything billed as input, cumulative for this session:
+      // prompt_tokens already contains the cached part, so this is a share and
+      // not a ratio of two disjoint buckets
+      const hit = t.prompt
+        ? `${Math.round((t.cached / t.prompt) * 100)}% of input read from the prefix cache (${t.cached}/${t.prompt})`
+        : "— (no input billed yet)";
       return {
         handled: true,
         output:
           `billed: ↑${t.prompt} ↓${t.completion} = ${t.prompt + t.completion} tok (provider-reported)\n` +
+          `cache: ${hit}\n` +
           `context: ${b.reported ? `${b.reported}/${b.limit} tok (${pct}%)` : "no provider report yet"}${b.over ? " — over compaction threshold" : ""}\n` +
           `compaction triggers at ${trig} tok`,
       };

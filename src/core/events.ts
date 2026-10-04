@@ -10,7 +10,12 @@ export type AgentEvent =
    *  message seq doesn't exist yet, so calls are identified by `id` */
   | { type: "tool_start"; id: string; name: string; args: string }
   | { type: "tool_end"; id: string; seq: number; name: string; args: string; output: string; ok: boolean }
-  | { type: "usage"; prompt_tokens: number; completion_tokens: number }
+  /** `prompt_tokens` is the billed total input (cached part included);
+   *  `cached_tokens` is how much of it was read from the provider's prefix
+   *  cache rather than re-sent — the hit-rate numerator. Optional so a plugin
+   *  or mock `ChatFn` that reports no cache detail still emits a valid event;
+   *  every consumer reads `?? 0`. */
+  | { type: "usage"; prompt_tokens: number; completion_tokens: number; cached_tokens?: number }
   | { type: "step"; n: number }
   | { type: "retry"; attempt: number; delay_ms: number; error: string }
   | { type: "compacted"; removed: number[]; tokens_before: number; tokens_after: number }

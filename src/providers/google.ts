@@ -76,6 +76,9 @@ export async function* streamChat(
               type: "usage",
               prompt_tokens: part.totalUsage.inputTokens ?? 0,
               completion_tokens: part.totalUsage.outputTokens ?? 0,
+              // input re-sent from the prefix cache: the part of the bill that
+              // stops getting charged once a prompt has been seen before
+              cached_tokens: part.totalUsage.inputTokenDetails?.cacheReadTokens ?? 0,
             };
           break;
       }

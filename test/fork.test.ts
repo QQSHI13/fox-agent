@@ -60,7 +60,7 @@ describe("fork isolation", () => {
   test("ops, kv and the model carry over; usage does not", async () => {
     const { forkSession, allOps, kvGet, recordUsage, sessionUsage, getSession } = await import("../src/store/db.ts");
     const { s } = await seeded();
-    recordUsage(s.id, null, 500, 50);
+    recordUsage(s.id, null, 500, 50, 300); // 300 of the 500 came from cache
 
     const fork = forkSession(s.id)!;
     expect(allOps(fork.id)).toHaveLength(1);
@@ -68,8 +68,9 @@ describe("fork isolation", () => {
     expect(getSession(fork.id)!.model).toBe("m1");
     expect(getSession(fork.id)!.cwd).toBe("/work");
     // billing belongs to the calls that were actually made, i.e. the source's
-    expect(sessionUsage(fork.id)).toEqual({ prompt: 0, completion: 0 });
+    expect(sessionUsage(fork.id)).toEqual({ prompt: 0, completion: 0, cached: 0 });
     expect(sessionUsage(s.id).prompt).toBe(500);
+    expect(sessionUsage(s.id).cached).toBe(300); // the cache reads are billing too
   });
 
   test("a view op still applies to the fork's copy of the message", async () => {

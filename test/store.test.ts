@@ -320,26 +320,50 @@ describe("index usage totals", () => {
     const { createSession, recordUsage, getSession } = await import("../src/store/db.ts");
     const s = createSession("/w", "m1");
     expect(getSession(s.id)!.prompt_tokens).toBe(0);
+    expect(getSession(s.id)!.cached_tokens).toBe(0);
     recordUsage(s.id, null, 100, 10);
-    recordUsage(s.id, null, 50, 5);
+    recordUsage(s.id, null, 50, 5, 40); // 40 of the 50 re-read from cache
     const row = getSession(s.id)!;
     expect(row.prompt_tokens).toBe(150);
     expect(row.completion_tokens).toBe(15);
+    expect(row.cached_tokens).toBe(40);
   });
 
-  test("sessionList reads totals from the index; a legacy NULL row backfills once", async () => {
+  test("the cache total is a subset of the billed input, summed both ways", async () => {
+    const t = await import("../src/store/db.ts");
+    const s = t.createSession("/w", "m1");
+    t.recordUsage(s.id, null, 100, 10, 60);
+    t.recordUsage(s.id, null, 100, 10, 80);
+    // session file and index row must agree — the status bar reads one, /usage
+    // the other, and a hit rate computed from two different sums is a bug
+    expect(t.sessionUsage(s.id)).toEqual({ prompt: 200, completion: 20, cached: 140 });
+    expect(t.getSession(s.id)!.cached_tokens).toBe(140);
+    expect(t.lastPromptTokens(s.id)).toBe(100); // untouched by the cache column
+    // cached never exceeds what was billed as input
+    expect(t.sessionUsage(s.id).cached).toBeLessThanOrEqual(t.sessionUsage(s.id).prompt);
+  });
+
+  test("recordUsage with no cache detail counts zero, not a hole", async () => {
+    const t = await import("../src/store/db.ts");
+    const s = t.createSession("/w", "m1");
+    t.recordUsage(s.id, null, 100, 10); // 4-arg callers are legitimate: no cache info
+    expect(t.sessionUsage(s.id)).toEqual({ prompt: 100, completion: 10, cached: 0 });
+    expect(t.getSession(s.id)!.cached_tokens).toBe(0);
+  });
+
+  test("a legacy index row backfills the cache total from the session file", async () => {
     const t = await import("../src/store/db.ts");
     const { sessionList } = await import("../src/commands.ts");
     const s = t.createSession("/w", "m1");
-    t.recordUsage(s.id, null, 42, 7);
-    expect(sessionList().find((it) => it.id === s.id)!.tokens).toBe(49);
+    t.recordUsage(s.id, null, 42, 7, 30);
 
     // simulate a row written before the index carried totals
-    t.indexDb().prepare("UPDATE sessions SET prompt_tokens = NULL, completion_tokens = NULL WHERE id = ?").run(s.id);
+    t.indexDb().prepare("UPDATE sessions SET prompt_tokens = NULL, completion_tokens = NULL, cached_tokens = NULL WHERE id = ?").run(s.id);
     expect(sessionList().find((it) => it.id === s.id)!.tokens).toBe(49); // backfilled from the session file
     const row = t.getSession(s.id)!; // and written back: the next listing does no reopen
     expect(row.prompt_tokens).toBe(42);
     expect(row.completion_tokens).toBe(7);
+    expect(row.cached_tokens).toBe(30);
   });
 
   test("a fork starts with zeroed totals even when the source has history", async () => {

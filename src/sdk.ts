@@ -33,7 +33,7 @@ export type { ChatFn, ChatMessage, ProviderConfig, StreamEvent, ToolDef } from "
 export interface AgentRunResult {
   text: string;
   reason: string;
-  usage: { prompt_tokens: number; completion_tokens: number } | null;
+  usage: { prompt_tokens: number; completion_tokens: number; cached_tokens?: number } | null;
 }
 
 export interface FoxAgent {
@@ -92,7 +92,8 @@ export async function createAgent(opts: {
       })) {
         runOpts.onEvent?.(ev);
         if (ev.type === "text") text += ev.delta;
-        else if (ev.type === "usage") usage = { prompt_tokens: ev.prompt_tokens, completion_tokens: ev.completion_tokens };
+        else if (ev.type === "usage")
+          usage = { prompt_tokens: ev.prompt_tokens, completion_tokens: ev.completion_tokens, cached_tokens: ev.cached_tokens ?? 0 };
         else if (ev.type === "done") reason = ev.reason;
       }
       return { text: text.trim(), reason, usage };

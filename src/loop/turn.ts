@@ -48,7 +48,10 @@ export interface TurnOptions {
 interface StepOutcome {
   text: string;
   calls: ToolCall[];
-  usage: { prompt_tokens: number; completion_tokens: number } | null;
+  /** `cached_tokens` is not optional here: the wire event may omit it (a
+   *  plugin's `ChatFn` never heard of caches), so the step folds `?? 0` once
+   *  and everything downstream — storage, the status bar — gets a number. */
+  usage: { prompt_tokens: number; completion_tokens: number; cached_tokens: number } | null;
   finish: string;
   reasoning: string;
 }
@@ -127,7 +130,12 @@ async function* drainStep(
         acc.text += ev.delta;
         yield { type: "text", delta: ev.delta };
       } else if (ev.type === "tool_call") acc.calls.push(ev.call);
-      else if (ev.type === "usage") acc.usage = { prompt_tokens: ev.prompt_tokens, completion_tokens: ev.completion_tokens };
+      else if (ev.type === "usage")
+        acc.usage = {
+          prompt_tokens: ev.prompt_tokens,
+          completion_tokens: ev.completion_tokens,
+          cached_tokens: ev.cached_tokens ?? 0,
+        };
       else if (ev.type === "done") acc.finish = ev.reason;
     }
   };
@@ -543,7 +551,7 @@ export async function* runTurnCore(
       tool_calls: prepared.length ? JSON.stringify(prepared.map((p) => p.call)) : null,
       tokens: estTok(outcome.text) + prepared.reduce((a, p) => a + estTok(p.call.arguments), 0),
     });
-    if (outcome.usage) recordUsage(sessionId, asstNode.id, outcome.usage.prompt_tokens, outcome.usage.completion_tokens);
+    if (outcome.usage) recordUsage(sessionId, asstNode.id, outcome.usage.prompt_tokens, outcome.usage.completion_tokens, outcome.usage.cached_tokens);
     if (outcome.usage && !quiet) yield { type: "usage", ...outcome.usage };
 
     if (!prepared.length) {

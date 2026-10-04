@@ -391,6 +391,23 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   // provider-reported usage for the CURRENT turn's last step (real numbers,
   // not estimates) — the only token figure the status bar is willing to show
   let lastPromptTokens = 0;
+  /**
+   * Session-cumulative cache hit for the status bar, held in memory so a frame
+   * costs no query. Seeded from the sessions *index* row (a primary-key lookup
+   * — it never opens the session file) the first time a status is stamped for
+   * this session; invalidated rather than incremented when a call lands, so the
+   * next stamp reads the total `recordUsage` has already written instead of
+   * guessing whether it has.
+   */
+  let hitTotals: { id: string; prompt: number; cached: number } | null = null;
+  function cacheHit(): { prompt: number; cached: number } {
+    if (!state.sessionId) return { prompt: 0, cached: 0 };
+    if (!hitTotals || hitTotals.id !== state.sessionId) {
+      const row = getSession(state.sessionId);
+      hitTotals = { id: state.sessionId, prompt: row?.prompt_tokens ?? 0, cached: row?.cached_tokens ?? 0 };
+    }
+    return hitTotals;
+  }
   /** a read-only viewer's mirror of the owner's live status (see the poll in
    *  run()); local `busy` stays false so the viewer can still type/queue */
   let remoteBusy = false;
@@ -1263,6 +1280,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           }
         } else if (ev.type === "usage") {
           lastPromptTokens = ev.prompt_tokens; // provider-reported context size
+          hitTotals = null; // recordUsage already stored this call's totals
           statsRev++;
         } else if (ev.type === "tool_start") {
           callLabels.set(ev.id, `${ev.name}${argsSummary(ev.args)}`);
@@ -2768,7 +2786,14 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         : "ctx —";
       const home = process.env.HOME ?? "";
       const cwdShort = home && state.cwd.startsWith(home) ? "~" + state.cwd.slice(home.length) : state.cwd;
-      return `${cwdShort} · ${providerDisplayName(state)} · ${state.provider.model} · ${ctx}`;
+      // session-cumulative prefix-cache hit rate, not the last call's — one
+      // number answering "is caching actually working on this session". Shown
+      // as soon as anything has been billed, including 0%: "no hits yet" and
+      // "no telemetry" must not look alike, and there is no "no telemetry"
+      // case here — an un-caching provider simply reports zero.
+      const hit = cacheHit();
+      const cache = hit.prompt > 0 ? ` · cache ${Math.round((hit.cached / hit.prompt) * 100)}%` : "";
+      return `${cwdShort} · ${providerDisplayName(state)} · ${state.provider.model} · ${ctx}${cache}`;
     } catch {
       return state.cwd;
     }

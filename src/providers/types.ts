@@ -30,7 +30,19 @@ export type StreamEvent =
   | { type: "reasoning"; delta: string }
   | { type: "text"; delta: string }
   | { type: "tool_call"; call: ToolCall }
-  | { type: "usage"; prompt_tokens: number; completion_tokens: number }
+  /**
+   * `prompt_tokens` is the billed *total* input for the step — on providers
+   * with a prefix cache it already includes the cached part (the AI SDK
+   * normalizes it that way), so `cached_tokens / prompt_tokens` is a hit rate
+   * and not a ratio of two disjoint buckets.
+   *
+   * `cached_tokens` is input *read* from cache, never written to it: it is what
+   * was billed at the cheap rate, which is the number anyone asking "is my
+   * prompt caching working" means. Optional rather than required so a plugin
+   * or a mock `ChatFn` that never heard of it still typechecks — consumers read
+   * `?? 0`.
+   */
+  | { type: "usage"; prompt_tokens: number; completion_tokens: number; cached_tokens?: number }
   | { type: "done"; reason: string };
 
 export interface ProviderConfig {

@@ -257,6 +257,18 @@ describe("turn manager", () => {
     const u = t.sessionUsage(s.id);
     expect(u.prompt).toBe(10);
     expect(u.completion).toBe(5);
+    expect(u.cached).toBe(0); // the event said nothing about caches — not a hole
+  });
+
+  test("cached input rides the usage event through to storage", async () => {
+    const t = await setup();
+    const s = t.createSession("/w", "m1");
+    const mock = mockChat([[...textDone("x"), { type: "usage", prompt_tokens: 100, completion_tokens: 5, cached_tokens: 70 }] as Script]);
+    const events = await collect(t.runTurnCore(s.id, cfg(), "q", undefined, { chat: mock.fn as any }));
+    expect(events.find((e) => e.type === "usage")).toMatchObject({ prompt_tokens: 100, cached_tokens: 70 });
+    expect(t.sessionUsage(s.id)).toEqual({ prompt: 100, completion: 5, cached: 70 });
+    // both stores must carry it: /usage reads the index row, the status bar too
+    expect(t.getSession(s.id)!.cached_tokens).toBe(70);
   });
 });
 

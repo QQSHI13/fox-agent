@@ -29,6 +29,14 @@ export interface SessionRow {
   prompt_tokens: number | null;
   completion_tokens: number | null;
   /**
+   * Running total of input *read* from the provider's prefix cache, same
+   * lifecycle as the two above and therefore the same NULL-means-unbackfilled
+   * rule. `cached_tokens / prompt_tokens` on this row is the session's hit rate
+   * — kept here so `/usage` and the status bar can answer it without opening
+   * the session file.
+   */
+  cached_tokens: number | null;
+  /**
    * Snippet of the last user/assistant text message, maintained by
    * `appendMessage` so pickers can show a preview without opening session
    * files. NULL means "written before this column existed — not yet
@@ -95,13 +103,14 @@ const INDEX_SCHEMA = `
     updated_at INTEGER NOT NULL,
     prompt_tokens INTEGER,
     completion_tokens INTEGER,
+    cached_tokens INTEGER,
     preview TEXT
   );
   CREATE INDEX IF NOT EXISTS idx_sessions_cwd_recent ON sessions(cwd, updated_at DESC);
 `;
 
 /** Every listing/lookup projects the same columns, in SessionRow order. */
-const SESSION_COLS = "id, cwd, model, title, created_at, updated_at, prompt_tokens, completion_tokens, preview";
+const SESSION_COLS = "id, cwd, model, title, created_at, updated_at, prompt_tokens, completion_tokens, cached_tokens, preview";
 
 /**
  * One database per session. `session_id` columns are kept even though the file
@@ -146,6 +155,7 @@ const SESSION_SCHEMA = `
     message_id TEXT,
     prompt_tokens INTEGER NOT NULL,
     completion_tokens INTEGER NOT NULL,
+    cached_tokens INTEGER NOT NULL DEFAULT 0,
     created_at INTEGER NOT NULL
   );
   CREATE INDEX IF NOT EXISTS idx_usage_session ON usage(session_id);
@@ -238,6 +248,7 @@ export function indexDb(): Database {
   // token totals were added after the first index databases existed
   ensureColumn(_index, "sessions", "prompt_tokens", "prompt_tokens INTEGER");
   ensureColumn(_index, "sessions", "completion_tokens", "completion_tokens INTEGER");
+  ensureColumn(_index, "sessions", "cached_tokens", "cached_tokens INTEGER");
   ensureColumn(_index, "sessions", "preview", "preview TEXT");
   return _index;
 }
@@ -254,6 +265,8 @@ export function sessionDb(sessionId: string): Database {
   }
   const d = open(sessionDbPath(sessionId), SESSION_SCHEMA);
   ensureColumn(d, "messages", "media", "media TEXT");
+  // the cache-read total postdates the sessions that only ever stored prompts
+  ensureColumn(d, "usage", "cached_tokens", "cached_tokens INTEGER");
   _sessions.set(sessionId, d);
   evict(sessionId);
   return d;
@@ -359,13 +372,14 @@ export function createSession(cwd: string, model: string): SessionRow {
     updated_at: now,
     prompt_tokens: 0,
     completion_tokens: 0,
+    cached_tokens: 0,
     preview: null,
   };
   indexDb()
     // explicit columns: a migrated index has `preview` as its LAST column, so a
     // positional VALUES would write completion_tokens into it
-    .prepare("INSERT INTO sessions (id, cwd, model, title, created_at, updated_at, prompt_tokens, completion_tokens) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
-    .run(s.id, s.cwd, s.model, s.title, s.created_at, s.updated_at, 0, 0);
+    .prepare("INSERT INTO sessions (id, cwd, model, title, created_at, updated_at, prompt_tokens, completion_tokens, cached_tokens) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+    .run(s.id, s.cwd, s.model, s.title, s.created_at, s.updated_at, 0, 0, 0);
   sessionDb(s.id).prepare("INSERT OR IGNORE INTO refs VALUES (?, 'main', NULL, ?)").run(s.id, Date.now());
   return s;
 }
@@ -481,6 +495,7 @@ export function forkSession(sourceId: string, uptoSeq?: number): SessionRow | nu
     updated_at: now,
     prompt_tokens: 0,
     completion_tokens: 0,
+    cached_tokens: 0,
     preview: null,
   };
   const target = sessionDbPath(fork.id);
@@ -511,8 +526,8 @@ export function forkSession(sourceId: string, uptoSeq?: number): SessionRow | nu
   })();
 
   indexDb()
-    .prepare("INSERT INTO sessions (id, cwd, model, title, created_at, updated_at, prompt_tokens, completion_tokens) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
-    .run(fork.id, fork.cwd, fork.model, null, fork.created_at, fork.updated_at, 0, 0);
+    .prepare("INSERT INTO sessions (id, cwd, model, title, created_at, updated_at, prompt_tokens, completion_tokens, cached_tokens) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+    .run(fork.id, fork.cwd, fork.model, null, fork.created_at, fork.updated_at, 0, 0, 0);
   setRefTitle(fork.id, `fork of ${src.title ?? src.id}`);
   return { ...fork, title: `fork of ${src.title ?? src.id}`.slice(0, 80) };
 }
@@ -690,20 +705,43 @@ export function kvGet<T>(sessionId: string, key: string): T | null {
 
 // ---- usage ----
 
-export function recordUsage(sessionId: string, messageId: string | null, promptTokens: number, completionTokens: number) {
-  sessionDb(sessionId).prepare("INSERT INTO usage VALUES (?, ?, ?, ?, ?)").run(sessionId, messageId, promptTokens, completionTokens, Date.now());
+/**
+ * Record one provider call's billing against a session.
+ *
+ * `cachedTokens` is input *read* from the prefix cache — a subset of
+ * `promptTokens`, not a third bucket, so the index row's running totals still
+ * add up to what was billed. Optional because it is genuinely optional
+ * information: a call site (or a test) with nothing to report means "no cache
+ * detail", which is 0.
+ */
+export function recordUsage(
+  sessionId: string,
+  messageId: string | null,
+  promptTokens: number,
+  completionTokens: number,
+  cachedTokens = 0,
+) {
+  // explicit columns: a migrated session has `cached_tokens` appended AFTER
+  // `created_at`, so a positional VALUES would put the timestamp in it
+  sessionDb(sessionId)
+    .prepare("INSERT INTO usage (session_id, message_id, prompt_tokens, completion_tokens, cached_tokens, created_at) VALUES (?, ?, ?, ?, ?, ?)")
+    .run(sessionId, messageId, promptTokens, completionTokens, cachedTokens, Date.now());
   // running totals on the index row too, so a session listing never has to open
   // the file to answer "how much has this session burned" — NULL means a legacy
   // row awaiting backfill, which COALESCE treats as zero going forward
   indexDb()
-    .prepare("UPDATE sessions SET prompt_tokens = COALESCE(prompt_tokens, 0) + ?, completion_tokens = COALESCE(completion_tokens, 0) + ? WHERE id = ?")
-    .run(promptTokens, completionTokens, sessionId);
+    .prepare(
+      "UPDATE sessions SET prompt_tokens = COALESCE(prompt_tokens, 0) + ?, completion_tokens = COALESCE(completion_tokens, 0) + ?, cached_tokens = COALESCE(cached_tokens, 0) + ? WHERE id = ?",
+    )
+    .run(promptTokens, completionTokens, cachedTokens, sessionId);
 }
 
 /** Backfill the index's token totals from the session file (legacy rows). */
-export function backfillUsage(sessionId: string): { prompt: number; completion: number } {
+export function backfillUsage(sessionId: string): { prompt: number; completion: number; cached: number } {
   const u = sessionUsage(sessionId);
-  indexDb().prepare("UPDATE sessions SET prompt_tokens = ?, completion_tokens = ? WHERE id = ?").run(u.prompt, u.completion, sessionId);
+  indexDb()
+    .prepare("UPDATE sessions SET prompt_tokens = ?, completion_tokens = ?, cached_tokens = ? WHERE id = ?")
+    .run(u.prompt, u.completion, u.cached, sessionId);
   return u;
 }
 
@@ -721,11 +759,18 @@ export function backfillPreview(sessionId: string): string {
   return preview;
 }
 
-export function sessionUsage(sessionId: string): { prompt: number; completion: number } {
+/**
+ * A session's billing from its own file: the input that was re-sent from the
+ * prefix cache is summed alongside what was billed, so a hit rate is
+ * `cached / prompt` without a second query.
+ */
+export function sessionUsage(sessionId: string): { prompt: number; completion: number; cached: number } {
   const r = sessionDb(sessionId)
-    .query("SELECT COALESCE(SUM(prompt_tokens),0) AS p, COALESCE(SUM(completion_tokens),0) AS c FROM usage WHERE session_id = ?")
-    .get(sessionId) as { p: number; c: number };
-  return { prompt: r.p, completion: r.c };
+    .query(
+      "SELECT COALESCE(SUM(prompt_tokens),0) AS p, COALESCE(SUM(completion_tokens),0) AS c, COALESCE(SUM(cached_tokens),0) AS k FROM usage WHERE session_id = ?",
+    )
+    .get(sessionId) as { p: number; c: number; k: number };
+  return { prompt: r.p, completion: r.c, cached: r.k };
 }
 
 /**

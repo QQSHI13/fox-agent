@@ -781,3 +781,36 @@ describe("/settings", () => {
     expect(res.output).toContain("abort a provider request");
   });
 });
+
+describe("/usage", () => {
+  function stateFor(sessionId: string) {
+    return {
+      sessionId,
+      cwd: "/w",
+      provider: { baseUrl: "http://x", apiKey: "k", model: "m" } as any,
+      config: {} as any,
+      configPath: join(dir, "config.toml"),
+      interactive: true,
+    } as any;
+  }
+
+  test("reports the session's prefix-cache hit rate, not just the bill", async () => {
+    const tt = await setup();
+    const s = tt.createSession("/w", "m1");
+    tt.recordUsage(s.id, null, 100, 10, 60);
+    tt.recordUsage(s.id, null, 100, 10, 80);
+    const out = tt.runSlashCommand("/usage", stateFor(s.id))!.output!;
+    expect(out).toContain("billed: ↑200 ↓20 = 220 tok");
+    // cached is a subset of prompt, so the hit rate is a share of the bill
+    expect(out).toContain("cache: 70% of input read from the prefix cache (140/200)");
+    expect(out).toContain("compaction triggers at");
+  });
+
+  test("with nothing billed the cache line says so rather than dividing by zero", async () => {
+    const tt = await setup();
+    const s = tt.createSession("/w", "m1");
+    const out = tt.runSlashCommand("/usage", stateFor(s.id))!.output!;
+    expect(out).toContain("cache: — (no input billed yet)");
+    expect(out).not.toContain("NaN");
+  });
+});
