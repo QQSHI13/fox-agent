@@ -15,7 +15,7 @@ import {
 import { projectView } from "./context/view.ts";
 import { formatPruneReport, pruneSession } from "./store/prune.ts";
 import { viewTokenEstimate } from "./context/render.ts";
-import { checkBudget } from "./context/budget.ts";
+import { checkBudget, triggerTokens } from "./context/budget.ts";
 import type { ProviderConfig } from "./providers/types.ts";
 import { renderTodos, getTodos } from "./tools/todo.ts";
 import { resolveProfile, resolveValue, saveGlobalConfig, saveProviderProfile, type Config } from "./core/config.ts";
@@ -176,7 +176,7 @@ export const COMMANDS: CommandSpec[] = [
     arg: true,
     help: "interactive session browser (plain list outside the TUI); with an id or list index, switch to it",
   },
-  { name: "/fork", desc: "fork this session at [mN], or another by id", usage: "[mN|id]", arg: true },
+  { name: "/fork", desc: "fork this session at [N], or another by id", usage: "[N|id]", arg: true },
   {
     name: "/delete",
     desc: "delete another session for good (needs 'yes')",
@@ -193,7 +193,7 @@ export const COMMANDS: CommandSpec[] = [
     help: 'report reclaimable disk; "/prune yes" deletes hidden context + VACUUM',
   },
   { name: "/ops", desc: "show context surgery ops" },
-  { name: "/view", desc: "preview visible nodes ([mN] role preview)" },
+  { name: "/view", desc: "preview visible nodes ([N] role preview)" },
   { name: "/todo", aliases: ["/todos"], desc: "show agent todo list" },
   { name: "/usage", desc: "token totals + budget" },
   { name: "/model", desc: "show or switch model — picker lists every configured profile and catalog model", usage: "[profile/][name]", arg: true },
@@ -1568,7 +1568,7 @@ export function runSlashCommand(input: string, state: HarnessState): CommandResu
       const lines = nodes
         .filter((n) => !n.deleted)
         .slice(-30)
-        .map((n) => `[m${n.msg.seq}] ${n.msg.role.padEnd(9)} ${n.content.replace(/\n/g, " ").slice(0, 70)}`);
+        .map((n) => `[${n.msg.seq}] ${n.msg.role.padEnd(9)} ${n.content.replace(/\n/g, " ").slice(0, 70)}`);
       const est = viewTokenEstimate(nodes);
       return {
         handled: true,
@@ -1593,13 +1593,17 @@ export function runSlashCommand(input: string, state: HarnessState): CommandResu
           : row
             ? backfillUsage(state.sessionId) // pre-index-totals session: fill once
             : { prompt: 0, completion: 0 };
-      const b = checkBudget(state.sessionId, state.provider.model, 0, state.config?.compactAt);
+      const b = checkBudget(state.sessionId, state.provider.model, 0, state.config?.compactAt, state.config?.compactAtTokens);
       const pct = Math.round(b.ratio * 100);
+      // the percentage is of the window, which the registry may overstate — so
+      // the number it is racing toward is shown too, not just the fraction
+      const trig = triggerTokens(state.provider.model, state.config?.compactAt, state.config?.compactAtTokens);
       return {
         handled: true,
         output:
           `billed: ↑${t.prompt} ↓${t.completion} = ${t.prompt + t.completion} tok (provider-reported)\n` +
-          `context: ${b.reported ? `${b.reported}/${b.limit} tok (${pct}%)` : "no provider report yet"}${b.over ? " — over compaction threshold" : ""}`,
+          `context: ${b.reported ? `${b.reported}/${b.limit} tok (${pct}%)` : "no provider report yet"}${b.over ? " — over compaction threshold" : ""}\n` +
+          `compaction triggers at ${trig} tok`,
       };
     }
 

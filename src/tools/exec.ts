@@ -4,6 +4,7 @@ import type { ToolDef } from "../providers/types.ts";
 import type { ToolContext, ToolResult } from "./types.ts";
 import { fail, ok } from "./types.ts";
 import { childEnv } from "../core/childenv.ts";
+import { shellName, shellPath } from "../core/shell.ts";
 import { outCap } from "./files.ts";
 import { partialTailBytes } from "./pty.ts";
 import { agentHome } from "../core/paths.ts";
@@ -11,7 +12,7 @@ import { agentHome } from "../core/paths.ts";
 export const execDef: ToolDef = {
   name: "exec",
   description:
-    "Run a shell command (bash) starting from the session's directory. Each call is independent: the working directory NEVER carries over from a previous exec, so a `cd` has no effect on the next call — use the workdir argument (or `cd x && cmd` within one call) instead. `background: true` starts the command detached and returns a job id immediately — poll new output with exec({job}) and stop it with exec({job, signal:\"kill\"}); output is NOT pushed to you, you only see what you poll. For an interactive shell that keeps its directory, use pty. Foreground runs return exit code + merged output (tail-capped, unless full:true). `full: true` lifts the per-result output cap for this call (foreground or poll) so you receive the whole output — use it when the capped tail is not enough; the hard memory guards still apply. Runs with full machine access.",
+    "Run a shell command (" + shellName() + ") starting from the session's directory. Each call is independent: the working directory NEVER carries over from a previous exec, so a `cd` has no effect on the next call — use the workdir argument (or `cd x && cmd` within one call) instead. `background: true` starts the command detached and returns a job id immediately — poll new output with exec({job}) and stop it with exec({job, signal:\"kill\"}); output is NOT pushed to you, you only see what you poll. For an interactive shell that keeps its directory, use pty. Foreground runs return exit code + merged output (tail-capped, unless full:true). `full: true` lifts the per-result output cap for this call (foreground or poll) so you receive the whole output — use it when the capped tail is not enough; the hard memory guards still apply. Runs with full machine access.",
   parameters: {
     type: "object",
     properties: {
@@ -28,19 +29,30 @@ export const execDef: ToolDef = {
 };
 
 /**
- * TERM then KILL the whole process group (child is spawned as setsid leader).
+ * TERM then KILL the whole process group (the child is spawned `detached`, so
+ * it leads its own session and `-pid` reaches grandchildren too).
+ *
+ * `kill(1)` is deliberately not used: BSD's kill on macOS does not accept `--`
+ * as an end-of-options marker, so `kill -TERM -- -123` was a no-op there, and
+ * forking a binary per timeout buys nothing. A group that is not there — the
+ * child never became a leader, or it already exited — falls back to the single
+ * pid rather than doing nothing.
+ *
  * Returns a canceller so the caller can drop the pending SIGKILL once the
  * child has actually exited — otherwise the timer keeps the loop alive.
  */
 export function killTree(pid: number): () => void {
-  try {
-    Bun.spawnSync(["kill", "-TERM", "--", `-${pid}`], { stdout: "ignore", stderr: "ignore" });
-  } catch {}
-  const t = setTimeout(() => {
+  const signal = (sig: "SIGTERM" | "SIGKILL") => {
     try {
-      Bun.spawnSync(["kill", "-KILL", "--", `-${pid}`], { stdout: "ignore", stderr: "ignore" });
-    } catch {}
-  }, 1_500);
+      process.kill(-pid, sig);
+    } catch {
+      try {
+        process.kill(pid, sig);
+      } catch {} // already gone
+    }
+  };
+  signal("SIGTERM");
+  const t = setTimeout(() => signal("SIGKILL"), 1_500);
   return () => clearTimeout(t);
 }
 
@@ -76,12 +88,16 @@ function sessionJobs(sessionId: string): Map<string, ExecJob> {
 }
 
 function spawnShell(cmd: string, cwd: string) {
-  const useSetsid = !!Bun.which("setsid");
-  return Bun.spawn([...(useSetsid ? ["setsid"] : []), "/bin/bash", "-c", cmd], {
+  // `detached` makes the child lead its own session and process group, which
+  // is what killTree targets. It replaces the `setsid` binary, which macOS
+  // does not ship — without it the tree kill silently did nothing there, and
+  // a timed-out command kept running.
+  return Bun.spawn([shellPath(), "-c", cmd], {
     cwd,
     stdout: "pipe",
     stderr: "pipe",
     stdin: "ignore",
+    detached: true,
     env: childEnv(undefined, cwd),
   });
 }

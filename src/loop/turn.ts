@@ -13,7 +13,7 @@ import { defaultConfig } from "../core/config.ts";
 import type { FoxPlugin } from "../plugins/types.ts";
 import { loadPlugins } from "../plugins/load.ts";
 import type { UiBridge } from "../core/ui.ts";
-import { buildSystemPrompt } from "./prompt.ts";
+import { buildSystemPrompt, buildRuntimeHeader } from "./prompt.ts";
 import { renderContext, stripEchoedMarkers } from "../context/render.ts";
 import { compactIfNeeded } from "../context/compact.ts";
 import { checkBudget } from "../context/budget.ts";
@@ -22,6 +22,8 @@ export interface TurnOptions {
   maxSteps?: number;
   retryLimit?: number;
   compactAt?: number;
+  /** absolute prompt-token compaction ceiling; absent = the config's value (0 = window fraction only) */
+  compactAtTokens?: number;
   /** suppress step/retry/compaction chatter (subagents) */
   quiet?: boolean;
   /** dependency injection — tests mock the provider here */
@@ -315,7 +317,6 @@ export async function* runTurnCore(
   // the live registry, so removing the tool here removes the doctrine too
   if (effCfg.contextMarkers === false) {
     tools.delete("ctx");
-    tools.delete("ctx_edit");
   }
   const toolDefs = [...tools.values()].map((t) => t.def);
   const hooked = plugins.filter((p) => p.hooks);
@@ -332,6 +333,11 @@ export async function* runTurnCore(
   // a counter runs out. The guard below only fires for a positive limit.
   const maxSteps = opts.maxSteps ?? 0;
   const quiet = opts.quiet ?? false;
+  // Compaction policy resolves config-first, option-second, so a host that
+  // passes `config` (every host does) cannot silently lose the ceiling by
+  // forgetting to forward one field alongside `compactAt`.
+  const compactAt = opts.compactAt ?? effCfg.compactAt;
+  const compactAtTokens = opts.compactAtTokens ?? effCfg.compactAtTokens;
 
   // Every provider request identifies itself and its conversation: gateways
   // (opencode's among them) route and cache on these. The user's own
@@ -414,23 +420,39 @@ export async function* runTurnCore(
 
     // compaction is not chatter — subagents need it too or they hard-fail on
     // a full window. Only the *event* is suppressed when quiet.
-    const cEv = await compactIfNeeded(sessionId, reqCfg, chat, { compactAt: opts.compactAt, signal }).catch(() => null);
+    const cEv = await compactIfNeeded(sessionId, reqCfg, chat, { compactAt, compactAtTokens, signal }).catch(() => null);
     if (!quiet) {
       if (cEv && cEv.type === "compacted" && cEv.removed.length) yield cEv;
       yield { type: "step", n: step };
     }
 
+    // The budget reads last step's provider report, which a compaction does not
+    // update — so the step that just pruned would still read `over` and nag the
+    // model to prune again. Suppress it for exactly that step; the next step
+    // reads this step's fresh report.
+    const budget = checkBudget(sessionId, cfg.model, 0, compactAt, compactAtTokens);
+    // Step-stable by construction: identity, project instructions, tool roster
+    // and doctrine. Nothing in here moves between steps, which is what lets the
+    // provider cache it (loop/prompt.ts buildSystemPrompt).
     const sysPrompt = buildSystemPrompt({
-      sessionId,
-      cwd: session.cwd,
-      model: cfg.model,
       tools: toolDefs,
       projectInstructions: opts.projectInstructions ?? "",
-      // the agent manages its own window, so it gets the same number the status
-      // bar shows: the provider's own report, never an estimate
-      budget: checkBudget(sessionId, cfg.model, 0, opts.compactAt ?? 0.85),
     });
-    const messages = renderContext(sessionId, sysPrompt, { markers: effCfg.contextMarkers !== false });
+    const messages = renderContext(sessionId, sysPrompt, {
+      markers: effCfg.contextMarkers !== false,
+      // everything that moves — cwd, date, model, version, todos, and the
+      // budget figure, which moves EVERY step — rides in the tail
+      trailing: buildRuntimeHeader({
+        sessionId,
+        cwd: session.cwd,
+        model: cfg.model,
+        provider: { name: cfg.label, format: cfg.provider },
+        tools: toolDefs,
+        // the agent manages its own window, so it gets the same number the status
+        // bar shows: the provider's own report, never an estimate
+        budget: cEv?.type === "compacted" ? { ...budget, over: false } : budget,
+      }),
+    });
 
     // `beforeLLMCall`: additive only. The patch appends to the system message
     // rather than replacing the array, so `renderContext`'s invariant — every
@@ -471,7 +493,7 @@ export async function* runTurnCore(
       return;
     }
 
-    // weak models open their reply by echoing the [mN] marker they saw on every
+    // weak models open their reply by echoing the [N] marker they saw on every
     // message; storing it would render "[m13] [m12] …" next step and feed the loop
     if (outcome.text) outcome.text = stripEchoedMarkers(outcome.text);
 

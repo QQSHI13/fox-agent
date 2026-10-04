@@ -36,7 +36,7 @@ export const todoDef: ToolDef = {
 // syntax the tool result is rendered with.
 const ICON = { pending: "[ ]", in_progress: "[~]", done: "[x]" };
 
-/** Plain rendering — model-facing (runtime header in the system prompt). */
+/** Plain rendering — model-facing (runtime header, sent at the message tail). */
 export function renderTodos(todos: TodoItem[] | null): string {
   if (!todos?.length) return "";
   return todos.map((t) => `${ICON[t.status] ?? "[ ]"} ${t.content}`).join("\n");

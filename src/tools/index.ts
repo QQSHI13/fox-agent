@@ -7,7 +7,7 @@ import * as F from "./files.ts";
 import { execDef, execRun } from "./exec.ts";
 import { cleanupPty, ptySessionName } from "./pty.ts";
 import { setOutputCap } from "./files.ts";
-import { ctxDef, ctxEditDef, ctxRun } from "./ctxedit.ts";
+import { ctxDef, ctxRun } from "./ctxedit.ts";
 import { taskDef, taskRun } from "./task.ts";
 import { mcpTools, closeMcp } from "./mcp.ts";
 import { loadPlugins, setActivePlugins } from "../plugins/load.ts";
@@ -35,7 +35,9 @@ export function baseRegistry(): Map<string, Tool> {
   add(F.grepDef, F.grepRun);
   add(execDef, execRun);
   add(ctxDef, ctxRun);
-  add(ctxEditDef, ctxRun); // deprecated alias: delete/replace only, same run
+  // ctx_edit is GONE from the registry: two tools editing the same store made
+  // models split their ops between them (and ctx's ops are a superset). The
+  // name now exists only as a documented alias inside ctx's own description.
   add(taskDef, taskRun);
   return map;
 }

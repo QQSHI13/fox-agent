@@ -131,7 +131,7 @@ async function spawnSession(sessionId: string, cwd: string): Promise<PtyState> {
   // back to $HOME — so trusting the requested path would make PtyState.cwd, the
   // lost-session note and the tool description all describe a directory the shell
   // is nowhere near. This has to come after waitForShell: pane_current_path
-  // reports the pane process's cwd, and until bash is up that is still fox-agent's own,
+  // reports the pane process's cwd, and until the pane's shell is up that is still fox-agent's own,
   // which would read as a mismatch on every single spawn.
   const actual = (await panePath(name)) ?? cwd;
   return { session: name, logPath, cursor, cwd: actual, requestedCwd: cwd };
@@ -140,7 +140,7 @@ async function spawnSession(sessionId: string, cwd: string): Promise<PtyState> {
 /**
  * Wait for a freshly spawned shell to be ready for input.
  *
- * `tmux new-session` returns as soon as the pane exists — bash has not yet run
+ * `tmux new-session` returns as soon as the pane exists — the shell has not yet run
  * its rc files or drawn a prompt. Keys sent into that window are buffered by the
  * tty and do eventually run, so nothing is lost, but the *echo* of those
  * keystrokes hits the log immediately while the command's real output only

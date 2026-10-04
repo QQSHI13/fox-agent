@@ -254,7 +254,7 @@ Cascade (later wins): defaults <- `~/.config/fox-agent/config.toml` <- project `
 
 TOML is the only config format -- a malformed file fails loudly, naming the file and the parser error, rather than being silently ignored. (Pre-1.0 `.fox.json` is rejected with a message telling you what to rename.)
 
-Don't want to edit TOML? `/settings` lists the scalar knobs with current values, `/settings key=value` changes one (validated, saved to the global config, applied live), `/settings key=` resets to the default. Covers `maxSteps`, `retryLimit`, `compactAt`, `requestTimeoutMs`, `toolOutputCap`, `sessionListLimit`, `tuiCollapsedChars`, `tuiKeptChars`, `tuiRich`, `diagnostics`, `contextMarkers` and `acpHistory`.
+Don't want to edit TOML? `/settings` lists the scalar knobs with current values, `/settings key=value` changes one (validated, saved to the global config, applied live), `/settings key=` resets to the default. Covers `maxSteps`, `retryLimit`, `compactAt`, `compactAtTokens`, `requestTimeoutMs`, `toolOutputCap`, `sessionListLimit`, `tuiCollapsedChars`, `tuiKeptChars`, `tuiRich`, `diagnostics`, `contextMarkers` and `acpHistory`.
 
 Project instructions are loaded from every `AGENTS.md` / `CLAUDE.md` on the path from the filesystem root down to cwd, each labeled with its own path so relative paths in it resolve against the right directory.
 
@@ -267,7 +267,8 @@ Project instructions are loaded from every `AGENTS.md` / `CLAUDE.md` on the path
 | `FOX_AGENT_API_KEY` | API key |
 | `FOX_AGENT_PROVIDER` | `openai-compatible` / `openai-responses` / `anthropic` / `google` / plugin name |
 | `FOX_AGENT_MAX_STEPS` | Turn step cap (0 = unlimited) |
-| `FOX_AGENT_COMPACT_AT` | Context compaction threshold |
+| `FOX_AGENT_COMPACT_AT` | Context compaction threshold (fraction of the window) |
+| `FOX_AGENT_COMPACT_AT_TOKENS` | Absolute prompt-token compaction ceiling (0 = window fraction only) |
 | `FOX_AGENT_RETRY_LIMIT` | Retry count on 429/5xx |
 | `FOX_AGENT_REQUEST_TIMEOUT_MS` | Timeout without progress (default 120000, 0 disables) |
 | `FOX_AGENT_DIAGNOSTICS` | `0`/`false`/`no` turns off post-edit diagnostics |
@@ -316,6 +317,7 @@ model = "kimi-k2"
 provider = "openrouter"   # a [providers.*] profile name, or a bare API format
 maxSteps = 0              # turn step cap; 0 (the default) = unlimited
 compactAt = 0.85
+compactAtTokens = 131072  # absolute token ceiling on top of compactAt (0 = window fraction only)
 retryLimit = 3
 requestTimeoutMs = 120000
 diagnostics = true          # report type errors after each edit (default true)
@@ -493,6 +495,8 @@ A `plugins` entry in a project `fox-agent.toml` is ignored, with a warning sayin
 
 `beforeLLMCall` can only *append* to the system prompt and `afterTool` can only *replace one tool's output text* -- neither can reorder or drop messages. That is deliberate: `renderContext` guarantees every assistant `tool_call` is followed by its `tool_result`, and a provider hard-400s on an orphan. A hook that returned a message array would put that invariant in every plugin author's hands, with a failure that surfaces as an opaque API error naming nothing. `messages` is still passed in full, to decide *with*.
 
+One rule attaches to that append: keep it byte-stable across steps. The system prompt is the provider's cached prefix, so a hook that injects a clock, a counter or any other live value re-bills the system prompt *and every message behind it* on every step -- which is exactly the defect the live context figure had before it moved out to the message tail.
+
 `afterTool` runs between the tool and the transcript write, so the patched text is the only version in the system -- what gets stored, what the model reads on the next step, and what the `tool_end` event reports are the same string.
 
 A plugin tool needs no prompt work; `buildSystemPrompt` derives its roster from the live registry, so the tool appears automatically. A plugin registering a name that already exists shadows it and the collision is reported as a warning -- allowed, but never silent. Registering a bundled *provider* name (`openai-compatible`, `openai-responses`, `anthropic`, `google` -- the `bundled:providers` plugin) is refused, and a command colliding with a built-in never fires (also warned).
@@ -582,7 +586,7 @@ src/
   core/       config cascade (TOML), on-disk paths, structured errors, event vocabulary
   store/      per-session sqlite (messages/ops/refs/kv), session index, forks, prune
   context/    view projection + pairing repair, rendering, budgets, compaction
-  loop/       turn manager (retries, parallel tools, step caps), system prompt
+  loop/       turn manager (retries, parallel tools, step caps), static system prompt + per-step runtime tail
   providers/  openai-compatible + openai-responses + anthropic (cache_control) + google, models.dev catalog
   acp/        ACP server (fox --acp), ACP client (drives other agents), event mapping
   lsp/        language server pool, frame codec, diagnostic formatting

@@ -248,7 +248,7 @@ describe("plugin tools in the registry", () => {
 
     // no prompt-side work: buildSystemPrompt derives the roster from the registry
     const { buildSystemPrompt } = await import("../src/loop/prompt.ts");
-    const prompt = buildSystemPrompt({ sessionId: "s", cwd: work, model: "test-model", tools: [...tools.values()].map((t) => t.def) });
+    const prompt = buildSystemPrompt({ tools: [...tools.values()].map((t) => t.def) });
     expect(prompt).toContain("ping");
   });
 

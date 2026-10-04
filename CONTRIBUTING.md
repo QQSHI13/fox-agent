@@ -78,7 +78,7 @@ src/
   core/       config cascade (TOML), on-disk paths, structured errors, event vocabulary
   store/      per-session sqlite (messages/ops/refs/kv), session index, forks, prune
   context/    view projection + pairing repair, rendering, budgets, compaction
-  loop/       turn manager (retries, parallel tools, step caps), system prompt
+  loop/       turn manager (retries, parallel tools, step caps), static system prompt + per-step runtime tail
   providers/  openai-compatible + openai-responses + anthropic (cache_control) + google, models.dev catalog
   acp/        ACP server (fox --acp), ACP client (drives other agents), event mapping
   lsp/        language server pool, frame codec, diagnostic formatting

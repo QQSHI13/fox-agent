@@ -41,7 +41,7 @@ export async function* streamChat(
       .filter((m) => m.role === "system")
       .map((m) => m.content)
       .join("\n\n");
-    const rest = toModelMessages(messages.filter((m) => m.role !== "system"));
+    const rest = toModelMessages(messages.filter((m) => m.role !== "system"), "user-fallback");
     if (!rest.length) rest.push({ role: "user", content: "(begin)" });
 
     const result = streamText({

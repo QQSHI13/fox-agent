@@ -112,7 +112,8 @@ export function computeFrame(inp: FrameInput): Frame {
     const shown = Math.min(inp.pendingCount, Math.max(1, inputTop - 1));
     queueH = shown + (inp.pendingCount > shown ? 1 : 0);
   }
-  const vh = Math.max(3, inp.H - shownCount - 2 - queueH);
+  // -1 status bar; NO spacer: content flows straight down to the dock
+  const vh = Math.max(3, inp.H - 1 - shownCount - queueH);
 
   // scroll position: clamp first, then "at the bottom" IS stuck — every scroll
   // path (scrub, wheel, pgdn, drag-past-edge) inherits follow-for-free
@@ -252,5 +253,6 @@ export function viewportHeight(inp: Pick<FrameInput, "H" | "inputRows" | "INPUT_
   const n = Math.max(1, Math.min(inp.INPUT_MAX_ROWS, inp.inputRows));
   const pend = inp.pendingCount;
   const qH = pend ? Math.min(pend, Math.max(1, inp.H - n - 5)) + (pend > Math.max(1, inp.H - n - 5) ? 1 : 0) : 0;
-  return Math.max(3, inp.H - n - 2 - qH);
+  // matches computeFrame: -1 status bar, no spacer row
+  return Math.max(3, inp.H - 1 - n - qH);
 }

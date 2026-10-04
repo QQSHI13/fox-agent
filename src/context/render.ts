@@ -3,18 +3,20 @@ import { estimateTokens } from "../providers/models.ts";
 import { projectView, parseToolCalls, type ViewNode } from "./view.ts";
 
 function marker(seq: number): string {
-  return `[m${seq}]`;
+  return `[${seq}]`;
 }
 
 /**
- * Marker echo stripper. Weak models see `[mN]` on every message and start
+ * Marker echo stripper. Weak models see `[N]` on every message and start
  * "predicting" one at the top of their own reply; stored verbatim, the next
  * render shows `[m13] [m12] …` and the echo compounds. Applied at store time
  * only (turn.ts) — rendering stays verbatim, so the transcript is the truth
  * and a pre-fix poisoned session is the agent's to ctx_edit away.
  */
 export function stripEchoedMarkers(text: string): string {
-  return text.replace(/^\s*(?:\[m\d+\][ \t]*)+/, "");
+  // accepts BOTH dialects: sessions poisoned before the [mN] -> [N] rename
+  // still strip, and new [N] echoes strip identically
+  return text.replace(/^\s*(?:\[m?\d+\][ \t]*)+/, "");
 }
 
 /**
@@ -35,7 +37,7 @@ interface RenderedNode {
   summary?: string;
   /** kept tool_call ids joined — the only part of an assistant entry that depends on other nodes */
   callsKey: string;
-  /** whether [mN] prefixes were rendered — part of the memo key, /reload can flip it */
+  /** whether [N] prefixes were rendered — part of the memo key, /reload can flip it */
   markers: boolean;
   /** the message to emit, or undefined when the node renders to nothing */
   msg?: ChatMessage;
@@ -83,7 +85,23 @@ function renderNode(n: ViewNode, callsKey: string, visibleToolIds: Set<string>, 
   return base; // think + system: storage-only
 }
 
-export function renderContext(sessionId: string, systemPrompt: string, opts: { markers?: boolean } = {}): ChatMessage[] {
+/**
+ * Build the request messages: system prompt, then history, then optionally an
+ * ephemeral tail.
+ *
+ * `trailing` is the per-step slot (see loop/prompt.ts buildRuntimeHeader). It
+ * is appended AFTER `flush()` and is never persisted, so the prefix
+ * [system … history] stays byte-identical from step to step and only the tail
+ * pays for changing bytes. It must therefore always be the LAST message — a
+ * volatile block sitting anywhere earlier changes the sequence from that point
+ * on and re-bills every message behind it, which is exactly what the live
+ * figure inside the system prompt did to every step.
+ */
+export function renderContext(
+  sessionId: string,
+  systemPrompt: string,
+  opts: { markers?: boolean; trailing?: string } = {},
+): ChatMessage[] {
   const markers = opts.markers ?? true;
   const out: ChatMessage[] = [{ role: "system", content: systemPrompt }];
   const view = projectView(sessionId);
@@ -146,6 +164,10 @@ export function renderContext(sessionId: string, systemPrompt: string, opts: { m
     out.push(r.msg);
   }
   flush();
+  // Ephemeral and last: rebuilt every step, never written to storage. Only the
+  // bytes after this point may vary, and there are none — so the whole prefix
+  // [system … history] above keeps its provider cache breakpoint intact.
+  if (opts.trailing) out.push({ role: "user", content: opts.trailing });
   return out;
 }
 

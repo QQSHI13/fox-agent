@@ -113,6 +113,12 @@ export interface Config {
   retryLimit: number;
   /** fraction of the model context window that triggers auto-compaction */
   compactAt: number;
+  /**
+   * absolute prompt-token ceiling for auto-compaction, applied on top of the
+   * window fraction (0 = window fraction only). Guards a window the registry
+   * overstates, where `compactAt * window` is unreachable and never fires.
+   */
+  compactAtTokens: number;
   /** abort a provider request after this long with no streamed progress (0 = never) */
   requestTimeoutMs: number;
   mcpServers: Record<string, McpServerConfig>;
@@ -132,14 +138,25 @@ export interface Config {
   tuiKeptChars: number;
   /** TUI rich mode: syntax-tinted code fences + diff-colored tool output (default off) */
   tuiRich: boolean;
-  /** TUI scrollbar: dedicated track column at the right edge of the transcript (default on) */
+  /**
+   * TUI scrollbar: dedicated track column at the right edge of the transcript
+   * (default on). Set false to hide the scrollbar entirely — text then wraps
+   * at the full width and the column is not reserved.
+   */
   tuiScrollbar: boolean;
+  /**
+   * TUI frame loop interval in ms (default 33). Lower = smoother spinner and
+   * faster stream echo at higher idle CPU; the loop skips work when nothing
+   * is dirty, so the cost of a small value is only the wakeups. Keystrokes
+   * are independent of this — they paint on the next tick regardless.
+   */
+  tuiFrameMs: number;
   /** reasoning effort: "low" | "medium" | "high" — unset lets the provider default rule */
   reasoningEffort?: "low" | "medium" | "high";
   /** TUI color theme: a preset name or a plugin-registered one (default "default") */
   theme: string;
   /**
-   * Render [mN] markers on messages and give the agent ctx_edit (default true).
+   * Render [N] markers on messages and give the agent ctx_edit (default true).
    * Weak models echo the markers instead of acting on them — set false for
    * them; the render and store paths strip echoed markers regardless.
    */
@@ -197,6 +214,7 @@ const DEFAULTS: Omit<Config, "projectInstructions"> = {
   maxSteps: 0, // 0 = no step cap; a turn ends when the model stops calling tools
   retryLimit: 3,
   compactAt: 0.85,
+  compactAtTokens: 131_072,
   requestTimeoutMs: 120_000,
   mcpServers: {},
   agents: {},
@@ -208,6 +226,7 @@ const DEFAULTS: Omit<Config, "projectInstructions"> = {
   tuiKeptChars: 4_000,
   tuiRich: false,
   tuiScrollbar: true,
+  tuiFrameMs: 33,
   theme: "default",
   contextMarkers: true,
   trusted: true,
@@ -344,6 +363,9 @@ function applyEnv(cfg: Config, env: Record<string, string | undefined>) {
   if (Number.isFinite(steps) && steps >= 0) cfg.maxSteps = Math.floor(steps);
   const at = Number(env.FOX_AGENT_COMPACT_AT);
   if (Number.isFinite(at) && at > 0 && at <= 1) cfg.compactAt = at;
+  const atTokens = Number(env.FOX_AGENT_COMPACT_AT_TOKENS);
+  // 0 is meaningful here (window fraction only), so the guard is >= 0
+  if (Number.isFinite(atTokens) && atTokens >= 0) cfg.compactAtTokens = Math.floor(atTokens);
   const retries = Number(env.FOX_AGENT_RETRY_LIMIT);
   if (Number.isFinite(retries) && retries >= 0) cfg.retryLimit = Math.floor(retries);
   // 0 is meaningful here (disable the timeout), so the guard is >= 0
@@ -369,10 +391,10 @@ function applyEnv(cfg: Config, env: Record<string, string | undefined>) {
  * tell a global file from a project one — both are applied through here.
  */
 const KNOWN_KEYS = new Set([
-  "model", "baseUrl", "apiKey", "provider", "maxSteps", "retryLimit", "compactAt",
+  "model", "baseUrl", "apiKey", "provider", "maxSteps", "retryLimit", "compactAt", "compactAtTokens",
   "requestTimeoutMs", "diagnostics", "mcpServers", "agents", "lsp", "plugins",
   "providers", "disabledPlugins", "toolOutputCap", "sessionListLimit",
-  "tuiCollapsedChars", "tuiKeptChars", "tuiRich", "tuiScrollbar", "theme", "contextMarkers", "acpHistory",
+  "tuiCollapsedChars", "tuiKeptChars", "tuiRich", "tuiScrollbar", "tuiFrameMs", "theme", "contextMarkers", "acpHistory",
   "reasoningEffort",
 ]);
 
@@ -446,6 +468,7 @@ function applyTable(cfg: Config, t: Record<string, unknown> | null, scope: "glob
   if (typeof t.maxSteps === "number" && t.maxSteps >= 0) cfg.maxSteps = Math.floor(t.maxSteps);
   if (typeof t.retryLimit === "number" && t.retryLimit >= 0) cfg.retryLimit = Math.floor(t.retryLimit);
   if (typeof t.compactAt === "number" && t.compactAt > 0 && t.compactAt <= 1) cfg.compactAt = t.compactAt;
+  if (typeof t.compactAtTokens === "number" && t.compactAtTokens >= 0) cfg.compactAtTokens = Math.floor(t.compactAtTokens);
   if (typeof t.requestTimeoutMs === "number" && t.requestTimeoutMs >= 0) cfg.requestTimeoutMs = Math.floor(t.requestTimeoutMs);
   if (typeof t.diagnostics === "boolean") cfg.diagnostics = t.diagnostics;
   if (typeof t.toolOutputCap === "number" && t.toolOutputCap >= 1000) cfg.toolOutputCap = Math.floor(t.toolOutputCap);
@@ -454,6 +477,7 @@ function applyTable(cfg: Config, t: Record<string, unknown> | null, scope: "glob
   if (typeof t.tuiKeptChars === "number" && t.tuiKeptChars >= 200) cfg.tuiKeptChars = Math.floor(t.tuiKeptChars);
   if (typeof t.tuiRich === "boolean") cfg.tuiRich = t.tuiRich;
   if (typeof t.tuiScrollbar === "boolean") cfg.tuiScrollbar = t.tuiScrollbar;
+  if (typeof t.tuiFrameMs === "number" && t.tuiFrameMs >= 8 && t.tuiFrameMs <= 250) cfg.tuiFrameMs = Math.floor(t.tuiFrameMs);
   if (t.reasoningEffort === "low" || t.reasoningEffort === "medium" || t.reasoningEffort === "high") cfg.reasoningEffort = t.reasoningEffort;
   if (typeof t.theme === "string" && t.theme.trim()) cfg.theme = t.theme.trim();
   if (typeof t.contextMarkers === "boolean") cfg.contextMarkers = t.contextMarkers;
@@ -778,6 +802,13 @@ export const SETTINGS: SettingSpec[] = [
     fmt: (v) => (v === undefined ? "0.85" : String(v)),
   },
   {
+    key: "compactAtTokens",
+    desc: "absolute prompt-token ceiling for auto-compact (0 = window fraction only)",
+    def: "131072",
+    validate: num(0),
+    fmt: (v) => (v === undefined ? "131072" : v === 0 ? "0 (window fraction only)" : String(v)),
+  },
+  {
     key: "requestTimeoutMs",
     desc: "abort a provider request silent this long (0 = never)",
     def: "120000",
@@ -816,7 +847,7 @@ export const SETTINGS: SettingSpec[] = [
   { key: "diagnostics", desc: "post-edit language-server diagnostics", def: "true", validate: bool, fmt: showBool },
   {
     key: "contextMarkers",
-    desc: "[mN] markers + ctx tool (weak models: set false)",
+    desc: "[N] markers + ctx tool (weak models: set false)",
     def: "true",
     validate: bool,
     fmt: showBool,
@@ -888,6 +919,7 @@ export function loadConfig(
   if (overrides.maxSteps !== undefined) merged.maxSteps = overrides.maxSteps;
   if (overrides.retryLimit !== undefined) merged.retryLimit = overrides.retryLimit;
   if (overrides.compactAt !== undefined) merged.compactAt = overrides.compactAt;
+  if (overrides.compactAtTokens !== undefined) merged.compactAtTokens = overrides.compactAtTokens;
   if (overrides.requestTimeoutMs !== undefined) merged.requestTimeoutMs = overrides.requestTimeoutMs;
 
   merged.maxSteps = Math.max(0, Math.floor(merged.maxSteps));

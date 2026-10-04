@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setConfiguredModels } from "../src/providers/models.ts";
 
 let dir: string;
 
@@ -11,6 +12,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  setConfiguredModels([]); // a test-registered model must not outlive itself
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -91,11 +93,14 @@ describe("auto-compaction", () => {
     const { id } = await fillSession(60, 4_000, 60_000);
     await compactIfNeeded(id, cfg as any, summarizer("s") as any);
     const vis = visibleNodes(projectView(id));
-    // at least the protected fraction of the window survives
+    // whatever survives is the keep-budget, not a fraction of the window:
+    // here it lands above a third of this tiny window and well under the
+    // majority the old 55%-of-window floor left behind
     const { estimateTokens } = await import("../src/providers/models.ts");
     const tailTok = vis.reduce((a, n) => a + estimateTokens(n.content), 0);
     expect(vis.length).toBeGreaterThanOrEqual(6);
     expect(tailTok).toBeGreaterThan(WINDOW * 0.3);
+    expect(tailTok).toBeLessThan(60_000 * 0.6);
   });
 
   test("a failing summarizer still compacts with a mechanical note", async () => {
@@ -129,5 +134,26 @@ describe("auto-compaction", () => {
     expect(await compactIfNeeded(id, cfg as any, summarizer("s") as any)).toBeNull();
     const ev = await compactIfNeeded(id, cfg as any, summarizer("s") as any, { compactAt: 0.6 });
     expect(ev).not.toBeNull();
+  });
+
+  test("the absolute ceiling compacts a window the fraction would never reach", async () => {
+    // the shipped defect: the registry claims a 1M window, so `0.85 * window`
+    // is unreachable in practice and the context grows monotonically to the
+    // provider's real limit, re-billed in full on every step
+    const { compactIfNeeded } = await import("../src/context/compact.ts");
+    setConfiguredModels([{ id: "overstated-window", contextWindow: 1_000_000 }]);
+    const big = { ...cfg, model: "overstated-window" };
+    const { id } = await fillSession(60, 4_000, 150_000); // over the 131_072 ceiling, far under 850_000
+
+    expect(await compactIfNeeded(id, big as any, summarizer("s") as any, { compactAtTokens: 0 })).toBeNull();
+    expect(await compactIfNeeded(id, big as any, summarizer("s") as any)).not.toBeNull();
+  });
+
+  test("the trigger is the smaller of the window fraction and the ceiling", async () => {
+    const { triggerTokens } = await import("../src/context/budget.ts");
+    setConfiguredModels([{ id: "overstated-window", contextWindow: 1_000_000 }]);
+    expect(triggerTokens("overstated-window", 0.85, 131_072)).toBe(131_072);
+    expect(triggerTokens("overstated-window", 0.85, 0)).toBe(850_000); // ceiling off -> fraction only
+    expect(triggerTokens(MODEL, 0.85, 131_072)).toBe(55_705); // a small window still binds first
   });
 });

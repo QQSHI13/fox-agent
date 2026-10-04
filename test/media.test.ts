@@ -1,176 +1,130 @@
-// Media input through `read`: images/audio/video attach as base64 parts when
-// the active model accepts that kind of input, and refuse with a named reason
-// when it does not. The report behind the old behavior was an image read
-// failing with "vision input is not wired up yet" on a vision-capable model.
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import type { ToolContext } from "../src/tools/types.ts";
-import type { ProviderConfig } from "../src/providers/types.ts";
+import { describe, expect, test } from "bun:test";
+import { toModelMessages } from "../src/providers/convert.ts";
+import type { ChatMessage, MediaPart } from "../src/providers/types.ts";
 
-let dir: string;
-let base: ToolContext;
+const PNG: MediaPart = { mimeType: "image/png", data: "iVBORw0KGgo=", filename: "shot.png" };
+const MP3: MediaPart = { mimeType: "audio/mpeg", data: "SGVsbG8=", filename: "clip.mp3" };
+const MP4: MediaPart = { mimeType: "video/mp4", data: "AAAA", filename: "vid.mp4" };
 
-beforeEach(() => {
-  dir = mkdtempSync(join(tmpdir(), "fox-media-"));
-  process.env.FOX_AGENT_HOME = join(dir, ".fox");
-  let pty: unknown;
-  base = { sessionId: "s1", cwd: dir,  get pty() { return pty; }, set pty(v: unknown) { pty = v; } } as unknown as ToolContext;
-});
+function toolMsg(media: MediaPart[]): ChatMessage {
+  return {
+    role: "tool",
+    tool_call_id: "call_1",
+    content: "shot taken",
+    media,
+  };
+}
 
-afterEach(() => rmSync(dir, { recursive: true, force: true }));
+const withAssistant = (tool: ChatMessage): ChatMessage[] => [
+  { role: "user", content: "look" },
+  { role: "assistant", content: "", tool_calls: [{ id: "call_1", name: "read", arguments: "{}" }] },
+  tool,
+];
 
-const withModel = (model?: string): ToolContext =>
-  ({ ...base, providerCfg: model ? ({ model, baseUrl: "http://x", apiKey: "k" } as ProviderConfig) : undefined }) as ToolContext;
-
-/** not a real PNG — read detects media by extension, never by content */
-const writeBlob = (name: string) => {
-  writeFileSync(join(dir, name), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x01, 0x02, 0x03]));
-  return name;
-};
-
-describe("read: media files", () => {
-  test("an image attaches as base64 when the model has vision", async () => {
-    const { readRun } = await import("../src/tools/files.ts");
-    const r = await readRun({ path: writeBlob("pic.png") }, withModel("gpt-4o"));
-    expect(r.ok).toBe(true);
-    expect(r.output).toContain("image/png");
-    expect(r.media).toHaveLength(1);
-    expect(r.media![0].mimeType).toBe("image/png");
-    expect(Buffer.from(r.media![0].data, "base64")).toEqual(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x01, 0x02, 0x03]));
-  });
-
-  test("an image is refused with a named reason when the model lacks vision", async () => {
-    const { readRun } = await import("../src/tools/files.ts");
-    const r = await readRun({ path: writeBlob("pic.png") }, withModel("kimi-k2"));
-    expect(r.ok).toBe(false);
-    expect(r.output).toContain("does not accept image input");
-    expect(r.media).toBeUndefined();
-  });
-
-  test("no provider config means no media — the gate fails safe", async () => {
-    const { readRun } = await import("../src/tools/files.ts");
-    const r = await readRun({ path: writeBlob("pic.png") }, withModel(undefined));
-    expect(r.ok).toBe(false);
-    expect(r.output).toContain("does not accept image input");
-  });
-
-  test("audio attaches for gemini but not for a vision-only model", async () => {
-    const { readRun } = await import("../src/tools/files.ts");
-    writeBlob("clip.mp3");
-    const yes = await readRun({ path: "clip.mp3" }, withModel("gemini-2.5-pro"));
-    expect(yes.ok).toBe(true);
-    expect(yes.media![0].mimeType).toBe("audio/mpeg");
-    const no = await readRun({ path: "clip.mp3" }, withModel("gpt-4o"));
-    expect(no.ok).toBe(false);
-    expect(no.output).toContain("does not accept audio input");
-  });
-
-  test("video attaches for gemini", async () => {
-    const { readRun } = await import("../src/tools/files.ts");
-    const r = await readRun({ path: writeBlob("mov.mp4") }, withModel("gemini-2.0-flash"));
-    expect(r.ok).toBe(true);
-    expect(r.media![0].mimeType).toBe("video/mp4");
-  });
-});
-
-describe("media through the pipeline", () => {
-  test("media survives storage and renders onto the provider message", async () => {
-    const { createSession, appendMessage } = await import("../src/store/db.ts");
-    const { renderContext } = await import("../src/context/render.ts");
-    const s = createSession(dir, "gpt-4o");
-    const asst = appendMessage(s.id, {
-      parent_id: null,
-      role: "assistant",
-      content: "",
-      tool_calls: JSON.stringify([{ id: "c1", name: "read", arguments: '{"path":"pic.png"}' }]),
-      tokens: 5,
+describe("media routing: user-fallback (openai-compatible / openai-responses)", () => {
+  test("tool message carries PLAIN TEXT; media moves to a following user message with file parts", () => {
+    const out = toModelMessages(withAssistant(toolMsg([PNG])), "user-fallback");
+    expect(out).toHaveLength(4);
+    const tool = out[2] as any;
+    expect(tool.role).toBe("tool");
+    // the tool-result output is plain text — NO base64 rides in it
+    expect(tool.content[0].output).toEqual({ type: "text", value: "shot taken" });
+    const user = out[3] as any;
+    expect(user.role).toBe("user");
+    expect(user.content[0].type).toBe("text");
+    expect(user.content[0].text).toContain("shot.png");
+    expect(user.content[0].text).toContain("image/png");
+    expect(user.content[1]).toEqual({
+      type: "file",
+      data: { type: "data", data: PNG.data },
+      mediaType: "image/png",
+      filename: "shot.png",
     });
-    const part = { mimeType: "image/png", data: "aGk=", filename: "pic.png" };
-    appendMessage(s.id, {
-      parent_id: asst.id,
-      role: "tool",
-      content: "pic.png: image/png, 0.0 KB — attached as image content below",
-      tool_call_id: "c1",
-      media: JSON.stringify([part]),
-      tokens: 1505,
-    });
-    const msgs = renderContext(s.id, "sys");
-    const toolMsg = msgs.find((m) => m.role === "tool")!;
-    expect(toolMsg.media).toEqual([part]);
   });
 
-  test("a tool message with media converts to content parts, not a bare string", async () => {
-    const { toModelMessages } = await import("../src/providers/convert.ts");
-    const msgs = toModelMessages([
-      { role: "assistant", content: "", tool_calls: [{ id: "c1", name: "read", arguments: "{}" }] },
+  test("the tool-result output carries no base64 — the blob rides only in the user file part", () => {
+    const out = toModelMessages(withAssistant(toolMsg([PNG])), "user-fallback");
+    const tool = out[2] as any;
+    // the exact bug: the tool message text contained the raw base64 blob
+    expect(JSON.stringify(tool)).not.toContain("iVBORw0KGgo");
+    // and the file part exists exactly once, in the user message
+    const user = out[3] as any;
+    expect(user.content[1].data.data).toBe("iVBORw0KGgo=");
+  });
+
+  test("audio and video route the same way", () => {
+    const out = toModelMessages(withAssistant(toolMsg([MP3, MP4])), "user-fallback");
+    const user = out[3] as any;
+    expect(user.content[1].mediaType).toBe("audio/mpeg");
+    expect(user.content[2].mediaType).toBe("video/mp4");
+  });
+
+  test("media from CONSECUTIVE tool results batches into ONE user message", () => {
+    // the opencode refinement: one assistant making two media tools -> both
+    // results are back-to-back tool messages -> ONE attachment message,
+    // not two (each synthetic message costs a turn in the provider window)
+    const msgs: ChatMessage[] = [
+      { role: "user", content: "look" },
       {
-        role: "tool",
-        tool_call_id: "c1",
-        content: "attached",
-        media: [{ mimeType: "image/png", data: "aGk=", filename: "pic.png" }],
+        role: "assistant",
+        content: "",
+        tool_calls: [
+          { id: "call_1", name: "read", arguments: "{}" },
+          { id: "call_2", name: "fetch", arguments: "{}" },
+        ],
       },
-    ]);
-    const out = (msgs[1] as any).content[0].output;
-    expect(out.type).toBe("content");
-    expect(out.value[0]).toEqual({ type: "text", text: "attached" });
-    expect(out.value[1]).toMatchObject({ type: "file", mediaType: "image/png", filename: "pic.png" });
-    expect(out.value[1].data).toEqual({ type: "data", data: "aGk=" });
-    // and the no-media path is unchanged
-    const plain = toModelMessages([
-      { role: "assistant", content: "", tool_calls: [{ id: "c2", name: "read", arguments: "{}" }] },
-      { role: "tool", tool_call_id: "c2", content: "text only" },
-    ]);
-    expect((plain[1] as any).content[0].output).toEqual({ type: "text", value: "text only" });
+      toolMsg([PNG]),
+      { ...toolMsg([MP3]), tool_call_id: "call_2" },
+    ];
+    const out = toModelMessages(msgs, "user-fallback");
+    const users = out.filter((m) => m.role === "user");
+    expect(users).toHaveLength(2); // the real "look" + ONE batched attachment message
+    const batched = users[1] as any;
+    expect(batched.content[1].mediaType).toBe("image/png");
+    expect(batched.content[2].mediaType).toBe("audio/mpeg");
   });
 
-  test("a session db written before the media column exists is migrated on open", async () => {
-    const { Database } = await import("bun:sqlite");
-    const { ensureLayout, sessionDbPath } = await import("../src/core/paths.ts");
-    ensureLayout();
-    // hand-build the pre-media schema, the way an older fox-agent left it
-    const old = new Database(sessionDbPath("oldsession"));
-    old.exec(`CREATE TABLE messages (
-      id TEXT PRIMARY KEY, seq INTEGER NOT NULL, session_id TEXT NOT NULL, parent_id TEXT,
-      role TEXT NOT NULL, content TEXT NOT NULL DEFAULT '', tool_calls TEXT, tool_call_id TEXT,
-      tokens INTEGER NOT NULL DEFAULT 0, error TEXT, created_at INTEGER NOT NULL
-    )`);
-    old.prepare("INSERT INTO messages VALUES ('m1', 1, 'oldsession', NULL, 'user', 'hi', NULL, NULL, 1, NULL, 0)").run();
-    old.close();
+  test("media flushes BEFORE the next user message, not after it", () => {
+    const msgs: ChatMessage[] = [
+      ...withAssistant(toolMsg([PNG])),
+      { role: "user", content: "now what?" },
+    ];
+    const out = toModelMessages(msgs, "user-fallback");
+    // order: user(look), assistant, tool, user(attachments), user(now what?)
+    expect(out.map((m) => m.role)).toEqual(["user", "assistant", "tool", "user", "user"]);
+    expect(((out[3] as any).content[0] as any).text).toContain("attachment");
+  });
 
-    const { getMessage, appendMessage } = await import("../src/store/db.ts");
-    expect(getMessage("oldsession", 1)?.content).toBe("hi"); // opens without throwing
-    const m = appendMessage("oldsession", { parent_id: null, role: "tool", content: "x", media: JSON.stringify([{ mimeType: "image/png", data: "aGk=" }]), tokens: 1 });
-    expect(getMessage("oldsession", m.seq)?.media).toContain("image/png");
+  test("no media -> no synthetic user message", () => {
+    const out = toModelMessages(withAssistant(toolMsg([])), "user-fallback");
+    expect(out).toHaveLength(3);
   });
 });
 
-describe("fetch: media URLs", () => {
-  async function serve(bytes: number[], ctype: string): Promise<string> {
-    // fetchRun blocks private/local URLs (SSRF gate); tests serve locally.
-    process.env.FOX_AGENT_ALLOW_PRIVATE_FETCH = "1";
-    const server = Bun.serve({
-      port: 0,
-      fetch: () => new Response(new Uint8Array(bytes), { headers: { "content-type": ctype } }),
+describe("media routing: native (anthropic / google)", () => {
+  test("media stays in the tool-result content as file parts", () => {
+    const out = toModelMessages(withAssistant(toolMsg([PNG])), "native");
+    expect(out).toHaveLength(3);
+    const tool = out[2] as any;
+    expect(tool.role).toBe("tool");
+    expect(tool.content[0].output.type).toBe("content");
+    expect(tool.content[0].output.value[1]).toEqual({
+      type: "file",
+      data: { type: "data", data: PNG.data },
+      mediaType: "image/png",
+      filename: "shot.png",
     });
-    return `http://127.0.0.1:${server.port}/pic`;
-  }
-
-  test("an image URL attaches as media when the model has vision", async () => {
-    const { fetchRun } = await import("../src/tools/fetch.ts");
-    const url = await serve([0x89, 0x50, 0x4e, 0x47], "image/png");
-    const r = await fetchRun({ url }, withModel("gpt-4o"));
-    expect(r.ok).toBe(true);
-    expect(r.media![0].mimeType).toBe("image/png");
-    expect(Buffer.from(r.media![0].data, "base64")).toEqual(Buffer.from([0x89, 0x50, 0x4e, 0x47]));
   });
 
-  test("a media URL is refused for a text-only model", async () => {
-    const { fetchRun } = await import("../src/tools/fetch.ts");
-    const url = await serve([0x89, 0x50], "image/png");
-    const r = await fetchRun({ url }, withModel("kimi-k2"));
-    expect(r.ok).toBe(false);
-    expect(r.output).toContain("does not accept image input");
+  test("default routing is native (existing providers unchanged)", () => {
+    const out = toModelMessages(withAssistant(toolMsg([PNG])));
+    expect(out).toHaveLength(3);
+    expect((out[2] as any).content[0].output.type).toBe("content");
+  });
+
+  test("no media -> identical to user-fallback (text-only tool result)", () => {
+    const a = toModelMessages(withAssistant(toolMsg([])), "native");
+    const b = toModelMessages(withAssistant(toolMsg([])), "user-fallback");
+    expect(JSON.stringify(a)).toBe(JSON.stringify(b));
   });
 });

@@ -10,8 +10,15 @@ export type Key =
    * tap: the thinking box collapsed the instant the button went down, and there
    * was no motion stream to select text with. `down`/`drag`/`up` is the minimum
    * that lets a consumer tell "clicked here" from "dragged from here to there".
+   *
+   * `button` names the physical button (0 left, 1 middle, 2 right) and the
+   * modifier flags ride along: xterm adds shift=4, alt=8, ctrl=16 to the SGR
+   * button code, and the old decoder matched only the bare codes — so
+   * shift/ctrl/alt+click produced NOTHING (no press, no drag, no selection
+   * anchor). Now they decode; the app keeps its current gestures, plugins get
+   * the chords.
    */
-  | { type: "mouse"; action: "down" | "drag" | "up"; x: number; y: number }
+  | { type: "mouse"; action: "down" | "drag" | "up"; x: number; y: number; button: 0 | 1 | 2; shift?: boolean; meta?: boolean; ctrl?: boolean }
   | { type: "paste"; text: string };
 
 const CSI = new Map<string, string>([
@@ -28,7 +35,67 @@ const CSI = new Map<string, string>([
   ["4~", "end"],
   ["5~", "pageup"],
   ["6~", "pagedown"],
+  ["11~", "f1"],
+  ["12~", "f2"],
+  ["13~", "f3"],
+  ["14~", "f4"],
+  ["15~", "f5"],
+  ["17~", "f6"],
+  ["18~", "f7"],
+  ["19~", "f8"],
+  ["20~", "f9"],
+  ["21~", "f10"],
+  ["23~", "f11"],
+  ["24~", "f12"],
+  ["29~", "menu"],
 ]);
+
+/**
+ * SS3 finals (`ESC O <byte>`) — a SEPARATE table from CSI on purpose. Several
+ * of these bytes tail-end ordinary terminal reports (`ESC [ 6 n` is a cursor
+ * position report; `ESC [ M` heads the X10 mouse encoding), so a shared map
+ * would turn every report into phantom keypad presses. The keypad block
+ * (digits, operators, enter) matters even though the app never enables
+ * application-keypad mode: a program before us can leave it ON, and undecoded,
+ * a numpad type arrives as `escape` (clears the input!) plus a stray digit.
+ */
+const SS3 = new Map<string, string>([
+  ["A", "up"],
+  ["B", "down"],
+  ["C", "right"],
+  ["D", "left"],
+  ["H", "home"],
+  ["F", "end"],
+  ["P", "f1"],
+  ["Q", "f2"],
+  ["R", "f3"],
+  ["S", "f4"],
+  ["M", "kpenter"],
+  ["j", "kp*"],
+  ["k", "kp+"],
+  ["l", "kp,"],
+  ["m", "kp-"],
+  ["n", "kp."],
+  ["p", "kp0"],
+  ["q", "kp1"],
+  ["r", "kp2"],
+  ["s", "kp3"],
+  ["t", "kp4"],
+  ["u", "kp5"],
+  ["v", "kp6"],
+  ["w", "kp7"],
+  ["x", "kp8"],
+  ["y", "kp9"],
+]);
+
+/** xterm pads the SGR button code with modifier bits: shift=4, alt=8, ctrl=16. */
+function mouseMods(btn: number): { shift?: boolean; meta?: boolean; ctrl?: boolean } {
+  const out: { shift?: boolean; meta?: boolean; ctrl?: boolean } = {};
+  if (btn & 4) out.shift = true;
+  if (btn & 8) out.meta = true;
+  if (btn & 16) out.ctrl = true;
+  return out;
+}
 
 /**
  * xterm encodes modifiers as a second CSI parameter, 1 + a bitmask:
@@ -37,7 +104,9 @@ const CSI = new Map<string, string>([
  * like a bare left.
  */
 function modsOf(param: string | undefined): { ctrl?: boolean; meta?: boolean; shift?: boolean } {
-  const n = Number(param);
+  // colon subparams (kitty: `CSI 97:1;5u` carries an event type after the
+  // code point) — the modifier lives in the first subparam
+  const n = Number(param?.split(":")[0]);
   if (!Number.isFinite(n) || n < 2) return {};
   const bits = n - 1;
   const out: { ctrl?: boolean; meta?: boolean; shift?: boolean } = {};
@@ -141,6 +210,12 @@ export function createDecoder(emit: (k: Key) => void) {
    */
   function skipUnparsed(): boolean {
     if (moreComing()) return false; // the rest of it may still be arriving
+    // A bare two-byte prefix (`ESC [`, `ESC O`) may be the head of a sequence
+    // split across reads: keep waiting until a byte behind it proves the rest
+    // is genuinely lost. Dropping it on quiet alone reintroduces the split-
+    // arrow bug — the re-drive timer fires 15ms later and would eat the head
+    // off every arrow key that arrives one chunk at a time.
+    if (buf.length === 2 && (buf[1] === "[" || buf[1] === "O")) return false;
     let i = buf[1] === "[" || buf[1] === "]" || buf[1] === "P" ? 2 : 1;
     while (i < buf.length && isParam(buf[i])) i++;
     while (i < buf.length && isIntermediate(buf[i])) i++;
@@ -239,21 +314,51 @@ export function createDecoder(emit: (k: Key) => void) {
       const x = Number(mm[2]) - 1;
       const y = Number(mm[3]) - 1;
       buf = buf.slice(mm[0].length);
-      // With ?1002h the terminal also reports motion while a button is held, as
-      // the button code + 32 (bit 5 = "this is a drag"). Wheel is 64/65 and is
-      // not a button at all — it is a scroll at a position, so it carries the
-      // coordinates the app routes it by (dock vs transcript). A wheel *release*
-      // (SGR `m`) reports nothing new — the notch already scrolled on its press
-      // — and several terminals send one per notch, so emitting it too would
-      // scroll every notch twice.
-      if (btn === 64 || btn === 65) {
+      // Full button-code decode (the old decoder matched only bare codes 0/32,
+      // so shift/ctrl/alt+click produced nothing at all):
+      //   bits 0-1  physical button (0 left, 1 middle, 2 right)
+      //   bit 2/3/4 shift / alt / ctrl
+      //   bit 5     motion — with ?1002h the terminal reports movement while a
+      //             button is held
+      //   bit 6     wheel — not a button at all, it is a scroll at a position,
+      //             so it carries the coordinates the app routes it by (dock vs
+      //             transcript). A wheel *release* (SGR `m`) reports nothing new
+      //             — the notch already scrolled on its press — and several
+      //             terminals send one per notch, so emitting it too would
+      //             scroll every notch twice.
+      const mods = mouseMods(btn);
+      if (btn & 64) {
         if (mm[4] === "m") return true;
-        emit({ type: "named", name: btn === 64 ? "wheelup" : "wheeldown", x, y });
+        emit({ type: "named", name: btn & 1 ? "wheeldown" : "wheelup", x, y, ...mods });
+        return true;
+      } else if (mm[4] === "m") emit({ type: "mouse", action: "up", x, y, button: (btn & 3) as 0 | 1 | 2, ...mods });
+      else if (btn & 32) emit({ type: "mouse", action: "drag", x, y, button: (btn & 3) as 0 | 1 | 2, ...mods });
+      else emit({ type: "mouse", action: "down", x, y, button: (btn & 3) as 0 | 1 | 2, ...mods });
+      return true;
+    }
+
+    // X10-compatible mouse fallback: ESC [ M <cb> <cx> <cy> — three raw bytes,
+    // coordinates 1-based, press-only. A terminal that ignored the SGR
+    // (?1006h) request speaks this dialect instead; undecoded, its coordinate
+    // bytes land in the input buffer as garbage characters.
+    if (buf.startsWith("\x1b[M")) {
+      if (buf.length < 6) {
+        if (moreComing()) return false;
+        buf = ""; // dead prefix mid-burst: nothing behind it can be saved
         return true;
       }
-      else if (mm[4] === "m") emit({ type: "mouse", action: "up", x, y });
-      else if (btn === 32) emit({ type: "mouse", action: "drag", x, y });
-      else if (btn === 0) emit({ type: "mouse", action: "down", x, y });
+      const cb = buf.charCodeAt(3) - 32;
+      const cx = buf.charCodeAt(4) - 32;
+      const cy = buf.charCodeAt(5) - 32;
+      buf = buf.slice(6);
+      if (cb >= 0 && cx >= 0 && cy >= 0) {
+        const mods = mouseMods(cb);
+        if (cb & 64) {
+          if (!(cb & 1)) emit({ type: "named", name: "wheelup", x: cx - 1, y: cy - 1, ...mods });
+          else emit({ type: "named", name: "wheeldown", x: cx - 1, y: cy - 1, ...mods });
+        } else if (cb & 32) emit({ type: "mouse", action: "drag", x: cx - 1, y: cy - 1, button: (cb & 3) as 0 | 1 | 2, ...mods });
+        else emit({ type: "mouse", action: "down", x: cx - 1, y: cy - 1, button: (cb & 3) as 0 | 1 | 2, ...mods });
+      }
       return true;
     }
 
@@ -265,6 +370,18 @@ export function createDecoder(emit: (k: Key) => void) {
       }
       return false;
     }
+    // Two-byte partial prefixes: `ESC [` and `ESC O` are the heads of most
+    // sequences, and a slow pty can split right between them. Waiting matters:
+    // `ESC O` alone decoded as escape + a literal `O` typed into the input, and
+    // `ESC [` alone fell into skipUnparsed, which silently ate the prefix so
+    // the arrow key's final byte arrived as a bare character (measured: ESC, [,
+    // "A" split across reads produced escape, `[`, `A` — three keystrokes for
+    // one press). skipUnparsed also refuses to drop a bare prefix, so the
+    // re-drive timer cannot eat it out from under the wait; the prefix is
+    // dropped only once a following byte proves the sequence is truly lost.
+    if (buf.length === 2 && (buf[1] === "[" || buf[1] === "O")) {
+      if (moreComing()) return false;
+    }
     // string-type escapes carry no keys and must not reach emitChar
     if (buf[1] === "]" || buf[1] === "P" || buf[1] === "_" || buf[1] === "X" || buf[1] === "^") {
       return consumeString();
@@ -272,11 +389,41 @@ export function createDecoder(emit: (k: Key) => void) {
     if (buf[1] !== "[") {
       // ESC followed by a plain char: alt+key or bare escape
       if (buf[1] === "O") {
-        const n = CSI.get(buf[2]);
-        if (n && buf.length >= 3) {
-          emit({ type: "named", name: n });
-          buf = buf.slice(3);
-          return true;
+        // An SS3 head with no final byte yet: wait for it regardless of the
+        // quiet window. No terminal sends a bare `ESC O` as a user gesture, so
+        // waiting costs nothing — while giving up here emitted `escape` + a
+        // typed `O` for every SS3 key that arrived one byte at a time. The
+        // re-drive timer re-runs consume; only a real following byte (or the
+        // whole-buffer guard in drain) resolves this.
+        if (buf.length === 2) return false;
+        const s3 = buf[2];
+        if (s3 !== undefined) {
+          // rxvt encodes ctrl+arrows as SS3 lowercase a-d
+          const rxvt = "abcd".indexOf(s3);
+          if (rxvt >= 0) {
+            emit({ type: "named", name: ["up", "down", "right", "left"][rxvt], ctrl: true });
+            buf = buf.slice(3);
+            return true;
+          }
+          const n = SS3.get(s3);
+          if (n) {
+            emit({ type: "named", name: n });
+            buf = buf.slice(3);
+            return true;
+          }
+          // Unmapped SS3 final: degrade to alt+char (or alt+backspace), never
+          // escape + a typed letter — escape clears the whole input, the chord
+          // is what a keyboard without an SS3 dialect means
+          if (s3 === "\x7f" || s3 === "\x08") {
+            emit({ type: "named", name: "backspace", meta: true });
+            buf = buf.slice(3);
+            return true;
+          }
+          if (s3 >= " " && s3 !== "\x7f") {
+            emit({ type: "named", name: s3.toLowerCase(), meta: true });
+            buf = buf.slice(3);
+            return true;
+          }
         }
       }
       // alt+backspace ("delete previous word" everywhere else) decoded as
