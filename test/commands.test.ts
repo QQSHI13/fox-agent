@@ -312,12 +312,16 @@ describe("interactive wizards", () => {
     const s = t.createSession("/w", "m1");
     const state = { sessionId: s.id, cwd: "/w", provider: { baseUrl: "http://x", apiKey: "k", model: "m" } as any, interactive: true, configPath: join(dir, "config.toml") };
 
-    // a provider with catalog models: picking a listed model skips the text step
+    // a provider with catalog models: the select covers listed and typed ids
+    // alike, so the separate text step has nothing left to ask
     const wiz = t.runSlashCommand("/login provider=google", state)!.prompt!;
     const custom = wiz.steps.find((st) => st.key === "modelCustom")!;
     const model = wiz.steps.find((st) => st.key === "model")!;
     expect(typeof custom.skipIf === "function" && custom.skipIf({ provider: "google", model: "gemini-2.5-pro" })).toBe(true); // listed pick: no re-ask
-    expect(typeof custom.skipIf === "function" && custom.skipIf({ provider: "google", model: "__custom" })).toBe(false); // typed pick: ask
+    expect(typeof custom.skipIf === "function" && custom.skipIf({ provider: "google", model: "typed-id" })).toBe(true); // typed pick: the box, not this step
+    expect(model.custom).toBe(true); // the select can take an id it never listed
+    // the text step reappears only when there is no select to show at all
+    expect(typeof custom.skipIf === "function" && custom.skipIf({ provider: "custom" })).toBe(false);
     // the select itself disappears when the provider lists nothing (custom)
     expect(typeof model.skipIf === "function" && model.skipIf({ provider: "custom" })).toBe(true);
     expect(typeof model.skipIf === "function" && model.skipIf({ provider: "google" })).toBe(false);
@@ -326,6 +330,13 @@ describe("interactive wizards", () => {
     const res = wiz.run({ provider: "google", apiKey: "", baseUrl: "", model: "gemini-2.5-pro" }, state);
     expect(res.output).toContain("saved");
     expect(state.provider.model).toBe("gemini-2.5-pro");
+
+    // …and so does an id the catalog never listed, typed straight into the
+    // select's own box — no sentinel row, no second step, no re-ask
+    const st2 = { ...state, provider: { ...state.provider, model: "gemini-2.5-pro" } };
+    const typed = wiz.run({ provider: "google", apiKey: "", baseUrl: "", model: "gemini-nobody-has-heard-of" }, st2);
+    expect(typed.output).toContain("saved");
+    expect(st2.provider.model).toBe("gemini-nobody-has-heard-of");
   });
 
   test("/model provider step never lists the current identity twice", async () => {
@@ -416,7 +427,9 @@ describe("interactive wizards", () => {
     const provOpts = w2.steps[0].options as { value: string }[];
     expect(provOpts[0].value).toBe("profile:ds");
     expect(w2.steps[0].initial).toBe("profile:ds");
-    const r2 = w2.run({ provider: "openrouter", apiKey: "sk-or", baseUrl: "", model: "__custom", modelCustom: "m-or", saveProfile: "or" }, st2);
+    // `model` is the answer either way now: a listed row, or what the select's
+    // own box was given — there is no sentinel left to spell out
+    const r2 = w2.run({ provider: "openrouter", apiKey: "sk-or", baseUrl: "", model: "m-or", saveProfile: "or" }, st2);
     expect(r2.output).toContain("provider: or");
     expect(readFileSync(cfgPath, "utf8")).toContain("[providers.or]");
 
@@ -462,7 +475,11 @@ describe("interactive wizards", () => {
     const w6 = t.runSlashCommand("/login", st6)!.prompt!;
     const modelStep = w6.steps.find((st) => st.key === "model")!;
     const mopts = (modelStep.options as (a: Record<string, string>) => { value: string }[])({ provider: "profile:mine" });
-    expect(mopts.map((m) => m.value)).toEqual(["m-x", "__custom"]);
+    expect(mopts.map((m) => m.value)).toEqual(["m-x"]); // no trailing "type a model id…" row
+    expect(modelStep.custom).toBe(true); // …because the select has its own answer box
+    expect(typeof modelStep.skipIf === "function" && modelStep.skipIf({ provider: "profile:mine" })).toBe(false);
+    const modelCustom = w6.steps.find((st) => st.key === "modelCustom")!;
+    expect(typeof modelCustom.skipIf === "function" && modelCustom.skipIf({ provider: "profile:mine" })).toBe(true);
   });
 
   test("bare /model, /prune and /fork ask; bare /delete opens the session picker", async () => {
@@ -491,6 +508,36 @@ describe("interactive wizards", () => {
 
     expect(t.runSlashCommand("/fork", state)!.prompt).toBeDefined();
     expect(t.runSlashCommand("/delete", state)!.picker).toEqual({ kind: "sessions" });
+  });
+
+  test("/model's model step takes an id it never listed, and knows which provider it was for", async () => {
+    const t = await setup();
+    const s = t.createSession("/w", "m1");
+    const state = { sessionId: s.id, cwd: "/w", provider: { baseUrl: "http://x", apiKey: "k", model: "m" }, interactive: true, configPath: join(dir, "config.toml") };
+    (state as any).config = { providers: { ds: { format: "openai-compatible", baseUrl: "https://api.deepseek.com/v1", apiKey: "sk", models: [{ id: "deepseek-chat" }] } } };
+
+    const steps = t.runSlashCommand("/model", state)!.prompt!.steps;
+    expect(steps[2].custom).toBe(true); // the box is part of the select, not a step after it
+    expect(steps.some((st) => st.key === "custom")).toBe(false); // the old "model id" step is gone
+
+    // A typed id carries no marker of its own — the provider step's answer is
+    // the context the listed row's marker would have handed over. Both arrive
+    // here as one vocabulary, so the handler has one thing to read.
+    const typed = (provider: string, model: string, baseUrl = "http://x") =>
+      t.runSlashCommand("/model", state)!.prompt!.run({ provider, baseUrl, model }, state);
+
+    expect(typed("m:", "m9").output).toContain("m9");
+    expect(state.provider.model).toBe("m9");
+
+    expect(typed("u:openai-compatible", "m9").output).toContain("m9");
+    expect(state.provider.model).toBe("m9");
+
+    expect(typed("p:ds", "m9", "").output).toContain("m9");
+    expect(state.provider.model).toBe("m9");
+
+    // a listed row still reads the marker it already carries
+    expect(typed("m:", "m:m2").output).toContain("m2");
+    expect(state.provider.model).toBe("m2");
   });
 
   test("/theme: bare lists, a name switches live and persists, junk names do not write", async () => {

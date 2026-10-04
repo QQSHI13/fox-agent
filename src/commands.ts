@@ -638,10 +638,22 @@ function targetNeedsKey(t: ModelTarget, state: HarnessState): boolean {
   return !(sameEndpoint && state.provider.apiKey);
 }
 
-/** Turn a wizard answers map into a ModelTarget, resolving the custom-model step. */
+/**
+ * Turn a wizard answers map into a ModelTarget.
+ *
+ * A listed model row carries its provider in its value (`m:<id>`,
+ * `u:<fmt>:<id>`, `p:<name>:<id>`, `x:<preset>:<id>`) because the model step is
+ * asked long after the provider step, whose answer is not in reach by name.
+ * What the model step's own box typed carries no prefix — the provider is
+ * still sitting in `a.provider`, which is the very context the prefix would
+ * have handed over. Splice it on and both kinds of answer become one shape.
+ */
 function promptSelectionToTarget(a: Record<string, string>, state: HarnessState): ModelTarget {
-  const v = a.model ?? "";
+  const raw = a.model ?? "";
+  if (!raw) return { model: "", error: "no model selected" };
   const customBase = (a.baseUrl ?? "").trim();
+  const marker = a.provider ?? "m:";
+  const v = /^[muxp]:/.test(raw) ? raw : marker === "m:" ? `m:${raw}` : `${marker}:${raw}`;
   if (v.startsWith("m:")) return { model: v.slice(2) };
   if (v.startsWith("u:")) {
     // u:<format>:<id> — a custom endpoint chosen in the provider step
@@ -654,18 +666,6 @@ function promptSelectionToTarget(a: Record<string, string>, state: HarnessState)
     const i = v.indexOf(":", 2);
     return parseModelArg(`${v.slice(2, i)}/${v.slice(i + 1)}`, state);
   }
-  if (v.startsWith("c:")) {
-    const custom = (a.custom ?? "").trim();
-    if (!custom) return { model: "", error: "no model id entered" };
-    const rest = v.slice(2);
-    if (!rest) return { model: custom };
-    if (rest.startsWith("u:")) {
-      if (!customBase) return { model: "", error: "no base url entered" };
-      return { model: custom, format: rest.slice(2), baseUrl: customBase };
-    }
-    if (rest.startsWith("p:")) return { ...parseModelArg(`${rest.slice(2)}/${custom}`, state) };
-    if (rest.startsWith("x:")) return { ...parseModelArg(`${rest.slice(2)}/${custom}`, state) };
-  }
   return { model: "", error: `unrecognized selection '${v}'` };
 }
 
@@ -675,8 +675,9 @@ function promptSelectionToTarget(a: Record<string, string>, state: HarnessState)
  * localhost endpoint) are hidden, not offered: picking one could only end in a
  * 401. Model lists come from the endpoint's own /models when reachable
  * (cached, refreshed in the background), falling back to configured profile
- * models and then the models.dev catalog. A custom entry covers models the
- * endpoint does not advertise.
+ * models and then the models.dev catalog. Models the endpoint does not
+ * advertise are typed into the model step's own answer box rather than added
+ * as a row of their own — the list grows, the affordance does not move.
  */
 function modelPrompt(state: HarnessState): PromptRequest {
   ensureFreshCatalog();
@@ -733,7 +734,6 @@ function modelPrompt(state: HarnessState): PromptRequest {
         const ctx = m.context ? ` — ${Math.round(m.context / 1000)}k` : "";
         out.push({ value: `m:${m.id}`, label: `${m.id}${ctx}` });
       }
-      out.push({ value: "c:", label: "＋ custom model on this provider…" });
       return out;
     }
     if (sel.startsWith("u:")) {
@@ -746,7 +746,6 @@ function modelPrompt(state: HarnessState): PromptRequest {
         const ctx = m.context ? ` — ${Math.round(m.context / 1000)}k` : "";
         out.push({ value: `u:${format}:${m.id}`, label: `${m.id}${ctx}` });
       }
-      out.push({ value: "c:u:" + format, label: "＋ custom model…" });
       return out;
     }
     if (sel.startsWith("p:")) {
@@ -761,7 +760,6 @@ function modelPrompt(state: HarnessState): PromptRequest {
         const ctx = m.context ? ` — ${Math.round(m.context / 1000)}k` : "";
         out.push({ value: `p:${name}:${m.id}`, label: `${m.name ?? m.id}${m.name && m.name !== m.id ? ` (${m.id})` : ""}${ctx}` });
       }
-      out.push({ value: `c:p:${name}`, label: "＋ custom model…" });
       return out;
     }
     const id = sel.slice(2);
@@ -774,7 +772,6 @@ function modelPrompt(state: HarnessState): PromptRequest {
       const ctx = m.context ? ` — ${Math.round(m.context / 1000)}k` : "";
       out.push({ value: `x:${id}:${m.id}`, label: `${m.id}${ctx}` });
     }
-    out.push({ value: `c:x:${id}`, label: "＋ custom model…" });
     return out;
   };
 
@@ -790,14 +787,15 @@ function modelPrompt(state: HarnessState): PromptRequest {
         hint: "https://… — the endpoint this provider serves",
         skipIf: (a) => !(a.provider ?? "").startsWith("u:"),
       },
-      { key: "model", label: "model — type to search", kind: "select", options: modelOptions },
       {
-        key: "custom",
-        label: "model id",
-        kind: "text",
-        allowEmpty: false,
-        hint: "any id the endpoint accepts, listed or not",
-        skipIf: (a) => !(a.model ?? "").startsWith("c"),
+        key: "model",
+        label: "model — type to search",
+        kind: "select",
+        options: modelOptions,
+        // No separate "type a model id…" row any more: the list appends its own
+        // `other…`, and the answer is stored exactly as typed — the handler
+        // stitches on the provider marker a listed row would have carried.
+        custom: true,
       },
       {
         key: "key",
@@ -1191,7 +1189,10 @@ function applyProfileLogin(
  * holds the typed id (previously discarded, saving the old model silently).
  */
 function loginModelAnswer(answers: Record<string, string>): string | undefined {
-  if (answers.model && answers.model !== "__custom") return answers.model;
+  // the select carries a listed id or one typed into its own box; the text step
+  // only ran at all when there was no select to show
+  const picked = answers.model?.trim();
+  if (picked) return picked;
   return answers.modelCustom?.trim() || undefined;
 }
 
@@ -1290,15 +1291,13 @@ function loginPrompt(state: HarnessState, pre: LoginFields = {}): PromptRequest 
         .filter((m) => !m.disabled)
         .map((m) => ({ value: m.id, label: m.contextWindow ? `${m.name ?? m.id} (${Math.round(m.contextWindow / 1000)}k ctx)` : (m.name ?? m.id) }));
       const seen = new Set<string>();
-      const out = [...live, ...configured].filter((m) => (seen.has(m.value) ? false : (seen.add(m.value), true)));
-      return [...out, { value: "__custom", label: "✎ type a model id…" }];
+      return [...live, ...configured].filter((m) => (seen.has(m.value) ? false : (seen.add(m.value), true)));
     }
     const models = presetOf(a)?.models ?? [];
-    const opts = models.map((m) => ({
+    return models.map((m) => ({
       value: m.id,
       label: m.context ? `${m.id} (${Math.round(m.context / 1000)}k ctx)` : m.id,
     }));
-    return [...opts, { value: "__custom", label: "✎ type a model id…" }];
   };
   return {
     title: "login — leave a field empty to keep the current value",
@@ -1335,30 +1334,25 @@ function loginPrompt(state: HarnessState, pre: LoginFields = {}): PromptRequest 
         label: "model",
         kind: "select",
         options: (a) => loginModelOptions(a, true),
-        initial: (a) => {
-          const cur = pre.model ?? p.model;
-          const ids = loginModelOptions(a, false).map((m) => m.value);
-          return ids.includes(cur) ? cur : "__custom";
-        },
+        // the current model is the start: a listed id lands on its row, one
+        // that is not listed opens the answer box already holding it — so
+        // "keep what I am on" costs no typing either way
+        initial: () => pre.model ?? p.model,
+        custom: true,
         // no catalog table for this provider (custom, or a preset that lists
-        // nothing) — the select would be a one-row menu, so go straight to text
-        skipIf: (a) => loginModelOptions(a, false).length <= 1,
+        // nothing) — a menu of zero rows is not a menu, so go straight to text
+        skipIf: (a) => loginModelOptions(a, false).length === 0,
       },
       {
         key: "modelCustom",
         label: "model id",
         kind: "text",
         allowEmpty: true,
-        initial: (a) => pre.model ?? p.model,
-        hint: (a) =>
-          (a.model ?? "") === "__custom" ? "type the id the endpoint accepts" : "empty = keep the picked/current model",
-        // asked only when the select was skipped (nothing listed) or the user
-        // explicitly chose "type a model id…" — picking a listed model no
-        // longer re-asks for an id it just confirmed
-        skipIf: (a) => {
-          const listed = loginModelOptions(a, false);
-          return listed.length > 1 && (a.model ?? "") !== "__custom";
-        },
+        initial: () => pre.model ?? p.model,
+        hint: "type the id the endpoint accepts — empty keeps the current model",
+        // asked only when there was no select to show; when there was, its own
+        // box takes the typed answer and this would re-ask for an id it holds
+        skipIf: (a) => loginModelOptions(a, false).length > 0,
       },
       {
         // a custom endpoint is a REAL provider: it always gets a name and

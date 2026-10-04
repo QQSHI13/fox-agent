@@ -769,10 +769,17 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       // a revisited step starts on its previous answer, not the default
       const initial = p.answers[st.key] ?? resolveField(st.initial, p.answers);
       const i = opts.findIndex((o) => o.value === initial);
-      p.sel = i >= 0 ? i : 0;
+      // A value with no row of its own is the case the custom box exists for:
+      // open it there and then, prefilled, rather than silently highlighting
+      // some other model than the one in use. Nothing to prefill means a plain
+      // unlisted start, which just lands on the first row.
+      const prefill = i < 0 && st.custom === true && initial ? initial : null;
+      p.sel = i >= 0 ? i : prefill ? opts.length : 0; // custom rows append last
+      p.entering = prefill !== null;
       buf = [];
       cur = 0;
       inputRev++;
+      if (prefill !== null) chsSet(prefill);
     } else {
       chsSet(p.answers[st.key] ?? resolveField(st.initial, p.answers) ?? "");
     }
@@ -793,8 +800,29 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   function commitStep(): boolean {
     const p = prompt!;
     const st = p.steps[p.idx];
-    // an open custom box overrides the list: its contents are the answer
-    const value = st.kind === "select" && !p.entering ? (promptOptions()[p.sel]?.value ?? "") : display().trim();
+    if (st.kind === "select" && !p.entering && isCustomOption(promptOptions()[p.sel])) {
+      // The row is a request to type, never an answer of its own — reaching it
+      // by any commit route (enter, a second click, pagedown, a menu with no
+      // other row) has to end in the box, or the sentinel would be recorded as
+      // the user's choice. Returning false leaves this step open for it.
+      p.entering = true;
+      chsSet("");
+      return false;
+    }
+    if (st.kind === "select" && p.entering) {
+      const typed = display().trim();
+      if (!typed) {
+        // nothing typed: back to the option list, never an empty answer
+        p.entering = false;
+        chsSet("");
+        return false;
+      }
+      // stored exactly as typed — the handler puts it in the right context, so
+      // reopening the box later shows the same text that will be committed again
+      p.answers[st.key] = typed;
+      return true;
+    }
+    const value = st.kind === "select" ? (promptOptions()[p.sel]?.value ?? "") : display().trim();
     if (st.kind === "text" && !value && st.allowEmpty === false) {
       flash("required — esc cancels");
       return false;
@@ -853,20 +881,8 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
 
   function promptSubmit() {
     const p = prompt!;
-    const st = p.steps[p.idx];
-    if (st.kind === "select" && !p.entering && isCustomOption(promptOptions()[p.sel])) {
-      // the "other…" row — the dock becomes this step's answer box rather
-      // than committing a sentinel no command asked for
-      p.entering = true;
-      chsSet("");
-      return;
-    }
-    if (st.kind === "select" && p.entering && !display().trim()) {
-      // an empty box means "never mind": back to the list, not an empty answer
-      p.entering = false;
-      chsSet("");
-      return;
-    }
+    // commitStep opens the answer box instead of committing when the "other…"
+    // row is selected, so its false here means "not yet", not "refused"
     if (!commitStep()) return;
     const next = nextLiveStep(p.idx + 1, 1);
     if (next < p.steps.length) {
