@@ -2,6 +2,7 @@ import { lookupModel } from "../providers/models.ts";
 import type { ToolDef } from "../providers/types.ts";
 import { renderTodos, getTodos } from "../tools/todo.ts";
 import { VERSION } from "../core/version.ts";
+import os from "node:os";
 
 export { VERSION };
 
@@ -91,6 +92,61 @@ export function buildSystemPrompt(
 }
 
 /**
+ * Machine facts, read once per process — none of them can change under a live
+ * session, and `os.cpus()` walks the machine's CPU list (sysctl on macOS,
+ * /proc/cpuinfo on Linux), which is not worth four syscalls on every step.
+ */
+let machine: { host: string; os: string; runtime: string } | undefined;
+function machineFacts(): { host: string; os: string; runtime: string } {
+  if (machine) return machine;
+  const versions = process.versions as Record<string, string | undefined>;
+  machine = {
+    host: os.hostname(),
+    // one line rather than four keys: platform/kernel/arch, parallelism (so
+    // the agent can decide how much to fan out) and the shell the box names —
+    // all of "what box am I on" in a dozen tokens
+    os: `${process.platform} ${os.release()} ${os.arch()} · ${os.cpus().length} cpu · shell=${process.env.SHELL || "/bin/bash"}`,
+    runtime: versions.bun ? `bun ${versions.bun}` : `node ${process.version}`,
+  };
+  return machine;
+}
+
+/**
+ * Local wall clock, minute granularity. The tail is rebuilt every step anyway
+ * so the ticking costs nothing extra, and an agent that cannot answer *the*
+ * question "what time is it" burns an `exec date` finding out.
+ *
+ * The offset uses UTC+8 / UTC-5:30 notation rather than a raw +08:00 — it reads
+ * as a zone, not as a timestamp, and it cannot be mistaken for part of the date.
+ */
+function localClock(): { date: string; tz: string } {
+  const now = new Date();
+  const p2 = (n: number) => String(n).padStart(2, "0");
+  const mins = -now.getTimezoneOffset();
+  const abs = Math.abs(mins);
+  const offset =
+    mins === 0 ? "UTC" : `UTC${mins < 0 ? "-" : "+"}${Math.floor(abs / 60)}${abs % 60 ? `:${p2(abs % 60)}` : ""}`;
+  const zone = Intl.DateTimeFormat().resolvedOptions().timeZone || offset;
+  return {
+    date: `${now.getFullYear()}-${p2(now.getMonth() + 1)}-${p2(now.getDate())} ${p2(now.getHours())}:${p2(now.getMinutes())}`,
+    tz: zone === offset ? offset : `${zone} ${offset}`,
+  };
+}
+
+/**
+ * `name` is what the user calls the endpoint — a `[providers.*]` profile or a
+ * catalog preset id; `format` is the wire API. Both go to the model: the first
+ * says which quota pool and vendor quirks apply, the second says what protocol
+ * it is actually speaking (which is what decides caching and tool behaviour).
+ */
+function providerLine(p?: { name?: string; format?: string }): string {
+  const name = p?.name;
+  const format = p?.format;
+  if (name && format && name !== format) return `${name} (${format})`;
+  return name ?? format ?? "unknown";
+}
+
+/**
  * The step-varying facts, sent as the LAST message of every request.
  *
  * Position is the whole point. Prefix caches match from the start forward, so
@@ -110,20 +166,27 @@ export function buildRuntimeHeader(opts: {
   sessionId: string;
   cwd: string;
   model: string;
+  provider?: { name?: string; format?: string };
   tools: ToolDef[];
   budget?: RuntimeBudget;
 }): string {
   const info = lookupModel(opts.model);
   const have = toolNames(opts.tools);
   const todos = renderTodos(getTodos(opts.sessionId));
+  const machine = machineFacts();
+  const clock = localClock();
 
   const lines = [
     `[harness metadata — refreshed every step, not something the person typed]`,
     `<runtime>`,
     `cwd: ${opts.cwd}`,
-    `os: ${process.platform} shell=/bin/bash`,
-    `date: ${new Date().toISOString().slice(0, 10)}`,
+    `host: ${machine.host}`,
+    `provider: ${providerLine(opts.provider)}`,
     `model: ${opts.model} ctx=${info.contextWindow} out=${info.maxOutput}`,
+    `os: ${machine.os}`,
+    `runtime: ${machine.runtime}`,
+    `tz: ${clock.tz}`,
+    `date: ${clock.date}`,
     `fox-agent: v${VERSION}`,
     ...(todos ? [`todos:\n${todos}`] : []),
     `</runtime>`,

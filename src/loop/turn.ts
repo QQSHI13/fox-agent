@@ -446,6 +446,7 @@ export async function* runTurnCore(
         sessionId,
         cwd: session.cwd,
         model: cfg.model,
+        provider: { name: cfg.label, format: cfg.provider },
         tools: toolDefs,
         // the agent manages its own window, so it gets the same number the status
         // bar shows: the provider's own report, never an estimate

@@ -50,6 +50,7 @@ async function header(
     tools?: ToolDef[];
     sessionId?: string;
     cwd?: string;
+    provider?: { name?: string; format?: string };
     budget?: { reported: number; limit: number; ratio: number; over: boolean };
   } = {},
 ): Promise<string> {
@@ -58,6 +59,7 @@ async function header(
     sessionId: opts.sessionId ?? "s-prompt",
     cwd: opts.cwd ?? "/work",
     model: "gpt-4o-mini",
+    provider: opts.provider,
     tools: await toolDefs(opts.tools),
     budget: opts.budget,
   });
@@ -70,6 +72,7 @@ async function both(
     projectInstructions?: string;
     sessionId?: string;
     cwd?: string;
+    provider?: { name?: string; format?: string };
     budget?: { reported: number; limit: number; ratio: number; over: boolean };
   } = {},
 ): Promise<string> {
@@ -113,10 +116,18 @@ describe("no git anywhere in the prompt", () => {
     Bun.spawnSync(["git", "init", "-q", repo], { stdout: "ignore", stderr: "ignore" });
     git("commit", "--allow-empty", "-q", "-m", "init");
 
-    const before = await both({ cwd: repo });
+    // the prefix is the claim: a file write must not move a byte of it. It no
+    // longer takes a cwd at all — there is nothing a probe could feed it.
+    const before = await build();
+    const tailBefore = await header({ cwd: repo });
     writeFileSync(join(repo, "scratch.txt"), "a change a git probe would have seen");
-    const after = await both({ cwd: repo });
+    const after = await build();
+    const tailAfter = await header({ cwd: repo });
     expect(after).toBe(before);
+    // the tail is allowed to move — it now carries a clock, by design — but not
+    // because of the write, which is what a probe would have reported
+    const stripDate = (s: string) => s.split("\n").filter((l) => !l.startsWith("date: ")).join("\n");
+    expect(stripDate(tailAfter)).toBe(stripDate(tailBefore));
   });
 
   test("no subprocess is spawned to build a prompt", async () => {
@@ -148,16 +159,23 @@ describe("the system prompt is a stable cache prefix", () => {
     expect(under).not.toContain("over the compaction threshold");
   });
 
-  test("the todo list, cwd, model and date never reach it", async () => {
+  test("the todo list, cwd, model, provider and clock never reach it", async () => {
     const { kvSet, createSession } = await import("../src/store/db.ts");
     const s = createSession("/work", "gpt-4o-mini");
     kvSet(s.id, "todos", [{ content: "wire ACP", status: "in_progress" }]);
 
     const plain = await build();
-    const noisy = await build({ sessionId: s.id, cwd: "/somewhere/else", model: "kimi-k2" } as any);
+    const noisy = await build({
+      sessionId: s.id,
+      cwd: "/somewhere/else",
+      model: "kimi-k2",
+      provider: { name: "zhipuai-coding-plan", format: "openai-compatible" },
+    } as any);
     expect(noisy).toBe(plain);
     expect(plain).not.toContain("<runtime>");
     expect(plain).not.toContain("cwd:");
+    expect(plain).not.toContain("provider:");
+    expect(plain).not.toContain("tz:");
     expect(plain).not.toContain("wire ACP");
   });
 
@@ -262,6 +280,30 @@ describe("the rest of the prompt still assembles", () => {
     expect(h).toContain("[harness metadata");
     expect(h).toContain("<runtime>");
     expect(h).toContain("</runtime>");
+  });
+
+  test("the tail carries provider, machine and clock facts", async () => {
+    const h = await header({ provider: { name: "zhipuai-coding-plan", format: "openai-compatible" } });
+    expect(h).toContain("provider: zhipuai-coding-plan (openai-compatible)");
+    expect(h).toMatch(/^host: \S+/m);
+    expect(h).toMatch(/^os: \S+ \S+ \S+ · \d+ cpu · shell=\S+/m);
+    expect(h).toMatch(/^runtime: (bun|node) /m);
+    expect(h).toMatch(/^fox-agent: v/m);
+
+    // profile name alone (a bare format with no name is the honest fallback)
+    expect(await header({ provider: { format: "anthropic" } })).toContain("provider: anthropic");
+    expect(await header({ provider: { name: "openrouter" } })).toContain("provider: openrouter");
+    expect(await header()).toContain("provider: unknown");
+  });
+
+  test("the clock is local and the offset reads as a zone, not a timestamp", async () => {
+    const h = await header();
+    expect(h).toMatch(/^date: \d{4}-\d{2}-\d{2} \d{2}:\d{2}$/m);
+    // UTC+8 / UTC-5:30 / plain UTC (a machine at offset 0 has no zone name to
+    // disambiguate) — never the raw +08:00 timestamp form, which would read as
+    // part of the date and needs a lookup to convert
+    expect(h).toMatch(/^tz: (\S+ )?UTC([+-]\d{1,2}(:\d{2})?)?$/m);
+    expect(h).not.toMatch(/[+-]\d{2}:\d{2}/);
   });
 });
 
