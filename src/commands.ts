@@ -28,7 +28,7 @@ import type { UiStep } from "./core/ui.ts";
 import { activePlugins, isPluginPathDisabled, loadPlugins } from "./plugins/load.ts";
 import { bundledDisabled, bundledPlugins } from "./plugins/bundled.ts";
 import { BUNDLED_PROVIDER_PLUGIN_NAMES, bundledProviderPlugins } from "./providers/bundled.ts";
-import { addPluginPath, effectiveConfigPath, globalConfigPath, removePluginPath, setPluginDisabled, SETTINGS, settingValue } from "./core/config.ts";
+import { addPluginPath, effectiveConfigPath, globalConfigPath, removePluginPath, setPluginDisabled, SETTINGS, settingValue, type SettingSpec } from "./core/config.ts";
 import { dirname } from "node:path";
 
 /**
@@ -37,6 +37,43 @@ import { dirname } from "node:path";
  * runSlashCommand), and a static tui import here would widen it; the tui
  * module is only needed in interactive hosts where it is loaded anyway.
  */
+/**
+ * Validate, persist and apply one `/settings` assignment.
+ *
+ * Shared by the `key=value` form and the interactive wizard so the two can
+ * never disagree about what a value means or what "reset" writes. An empty
+ * value clears the key, which is what `/settings key=` has always done.
+ */
+function applySetting(spec: SettingSpec, raw: string, state: HarnessState): CommandResult {
+  try {
+    const trimmed = raw.trim();
+    const value = trimmed ? spec.validate(trimmed) : (undefined as unknown as string);
+    const saved = saveGlobalConfig({ extraSettings: { [spec.key]: value } }, state.configPath);
+    if (state.config) (state.config as unknown as Record<string, unknown>)[spec.key] = value;
+    applyResultLive(state, spec.key);
+    return {
+      handled: true,
+      output: `${spec.key} = ${value === undefined ? `(default ${spec.def})` : String(value)} — saved to ${saved}, live now (/reload re-reads it)`,
+    };
+  } catch (e) {
+    return { handled: true, output: `${spec.key}: ${(e as Error).message}` };
+  }
+}
+
+/**
+ * The wizard's prefill: the value as it would be typed back, not as
+ * `settingValue` renders it — "0 (unlimited)" is not something `num(0)` can
+ * parse. Unset prefills empty, so leaving it alone leaves the key unset.
+ */
+function rawSettingValue(spec: SettingSpec | undefined, cfg?: Config): string {
+  if (!spec) return "";
+  const v = cfg === undefined ? undefined : (cfg as unknown as Record<string, unknown>)[spec.key];
+  if (v === undefined) return "";
+  if (typeof v === "boolean") return v ? "true" : "false";
+  if (typeof v === "number") return String(v);
+  return typeof v === "string" ? v : "";
+}
+
 function applyResultLive(state: HarnessState, key: string): void {
   void (async () => {
     try {
@@ -45,6 +82,11 @@ function applyResultLive(state: HarnessState, key: string): void {
         app.setTuiCaps(state.config?.tuiCollapsedChars ?? 240, state.config?.tuiKeptChars ?? 4_000);
       } else if (key === "tuiRich") {
         app.setTuiRich(!!state.config?.tuiRich);
+      } else if (key === "tuiScrollbar") {
+        // wrap width changes with it, so the setter forces a full repaint
+        app.setTuiScrollbar(state.config?.tuiScrollbar ?? true);
+      } else if (key === "tuiFrameMs") {
+        app.setTuiFrameMs(state.config?.tuiFrameMs ?? 33);
       }
     } catch {}
   })();
@@ -213,7 +255,7 @@ export const COMMANDS: CommandSpec[] = [
     desc: "show or change config settings (caps, limits, markers…)",
     usage: "[key[=value]]",
     arg: true,
-    help: "bare: all settings with current values; key: show one; key=value: set (empty value resets to default). Saved to the global config, applied live.",
+    help: "bare in the TUI: pick a key, then type its value (empty resets). Elsewhere bare lists all with current values; key shows one; key=value sets. Saved to the global config, applied live.",
   },
   {
     name: "/upgrade",
@@ -1831,11 +1873,43 @@ export function runSlashCommand(input: string, state: HarnessState): CommandResu
     }
 
     case "/settings": {
-      // Obscure knobs that have no dedicated command. Bare lists everything
-      // with current values; `/settings key=value` sets (validated, saved,
-      // applied live); `/settings key` shows one. Setting an empty value
-      // resets to the default.
+      // Obscure knobs that have no dedicated command. Interactive bare walks
+      // them (pick a key, type a value); otherwise bare lists everything with
+      // current values, `/settings key=value` sets (validated, saved, applied
+      // live), `/settings key` shows one, and an empty value resets to default.
       if (!arg) {
+        if (state.interactive) {
+          return {
+            handled: true,
+            prompt: {
+              title: "settings",
+              steps: [
+                {
+                  key: "key",
+                  label: "setting",
+                  kind: "select",
+                  options: SETTINGS.map((s) => ({ value: s.key, label: `${s.key} — ${s.desc}` })),
+                },
+                {
+                  key: "value",
+                  label: "value",
+                  kind: "text",
+                  // empty resets — the same thing `/settings key=` does
+                  allowEmpty: true,
+                  initial: (a) => rawSettingValue(SETTINGS.find((s) => s.key === a.key), state.config),
+                  hint: (a) => {
+                    const s = SETTINGS.find((x) => x.key === a.key);
+                    return s ? `${s.desc} · default ${s.def} · empty resets` : undefined;
+                  },
+                },
+              ],
+              run: (a) => {
+                const spec = SETTINGS.find((s) => s.key === a.key);
+                return spec ? applySetting(spec, a.value ?? "", state) : { handled: true, output: `unknown setting '${a.key}'` };
+              },
+            },
+          };
+        }
         const st = sty();
         const lines = SETTINGS.map((s) => `${s.key.padEnd(20)} ${settingValue(s, state.config)}`);
         lines.push(st.dim("set: /settings key=value · reset: /settings key= · show: /settings key · saved to global config"));
@@ -1846,19 +1920,7 @@ export function runSlashCommand(input: string, state: HarnessState): CommandResu
       const spec = SETTINGS.find((s) => s.key === key);
       if (!spec) return { handled: true, output: `unknown setting '${key}' — settings: ${SETTINGS.map((s) => s.key).join(", ")}` };
       if (eq < 0) return { handled: true, output: `${spec.key} = ${settingValue(spec, state.config)}\n${spec.desc} (default ${spec.def})` };
-      const raw = arg.slice(eq + 1).trim();
-      try {
-        const value = raw ? spec.validate(raw) : (undefined as unknown as string);
-        const saved = saveGlobalConfig({ extraSettings: { [spec.key]: value } }, state.configPath);
-        if (state.config) (state.config as unknown as Record<string, unknown>)[spec.key] = value;
-        applyResultLive(state, spec.key);
-        return {
-          handled: true,
-          output: `${spec.key} = ${value === undefined ? `(default ${spec.def})` : String(value)} — saved to ${saved}, live now (/reload re-reads it)`,
-        };
-      } catch (e) {
-        return { handled: true, output: `${spec.key}: ${(e as Error).message}` };
-      }
+      return applySetting(spec, arg.slice(eq + 1), state);
     }
 
     case "/exit":

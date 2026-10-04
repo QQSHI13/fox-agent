@@ -844,6 +844,14 @@ export const SETTINGS: SettingSpec[] = [
     fmt: (v) => (v === undefined ? "4000" : String(v)),
   },
   { key: "tuiRich", desc: "rich markdown: syntax-tinted fences + diff colors", def: "false", validate: bool, fmt: showBool },
+  { key: "tuiScrollbar", desc: "dedicated scrollbar column at the right edge", def: "true", validate: bool, fmt: showBool },
+  {
+    key: "tuiFrameMs",
+    desc: "TUI frame interval in ms (8..250 — lower = snappier, more wakeups)",
+    def: "33",
+    validate: num(8, 250),
+    fmt: (v) => (v === undefined ? "33" : String(v)),
+  },
   { key: "diagnostics", desc: "post-edit language-server diagnostics", def: "true", validate: bool, fmt: showBool },
   {
     key: "contextMarkers",

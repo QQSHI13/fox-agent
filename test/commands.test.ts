@@ -673,18 +673,57 @@ describe("/settings", () => {
       interactive: true,
     };
   }
-  test("bare lists every setting with its current value", async () => {
+  test("bare lists every setting with its current value (plain mode)", async () => {
     const tt = await setup();
     const cfgPath = join(dir, "config.toml");
     writeFileSync(cfgPath, 'model = "m"\n'); // explicit --config paths must exist (loud-missing rule)
     const { loadConfig } = await import("../src/core/config.ts");
     const s = tt.createSession("/w", "m1");
     const state = mkState(cfgPath, s.id, loadConfig({ cwd: "/w", configPath: cfgPath }, {}));
+    // a front end that cannot take the keyboard gets the printed list — the TUI
+    // is walked by a wizard instead (see the test below)
+    state.interactive = false;
     const res = tt.runSlashCommand("/settings", state)!;
     for (const key of ["maxSteps", "retryLimit", "compactAt", "tuiRich", "contextMarkers", "acpHistory"]) {
       expect(res.output).toContain(key);
     }
     expect(res.output).toContain("0.85"); // default shown
+  });
+
+  test("bare in the TUI picks a key, then takes a typed value", async () => {
+    const tt = await setup();
+    const cfgPath = join(dir, "config.toml");
+    writeFileSync(cfgPath, 'model = "m"\n');
+    const { SETTINGS, loadConfig } = await import("../src/core/config.ts");
+    const { resolveField } = await import("../src/core/ui.ts");
+    const s = tt.createSession("/w", "m1");
+    const state = mkState(cfgPath, s.id, loadConfig({ cwd: "/w", configPath: cfgPath }, {}));
+
+    const res = tt.runSlashCommand("/settings", state)!;
+    expect(res.output).toBeUndefined();
+    const p = res.prompt!;
+    expect(p.steps.map((st) => st.kind)).toEqual(["select", "text"]);
+
+    const listed = (p.steps[0].options as { value: string }[]).map((o) => o.value);
+    expect(listed).toEqual(SETTINGS.map((st) => st.key));
+    // the two that had no command at all before
+    expect(listed).toContain("tuiScrollbar");
+    expect(listed).toContain("tuiFrameMs");
+
+    // the value step prefills what is set and says what the default is
+    const valueStep = p.steps[1];
+    expect(resolveField(valueStep.initial, { key: "tuiFrameMs" })).toBe("33");
+    expect(resolveField(valueStep.initial, { key: "tuiRich" })).toBe("false"); // loader defaults, not blank
+    expect(resolveField(valueStep.hint, { key: "compactAt" })).toContain("default 0.85");
+
+    const out = p.run({ key: "tuiFrameMs", value: "16" }, state);
+    expect(out.output).toContain("tuiFrameMs = 16");
+    expect(state.config.tuiFrameMs).toBe(16);
+
+    // and an empty value is the reset the hint promises
+    const reset = p.run({ key: "tuiFrameMs", value: "" }, state);
+    expect(reset.output).toContain("(default 33)");
+    expect(state.config.tuiFrameMs).toBeUndefined();
   });
 
   test("key=value validates, saves and applies live; = resets; junk is refused", async () => {

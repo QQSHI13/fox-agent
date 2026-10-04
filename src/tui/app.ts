@@ -108,6 +108,12 @@ export function setTuiRich(on: boolean): void {
  */
 let SCROLLBAR = true;
 let clearKeyRef: () => void = () => {}; // set in startTui: forces full repaint
+/**
+ * Re-arms the frame loop — set from inside startTui, exactly like clearKeyRef.
+ * The loop's period is config `tuiFrameMs`, so a live change has to rebuild the
+ * timer rather than wait for the next launch.
+ */
+let frameArmRef: ((ms: number) => void) | null = null;
 
 export function setTuiScrollbar(on: boolean): void {
   if (SCROLLBAR === on) return;
@@ -115,6 +121,17 @@ export function setTuiScrollbar(on: boolean): void {
   // the track column (or its absence) must repaint immediately: wrap width
   // changes too, so every cached row is stale
   clearKeyRef();
+}
+
+/**
+ * Frame interval (config `tuiFrameMs`, default 33).
+ *
+ * The loop coalesces dirty work once per tick, so this trades wakeups against
+ * repaint latency and nothing else. Clamped 8..250 the same way config loading
+ * clamps it, because this is reachable without going through the loader.
+ */
+export function setTuiFrameMs(ms: number): void {
+  frameArmRef?.(Math.max(8, Math.min(250, Math.floor(ms))));
 }
 
 // Live palette: resolves against the active theme on every access, so a
@@ -3555,8 +3572,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       // Frame interval honors tuiFrameMs (config, default 33). The loop is a
       // coalescer, not a pacer: dirty work runs at most once per interval,
       // and a spinner-only tick re-derives the status region alone.
-      const frameMs = Math.max(8, Math.min(250, state.config?.tuiFrameMs ?? 33));
-      const frameTimer = setInterval(() => {
+      const frameTick = () => {
         tickSpinner();
         if (!dirty && !statusOnly) return;
         const spinOnly = statusOnly && !dirty;
@@ -3610,7 +3626,14 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           } catch {}
           gracefulExit(1);
         }
-      }, 33);
+      };
+      let frameTimer: ReturnType<typeof setInterval> | null = null;
+      const armFrameTimer = (ms: number) => {
+        if (frameTimer) clearInterval(frameTimer);
+        frameTimer = setInterval(frameTick, Math.max(8, Math.min(250, Math.floor(ms))));
+      };
+      frameArmRef = armFrameTimer;
+      armFrameTimer(state.config?.tuiFrameMs ?? 33);
 
       try {
         await new Promise<void>((resolve) => {
@@ -3618,7 +3641,8 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           if (exiting) resolve(); // exited during startup
         });
       } finally {
-        clearInterval(frameTimer);
+        if (frameTimer) clearInterval(frameTimer);
+        frameArmRef = null;
       }
       if (exitCode) process.exitCode = exitCode;
     } catch (e) {
