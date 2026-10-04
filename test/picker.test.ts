@@ -147,6 +147,89 @@ describe("picker verbs", () => {
   });
 });
 
+describe("picker custom input rows", () => {
+  const withInput = (): PickerRow[] => [...rows("a", "b"), { id: "other", cells: ["other…"], search: "other", input: true }];
+
+  test("enter on an input row opens a box instead of choosing the row", () => {
+    const p = new Picker(withInput(), ALL);
+    p.key({ name: "end" });
+    expect(p.selected()!.id).toBe("other");
+    expect(p.key({ name: "return" })).toBeNull(); // nothing chosen yet
+    expect(p.enteringValue()).toBe(""); // an empty box is a real state
+    expect(p.footer()).toContain("type your answer");
+    // and the row that opened it is still the selected one
+    expect(p.selected()!.id).toBe("other");
+  });
+
+  test("keystrokes fill the box, never the filter, and enter returns the value", () => {
+    const p = new Picker(withInput(), ALL);
+    p.key({ name: "end" });
+    p.key({ name: "return" });
+    for (const ch of "hi x") p.key({ ch });
+    expect(p.enteringValue()).toBe("hi x");
+    expect(p.filter()).toBe(""); // the same keys would have been a query
+    expect(p.visible().map((r) => r.id)).toEqual(["a", "b", "other"]);
+    expect(p.key({ name: "return" })).toEqual({ kind: "input", id: "other", value: "hi x" });
+    expect(p.enteringValue()).toBeNull();
+  });
+
+  test("the value is trimmed, and an empty box hands the list back", () => {
+    const p = new Picker(withInput(), ALL);
+    p.key({ name: "end" });
+    p.key({ name: "return" });
+    p.key({ ch: " " });
+    expect(p.key({ name: "return" })).toBeNull(); // whitespace only: no answer
+    expect(p.enteringValue()).toBeNull();
+
+    p.key({ name: "return" }); // box again
+    p.key({ ch: "x" });
+    expect(p.key({ name: "return" })).toEqual({ kind: "input", id: "other", value: "x" });
+  });
+
+  test("escape leaves the box but not the picker; ctrl+c still quits", () => {
+    const p = new Picker(withInput(), ALL);
+    p.key({ name: "end" });
+    p.key({ name: "return" });
+    p.key({ ch: "a" });
+    expect(p.key({ name: "escape" })).toBeNull();
+    expect(p.enteringValue()).toBeNull();
+    expect(p.selected()!.id).toBe("other"); // still in the chooser
+
+    p.key({ name: "return" });
+    expect(p.key({ name: "c", ctrl: true })).toEqual({ kind: "cancel" });
+    expect(p.enteringValue()).toBeNull();
+  });
+
+  test("verbs are letters while the box is open", () => {
+    const p = new Picker(withInput(), ALL);
+    p.key({ name: "end" });
+    p.key({ name: "return" });
+    for (const ch of "xnf") p.key({ ch });
+    expect(p.enteringValue()).toBe("xnf");
+    expect(p.pendingConfirm()).toBeNull(); // x did not arm a delete
+    expect(p.filter()).toBe("");
+  });
+
+  test("backspace edits the value by code point, so an emoji survives it", () => {
+    const p = new Picker(withInput(), ALL);
+    p.key({ name: "end" });
+    p.key({ name: "return" });
+    p.key({ ch: "a" });
+    p.key({ ch: "😀" });
+    expect(p.enteringValue()).toBe("a😀");
+    p.key({ name: "backspace" });
+    expect(p.enteringValue()).toBe("a"); // not "a\uD83D"
+    p.key({ name: "backspace" });
+    p.key({ name: "backspace" }); // empty: a no-op, never a cancel
+    expect(p.enteringValue()).toBe("");
+  });
+
+  test("a plain row next to an input row still returns choose", () => {
+    const p = new Picker(withInput(), ALL);
+    expect(p.key({ name: "return" })).toEqual({ kind: "choose", id: "a" });
+  });
+});
+
 describe("picker rows and window", () => {
   test("setRows keeps the place, and lands on the row that slid up after a delete", () => {
     const p = new Picker(rows("a", "b", "c"), ALL);

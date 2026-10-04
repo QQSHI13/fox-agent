@@ -28,6 +28,13 @@ export interface PickerRow {
   /** rendered with a marker and never destructible (the live session) */
   current?: boolean;
   /**
+   * An "other…" row: enter does not return it, it opens a free-text box and
+   * the value typed there comes back as a `{ kind: "input" }` action carrying
+   * this row's id. For a caller offering a list that cannot be complete — a
+   * theme name, a provider id — without forcing it to invent a two-step dance.
+   */
+  input?: boolean;
+  /**
    * How to name this row in the delete confirm. Defaults to `id`, never to a
    * cell: the first column is a list position, so the prompt read "delete 2?" —
    * a number that identifies nothing and that a filter edit would renumber.
@@ -38,6 +45,8 @@ export interface PickerRow {
 /** What a keypress resolved to. `null` means "the picker consumed it". */
 export type PickerAction =
   | { kind: "choose"; id: string }
+  /** an `input` row: `value` is what the user typed, trimmed and non-empty */
+  | { kind: "input"; id: string; value: string }
   | { kind: "fork"; id: string }
   | { kind: "delete"; id: string }
   | { kind: "new" }
@@ -70,6 +79,12 @@ export class Picker {
   private query = "";
   private sel = 0;
   private confirming: PickerConfirm | null = null;
+  /**
+   * An `input` row is open: this holds its id and the value typed so far.
+   * While set, keystrokes belong to the box rather than to the filter — the
+   * one place the two would otherwise fight over every printable character.
+   */
+  private entering: { id: string; value: string } | null = null;
 
   constructor(
     rows: PickerRow[],
@@ -112,6 +127,14 @@ export class Picker {
     return this.confirming;
   }
 
+  /**
+   * The open input box's contents, or null when no `input` row is open. An
+   * empty string is a real state — an empty box the painter still has to show.
+   */
+  enteringValue(): string | null {
+    return this.entering ? this.entering.value : null;
+  }
+
   /** Replace the rows (after a delete) while keeping the selection sensible. */
   setRows(rows: PickerRow[]): void {
     const keep = this.selected()?.id;
@@ -148,6 +171,39 @@ export class Picker {
     }
 
     const n = this.visible().length;
+    if (this.entering) {
+      const box = this.entering;
+      switch (k.name) {
+        case "escape":
+          // back to the list, not out of the picker: the row that opened the
+          // box is still selected, so a typo costs one key rather than the
+          // whole chooser
+          this.entering = null;
+          return null;
+        case "return": {
+          const value = box.value.trim();
+          this.entering = null;
+          // an empty box is "I changed my mind" — hand the list back instead
+          // of returning an answer nobody typed
+          return value ? { kind: "input", id: box.id, value } : null;
+        }
+        case "backspace": {
+          const chars = [...box.value]; // code points: a box takes emoji too
+          chars.pop();
+          box.value = chars.join("");
+          return null;
+        }
+        case "c":
+          if (k.ctrl) {
+            this.entering = null;
+            return { kind: "cancel" };
+          }
+          return null;
+      }
+      if (k.ch === undefined) return null; // every other named key belongs to the box
+      box.value += k.ch;
+      return null;
+    }
     switch (k.name) {
       case "escape":
         return { kind: "cancel" };
@@ -171,7 +227,12 @@ export class Picker {
         return null;
       case "return": {
         const row = this.selected();
-        return row ? { kind: "choose", id: row.id } : null;
+        if (!row) return null;
+        if (row.input) {
+          this.entering = { id: row.id, value: "" };
+          return null;
+        }
+        return { kind: "choose", id: row.id };
       }
       case "backspace":
         this.query = this.query.slice(0, -1);
@@ -233,6 +294,7 @@ export class Picker {
 
   /** The one-line footer: either the key legend or the confirm prompt. */
   footer(): string {
+    if (this.entering) return "type your answer · enter confirm · esc back to list";
     if (this.confirming) return `delete ${this.confirming.label}? this cannot be undone — y / n`;
     const keys = ["↑↓ move", "enter open"];
     if (this.opts.allowFork) keys.push("f fork");

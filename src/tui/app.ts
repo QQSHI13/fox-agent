@@ -42,7 +42,7 @@ import {
   type PickerRequest,
   type PromptRequest,
 } from "../commands.ts";
-import { resolveField, type UiBridge, type UiStep } from "../core/ui.ts";
+import { isCustomOption, resolveField, visibleOptions, type UiBridge, type UiStep } from "../core/ui.ts";
 import { childEnv } from "../core/childenv.ts";
 import { shellPath } from "../core/shell.ts";
 import { killTree } from "../tools/exec.ts";
@@ -459,6 +459,12 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     /** typed filter for a select step's option list */
     filter: string;
     /**
+     * The step's `custom` row is open and the dock is its answer box. While
+     * set the select behaves like a text step — except escape, which backs
+     * out to the option list instead of cancelling the whole wizard.
+     */
+    entering: boolean;
+    /**
      * The select options as of step entry. Endpoint/catalog refreshes landing
      * mid-navigation used to reorder the live list under the user's fingers,
      * so the highlight jumped rows between keypresses — every consumer
@@ -655,6 +661,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       answers: {},
       sel: 0,
       filter: "",
+      entering: false,
       snap: null,
       done: (answers) => {
         if (answers === null) return flash("cancelled");
@@ -715,6 +722,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       answers: {},
       sel: 0,
       filter: "",
+      entering: false,
       snap: null,
       done: (answers) => {
         resolve(answers ?? undefined);
@@ -728,16 +736,16 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   /** The filtered option list of the current select step (all of them on a text step). */
   function promptOptions(): { value: string; label: string }[] {
     const p = prompt!;
-    const all = (p.snap && p.snap.idx === p.idx ? p.snap.opts : resolveField(p.steps[p.idx].options, p.answers)) ?? [];
-    const f = p.filter.trim().toLowerCase();
-    if (!f) return all;
-    return all.filter((o) => o.label.toLowerCase().includes(f) || o.value.toLowerCase().includes(f));
+    const st = p.steps[p.idx];
+    const all = (p.snap && p.snap.idx === p.idx ? p.snap.opts : resolveField(st.options, p.answers)) ?? [];
+    return visibleOptions(all, p.filter, st.kind === "select" && st.custom === true);
   }
 
   function enterPromptStep() {
     const p = prompt!;
     const st = p.steps[p.idx];
     p.filter = "";
+    p.entering = false;
     if (st.kind === "select") {
       const opts = resolveField(st.options, p.answers) ?? [];
       p.snap = { idx: p.idx, opts };
@@ -768,7 +776,8 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   function commitStep(): boolean {
     const p = prompt!;
     const st = p.steps[p.idx];
-    const value = st.kind === "select" ? (promptOptions()[p.sel]?.value ?? "") : display().trim();
+    // an open custom box overrides the list: its contents are the answer
+    const value = st.kind === "select" && !p.entering ? (promptOptions()[p.sel]?.value ?? "") : display().trim();
     if (st.kind === "text" && !value && st.allowEmpty === false) {
       flash("required — esc cancels");
       return false;
@@ -826,8 +835,22 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   }
 
   function promptSubmit() {
-    if (!commitStep()) return;
     const p = prompt!;
+    const st = p.steps[p.idx];
+    if (st.kind === "select" && !p.entering && isCustomOption(promptOptions()[p.sel])) {
+      // the "other…" row — the dock becomes this step's answer box rather
+      // than committing a sentinel no command asked for
+      p.entering = true;
+      chsSet("");
+      return;
+    }
+    if (st.kind === "select" && p.entering && !display().trim()) {
+      // an empty box means "never mind": back to the list, not an empty answer
+      p.entering = false;
+      chsSet("");
+      return;
+    }
+    if (!commitStep()) return;
     const next = nextLiveStep(p.idx + 1, 1);
     if (next < p.steps.length) {
       p.idx = next;
@@ -852,12 +875,14 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       // submits. Clicks used to die here entirely, so choosing with the mouse
       // left the stale highlight behind and enter committed the wrong answer —
       // notably landing /login on the "model id" text step after "picking" a
-      // listed model.
+      // listed model. With the custom box open there is no list to click: the
+      // dock owns the step until escape backs out of it.
+      if (p.entering) return true;
       if (k.action === "up" && st.kind === "select") promptClick(k.x, k.y);
       return true;
     }
     if (k.type === "paste") {
-      if (st.kind === "text") insertText(k.text);
+      if (st.kind === "text" || p.entering) insertText(k.text);
       else {
         p.filter += k.text;
         p.sel = 0;
@@ -866,7 +891,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       return true;
     }
     if (k.type === "char") {
-      if (st.kind === "text") return false; // ordinary editing falls through
+      if (st.kind === "text" || p.entering) return false; // ordinary editing falls through
       // a select filters as you type — a 300-model list is not an arrow-key list
       p.filter += k.ch;
       p.sel = 0;
@@ -876,6 +901,13 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     const { name, ctrl } = k;
     // ctrl+c cancels too (muscle memory), but only esc is advertised
     if (name === "escape" || (name === "c" && ctrl)) {
+      if (p.entering) {
+        // out of the answer box, not out of the wizard: the option list is
+        // still open on the same step with its selection where it was
+        p.entering = false;
+        chsSet("");
+        return true;
+      }
       finishPrompt(null);
       return true;
     }
@@ -901,7 +933,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       }
       return true;
     }
-    if (st.kind === "select") {
+    // with the custom box open the select no longer routes keys: they fall
+    // through as ordinary editing, which is what the box is made of
+    if (st.kind === "select" && !p.entering) {
       const n = promptOptions().length;
       if (name === "up" || name === "down") {
         p.sel = (p.sel + (name === "up" ? -1 : 1) + n) % Math.max(1, n);
@@ -3137,7 +3171,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     // a truly empty box, or it paints over leading indentation the user typed
     const empty = !buf.length;
     const st0 = prompt?.steps[prompt.idx];
-    const selectFilter = prompt && st0?.kind === "select" ? prompt.filter : "";
+    // with the custom box open the dock shows what is being typed, not the
+    // filter — the two would otherwise fight over the same line
+    const selectFilter = prompt && st0?.kind === "select" && !prompt.entering ? prompt.filter : "";
     const pfx = prompt ? "› " : "❯ ";
     if (selectFilter) {
       // a select step's keystrokes go to the filter — show them in the dock,
@@ -3147,9 +3183,11 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       pendingCaret = { x: 3 + [...selectFilter].reduce((w, ch) => w + charWidth(ch.codePointAt(0)!), 0), y: inputTop };
     } else if (empty) {
       const placeholder = prompt
-        ? st0!.kind === "select"
-          ? "(type to filter · ↑↓ choose · enter confirms · esc cancels)"
-          : `(${resolveField(st0!.hint, prompt!.answers) ?? "type your answer"} · enter submits · esc cancels)`
+        ? prompt.entering
+          ? "(type an answer not in the list · enter submits · esc back to the list)"
+          : st0!.kind === "select"
+            ? "(type to filter · ↑↓ choose · enter confirms · esc cancels)"
+            : `(${resolveField(st0!.hint, prompt!.answers) ?? "type your answer"} · enter submits · esc cancels)`
         : "(type here — / commands · \\ escapes · ! shell · wheel/pgup scroll · click expands · drag/dbl-click selects)";
       screen.text(1, inputTop, pfx, prompt ? S.accent : S.dim);
       screen.text(3, inputTop, placeholder, S.dim);

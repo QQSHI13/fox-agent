@@ -87,7 +87,15 @@ export async function runPicker(
     const listH = Math.max(1, H - listTop - 2);
     const q = picker.filter();
     screen.text(1, 0, clip(opts.title, W - 2), S.accent);
-    screen.text(1, 1, clip(q ? `filter: ${q}` : (opts.headers?.join("  ") ?? "type to filter"), W - 2), S.dim);
+    const entered = picker.enteringValue();
+    if (entered !== null) {
+      // an `input` row is open: row 1 becomes the answer box, painted like a
+      // selected row so it reads as what the highlight below is asking for
+      screen.fillRow(1, 0, W, S.sel);
+      screen.text(1, 1, clip(entered || "type your answer", W - 2), S.sel);
+    } else {
+      screen.text(1, 1, clip(q ? `filter: ${q}` : (opts.headers?.join("  ") ?? "type to filter"), W - 2), S.dim);
+    }
 
     const win = picker.window(listH);
     if (!win.rows.length) {
@@ -110,8 +118,11 @@ export async function runPicker(
   let done: ((a: PickerAction) => void) | null = null;
   const decoder = createDecoder((k) => {
     if (k.type === "paste") {
-      // a pasted id is a filter, not a burst of verb keys
-      for (const ch of k.text.replace(/\s+/g, "")) picker.key({ ch });
+      // while an input box is open the paste is the value, spaces and all;
+      // as a filter it would be a burst of verb keys and the spaces stripped
+      const box = picker.enteringValue();
+      const text = box !== null ? k.text : k.text.replace(/\s+/g, "");
+      for (const ch of text) picker.key({ ch });
       dirty = true;
       return;
     }

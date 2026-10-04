@@ -26,6 +26,16 @@ export interface UiStep {
    * for the provider just picked, say).
    */
   options?: { value: string; label: string }[] | ((answers: Record<string, string>) => { value: string; label: string }[]);
+  /**
+   * select: offer an answer that is not in `options` too. An "other…" row is
+   * appended to the list (never filtered away — it is how you reach a value
+   * no filter can match), and choosing it swaps the dock to a free-text box
+   * for this step; whatever is typed becomes the answer.
+   *
+   * Off by default: a closed list is a promise the command can rely on. Turn
+   * it on where the handler validates what it gets back anyway.
+   */
+  custom?: boolean;
   /** text prefill, or the select value to start on; may also depend on earlier answers */
   initial?: string | ((answers: Record<string, string>) => string | undefined);
   /** dim suffix, e.g. "empty = keep current"; may also depend on earlier answers */
@@ -41,6 +51,40 @@ export interface UiStep {
 /** Resolve a possibly-dynamic step field against the answers so far. */
 export function resolveField<T>(field: T | ((answers: Record<string, string>) => T) | undefined, answers: Record<string, string>): T | undefined {
   return typeof field === "function" ? (field as (a: Record<string, string>) => T)(answers) : field;
+}
+
+/**
+ * The synthetic row a `custom` select step appends to its options.
+ *
+ * Its value is a sentinel, never an answer: choosing it opens a free-text box
+ * for the step, and whatever is typed there is committed instead. The sentinel
+ * exists so the wizard can tell the row apart from real options — a command
+ * that ends up holding it was handed something the user never chose.
+ */
+export const CUSTOM_OPTION = { value: "__fox_other__", label: "other…" };
+
+/** Is this option the custom-answer row? */
+export function isCustomOption(option: { value: string } | undefined): boolean {
+  return option !== undefined && option.value === CUSTOM_OPTION.value;
+}
+
+/**
+ * What a select step paints: its options narrowed by the typed filter, plus
+ * the custom row when the step allows one.
+ *
+ * The custom row is appended *after* filtering and deliberately does not match
+ * the filter. It is the one row that has to survive a query matching nothing
+ * else — "type whatever you want" must stay reachable precisely when every
+ * listed option has been filtered away.
+ */
+export function visibleOptions(
+  options: { value: string; label: string }[],
+  filter: string,
+  custom: boolean,
+): { value: string; label: string }[] {
+  const f = filter.trim().toLowerCase();
+  const shown = !f ? options : options.filter((o) => o.label.toLowerCase().includes(f) || o.value.toLowerCase().includes(f));
+  return custom ? [...shown, CUSTOM_OPTION] : shown;
 }
 
 /**
