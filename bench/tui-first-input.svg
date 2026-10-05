@@ -9,20 +9,20 @@
 <rect x="170" y="93" width="3" height="16" fill="#5b7fa6"/>
 <text x="181" y="106" fill="#e6e1d8" font-size="12">0.1 ms</text>
 <text x="16" y="131" fill="#8a8578" font-size="12">pi</text>
-<rect x="170" y="119" width="54" height="16" fill="#5b7fa6"/>
-<text x="232" y="132" fill="#e6e1d8" font-size="12">8.2 ms</text>
+<rect x="170" y="119" width="55" height="16" fill="#5b7fa6"/>
+<text x="233" y="132" fill="#e6e1d8" font-size="12">7.2 ms</text>
 <text x="16" y="157" fill="#8a8578" font-size="12">aider</text>
-<rect x="170" y="145" width="71" height="16" fill="#5b7fa6"/>
-<text x="249" y="158" fill="#e6e1d8" font-size="12">10.8 ms</text>
+<rect x="170" y="145" width="61" height="16" fill="#5b7fa6"/>
+<text x="239" y="158" fill="#e6e1d8" font-size="12">8.0 ms</text>
 <text x="16" y="183" fill="#8a8578" font-size="12">opencode v1</text>
-<rect x="170" y="171" width="257" height="16" fill="#5b7fa6"/>
-<text x="435" y="184" fill="#e6e1d8" font-size="12">39.0 ms</text>
+<rect x="170" y="171" width="273" height="16" fill="#5b7fa6"/>
+<text x="451" y="184" fill="#e6e1d8" font-size="12">35.8 ms</text>
 <text x="16" y="209" fill="#8a8578" font-size="12">kilo code</text>
-<rect x="170" y="197" width="327" height="16" fill="#5b7fa6"/>
-<text x="505" y="210" fill="#e6e1d8" font-size="12">49.6 ms</text>
+<rect x="170" y="197" width="318" height="16" fill="#5b7fa6"/>
+<text x="496" y="210" fill="#e6e1d8" font-size="12">41.8 ms</text>
 <text x="16" y="235" fill="#8a8578" font-size="12">opencode v2</text>
 <rect x="170" y="223" width="440" height="16" fill="#5b7fa6"/>
-<text x="618" y="236" fill="#e6e1d8" font-size="12">66.8 ms</text>
+<text x="618" y="236" fill="#e6e1d8" font-size="12">57.8 ms</text>
 <text x="16" y="261" fill="#e6e1d8" font-size="12">fox-agent</text>
 <rect x="170" y="249" width="440" height="16" fill="#3a382f"/>
 <text x="176" y="262" fill="#8a8578" font-size="11">n/a — not installed</text>

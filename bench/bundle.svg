@@ -15,11 +15,11 @@
 <rect x="170" y="145" width="88" height="16" fill="#5b7fa6"/>
 <text x="266" y="158" fill="#e6e1d8" font-size="12">128.5 MB</text>
 <text x="16" y="183" fill="#8a8578" font-size="12">jcode</text>
-<rect x="170" y="171" width="91" height="16" fill="#5b7fa6"/>
-<text x="269" y="184" fill="#e6e1d8" font-size="12">132.6 MB</text>
+<rect x="170" y="171" width="92" height="16" fill="#5b7fa6"/>
+<text x="270" y="184" fill="#e6e1d8" font-size="12">134.7 MB</text>
 <text x="16" y="209" fill="#8a8578" font-size="12">qwen code</text>
-<rect x="170" y="197" width="95" height="16" fill="#5b7fa6"/>
-<text x="273" y="210" fill="#e6e1d8" font-size="12">139.1 MB</text>
+<rect x="170" y="197" width="100" height="16" fill="#5b7fa6"/>
+<text x="278" y="210" fill="#e6e1d8" font-size="12">146.2 MB</text>
 <text x="16" y="235" fill="#8a8578" font-size="12">copilot cli</text>
 <rect x="170" y="223" width="122" height="16" fill="#5b7fa6"/>
 <text x="300" y="236" fill="#e6e1d8" font-size="12">178.6 MB</text>
