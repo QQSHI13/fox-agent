@@ -109,6 +109,15 @@ export function setTuiRich(on: boolean): void {
  * reserved column: buildRows wraps at full width and the mouse scrub is dead.
  */
 let SCROLLBAR = true;
+/** FOX_AGENT_FRAMEPROFILE=<file>: per-frame phase timings land there (perf work). */
+const PROF = process.env.FOX_AGENT_FRAMEPROFILE ?? "";
+let profMark = 0;
+function profLine(line: string): void {
+  try {
+    appendFileSync(PROF, `${line}\n`);
+  } catch {}
+}
+
 /** transcript rows moved per wheel notch / drag-edge tick (config `tuiScrollStep`). */
 let SCROLL_STEP = 1;
 let clearKeyRef: () => void = () => {}; // set in startTui: forces full repaint
@@ -2572,7 +2581,13 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   // span is the item's non-blank edge span, computed once at fill — countRows
   // asks for it for EVERY item on EVERY frame (twice with the scrollbar), and
   // rescanning the row arrays there was the O(nodes) render cost on long sessions
-  const lineCache = new Map<number, { rev: number; w: number; rows: Row[]; rich: number; span: [number, number] }>();
+  // per (item, width): computeFrame counts at W and counts AGAIN at W-2 when
+  // the scrollbar shows, so one width per item thrashed the cache — every
+  // frame re-rendered ALL items at W (evicting W-2), then all at W-2
+  // (evicting W): 60ms+ of pure re-render per scroll tick on a long session.
+  // Nested by width keeps both warm; the prune sweep walks the outer (item)
+  // keys and stays correct, and the clear()s are whole-map as before.
+  const lineCache = new Map<number, Map<number, { rev: number; rows: Row[]; rich: number; span: [number, number] }>>();
 
   function itemStyle(kind: ItemKind): Partial<Seg> {
     switch (kind) {
@@ -2620,8 +2635,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   }
 
   function itemRows(it: Item, w: number): { rows: Row[]; span: [number, number] } {
-    const cached = lineCache.get(it.k);
-    if (cached && cached.rev === revs.get(it.k) && cached.w === w && cached.rich === richRev) return cached;
+    const perWidth = lineCache.get(it.k);
+    const cached = perWidth?.get(w);
+    if (cached && cached.rev === revs.get(it.k) && cached.rich === richRev) return cached;
     let rows: Row[];
     if (it.kind === "md") {
       // no trailing blank: spacing between items is buildRows' job
@@ -2740,8 +2756,13 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     } else {
       rows = wrapSegs([{ t: it.text, ...itemStyle(it.kind) }], w).map((segs) => ({ segs }));
     }
-    const entry = { rev: revs.get(it.k) ?? 0, w, rows, rich: richRev, span: itemEdgeSpan(rows) };
-    lineCache.set(it.k, entry);
+    const entry = { rev: revs.get(it.k) ?? 0, rows, rich: richRev, span: itemEdgeSpan(rows) };
+    let pw = lineCache.get(it.k);
+    if (!pw) {
+      pw = new Map();
+      lineCache.set(it.k, pw);
+    }
+    pw.set(w, entry);
     return entry;
   }
 
@@ -3367,8 +3388,10 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     }
 
     // ---- frame + transcript region ----
+    const pT = PROF ? performance.now() : 0;
     const fs = transcriptSig();
     const frameChanged = fs !== lastFrameSig || !painted;
+    const pS = PROF ? performance.now() : 0;
     if (frameChanged) {
       const fr = computeFrame(frameInput());
       scrollTop = fr.scrollTop; // computeFrame owns the clamp/stick rule
@@ -3417,6 +3440,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         for (let sy = 0; sy < fr.vh; sy++)
           P.transcript.fillRow(sy, W - 1, W, sy >= fr.sb.ty && sy < fr.sb.ty + fr.sb.th ? S.sbThumb : S.sbTrack);
       }
+      if (PROF) profLine(`  derive=${(performance.now() - pS).toFixed(1)} sig=${(pS - pT).toFixed(1)}`);
     }
 
     // ---- dock region ----
@@ -3943,6 +3967,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         statusOnly = false;
         dirty = false;
         const t0 = DEBUG_VERBOSE ? performance.now() : 0;
+        if (PROF) profMark = performance.now();
         try {
           if (spinOnly) {
             // spinner path: status region only — no computeFrame, no
@@ -3950,12 +3975,16 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
             // The caret repositions too: the status write strands the
             // hardware cursor at the row end, and the input caret would
             // visibly jump there until the next full frame.
+            const p0 = PROF ? performance.now() : 0;
             paintStatus();
+            const p1 = PROF ? performance.now() : 0;
             screen.composite();
+            const p2 = PROF ? performance.now() : 0;
             screen.flush();
             const caret = nextCaret ?? { x: 3, y: H - 2 };
             term.setCursor(caret.x, caret.y);
             term.flush();
+            if (PROF) profLine(`spin paint=${(p1 - p0).toFixed(1)} comp=${(p2 - p1).toFixed(1)} flush=${(performance.now() - p2).toFixed(1)}`);
             return;
           }
           // Cursor churn flickers: only hide/reposition it when the caret actually
@@ -3964,13 +3993,18 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           // hide/show round-trip. paint() runs BEFORE the caret is read: nextCaret
           // is computed inside paint, so reading it first would place the cursor
           // one frame (one keystroke) behind the text.
+          const q0 = PROF ? performance.now() : 0;
           paint();
+          const q1 = PROF ? performance.now() : 0;
           const caret = nextCaret ?? { x: 3, y: H - 2 };
           const caretKey = `${caret.x},${caret.y}`;
           const moved = caretKey !== lastCaretKey;
           if (moved) term.hideCursor(); // see the old comment: visible cursor mid-repaint ghosts on Windows Terminal
           screen.composite();
+          const q2 = PROF ? performance.now() : 0;
           screen.flush();
+          if (PROF) profLine(`full paint=${(q1 - q0).toFixed(1)} comp=${(q2 - q1).toFixed(1)} flush=${(performance.now() - q2).toFixed(1)} items=${items.length} ${W}x${H}`);
+          const q3 = PROF ? performance.now() : 0;
           if (process.env.FOX_AGENT_TRACE && screen.lastDirty()) {
             try {
               appendFileSync(process.env.FOX_AGENT_TRACE + ".grid", `⟦frame⟧\n${screen.dumpGrid()}\n`);
@@ -3988,6 +4022,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
             const ms = performance.now() - t0;
             if (ms > 16) debugLog(`slow frame ${ms.toFixed(0)}ms`, `items=${items.length} spinOnly=${spinOnly}`);
           }
+          if (PROF && performance.now() - profMark > 20) profLine(`SLOWFRAME total=${(performance.now() - profMark).toFixed(1)}ms`);
         } catch (e) {
           // painting over the grid with a stack trace is how raw errors leak.
           // This used to gracefulExit(1): one bad row (a resume replaying an
