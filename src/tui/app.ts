@@ -3105,10 +3105,12 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         }
       }
 
-      // scrollbar — dedicated track column whenever tuiScrollbar is on
-      if (SCROLLBAR) {
+      // scrollbar — dedicated track column only when content overflows:
+      // painting the track unconditionally put a dead gutter down the welcome
+      // screen and any short session with nothing to scroll
+      if (SCROLLBAR && fr.sbShowing) {
         for (let sy = 0; sy < fr.vh; sy++)
-          screen.fillRow(sy, W - 1, W, fr.sbShowing && sy >= fr.sb.ty && sy < fr.sb.ty + fr.sb.th ? S.sbThumb : S.sbTrack);
+          screen.fillRow(sy, W - 1, W, sy >= fr.sb.ty && sy < fr.sb.ty + fr.sb.th ? S.sbThumb : S.sbTrack);
       }
     }
 
@@ -3186,9 +3188,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         if (range) screen.restyle(y, 1 + range.from, 2 + range.to, C.selBg);
       }
     }
-    if (SCROLLBAR) {
+    if (SCROLLBAR && fr.sbShowing) {
       for (let sy = 0; sy < fr.vh; sy++)
-        screen.fillRow(sy, W - 1, W, fr.sbShowing && sy >= fr.sb.ty && sy < fr.sb.ty + fr.sb.th ? S.sbThumb : S.sbTrack);
+        screen.fillRow(sy, W - 1, W, sy >= fr.sb.ty && sy < fr.sb.ty + fr.sb.th ? S.sbThumb : S.sbTrack);
     }
     screen.forceRepaintAll(); // region partially overwritten the modal — re-emit everything it touched
   }
@@ -3365,9 +3367,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     // floats cleared/restamped full-width rows that overlap the transcript
     // band — the scrollbar column they wiped must be re-stamped or the
     // track/thumb vanish whenever hints/queue/wizard change height
-    if (SCROLLBAR && painted) {
+    if (SCROLLBAR && painted?.sbShowing) {
       for (let sy = 0; sy < Math.min(painted.vh, inputTop); sy++)
-        screen.fillRow(sy, W - 1, W, painted.sbShowing && sy >= painted.sb.ty && sy < painted.sb.ty + painted.sb.th ? S.sbThumb : S.sbTrack);
+        screen.fillRow(sy, W - 1, W, sy >= painted.sb.ty && sy < painted.sb.ty + painted.sb.th ? S.sbThumb : S.sbTrack);
     }
   }
 
