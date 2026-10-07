@@ -111,9 +111,6 @@ export function setTuiRich(on: boolean): void {
 let SCROLLBAR = true;
 /** transcript rows moved per wheel notch / drag-edge tick (config `tuiScrollStep`). */
 let SCROLL_STEP = 1;
-/** wheel ticks closer than this share one frame (burst-coalesced scroll) */
-const WHEEL_COALESCE_MS = 24;
-let lastWheelPaint = 0;
 let clearKeyRef: () => void = () => {}; // set in startTui: forces full repaint
 /**
  * Re-arms the frame loop — set from inside startTui, exactly like clearKeyRef.
@@ -517,8 +514,29 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   let dirty = true;
   /** spinner tick landed: only the status region needs re-deriving */
   let statusOnly = false;
+  /**
+   * Short-interval paint scheduler: the event-driven half of the frame loop.
+   * markDirty used to only raise a flag and wait for the 33ms interval, so a
+   * scroll burst's last ticks (a direction change worst of all) idled up to
+   * 57ms before showing. Now dirty work lands within ~8ms of the event, and
+   * the schedule itself is the burst coalescer — N ticks inside the window
+   * still produce one paint at the final offset. The setInterval remains for
+   * spinner pacing and as a missed-event safety net.
+   */
+  let paintTimer: ReturnType<typeof setTimeout> | null = null;
+  // set from startTui once frameTick exists (same pattern as clearKeyRef)
+  let tickRef: (() => void) | null = null;
+  const schedulePaint = (ms = 8) => {
+    if (paintTimer) return;
+    paintTimer = setTimeout(() => {
+      paintTimer = null;
+      tickRef?.();
+    }, ms);
+    paintTimer.unref?.();
+  };
   const markDirty = () => {
     dirty = true;
+    schedulePaint();
   };
 
   // ---- mouse / selection state ----
@@ -1868,16 +1886,11 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       scrollTop += dir;
       clampScroll();
       // re-stick at the bottom is paint()'s job now (scrollTop >= max)
-      // Burst-coalesce: a lone notch paints THIS frame (waiting 33ms feels
-      // rubber-banded), but mid-burst ticks only mark dirty — the next frame
-      // lands on the FINAL offset. Serializing a full paint per tick made
-      // fast scrolling crawl and queued older paints drown a newer reverse
-      // scroll: scroll input is a target, not a work queue.
-      const now = Date.now();
-      if (now - lastWheelPaint >= WHEEL_COALESCE_MS) {
-        lastWheelPaint = now;
-        paintNow();
-      } else markDirty();
+      // The 8ms paint schedule coalesces a burst at its FINAL offset while
+      // keeping every tick's visible latency under one schedule window —
+      // including a mid-burst direction change, which used to idle behind
+      // the 33ms interval.
+      markDirty();
       return;
     }
     if (name === "c" && ctrl) {
@@ -2180,6 +2193,11 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   function paintNow() {
     if (paintScheduled) return; // re-entered from a sync event storm: one paint
     paintScheduled = true;
+    // flags clear BEFORE paint, mirroring frameTick: paint() itself can
+    // markDirty (a drain firing mid-paint), and a post-paint clear would
+    // erase that flag and strand the update on no future frame
+    dirty = false;
+    statusOnly = false;
     try {
       paint();
       const caret = nextCaret ?? { x: 3, y: H - 2 };
@@ -2187,8 +2205,6 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       screen.flush();
       term.setCursor(caret.x, caret.y);
       term.flush();
-      dirty = false;
-      statusOnly = false;
     } catch (e) {
       debugLog("tui sync paint error", e);
     } finally {
@@ -4008,6 +4024,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         if (frameTimer) clearInterval(frameTimer);
         frameTimer = setInterval(frameTick, Math.max(8, Math.min(250, Math.floor(ms))));
       };
+      tickRef = frameTick;
       frameArmRef = armFrameTimer;
       armFrameTimer(state.config?.tuiFrameMs ?? 33);
 
