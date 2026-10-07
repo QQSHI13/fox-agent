@@ -185,8 +185,15 @@ const BANNERS = [
 
 
 
-let keySeq = 0;
+// Minted keys start above the seq-derived range: log items take their key
+// from their storage seq (seq*4+slot), so keys are STABLE across refresh()
+// and the line cache never goes stale. Minted keys (welcome, ephemeral,
+// streaming) live in their own high range — sessions would need 268M messages
+// before the ranges could touch.
+const SEQ_KEY_SPACE = 0x40000000;
+let keySeq = SEQ_KEY_SPACE;
 const nk = () => ++keySeq;
+const seqKey = (seq: number, slot: number) => seq * 4 + slot;
 
 /**
  * One-line "what actually ran" for a tool head: the meaningful field when the
@@ -549,6 +556,14 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
 
   function refresh() {
     items = loadItems(); // loadItems already restores expandedRefs
+    // log items keep stable seq-derived keys, so their cache entries stay
+    // warm across rebuilds (the whole point); minted-key items (welcome,
+    // ephemeral, streaming) die here — sweep their entries once per rebuild
+    // rather than paying an eviction scan on every cache insert every frame
+    if (lineCache.size > items.length) {
+      const live = new Set(items.map((i) => i.k));
+      for (const k of lineCache.keys()) if (!live.has(k)) lineCache.delete(k);
+    }
     for (const it of items) touch(it.k);
     // the rebuild drops the startup block with everything else — its lifetime
     // ends here, so a later refreshWelcome() must not resurrect it
@@ -584,15 +599,15 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       }
     }
     for (const m of msgs) {
-      if (m.role === "user") out.push({ k: nk(), kind: "user", text: `[${m.seq}] ❯ ${m.content}` });
+      if (m.role === "user") out.push({ k: seqKey(m.seq, 0), kind: "user", text: `[${m.seq}] ❯ ${m.content}` });
       else if (m.role === "tool") {
         // todo bodies are markdown task lists — rendered as md, always
         // visible (a task list hidden behind a click is useless)
         const isTodo = callName.get(m.tool_call_id ?? "") === "todo";
-        out.push({ k: nk(), kind: "toolhead", text: `[${m.seq}] » ${callLabel.get(m.tool_call_id ?? "") ?? "tool"}`, detail: callDetail.get(m.tool_call_id ?? "") });
+        out.push({ k: seqKey(m.seq, 1), kind: "toolhead", text: `[${m.seq}] » ${callLabel.get(m.tool_call_id ?? "") ?? "tool"}`, detail: callDetail.get(m.tool_call_id ?? "") });
         // raw text — collapsed/expanded rendering lives in itemRows
         out.push({
-          k: nk(),
+          k: seqKey(m.seq, 2),
           kind: "toolbody",
           text: m.content.slice(0, KEPT_TOOL_CHARS * 4),
           ref: m.seq,
@@ -602,8 +617,8 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           expanded: isTodo || expandedRefs.has(m.seq),
         });
       } else if (m.role === "think")
-        out.push({ k: nk(), kind: "think", text: m.content, ref: m.seq, expanded: expandedRefs.has(m.seq) });
-      else out.push({ k: nk(), kind: "md", text: m.content || "" });
+        out.push({ k: seqKey(m.seq, 0), kind: "think", text: m.content, ref: m.seq, expanded: expandedRefs.has(m.seq) });
+      else out.push({ k: seqKey(m.seq, 0), kind: "md", text: m.content || "" });
     }
     return out;
   }
@@ -2376,7 +2391,6 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   // asks for it for EVERY item on EVERY frame (twice with the scrollbar), and
   // rescanning the row arrays there was the O(nodes) render cost on long sessions
   const lineCache = new Map<number, { rev: number; w: number; rows: Row[]; rich: number; span: [number, number] }>();
-  const LINE_CACHE_MAX = 2_000;
 
   function itemStyle(kind: ItemKind): Partial<Seg> {
     switch (kind) {
@@ -2546,12 +2560,6 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     }
     const entry = { rev: revs.get(it.k) ?? 0, w, rows, rich: richRev, span: itemEdgeSpan(rows) };
     lineCache.set(it.k, entry);
-    // keys are re-minted on every refresh(), so without eviction this grows
-    // unbounded across a long session
-    if (lineCache.size > LINE_CACHE_MAX) {
-      const live = new Set(items.map((i) => i.k));
-      for (const k of lineCache.keys()) if (!live.has(k)) lineCache.delete(k);
-    }
     return entry;
   }
 
