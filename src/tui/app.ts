@@ -5,6 +5,7 @@ import { openTerm, type Term } from "./term.ts";
 import { appendFileSync } from "node:fs";
 import { Screen } from "./screen.ts";
 import { computeFrame, dockRows, itemEdgeSpan, scrollbarScrollTop, viewportHeight, type Frame, type FrameInput, type Row } from "./layout.ts";
+import { activePlugins } from "../plugins/load.ts";
 import { createDecoder, type Key } from "./keys.ts";
 import { graphemeBack, graphemeForward, type Ch } from "./edit.ts";
 import {
@@ -2852,6 +2853,36 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   }
   let lastStatsAt = 0;
 
+  /** config `statusBar` parsed once per revision — /settings bumps statsRev */
+  let statusBarCacheRev = -1;
+  let statusBarCacheSlots: string[] = [];
+  function statusBarSlots(): string[] {
+    if (statusBarCacheRev !== statsRev) {
+      statusBarCacheSlots = (state.config?.statusBar ?? "cwd provider model ctx").trim().split(/\s+/);
+      statusBarCacheRev = statsRev;
+    }
+    return statusBarCacheSlots;
+  }
+
+  /** plugin `statusSegments` lookup; a throwing segment is dropped, warned once per name */
+  const segWarned = new Set<string>();
+  function pluginSegment(name: string): string | null {
+    for (const p of activePlugins()) {
+      const fn = p.statusSegments?.[name];
+      if (!fn) continue;
+      try {
+        return fn();
+      } catch (e) {
+        if (!segWarned.has(name)) {
+          segWarned.add(name);
+          push("error", `statusSegment '${name}' (${p.name}) threw: ${(e as Error)?.message ?? e}`, { ephemeral: true });
+        }
+        return null;
+      }
+    }
+    return null; // unknown slot: silently ignored, per the config doc
+  }
+
   function elapsed(): string {
     if (!startedAt) return "";
     const s = Math.floor((Date.now() - startedAt) / 1000);
@@ -3397,13 +3428,28 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     } else {
       lx = screen.text(lx, barY, `ready`, S.ok);
     }
-    // right side composed least-to-most important; a narrow window DROPS
-    // whole segments from the LEFT (cwd first) only as many as needed —
+    // right side: config `statusBar` names segments left-to-right (built-ins
+    // cwd provider model ctx readOnly, plus plugin `statusSegments`); a null
+    // or throwing plugin slot drops out of this repaint. A narrow window then
+    // DROPS whole segments from the LEFT (cwd first) only as many as needed —
     // dropping everything because one segment overflows, or clipping
-    // mid-text ("ctx 9…"), both read as corruption
+    // mid-text ("ctx 9…"), both read as corruption.
     const avail = W - lx - 2;
     const ro = state.readOnly ? "read-only" : null;
-    const segs = [...cachedStats(), ...(ro ? [ro] : [])];
+    const stats = cachedStats(); // [cwd, provider, model, ctx+cache] least-first
+    const segs: string[] = [];
+    for (const name of statusBarSlots()) {
+      if (name === "cwd") segs.push(stats[0]);
+      else if (name === "provider") segs.push(stats[1]);
+      else if (name === "model") segs.push(stats[2]);
+      else if (name === "ctx") segs.push(stats[3]);
+      else if (name === "readOnly") {
+        if (ro) segs.push(ro);
+      } else {
+        const seg = pluginSegment(name);
+        if (seg !== null && seg !== undefined) segs.push(seg);
+      }
+    }
     let from = 0;
     let right = "";
     for (;;) {

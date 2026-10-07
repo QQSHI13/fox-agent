@@ -145,6 +145,13 @@ export interface Config {
    */
   tuiScrollbar: boolean;
   /**
+   * Status bar right side, space-separated segment names left-to-right.
+   * Built-ins: cwd provider model ctx readOnly. Plugins may contribute more
+   * via `statusSegments`; unknown names are ignored. On a narrow window
+   * segments drop from the left until the rest fits.
+   */
+  statusBar: string;
+  /**
    * Transcript rows moved per wheel notch / drag-past-edge tick (default 1).
    * Higher values suit long sessions on small windows; pageup/pagedown ignore
    * this and keep their proportional 80%-of-viewport jump.
@@ -233,6 +240,7 @@ const DEFAULTS: Omit<Config, "projectInstructions"> = {
   tuiRich: false,
   tuiScrollbar: true,
   tuiScrollStep: 1,
+  statusBar: "cwd provider model ctx",
   tuiFrameMs: 33,
   theme: "default",
   contextMarkers: true,
@@ -401,7 +409,7 @@ const KNOWN_KEYS = new Set([
   "model", "baseUrl", "apiKey", "provider", "maxSteps", "retryLimit", "compactAt", "compactAtTokens",
   "requestTimeoutMs", "diagnostics", "mcpServers", "agents", "lsp", "plugins",
   "providers", "disabledPlugins", "toolOutputCap", "sessionListLimit",
-  "tuiCollapsedChars", "tuiKeptChars", "tuiRich", "tuiScrollbar", "tuiScrollStep", "tuiFrameMs", "theme", "contextMarkers", "acpHistory",
+  "tuiCollapsedChars", "tuiKeptChars", "tuiRich", "tuiScrollbar", "tuiScrollStep", "statusBar", "tuiFrameMs", "theme", "contextMarkers", "acpHistory",
   "reasoningEffort",
 ]);
 
@@ -485,6 +493,7 @@ function applyTable(cfg: Config, t: Record<string, unknown> | null, scope: "glob
   if (typeof t.tuiRich === "boolean") cfg.tuiRich = t.tuiRich;
   if (typeof t.tuiScrollbar === "boolean") cfg.tuiScrollbar = t.tuiScrollbar;
   if (typeof t.tuiScrollStep === "number" && t.tuiScrollStep >= 1 && t.tuiScrollStep <= 40) cfg.tuiScrollStep = Math.floor(t.tuiScrollStep);
+  if (typeof t.statusBar === "string" && t.statusBar.trim()) cfg.statusBar = t.statusBar.trim().split(/\s+/).join(" ");
   if (typeof t.tuiFrameMs === "number" && t.tuiFrameMs >= 8 && t.tuiFrameMs <= 250) cfg.tuiFrameMs = Math.floor(t.tuiFrameMs);
   if (t.reasoningEffort === "low" || t.reasoningEffort === "medium" || t.reasoningEffort === "high") cfg.reasoningEffort = t.reasoningEffort;
   if (typeof t.theme === "string" && t.theme.trim()) cfg.theme = t.theme.trim();
@@ -858,6 +867,17 @@ export const SETTINGS: SettingSpec[] = [
     def: "1",
     validate: num(1, 40),
     fmt: (v) => (v === undefined ? "1" : String(v)),
+  },
+  {
+    key: "statusBar",
+    desc: "status bar segments: cwd provider model ctx readOnly (+ plugin slots)",
+    def: "cwd provider model ctx",
+    validate: (raw) => {
+      const v = raw.trim().split(/\s+/).join(" ");
+      if (!v) throw new Error("must be a space-separated list of segment names (cwd provider model ctx readOnly)");
+      return v;
+    },
+    fmt: (v) => (v === undefined ? "cwd provider model ctx" : String(v)),
   },
   { key: "tuiScrollbar", desc: "dedicated scrollbar column at the right edge", def: "true", validate: bool, fmt: showBool },
   {

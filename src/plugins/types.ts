@@ -180,4 +180,14 @@ export interface FoxPlugin {
   agents?: Record<string, ExternalAgentConfig>;
   /** slash commands (`/deploy`, …) — run through the same result as built-ins */
   commands?: PluginCommand[];
+  /**
+   * Status bar slots this plugin contributes, by name — a config's `statusBar`
+   * template lists segment names and any name registered here paints as a
+   * ` · `-joined segment. Return null to hide the slot this repaint (a plugin
+   * with nothing to say must not leave an empty `· ·` hole). Called on the
+   * status repaint cadence (revision bump / 2s while busy), so keep it cheap —
+   * read cached state, do not I/O. A throwing segment is dropped and warned
+   * once per name.
+   */
+  statusSegments?: Record<string, () => string | null>;
 }
