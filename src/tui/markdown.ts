@@ -2,6 +2,7 @@
 import type { Seg } from "./wrap.ts";
 import { liveTheme } from "./themes.ts";
 import { charWidth } from "./screen.ts";
+import { wrapSegs } from "./wrap.ts";
 import { highlightLine, diffFenceLine, jsonSegs } from "./highlight.ts";
 
 // live theme lookups: a /theme switch recolors markdown on the next frame
@@ -36,7 +37,7 @@ export interface MdState {
   lang?: string;
 }
 
-export function renderMarkdown(src: string, state?: MdState): Seg[][] {
+export function renderMarkdown(src: string, state?: MdState, width?: number): Seg[][] {
   const out: Seg[][] = [];
   const lines = src.split("\n");
   let i = 0;
@@ -195,29 +196,60 @@ export function renderMarkdown(src: string, state?: MdState): Seg[][] {
         if (!isSep(lines[i])) rows.push(splitRow(lines[i]));
         i++;
       }
-      const width = (s: string) => [...s].reduce((w, c) => w + charWidth(c.codePointAt(0)!), 0);
+      const lineWidth = (segs: Seg[]) => segs.reduce((n, sg) => n + [...sg.t].reduce((w, c) => w + charWidth(c.codePointAt(0)!), 0), 0);
       const cols = Math.max(aligns.length, ...rows.map((r) => r.length));
       const widths = Array.from({ length: cols }, () => 1);
-      for (const r of rows) for (let c = 0; c < r.length; c++) widths[c] = Math.max(widths[c], width(r[c]));
-      const padCell = (cell: string, w: number, align: string): string => {
-        const pad = Math.max(0, w - width(cell));
-        if (align === "right") return " ".repeat(pad) + cell;
-        if (align === "center") {
-          const l = Math.floor(pad / 2);
-          return " ".repeat(l) + cell + " ".repeat(pad - l);
+      for (const r of rows) for (let c = 0; c < r.length; c++) widths[c] = Math.max(widths[c], lineWidth([{ t: r[c] ?? "" }]));
+      // shrink-to-fit: natural widths come from the widest cell, and one
+      // prose-filled column made the table wider than the terminal — it ran
+      // off-screen and the line wrap shredded the box into stray gutters.
+      // Within a caller-supplied width, wide columns shrink (min 3) so cell
+      // text wraps INSIDE the cell instead.
+      const gutters = cols * 3 + 1; // │ + per-cell " x " + joins
+      if (width !== undefined) {
+        const budget = Math.max(cols * 3, width - gutters);
+        while (widths.reduce((a, b) => a + b, 0) > budget) {
+          const mi = widths.indexOf(Math.max(...widths));
+          if (widths[mi] <= 3) break;
+          widths[mi]--;
         }
-        return cell + " ".repeat(pad);
+      }
+      // wrap one cell's styled text to its column, then pad each physical
+      // line to the column width per the alignment — padding lands on plain
+      // space segs so cell styling never bleeds into the gutter
+      const cellLines = (cell: string, c: number, base?: Partial<Seg>): Seg[][] => {
+        // +1: wrapSegs soft-wraps at width-1 (its width includes a
+        // continuation affordance), so a cell exactly as wide as its column
+        // would drop its last char onto a second line
+        const lines = wrapSegs(inline(cell, base), widths[c] + 1);
+        return lines.map((line) => {
+          const pad = Math.max(0, widths[c] - lineWidth(line));
+          const a = aligns[c] ?? "left";
+          const lead = a === "right" ? pad : a === "center" ? Math.floor(pad / 2) : 0;
+          const segs: Seg[] = [];
+          if (lead) segs.push({ t: " ".repeat(lead) });
+          segs.push(...line);
+          const trail = pad - lead;
+          if (trail > 0) segs.push({ t: " ".repeat(trail) });
+          return segs;
+        });
       };
       rows.forEach((r, ri) => {
-        // padding is applied to the plain cell first so inline styling
-        // (bold header, `code`) never inherits into the gutter
-        const cells = Array.from({ length: cols }, (_, c) => padCell(r[c] ?? "", widths[c], aligns[c] ?? "left"));
-        const segs: Seg[] = [{ t: "│ ", fg: MD.DIM }];
-        cells.forEach((cell, c) => {
-          segs.push(...inline(cell, ri === 0 ? { bold: true } : undefined));
-          segs.push({ t: c < cols - 1 ? " │ " : " │", fg: MD.DIM });
-        });
-        out.push(segs);
+        const base = ri === 0 ? { bold: true as const } : undefined;
+        const cells = Array.from({ length: cols }, (_, c) => cellLines(r[c] ?? "", c, base));
+        const height = Math.max(1, ...cells.map((cl) => cl.length));
+        for (let li = 0; li < height; li++) {
+          const segs: Seg[] = [{ t: "│ ", fg: MD.DIM }];
+          cells.forEach((cl, c) => {
+            // a cell shorter than the row (wrapped to fewer lines) pads its
+            // slot with blanks — an unpadded fallback left the gutter hugging
+            // the next divider on continuation lines
+            segs.push(...(cl[li] ?? [{ t: " ".repeat(widths[c]) }]));
+            segs.push({ t: c < cols - 1 ? " │ " : " │", fg: MD.DIM });
+          });
+          out.push(segs);
+        }
+        // the header rule follows the WHOLE header block, not its first line
         if (ri === 0) out.push([{ t: "├" + widths.map((w) => "─".repeat(w + 2)).join("┼") + "┤", fg: MD.DIM }]);
       });
       continue;

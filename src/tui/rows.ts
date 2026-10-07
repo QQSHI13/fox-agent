@@ -56,7 +56,7 @@ export function legacyStreamRows(
     scan = nl + 1;
   }
   if (newCut > c.cut) {
-    for (const mline of renderMarkdown(text.slice(c.cut, newCut - 1), c.md)) {
+    for (const mline of renderMarkdown(text.slice(c.cut, newCut - 1), c.md, w)) {
       c.prefix.push(...wrapSegs(mline, w).map((segs) => ({ segs })));
     }
     c.cut = newCut;
@@ -64,7 +64,7 @@ export function legacyStreamRows(
   }
   c.text = text;
   const rows = c.prefix.slice();
-  for (const mline of renderMarkdown(text.slice(c.cut), { ...c.md })) {
+  for (const mline of renderMarkdown(text.slice(c.cut), { ...c.md }, w)) {
     rows.push(...wrapSegs(mline, w).map((segs) => ({ segs })));
   }
   return rows;
@@ -127,7 +127,7 @@ export function createStreamRows(w: number): StreamRows {
       scan = nl + 1;
     }
     if (newCut === settledCut) return false;
-    for (const mline of renderMarkdown(text.slice(settledCut, newCut - 1), md)) {
+    for (const mline of renderMarkdown(text.slice(settledCut, newCut - 1), md, width)) {
       for (const segs of wrapSegs(mline, width)) settledRows.push({ segs });
     }
     settledCut = newCut;
@@ -140,7 +140,7 @@ export function createStreamRows(w: number): StreamRows {
     // emits a gutter row ("│ "), and that row is on screen today (golden).
     const tailText = text.slice(settledCut);
     const fresh: Seg[] = [];
-    for (const mline of renderMarkdown(tailText, { ...md })) fresh.push(...mline);
+    for (const mline of renderMarkdown(tailText, { ...md }, width)) fresh.push(...mline);
     if (!fresh.length) {
       // legacy: zero markdown lines (e.g. the tail is only a fence opener)
       // produce ZERO rows; the [[]] caret row comes from the EMPTY tail only.

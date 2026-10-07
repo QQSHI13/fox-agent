@@ -2447,7 +2447,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     if (it.kind === "md") {
       // no trailing blank: spacing between items is buildRows' job
       rows = [];
-      for (const mline of renderMarkdown(it.text)) rows.push(...wrapSegs(mline, w).map((segs) => ({ segs })));
+      for (const mline of renderMarkdown(it.text, undefined, w)) rows.push(...wrapSegs(mline, w).map((segs) => ({ segs })));
     } else if (it.ephemeral) {
       // Ephemeral notice: a boxed, uniformly-colored block that dies on the
       // next keypress/click. The box keeps it physically separate from the
@@ -2512,7 +2512,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         if (it.mdBody) {
           // markdown body (todo task lists): through the md parser so
           // task-list syntax renders as status marks, not punctuation
-          for (const mline of renderMarkdown(it.text)) rows.push(...wrapSegs(mline, w).map((segs) => ({ segs })));
+          for (const mline of renderMarkdown(it.text, undefined, w)) rows.push(...wrapSegs(mline, w).map((segs) => ({ segs })));
         } else {
           const lines = it.text.split("\n");
           // Pair each -/+ run so rich mode can word-diff INSIDE changed lines:
