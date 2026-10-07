@@ -190,8 +190,10 @@ function assemble(
     if (n === 0) continue;
     const hasBlank = idx > 0 && !glued(prevKind2, it.kind);
     const blankAt = hasBlank ? idx : -1;
-    const bodyStart = idx + (hasBlank ? 1 : 0);
-    const bodyEnd = bodyStart + n; // exclusive
+    // `n` already contains this item's separator blank, so idx + n IS the next
+    // item's absolute start. Deriving it from bodyStart would add the blank a
+    // second time and push `idx` one row past the item's real end.
+    const bodyEnd = idx + n;
     prevKind2 = it.kind;
     // WHOLE-ITEM skip: the [blank..body] block ends before the window starts —
     // renderItem (which allocates) is never called for it. This is what keeps

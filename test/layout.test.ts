@@ -117,6 +117,49 @@ describe("computeFrame", () => {
     expect(itemEdgeSpan([row(""), row("")])).toEqual([2, 2]); // all-blank: nothing survives
     expect(itemEdgeSpan([])).toEqual([0, 0]);
   });
+
+  test("the window holds the transcript's real rows, at every scroll position", () => {
+    // Geometry alone cannot catch a skipped-item accounting bug: `total` and
+    // `scrollTop` stay honest while the rows inside the window drift, which
+    // read as "the scrollbar says the bottom, the screen shows something else".
+    // So compare the painted window against the rows built whole.
+    const mdRows = (text: string, w: number): Row[] =>
+      renderMarkdown(text).flatMap((m) => wrapSegs(m, w).map((segs) => ({ segs })));
+    const strip = (it: any, w: number) => {
+      const rows = mdRows(it.text, w);
+      const [a, b] = itemEdgeSpan(rows);
+      return rows.slice(a, b);
+    };
+    const items = Array.from({ length: 100 }, (_, k) => ({ kind: "md", k, text: `message ${k} body\n` }));
+    const truth: Row[] = [];
+    items.forEach((it, i) => {
+      if (i) truth.push({ segs: [] }); // assemble's separator blank
+      truth.push(...strip(it, 78));
+    });
+
+    const inp: FrameInput = {
+      ...base,
+      W: 80,
+      H: 30,
+      items,
+      renderItem: strip,
+      countItem: (it: any, w: number) => strip(it, w).length,
+    };
+    const vh = viewportHeight(inp);
+    const at = (scrollTop: number, stick: boolean) => {
+      const fr = computeFrame({ ...inp, scrollTop, stick });
+      return fr.rows.slice(fr.winOffset, fr.winOffset + fr.vh).map((r) => r.segs.map((s) => s.t).join(""));
+    };
+    const want = (from: number) => truth.slice(from, from + vh).map((r) => r.segs.map((s) => s.t).join(""));
+
+    const max = truth.length - vh;
+    for (const scrollTop of [0, Math.floor(max / 2), max]) {
+      expect(at(scrollTop, scrollTop === max)).toEqual(want(scrollTop));
+    }
+    // the reason this test exists: the bottom of the transcript is the last
+    // content row, not `message 75` of 100
+    expect(at(max, true).at(-1)).toContain("message 99");
+  });
 });
 
 describe("scrollbarGeom / scrollbarScrollTop", () => {
