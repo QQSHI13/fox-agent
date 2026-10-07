@@ -171,8 +171,18 @@ export function renderMarkdown(src: string, state?: MdState): Seg[][] {
     // a bordered box (│ / ├─┼─┤) with per-column alignment from the separator
     // row (:--- left, :---: center, ---: right) — the old borderless columns
     // collapsed into unreadable soup on more than two columns.
-    const isTableLine = (l: string) => /^\s*\|.*\|\s*$/.test(l);
-    const isSep = (l: string) => /^\s*\|[\s:|-]+\|\s*$/.test(l);
+    //
+    // Outer pipes are OPTIONAL (GFM allows `a | b` / `--- | ---`), and models
+    // emit that form constantly — the strict `|...|` test dropped those whole
+    // tables into paragraph text. A line qualifies as a table row when it
+    // contains a pipe at all; the separator line right after is what actually
+    // promotes the pair into a table, so prose mentioning "a | b" stays prose.
+    const isTableLine = (l: string) => l.includes("|");
+    const isSep = (l: string) => {
+      const t = l.trim().replace(/^\||\|$/g, "").trim();
+      if (!t || !/^[\s:|-]+$/.test(t)) return false;
+      return (t.match(/-/g) ?? []).length >= 3; // `--- | ---`, `|:--|:--:|`
+    };
     const splitRow = (l: string) => l.trim().replace(/^\||\|$/g, "").split("|").map((c) => c.trim());
     if (isTableLine(line) && i + 1 < lines.length && isSep(lines[i + 1])) {
       const aligns = splitRow(lines[i + 1]).map((cell) => {
@@ -226,7 +236,7 @@ export function renderMarkdown(src: string, state?: MdState): Seg[][] {
       i < lines.length &&
       lines[i].trim() &&
       !/^(#{1,6}\s|```|>)/.test(lines[i]) &&
-      !/^\s*\|.*\|\s*$/.test(lines[i]) // a table row is not a paragraph line
+      !isTableLine(lines[i]) // a table row is not a paragraph line
     )
       para.push(lines[i++]);
     for (const pl of para) out.push(inline(pl));

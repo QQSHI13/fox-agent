@@ -95,6 +95,24 @@ describe("tables", () => {
     const text = rows.map((r) => r.map((s) => s.t).join(""));
     expect(text).toEqual(["intro", "│ a │", "├───┤", "│ b │"]);
   });
+
+  test("outer pipes are optional — models emit `a | b` / `--- | ---` constantly", () => {
+    const rows = renderMarkdown("a | b\n--- | ---\n1 | 2");
+    const text = rows.map((r) => r.map((s) => s.t).join(""));
+    expect(text[0]).toBe("│ a │ b │");
+    expect(text[1]).toBe("├───┼───┤");
+    expect(text[2]).toBe("│ 1 │ 2 │");
+    // two-dash separators too (`-- | --`), another common model spelling
+    const short = renderMarkdown("Name | Qty\n-- | --\nfoo | 3");
+    expect(short.map((r) => r.map((s) => s.t).join(""))[0]).toBe("│ Name │ Qty │");
+  });
+
+  test("prose that merely contains a pipe stays prose", () => {
+    // the separator line is what promotes a table; a lone pipe sentence has none
+    const rows = renderMarkdown("use docker | kubectl for this");
+    const text = rows.map((r) => r.map((s) => s.t).join(""));
+    expect(text).toEqual(["use docker | kubectl for this"]);
+  });
 });
 
 describe("task lists", () => {
