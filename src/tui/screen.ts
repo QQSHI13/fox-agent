@@ -54,22 +54,27 @@ export function charWidth(cp: number): number {
 }
 
 export class Screen {
-  private w = 0;
-  private h = 0;
+  // grid geometry — visible to Plane (same module, shared buffers); only
+  // resize() mutates either
+  w = 0;
+  h = 0;
   private chars: (string | undefined)[] = [];
   private sty: Uint16Array = new Uint16Array(0);
   private prevHash: Float64Array = new Float64Array(0);
-  private styles: Style[] = [];
+  styles: Style[] = []; // visible to Plane (same module, shared style table)
   private styleIdx = new Map<string, number>();
   /** interned id of the empty style, so cleared cells never inherit a stale one */
   private defSty = -1;
   private _lastDirty = false;
   /** href of the currently open OSC 8 hyperlink ("" = none) */
   private lastHref = "";
+  /** compositing planes, keyed by name; bottom-most z composites first */
+  private planes = new Map<string, Plane>();
 
   constructor(private term: Term) {}
 
-  private defaultStyle(): number {
+  /** interned empty style — Plane uses it too (same module, shared table) */
+  defaultStyle(): number {
     if (this.defSty < 0) this.defSty = this.sgr({});
     return this.defSty;
   }
@@ -91,6 +96,49 @@ export class Screen {
     this.sty = new Uint16Array(w * h).fill(this.defaultStyle());
     this.prevHash = new Float64Array(h).fill(NaN);
     this.lastHref = "";
+    for (const p of this.planes.values()) p.realloc();
+  }
+
+  // ---- planes ----
+  // Regions paint into their own cell buffers; composite() folds them into
+  // the grid bottom-up. An UNDEFINED plane cell is transparent: the plane
+  // below shows through. Correctness never depends on a region "clearing
+  // what it painted last frame" — every plane is a complete picture of its
+  // region, so one region's transitions can never wipe another's output.
+
+  createPlane(name: string, z: number): Plane {
+    const existing = this.planes.get(name);
+    if (existing) return existing; // idempotent: same name, same plane
+    const p = new Plane(name, z, this);
+    this.planes.set(name, p);
+    return p;
+  }
+
+  dropPlane(name: string): void {
+    this.planes.delete(name); // gone from the next composite; grid self-heals
+  }
+
+  hasPlane(name: string): boolean {
+    return this.planes.has(name);
+  }
+
+  plane(name: string): Plane | undefined {
+    return this.planes.get(name);
+  }
+
+  /** fold every plane into the grid, bottom-most z first; ties by creation order */
+  composite(): void {
+    const sorted = [...this.planes.values()].sort((a, b) => a.z - b.z);
+    for (const p of sorted) {
+      const pc = p.chars;
+      const ps = p.sty;
+      for (let i = 0; i < pc.length; i++) {
+        const ch = pc[i];
+        if (ch === undefined) continue; // transparent: lower plane shows through
+        this.chars[i] = ch;
+        this.sty[i] = ps[i];
+      }
+    }
   }
 
   dims() {
@@ -301,6 +349,150 @@ export class Screen {
 
   forceRepaintAll() {
     this.prevHash.fill(NaN);
+  }
+}
+
+/**
+ * One compositing layer: a full-screen cell buffer an owner region stamps
+ * complete content into every frame it changes. Shares the screen's style
+ * table so style ids move between planes and the grid without translation.
+ *
+ * A plane cell is `undefined` until written — unwritten cells are TRANSPARENT
+ * in composite, letting lower planes (ultimately the transcript) show
+ * through. Opaqueness is per-cell, not per-region: a hint bar fillRows its
+ * band, a queue box fills its panel, a bare overlay line covers only the
+ * cells its glyphs occupy.
+ */
+export class Plane {
+  chars: (string | undefined)[];
+  sty: Uint16Array;
+  /**
+   * Write clip rect [x0,y0,x1,y1) — writes outside are dropped. Defaults to
+   * the full screen (built-in regions own their layout); plugin regions get
+   * the rect they registered so a plane can never paint outside its region,
+   * however buggy its painter. The BUFFER stays full-screen either way:
+   * regions paint disjoint moving bands, so per-plane sizing would realloc
+   * every frame — containment is a clamp on writes, not a buffer shape.
+   */
+  clip: [number, number, number, number] | null = null;
+
+  constructor(public readonly name: string, public z: number, private scr: Screen) {
+    this.chars = new Array(scr.w * scr.h).fill(undefined);
+    this.sty = new Uint16Array(scr.w * scr.h).fill(scr.defaultStyle());
+  }
+
+  private cx0(): number {
+    return this.clip ? Math.max(0, this.clip[0]) : 0;
+  }
+  private cx1(): number {
+    return this.clip ? Math.min(this.scr.w, this.clip[2]) : this.scr.w;
+  }
+  private cy0(): number {
+    return this.clip ? Math.max(0, this.clip[1]) : 0;
+  }
+  private cy1(): number {
+    return this.clip ? Math.min(this.scr.h, this.clip[3]) : this.scr.h;
+  }
+
+  /** screen dimensions changed — drop content; buffer sizes follow */
+  realloc(): void {
+    this.chars = new Array(this.scr.w * this.scr.h).fill(undefined);
+    this.sty = new Uint16Array(this.scr.w * this.scr.h).fill(this.scr.defaultStyle());
+  }
+
+  clear(): void {
+    this.chars.fill(undefined);
+    this.sty.fill(this.scr.defaultStyle());
+  }
+
+  clearRows(y0: number, y1: number): void {
+    const lo = Math.max(this.cy0(), y0);
+    const hi = Math.min(this.cy1(), y1);
+    for (let y = lo; y < hi; y++) {
+      const base = y * this.scr.w;
+      for (let x = 0; x < this.scr.w; x++) {
+        this.chars[base + x] = undefined;
+        this.sty[base + x] = this.scr.defaultStyle();
+      }
+    }
+  }
+
+  text(x: number, y: number, str: string, st: number): number {
+    const w = this.scr.w;
+    if (y < this.cy0() || y >= this.cy1()) return x;
+    const want = this.scr.styles[st] ?? {};
+    let cx = x;
+    const xLimit = this.cx1();
+    const xStart = this.cx0();
+    for (const ch of str) {
+      const cw = charWidth(ch.codePointAt(0)!);
+      if (cw === 0) continue;
+      if (cx >= xLimit) break;
+      // cursor still advances left of the clip (the caller tracks position),
+      // but no cell is written outside the region
+      const i = y * w + cx;
+      // same bg-inherit rule as the grid: text over a filled area keeps the
+      // fill's background — compositing belongs in the buffer, not in
+      // terminal SGR state that leaks sideways
+      let finalSt = st;
+      if (!want.bg) {
+        const curBg = (this.scr.styles[this.sty[i]] ?? {}).bg;
+        if (curBg) finalSt = this.scr.sgr({ ...want, bg: curBg });
+      }
+      if (cx >= xStart) {
+        this.chars[i] = ch;
+        this.sty[i] = finalSt;
+      }
+      if (cw === 2 && cx + 1 < w) {
+        if (cx + 1 >= xStart) {
+          this.chars[i + 1] = "";
+          this.sty[i + 1] = finalSt;
+        }
+        cx += 2;
+      } else {
+        cx += cw;
+      }
+    }
+    return cx;
+  }
+
+  fillRow(y: number, x0: number, x1: number, st: number): void {
+    if (y < this.cy0() || y >= this.cy1()) return;
+    const w = this.scr.w;
+    for (let x = Math.max(this.cx0(), x0); x < Math.min(this.cx1(), x1); x++) {
+      const i = y * w + x;
+      this.chars[i] = " ";
+      this.sty[i] = st;
+    }
+  }
+
+  restyle(y: number, x0: number, x1: number, bg: string): void {
+    if (y < this.cy0() || y >= this.cy1()) return;
+    const w = this.scr.w;
+    for (let x = Math.max(this.cx0(), x0); x < Math.min(this.cx1(), x1); x++) {
+      const i = y * w + x;
+      if (this.chars[i] === undefined) this.chars[i] = " ";
+      const cur = this.scr.styles[this.sty[i]] ?? {};
+      this.sty[i] = this.scr.sgr({ ...cur, bg });
+    }
+  }
+
+  /** first/last row containing any defined cell — hit tests and debug */
+  extent(): { y0: number; y1: number } | null {
+    const w = this.scr.w;
+    let y0 = -1;
+    let y1 = -1;
+    for (let y = 0; y < this.scr.h; y++) {
+      const base = y * w;
+      for (let x = 0; x < w; x++) {
+        if (this.chars[base + x] !== undefined) {
+          if (y0 < 0) y0 = y;
+          y1 = y + 1;
+          break;
+        }
+      }
+    }
+    return y0 < 0 ? null : { y0, y1 };
   }
 }
 

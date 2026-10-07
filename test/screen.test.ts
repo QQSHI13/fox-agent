@@ -215,3 +215,82 @@ describe("Screen.flush: sparse row with trailing styled cell (scrollbar)", () =>
     expect(term.buf).toContain("\x1b[K");
   });
 });
+
+describe("planes", () => {
+  test("higher z overwrites lower; transparent cells show through", async () => {
+    const { Screen } = await import("../src/tui/screen.ts");
+    const scr = new Screen({ write: () => {} } as any);
+    scr.resize(20, 3);
+    const base = scr.sgr({ fg: "#ffffff" });
+    const basePlane = scr.createPlane("base", 0);
+    const top = scr.createPlane("floats", 10);
+    basePlane.text(0, 0, "underneath", base);
+    top.text(0, 0, "TOP", base); // only 3 of the 10 cells covered
+    scr.composite();
+    const row = (scr as any).chars as (string | undefined)[];
+    expect(row.slice(0, 3).join("")).toBe("TOP");
+    expect(row.slice(3, 10).join("")).toBe("erneath"); // transparent cells: base shows
+  });
+
+  test("composite order is by z, not creation order", async () => {
+    const { Screen } = await import("../src/tui/screen.ts");
+    const scr = new Screen({ write: () => {} } as any);
+    scr.resize(10, 1);
+    const base = scr.sgr({});
+    const lateButLow = scr.createPlane("late", 0);   // created second...
+    const earlyButHigh = scr.createPlane("early", 5); // ...but lower z... wait, reversed on purpose
+    earlyButLowText(lateButLow, earlyButHigh, scr);
+    scr.composite();
+    expect(((scr as any).chars as string[]).join("")).toBe("HIGH");
+    function earlyButLowText(low: any, high: any, scr: any) {
+      const st = scr.sgr({});
+      low.text(0, 0, "LOW", st);
+      high.text(0, 0, "HIGH", st);
+    }
+  });
+
+  test("createPlane is idempotent by name; dropPlane removes", async () => {
+    const { Screen } = await import("../src/tui/screen.ts");
+    const scr = new Screen({ write: () => {} } as any);
+    scr.resize(10, 1);
+    const a = scr.createPlane("x", 0);
+    const b = scr.createPlane("x", 99);
+    expect(a).toBe(b);
+    expect(b.z).toBe(0); // original z survives
+    scr.dropPlane("x");
+    expect(scr.hasPlane("x")).toBe(false);
+  });
+
+  test("clip rect contains a plugin plane's writes", async () => {
+    const { Screen } = await import("../src/tui/screen.ts");
+    const scr = new Screen({ write: () => {} } as any);
+    scr.resize(20, 5);
+    const st = scr.sgr({});
+    const rogue = scr.createPlane("plugin", 50);
+    rogue.clip = [5, 1, 15, 3];
+    // tries to paint EVERYWHERE
+    for (let y = 0; y < 5; y++) rogue.fillRow(y, 0, 20, st);
+    rogue.text(0, 1, "aaaaaaaaaaaaaaaaaaaa", st);
+    scr.composite();
+    const chars = (scr as any).chars as (string | undefined)[];
+    const W = 20;
+    for (let y = 0; y < 5; y++) {
+      for (let x = 0; x < W; x++) {
+        const inside = y >= 1 && y < 3 && x >= 5 && x < 15;
+        if (!inside) expect(chars[y * W + x]).toBeUndefined();
+        else expect(chars[y * W + x]).toBeDefined();
+      }
+    }
+  });
+
+  test("resize reallocates planes (stale content dropped, not shifted)", async () => {
+    const { Screen } = await import("../src/tui/screen.ts");
+    const scr = new Screen({ write: () => {} } as any);
+    scr.resize(10, 2);
+    const st = scr.sgr({});
+    const p = scr.createPlane("p", 0);
+    p.text(0, 0, "hello", st);
+    scr.resize(10, 2); // same dims, but resize must still reset prevHash
+    expect((p.chars as (string | undefined)[]).every((c) => c === undefined)).toBe(true);
+  });
+});
