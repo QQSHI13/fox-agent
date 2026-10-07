@@ -46,6 +46,11 @@ export async function mcpTools(
         command: cfg.command,
         args: cfg.args ?? [],
         env: childEnv(cfg.env),
+        // SDK default is stderr inherit, which points at the parent's stderr —
+        // the TUI's own surface. A chatty server (npm exec wrappers print
+        // notices/warnings by the line) then smears garbage across the screen;
+        // its diagnostics are not worth the pixels, matching lsp/client.ts.
+        stderr: "ignore",
       });
       await client.connect(transport);
       clients.push({ close: () => client.close() });
