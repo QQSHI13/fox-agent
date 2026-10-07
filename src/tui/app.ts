@@ -386,6 +386,19 @@ async function clipWrite(text: string, term: Term): Promise<boolean> {
 export async function startTui(state: HarnessState, applyConfig?: () => { warnings: string[] }) {
   const term: Term = openTerm();
   const screen = new Screen(term);
+  // ---- planes: one per screen region, composited into the grid each paint ----
+  // z is the stack order; a region stamps complete content into its plane and
+  // composite() folds them in bottom-up. Regions no longer clear each other's
+  // output — the old prev-extent wipe choreography (and its stale-paint bugs:
+  // queue drain leaving black bands, multi-line submit blanks, modal-close
+  // re-derives) is deleted with it.
+  const P = {
+    transcript: screen.createPlane("transcript", 0),
+    dock: screen.createPlane("dock", 10),
+    floats: screen.createPlane("floats", 20),
+    overlay: screen.createPlane("overlay", 30),
+    status: screen.createPlane("status", 40),
+  };
   let W = 0;
   let H = 0;
 
@@ -2122,6 +2135,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     try {
       paint();
       const caret = nextCaret ?? { x: 3, y: H - 2 };
+      screen.composite();
       screen.flush();
       term.setCursor(caret.x, caret.y);
       term.flush();
@@ -3132,15 +3146,6 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   let lastFloatsSig = "";
   /** Full-invalidate key: dims + theme (screen.resize/initStyles territory). */
   let lastClearKey = "";
-  /** Row ranges each region occupied LAST frame — a region clears its old
-   *  range plus its new one before stamping, or shrunken content leaves
-   *  stale cells the row-hash diff reports as "unchanged" (the ghosting
-   *  bug: every region shrinks constantly while scrolling). */
-  let prevTranscriptRows: { y0: number; y1: number } = { y0: 0, y1: 0 };
-  let prevDockRows: { y0: number; y1: number } = { y0: 0, y1: 0 };
-  let prevFloatsRows: { y0: number; y1: number } = { y0: 0, y1: 0 };
-  let prevOverlayRows: { y0: number; y1: number } = { y0: 0, y1: 0 };
-
   /** Does the transcript need re-derivation? Cheap incremental check. */
   function transcriptSig(): string {
     // items rev sum changes on any touch(); streamText identity per stream;
@@ -3208,10 +3213,6 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       lastFloatsSig = "";
       lastStatusSig = "";
       lastOverlaySig = "";
-      prevTranscriptRows = { y0: 0, y1: 0 };
-      prevDockRows = { y0: 0, y1: 0 };
-      floatPainted = [];
-      prevOverlayRows = { y0: 0, y1: 0 };
     }
 
     // ---- frame + transcript region ----
@@ -3224,10 +3225,12 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       painted = fr; // THE geometry of record until the next frame
       lastFrameSig = fs;
 
-      // transcript — clear LAST frame's range first: scrolled content
-      // shrinks/moves, and uncleared old cells are the ghosting bug
-      screen.clearRows(prevTranscriptRows.y0, Math.max(prevTranscriptRows.y1, fr.vh));
-      prevTranscriptRows = { y0: 0, y1: fr.vh };
+      // transcript — the plane is restamped in full; there is no "old range"
+      // to clear, because everything it contained is about to be overwritten
+      // (and a cell the new frame does NOT write is transparent, revealing
+      // the grid's last composite — which is exactly what stale-ghosting
+      // used to require clearRows choreography to avoid)
+      P.transcript.clearRows(0, H);
 
       // fr.rows is the WINDOW built around scrollTop (total is the real
       // length): rows[0] is absolute row fr.scrollTop - fr.winOffset, and the
@@ -3242,17 +3245,17 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         // instead of floating in default. NEVER the last column — that cell
         // belongs to the scrollbar strip (the strip's track/thumb must show
         // through even on tool rows)
-        if (row.bg) screen.fillRow(y, 0, SCROLLBAR ? W - 1 : W, row.bg);
+        if (row.bg) P.transcript.fillRow(y, 0, SCROLLBAR ? W - 1 : W, row.bg);
         let x = 1;
         for (const seg of row.segs) {
-          x = screen.text(x, y, seg.t, st(seg, S.base));
+          x = P.transcript.text(x, y, seg.t, st(seg, S.base));
         }
         // Selection is a re-style over the cells already painted, not a second
-        // text pass: the grid holds one char per cell, so re-stamping the range
-        // with a highlight background cannot disturb wide chars or wrapping.
+        // text pass: one char per cell, so re-stamping the range with a
+        // highlight background cannot disturb wide chars or wrapping.
         if (hasSel()) {
           const range = selRangeForRow(absolute, selA!, selB!, rowCells(row.segs));
-          if (range) screen.restyle(y, 1 + range.from, 2 + range.to, C.selBg);
+          if (range) P.transcript.restyle(y, 1 + range.from, 2 + range.to, C.selBg);
         }
       }
 
@@ -3261,7 +3264,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       // screen and any short session with nothing to scroll
       if (SCROLLBAR && fr.sbShowing) {
         for (let sy = 0; sy < fr.vh; sy++)
-          screen.fillRow(sy, W - 1, W, sy >= fr.sb.ty && sy < fr.sb.ty + fr.sb.th ? S.sbThumb : S.sbTrack);
+          P.transcript.fillRow(sy, W - 1, W, sy >= fr.sb.ty && sy < fr.sb.ty + fr.sb.th ? S.sbThumb : S.sbTrack);
       }
     }
 
@@ -3275,13 +3278,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     // ---- floats region (wizard / queue / cmdOut / hints) ----
     const fsig = floatsSig();
     if (fsig !== lastFloatsSig || frameChanged) {
-      // floats clear the rows they painted (hints/wizard are opaque full-width
-      // bars OVER the transcript) — after wiping, the transcript content that
-      // was under them must re-derive, or closing the hints leaves blank rows
-      // where the popup used to be
-      const hadFloats = floatPainted.length > 0;
+      // the floats plane restamps from empty: opening/closing a popup cannot
+      // corrupt the band underneath, so no transcript re-derive is scheduled
       lastFloatsSig = fsig;
-      if (hadFloats) lastFrameSig = ""; // transcript re-derives this frame
       paintFloats();
     }
 
@@ -3291,16 +3290,11 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       lastOverlaySig = os;
       paintOverlay(painted?.inputTop ?? H - 2);
     } else if (!overlay && lastOverlaySig !== "-") {
-      // modal closed: wipe the band it occupied and re-derive every other
-      // region over it (the overlay covered transcript AND possibly floats)
-      screen.clearRows(prevOverlayRows.y0, prevOverlayRows.y1);
-      prevOverlayRows = { y0: 0, y1: 0 };
+      // modal closed: its plane simply goes empty at the next composite —
+      // transcript/floats/dock were never overwritten, so no wipe or
+      // re-derive of anything is needed
+      P.overlay.clearRows(0, H);
       lastOverlaySig = "-";
-      lastFrameSig = ""; // transcript re-derives over the wiped band
-      lastFloatsSig = "";
-      lastDockSig = "";
-      floatPainted = [];
-      repaintTranscriptNow();
     }
 
     // ---- status region (ALWAYS checked: spinner ticks land here alone) ----
@@ -3311,41 +3305,6 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     }
   }
 
-  /** Re-derive just the transcript + scrollbar (stale-overlay cleanup). */
-  function repaintTranscriptNow() {
-    const fr = painted;
-    if (!fr) return;
-    // fr.rows is the WINDOW built around scrollTop (total is the real length):
-    // rows[0] is absolute row fr.scrollTop - fr.winOffset, and the viewport
-    // starts winOffset rows INTO the slice — rows before it are scroll-up
-    // margin, never on screen
-    const winBase = fr.scrollTop - fr.winOffset;
-    let y = 0;
-    for (let i = fr.winOffset; i < fr.rowCount && y < fr.vh; i++, y++) {
-      const row = fr.rows[i];
-      const absolute = winBase + i;
-      // tool rows fill the background first, so the text paints over it
-      // instead of floating in default. NEVER the last column — that cell
-      // belongs to the scrollbar strip (the strip's track/thumb must show
-      // through even on tool rows)
-      if (row.bg) screen.fillRow(y, 0, SCROLLBAR ? W - 1 : W, row.bg);
-      let x = 1;
-      for (const seg of row.segs) {
-        const styled = seg.fg || seg.bg || seg.bold || seg.italic || seg.strike || seg.href;
-        x = screen.text(x, y, seg.t, styled ? screen.sgr(seg) : S.base);
-      }
-      if (hasSel()) {
-        const range = selRangeForRow(absolute, selA!, selB!, rowCells(row.segs));
-        if (range) screen.restyle(y, 1 + range.from, 2 + range.to, C.selBg);
-      }
-    }
-    if (SCROLLBAR && fr.sbShowing) {
-      for (let sy = 0; sy < fr.vh; sy++)
-        screen.fillRow(sy, W - 1, W, sy >= fr.sb.ty && sy < fr.sb.ty + fr.sb.th ? S.sbThumb : S.sbTrack);
-    }
-    screen.forceRepaintAll(); // region partially overwritten the modal — re-emit everything it touched
-  }
-
   function paintDock() {
     const fr = painted;
     if (!fr) return;
@@ -3353,18 +3312,13 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     const { shownCount, firstShown, inputTop } = fr;
     let pendingCaret: { x: number; y: number } | null = null;
 
-    // clear this region's previous extent (the dock flexes: fewer wrapped
-    // rows than last frame must not leave old text behind). prev.y1===0 means
-    // "no previous extent" (first paint / full invalidate) — the transcript
-    // was already stamped this frame; clearing down from row 0 here would
-    // wipe it INCLUDING the scrollbar column.
-    if (prevDockRows.y1 > 0 || prevDockRows.y0 > 0) {
-      screen.clearRows(prevDockRows.y0, Math.max(prevDockRows.y1, inputTop + shownCount));
-    }
-    prevDockRows = { y0: inputTop, y1: inputTop + shownCount };
+    // plane restamps fully: shrinking from 4 wrapped rows to 1 cannot leave
+    // old text behind, because last frame's cells lived in the plane, not in
+    // the grid — no prev-extent wipe, no scrollbar-column footnote
+    P.dock.clearRows(0, H);
 
     // input box background
-    for (let i = 0; i < shownCount; i++) screen.fillRow(inputTop + i, 0, W, S.inputBgRow);
+    for (let i = 0; i < shownCount; i++) P.dock.fillRow(inputTop + i, 0, W, S.inputBgRow);
 
     const d = display();
     void d;
@@ -3379,8 +3333,8 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     if (selectFilter) {
       // a select step's keystrokes go to the filter — show them in the dock,
       // not just in the floating header, or typing feels dead
-      screen.text(1, inputTop, pfx, S.accent);
-      screen.text(3, inputTop, selectFilter, S.inputFg);
+      P.dock.text(1, inputTop, pfx, S.accent);
+      P.dock.text(3, inputTop, selectFilter, S.inputFg);
       pendingCaret = { x: 3 + [...selectFilter].reduce((w, ch) => w + charWidth(ch.codePointAt(0)!), 0), y: inputTop };
     } else if (empty) {
       const placeholder = prompt
@@ -3390,8 +3344,8 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
             ? "(type to filter · ↑↓ choose · enter confirms · esc cancels)"
             : `(${resolveField(st0!.hint, prompt!.answers) ?? "type your answer"} · enter submits · esc cancels)`
         : "(type here — / commands · \\ escapes · ! shell · wheel/pgup scroll · click expands · drag/dbl-click selects)";
-      screen.text(1, inputTop, pfx, prompt ? S.accent : S.dim);
-      screen.text(3, inputTop, placeholder, S.dim);
+      P.dock.text(1, inputTop, pfx, prompt ? S.accent : S.dim);
+      P.dock.text(3, inputTop, placeholder, S.dim);
       pendingCaret = { x: 3, y: inputTop };
     } else {
       const totalVis = layout.rows.length;
@@ -3400,8 +3354,8 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         const yy = inputTop + (v - firstShown);
         const isFirstVisual = vr.index === 0 && vr.startCol === 0;
         const prefix = isFirstVisual ? pfx : "  ";
-        screen.text(1, yy, prefix, S.accent);
-        screen.text(3, yy, vr.text, S.inputFg);
+        P.dock.text(1, yy, prefix, S.accent);
+        P.dock.text(3, yy, vr.text, S.inputFg);
       }
       // input selection: same restyle-over-cells trick as the transcript
       const ir = inSelRange();
@@ -3420,7 +3374,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           // (back-fill of unselected cells). State was always correct — only
           // the highlight coordinates were.
           const wb = widthOf(it, b) - widthOf(it, rs);
-          screen.restyle(inputTop + (v - firstShown), 3 + wa, 3 + wb, C.selBg);
+          P.dock.restyle(inputTop + (v - firstShown), 3 + wa, 3 + wb, C.selBg);
         }
       }
       const cy = inputTop + Math.max(0, Math.min(shownCount - 1, caret.visRow - firstShown));
@@ -3432,18 +3386,14 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   /** Row ranges floats actually painted last frame — ONLY these may be
    *  cleaned on re-derive (queue rows are transparent over the transcript;
    *  clearing the whole band would wipe transcript content under it). */
-  let floatPainted: { y0: number; y1: number }[] = [];
-
-  function clearOldFloats() {
-    for (const r of floatPainted) screen.clearRows(r.y0, r.y1);
-    floatPainted = [];
-  }
-
   function paintFloats() {
     const fr = painted;
     if (!fr) return;
     const { inputTop } = fr;
-    clearOldFloats();
+    // the plane replaces the floatPainted bookkeeping: restamping from an
+    // empty buffer is the complete picture — a float that vanished is just
+    // absent, and the transcript underneath was never touched
+    P.floats.clearRows(0, H);
 
     // the question wizard floats where the command hints would (it supersedes
     // them — the dock is an answer field while a prompt is open)
@@ -3471,10 +3421,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         }
       }
       const hTop = menuTop - rows.length;
-      floatPainted.push({ y0: hTop, y1: hTop + rows.length });
       for (let i = 0; i < rows.length; i++) {
-        screen.fillRow(hTop + i, 0, W, S.barBgRow);
-        screen.text(1, hTop + i, clipW(rows[i].text, W - 2), rows[i].sel ? S.hintSel : S.hintDim);
+        P.floats.fillRow(hTop + i, 0, W, S.barBgRow);
+        P.floats.text(1, hTop + i, clipW(rows[i].text, W - 2), rows[i].sel ? S.hintSel : S.hintDim);
       }
     }
 
@@ -3486,12 +3435,11 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       const shown = pend.slice(0, queueRowsH);
       const qTop = inputTop - queueRowsH;
       const extra = pend.length > shown.length ? 1 : 0;
-      floatPainted.push({ y0: qTop, y1: qTop + shown.length + extra });
       for (let i = 0; i < shown.length; i++) {
-        screen.text(1, qTop + i, clipW(shown[i], W - 2), S.hintOnBase);
+        P.floats.text(1, qTop + i, clipW(shown[i], W - 2), S.hintOnBase);
       }
       if (extra) {
-        screen.text(1, qTop + shown.length, clipW(`… ${pend.length - shown.length} more — ctrl+up withdraws last`, W - 2), S.hintOnBase);
+        P.floats.text(1, qTop + shown.length, clipW(`… ${pend.length - shown.length} more — ctrl+up withdraws last`, W - 2), S.hintOnBase);
       }
     }
 
@@ -3502,48 +3450,40 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       const shown = cmdOut.slice(0, avail);
       cmdRowsH = shown.length + (cmdOut.length > avail ? 1 : 0);
       const cTop = inputTop - queueRowsH - cmdRowsH;
-      floatPainted.push({ y0: cTop, y1: cTop + cmdRowsH });
       for (let i = 0; i < shown.length; i++) {
         // themed panel fill first: the box used to sit on the terminal's own
         // background (plain black), unrelated to the theme
-        screen.fillRow(cTop + i, 0, W, S.panelBgRow);
-        screen.text(1, cTop + i, clipW(shown[i], W - 2), S.panelBgRow);
+        P.floats.fillRow(cTop + i, 0, W, S.panelBgRow);
+        P.floats.text(1, cTop + i, clipW(shown[i], W - 2), S.panelBgRow);
       }
       if (cmdOut.length > avail) {
-        screen.fillRow(cTop + shown.length, 0, W, S.panelBgRow);
-        screen.text(1, cTop + shown.length, clipW(`… ${cmdOut.length - avail} more lines`, W - 2), S.panelBgRow);
+        P.floats.fillRow(cTop + shown.length, 0, W, S.panelBgRow);
+        P.floats.text(1, cTop + shown.length, clipW(`… ${cmdOut.length - avail} more lines`, W - 2), S.panelBgRow);
       }
     }
 
     const hints = hintText(Math.min(5, Math.max(1, inputTop - queueRowsH - cmdRowsH - 1)));
     if (hints.active && hints.rows.length) {
       const hTop = inputTop - queueRowsH - cmdRowsH - hints.rows.length;
-      floatPainted.push({ y0: hTop, y1: hTop + hints.rows.length });
       for (let i = 0; i < hints.rows.length; i++) {
-        screen.fillRow(hTop + i, 0, W, S.barBgRow);
-        screen.text(1, hTop + i, hints.rows[i].text, hints.rows[i].sel ? S.hintSel : S.hintDim);
+        P.floats.fillRow(hTop + i, 0, W, S.barBgRow);
+        P.floats.text(1, hTop + i, hints.rows[i].text, hints.rows[i].sel ? S.hintSel : S.hintDim);
       }
     }
 
-    // floats cleared/restamped full-width rows that overlap the transcript
-    // band — the scrollbar column they wiped must be re-stamped or the
-    // track/thumb vanish whenever hints/queue/wizard change height
-    if (SCROLLBAR && painted?.sbShowing) {
-      for (let sy = 0; sy < Math.min(painted.vh, inputTop); sy++)
-        screen.fillRow(sy, W - 1, W, sy >= painted.sb.ty && sy < painted.sb.ty + painted.sb.th ? S.sbThumb : S.sbTrack);
-    }
   }
 
   function paintStatus() {
     const barY = H - 1;
-    screen.fillRow(barY, 0, W, S.barBgRow);
+    P.status.clearRows(0, H);
+    P.status.fillRow(barY, 0, W, S.barBgRow);
     let lx = 1;
     if (Date.now() < flashUntil && flashMsg) {
-      lx = screen.text(lx, barY, `${flashMsg}`, displayBusy() ? S.accent : S.ok);
+      lx = P.status.text(lx, barY, `${flashMsg}`, displayBusy() ? S.accent : S.ok);
     } else if (displayBusy()) {
-      lx = screen.text(lx, barY, clipW(`${SPIN[frameIdx]} ${streamText !== null ? "responding" : "thinking"}${busyMsg ? ` — ${busyMsg}` : ""} ${elapsed()}`, W - 2), S.accent);
+      lx = P.status.text(lx, barY, clipW(`${SPIN[frameIdx]} ${streamText !== null ? "responding" : "thinking"}${busyMsg ? ` — ${busyMsg}` : ""} ${elapsed()}`, W - 2), S.accent);
     } else {
-      lx = screen.text(lx, barY, `ready`, S.ok);
+      lx = P.status.text(lx, barY, `ready`, S.ok);
     }
     // right side: config `statusBar` names segments left-to-right (built-ins
     // cwd provider model ctx readOnly, plus plugin `statusSegments`); a null
@@ -3574,7 +3514,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       if (Bun.stringWidth(right) <= avail || from >= segs.length) break;
       from++;
     }
-    if (right && from < segs.length) screen.text(W - 1 - Bun.stringWidth(right), barY, right, S.chromeOnBar);
+    if (right && from < segs.length) P.status.text(W - 1 - Bun.stringWidth(right), barY, right, S.chromeOnBar);
   }
 
   /**
@@ -3592,26 +3532,24 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     const top = Math.max(0, inputTop - bodyH - 2);
     const win = p.window(bodyH);
     const q = p.filter();
-    prevOverlayRows = { y0: top, y1: top + bodyH + 2 }; // close-time wipe range
-
-
-    screen.fillRow(top, 0, W, S.barBgRow);
-    screen.text(1, top, clipW(`sessions ${q ? `· filter: ${q}` : "· type to filter"}`, W - 2), S.accent);
+    P.overlay.clearRows(0, H);
+    P.overlay.fillRow(top, 0, W, S.barBgRow);
+    P.overlay.text(1, top, clipW(`sessions ${q ? `· filter: ${q}` : "· type to filter"}`, W - 2), S.accent);
     for (let i = 0; i < bodyH; i++) {
       const y = top + 1 + i;
       const r = win.rows[i];
       const on = i === win.selRow;
-      screen.fillRow(y, 0, W, on ? S.overlaySel : S.overlayRow);
+      P.overlay.fillRow(y, 0, W, on ? S.overlaySel : S.overlayRow);
       if (!r) {
-        if (i === 0 && !win.rows.length) screen.text(1, y, q ? `no match for "${q}"` : "(no sessions)", S.dim);
+        if (i === 0 && !win.rows.length) P.overlay.text(1, y, q ? `no match for "${q}"` : "(no sessions)", S.dim);
         continue;
       }
       const mark = r.current ? "*" : on ? "›" : " ";
-      screen.text(1, y, clipW(`${mark} ${r.cells.join("  ")}`, W - 2), on ? S.overlaySel : S.overlayRow);
+      P.overlay.text(1, y, clipW(`${mark} ${r.cells.join("  ")}`, W - 2), on ? S.overlaySel : S.overlayRow);
     }
     const y = top + 1 + bodyH;
-    screen.fillRow(y, 0, W, S.barBgRow);
-    screen.text(1, y, clipW(p.footer(), W - 2), p.pendingConfirm() ? S.err : S.hintDim);
+    P.overlay.fillRow(y, 0, W, S.barBgRow);
+    P.overlay.text(1, y, clipW(p.footer(), W - 2), p.pendingConfirm() ? S.err : S.hintDim);
   }
 
   /** Truncate to `cols` display columns (wide chars count as two). */
@@ -3768,6 +3706,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       // First frame BEFORE anything expensive: transcript replay and
       // config/plugin loading happen once the window is already up.
       paint();
+      screen.composite();
       screen.flush();
       term.flush();
       // show the input caret from the very first frame, not only after the
@@ -3858,6 +3797,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
             // hardware cursor at the row end, and the input caret would
             // visibly jump there until the next full frame.
             paintStatus();
+            screen.composite();
             screen.flush();
             const caret = nextCaret ?? { x: 3, y: H - 2 };
             term.setCursor(caret.x, caret.y);
@@ -3875,6 +3815,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           const caretKey = `${caret.x},${caret.y}`;
           const moved = caretKey !== lastCaretKey;
           if (moved) term.hideCursor(); // see the old comment: visible cursor mid-repaint ghosts on Windows Terminal
+          screen.composite();
           screen.flush();
           if (process.env.FOX_AGENT_TRACE && screen.lastDirty()) {
             try {
