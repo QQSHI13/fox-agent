@@ -1,5 +1,5 @@
 {
-  "generated": "2026-10-07T12:45:31Z",
+  "generated": "2026-10-07T13:07:00Z",
   "machine": "Linux x86_64 (6.17.0-1022-azure)",
   "method": "best of 4 `--version` runs; best of 5 PTY launches (no args) to first output byte; best of 3 PTY launches typing a probe and waiting for it on screen (log marker where a tool suppresses echo); PSS after 1.5s idle from /proc smaps_rollup; bundle = the binary itself, a launcher's exec target where a wrapper hands off, or the package dir for script CLIs (entry shims alone would pretend node_modules are free); fox TTFT = spawn to first text event of `fox -p \u2026 --json` vs the repo's scripted local provider (no key, no network); fox peak RSS of that turn via /usr/bin/time -v. Missing tools are n/a, never estimated.",
   "rows": [
@@ -10,10 +10,10 @@
       "version": "0.5.0-beta.1",
       "disk_mb": 89.4,
       "disk_kind": "bin",
-      "startup_ms": 13.6,
-      "tui_first_byte_ms": 16.1,
+      "startup_ms": 13.7,
+      "tui_first_byte_ms": 14.6,
       "tui_first_input_ms": null,
-      "idle_pss_mb": 33.1
+      "idle_pss_mb": 36.0
     },
     {
       "agent": "claude code",
@@ -22,8 +22,8 @@
       "version": "2.1.292 (Claude Code)",
       "disk_mb": 251.5,
       "disk_kind": "bin",
-      "startup_ms": 9.3,
-      "tui_first_byte_ms": 216.6,
+      "startup_ms": 8.5,
+      "tui_first_byte_ms": 197.7,
       "tui_first_input_ms": null,
       "idle_pss_mb": 184.4
     },
@@ -34,8 +34,8 @@
       "version": "codex-cli 0.160.1",
       "disk_mb": 446.8,
       "disk_kind": "pkg",
-      "startup_ms": 42.5,
-      "tui_first_byte_ms": 44.3,
+      "startup_ms": 41.5,
+      "tui_first_byte_ms": 41.8,
       "tui_first_input_ms": null,
       "idle_pss_mb": 49.1
     },
@@ -46,10 +46,10 @@
       "version": "1.18.35",
       "disk_mb": 185.7,
       "disk_kind": "bin",
-      "startup_ms": 591.3,
-      "tui_first_byte_ms": 987.0,
-      "tui_first_input_ms": 45.7,
-      "idle_pss_mb": 366.0
+      "startup_ms": 608.1,
+      "tui_first_byte_ms": 984.0,
+      "tui_first_input_ms": 41.8,
+      "idle_pss_mb": 364.9
     },
     {
       "agent": "opencode v2",
@@ -58,10 +58,10 @@
       "version": "opencode2 v0.0.0-beta-19271",
       "disk_mb": 207.4,
       "disk_kind": "bin",
-      "startup_ms": 79.2,
-      "tui_first_byte_ms": 131.9,
-      "tui_first_input_ms": 61.2,
-      "idle_pss_mb": 127.4
+      "startup_ms": 80.2,
+      "tui_first_byte_ms": 130.1,
+      "tui_first_input_ms": 60.9,
+      "idle_pss_mb": 129.4
     },
     {
       "agent": "jcode",
@@ -70,10 +70,10 @@
       "version": "jcode v0.91.0 (439a243bb)",
       "disk_mb": 135.1,
       "disk_kind": "bin",
-      "startup_ms": 9.4,
-      "tui_first_byte_ms": 11.5,
+      "startup_ms": 9.1,
+      "tui_first_byte_ms": 11.3,
       "tui_first_input_ms": null,
-      "idle_pss_mb": 27.3
+      "idle_pss_mb": 26.9
     },
     {
       "agent": "pi",
@@ -82,10 +82,10 @@
       "version": "1.0.4",
       "disk_mb": 123.1,
       "disk_kind": "pkg",
-      "startup_ms": 232.2,
-      "tui_first_byte_ms": 303.0,
-      "tui_first_input_ms": 8.0,
-      "idle_pss_mb": 129.8
+      "startup_ms": 237.2,
+      "tui_first_byte_ms": 307.6,
+      "tui_first_input_ms": 8.3,
+      "idle_pss_mb": 132.7
     },
     {
       "agent": "gemini cli",
@@ -94,10 +94,10 @@
       "version": "0.63.0",
       "disk_mb": 102.3,
       "disk_kind": "pkg",
-      "startup_ms": 1513.3,
-      "tui_first_byte_ms": 1598.7,
+      "startup_ms": 1490.6,
+      "tui_first_byte_ms": 1572.3,
       "tui_first_input_ms": 0.1,
-      "idle_pss_mb": 145.8
+      "idle_pss_mb": 145.7
     },
     {
       "agent": "copilot cli",
@@ -106,10 +106,10 @@
       "version": "GitHub Copilot CLI 1.0.92.",
       "disk_mb": 180.1,
       "disk_kind": "pkg",
-      "startup_ms": 100.2,
-      "tui_first_byte_ms": 834.9,
+      "startup_ms": 99.2,
+      "tui_first_byte_ms": 815.8,
       "tui_first_input_ms": null,
-      "idle_pss_mb": 47.5
+      "idle_pss_mb": 47.4
     },
     {
       "agent": "crush",
@@ -118,10 +118,10 @@
       "version": "crush version v0.97.1",
       "disk_mb": 128.5,
       "disk_kind": "pkg",
-      "startup_ms": 152.7,
-      "tui_first_byte_ms": 527.2,
+      "startup_ms": 148.2,
+      "tui_first_byte_ms": 540.5,
       "tui_first_input_ms": null,
-      "idle_pss_mb": 68.8
+      "idle_pss_mb": 68.7
     },
     {
       "agent": "goose",
@@ -130,9 +130,9 @@
       "version": "1.53.0",
       "disk_mb": 298.7,
       "disk_kind": "bin",
-      "startup_ms": 7.1,
-      "tui_first_byte_ms": 6.9,
-      "tui_first_input_ms": 0.1,
+      "startup_ms": 7.0,
+      "tui_first_byte_ms": 6.7,
+      "tui_first_input_ms": null,
       "idle_pss_mb": null
     },
     {
@@ -142,10 +142,10 @@
       "version": "aider 0.86.2",
       "disk_mb": 642.8,
       "disk_kind": "pkg",
-      "startup_ms": 780.6,
-      "tui_first_byte_ms": 722.5,
-      "tui_first_input_ms": 10.6,
-      "idle_pss_mb": 67.0
+      "startup_ms": 788.1,
+      "tui_first_byte_ms": 727.8,
+      "tui_first_input_ms": 10.5,
+      "idle_pss_mb": 66.8
     },
     {
       "agent": "amp",
@@ -162,10 +162,10 @@
       "version": "0.25.0",
       "disk_mb": 146.2,
       "disk_kind": "pkg",
-      "startup_ms": 37.3,
-      "tui_first_byte_ms": 785.6,
+      "startup_ms": 35.6,
+      "tui_first_byte_ms": 795.5,
       "tui_first_input_ms": null,
-      "idle_pss_mb": 249.6
+      "idle_pss_mb": 266.8
     },
     {
       "agent": "codebuff",
@@ -178,15 +178,15 @@
       "version": "7.8.8",
       "disk_mb": 653.7,
       "disk_kind": "pkg",
-      "startup_ms": 814.6,
-      "tui_first_byte_ms": 2453.5,
-      "tui_first_input_ms": 41.1,
+      "startup_ms": 830.6,
+      "tui_first_byte_ms": 2440.8,
+      "tui_first_input_ms": 36.1,
       "idle_pss_mb": 46.2
     }
   ],
   "fox": {
-    "ttft_ms": 55.4,
-    "headless_peak_rss_mb": 64.3,
+    "ttft_ms": 55.8,
+    "headless_peak_rss_mb": 64.2,
     "method": "headless `fox -p \u2026 --json` vs scripted local provider; RSS via /usr/bin/time -v; TUI bytes via PTY; TUI input = first typed byte to probe text on screen (log marker where echo is suppressed)"
   }
 }
