@@ -185,6 +185,12 @@ export interface CommandResult {
   reload?: boolean;
   /** transient output (like /help): the TUI drops it on the next keypress/click */
   ephemeral?: boolean;
+  /**
+   * Text the host submits AS THE USER's next message (queued when busy, sent
+   * when idle). Prompt-template commands (`/init`) ride this: they ARE a
+   * turn, not a printout — the model does the work with its ordinary tools.
+   */
+  submit?: string;
 }
 
 /**
@@ -214,6 +220,7 @@ export interface CommandSpec {
 export const COMMANDS: CommandSpec[] = [
   { name: "/help", aliases: ["/?"], desc: "show commands" },
   { name: "/new", desc: "start a fresh session" },
+  { name: "/init", desc: "guided AGENTS.md setup for this repo", usage: "[focus]", arg: true, help: "bare: analyzes the repo and writes/updates AGENTS.md; anything typed becomes the focus/constraints the agent honors" },
   {
     name: "/debug",
     desc: "verbose diagnostics on/off, or tail debug.log",
@@ -1465,6 +1472,37 @@ export function runSlashCommand(input: string, state: HarnessState): CommandResu
     case "/new": {
       const s = createSession(state.cwd, state.provider.model);
       return { handled: true, newSessionId: s.id, output: `new session ${s.id}`, welcome: true };
+    }
+
+    case "/init": {
+      // A prompt-template command, not a printout: the turn itself does the
+      // work with the agent's ordinary tools (opencode's initialize.txt is the
+      // model — compact, executable-sources-over-prose, improve-in-place).
+      const focus = arg ? `\n\nUser-provided focus or constraints (honor these):\n${arg}` : "";
+      return {
+        handled: true,
+        output: "analyzing the repository — AGENTS.md will be written or improved in place",
+        submit: `Create or update AGENTS.md for this repository (${state.cwd}).
+The goal is a compact instruction file that helps future sessions avoid mistakes and ramp up quickly. Every line should answer: "Would an agent likely miss this without help?" If not, leave it out.${focus}
+
+## How to investigate
+Read the highest-value sources first: README*, root manifests and lockfiles, build/test/lint/typecheck/codegen config, CI workflows and pre-commit/task-runner config, existing instruction files (AGENTS.md, CLAUDE.md, .cursor/rules/, .github/copilot-instructions.md), and repo-local fox-agent.toml. If architecture is still unclear, inspect a small number of representative code files to find the real entrypoints, package boundaries, and execution flow. Prefer executable sources of truth over prose; if docs conflict with config or scripts, trust the executable source and only keep what you can verify.
+
+## What to extract
+- exact developer commands, especially non-obvious ones, and how to run a single test or focused verification step
+- required command order when it matters (e.g. lint -> typecheck -> test)
+- monorepo/multi-package boundaries, ownership of major directories, real entrypoints
+- toolchain quirks: generated code, migrations, codegen, build artifacts, env loading, dev servers
+- testing quirks: fixtures, integration prerequisites, snapshot workflows, flaky or expensive suites
+- important constraints from existing instruction files worth preserving
+
+## Writing rules
+Include only high-signal, repo-specific guidance an agent would otherwise guess wrong. Exclude generic software advice, long tutorials, exhaustive file trees, obvious language conventions, and anything you could not verify. Prefer short sections and bullets; if the repo is simple, keep the file simple. Do not ask the user questions the repo can answer.
+
+If AGENTS.md already exists, improve it in place rather than rewriting blindly: preserve verified useful guidance, delete fluff or stale claims, and reconcile it with the current codebase. Read it fully first — relative paths in it resolve against its own directory.
+
+Verify what you write: run the commands you document (at least the build/test entry points) before recording them. Finish with the file path and a one-line summary of what changed.`,
+      };
     }
 
     case "/sessions": {

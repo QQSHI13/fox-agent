@@ -42,6 +42,8 @@ export interface RuntimeBudget {
  * which is why a 1.6k system prompt cost a fresh 1.6k re-read 5,157 times in a
  * row. Those all travel in buildRuntimeHeader() at the message tail instead.
  */
+import { agentDocsDir, ensureAgentDocs } from "../core/selfdocs.ts";
+
 export function buildSystemPrompt(
   opts: {
     tools: ToolDef[];
@@ -88,6 +90,23 @@ export function buildSystemPrompt(
     ...(have.has("task") ? [`Delegate self-contained subtasks to task to protect this context window.`] : []),
   ];
   sections.push(style.join(" "));
+
+  // pi's self-documentation mechanism: ship docs, route to them, and let the
+  // ordinary read tool do the rest. Routing lives in the prompt; the content
+  // never does — a doc file read on demand costs nothing per turn.
+  ensureAgentDocs();
+  sections.push(
+    [
+      `## Self documentation`,
+      `fox-agent's own docs are materialized at ${agentDocsDir()}/ — read them with your read tool when the user asks about fox-agent itself (its config, plugins, tools, sessions, themes, protocols) or asks how to use or extend it. Do not read them otherwise.`,
+      `- config.md — config cascade, every field, env vars, editing the config yourself (/settings, /reload apply rules)`,
+      `- plugins.md — writing plugins (FoxPlugin: tools/hooks/providers/themes/commands/statusSegments), global-only loading rule`,
+      `- sessions-acp.md — session model, picker keys, forking, ACP server/client, A2A, headless modes`,
+      `- themes-tui.md — themes, TUI internals, keybindings`,
+      `- hacking.md — building/patching fox-agent's own source (build, test, conventions, layout, commit workflow)`,
+      `Read a file completely before acting on it; follow cross-references between the files.`,
+    ].join("\n"),
+  );
 
   return sections.join("\n\n");
 }

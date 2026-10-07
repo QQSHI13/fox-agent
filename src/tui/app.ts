@@ -645,6 +645,18 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     // short command output floats above the dock and dies on the next key —
     // it never pushes the transcript up (/todo, /usage, switch confirmations)
     if (res.output) setCmdOut(res.output);
+    // prompt-template commands (/init) ARE a turn: sent literally (never
+    // re-interpreted as !shell or /slash), queued when a turn is running —
+    // the same lane a user's typed message takes mid-turn
+    if (res.submit) {
+      if (busy) {
+        queued.push({ raw: res.submit, lit: true });
+        markDirty();
+      } else {
+        void runAgent(res.submit);
+      }
+      return; // a submitting command has no other effect to apply
+    }
     if (res.newSessionId) switchSession(res.newSessionId);
     if (res.welcome) {
       // /new is a fresh `fox` launch: reload config (model/theme/caps) and
