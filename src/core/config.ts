@@ -245,7 +245,7 @@ const DEFAULTS: Omit<Config, "projectInstructions"> = {
   tuiKeptChars: 4_000,
   tuiRich: false,
   tuiScrollbar: true,
-  tuiScrollStep: 1,
+  tuiScrollStep: 2,
   statusBar: "cwd provider model ctx",
   debug: false,
   tuiFrameMs: 16,
@@ -872,9 +872,9 @@ export const SETTINGS: SettingSpec[] = [
   {
     key: "tuiScrollStep",
     desc: "transcript rows per wheel notch (1..40)",
-    def: "1",
+    def: "2",
     validate: num(1, 40),
-    fmt: (v) => (v === undefined ? "1" : String(v)),
+    fmt: (v) => (v === undefined ? "2" : String(v)),
   },
   {
     key: "debug",

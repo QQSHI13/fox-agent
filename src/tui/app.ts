@@ -1149,7 +1149,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       setTuiCaps(state.config?.tuiCollapsedChars ?? 240, state.config?.tuiKeptChars ?? 4_000);
       setTuiRich(!!state.config?.tuiRich);
       setTuiScrollbar(state.config?.tuiScrollbar ?? true);
-      setTuiScrollStep(state.config?.tuiScrollStep ?? 1);
+      setTuiScrollStep(state.config?.tuiScrollStep ?? 2);
       setDebug(!!state.config?.debug);
       const wantTheme = state.config?.theme ?? "default";
       // plugin themes register on first buildRegistry, so an unknown name here
