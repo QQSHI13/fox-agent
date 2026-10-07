@@ -21,8 +21,8 @@ import { renderMarkdown } from "./markdown.ts";
 import { createPlainRows, createStreamRows } from "./rows.ts";
 import { wrapSegs, type Seg } from "./wrap.ts";
 import { charWidth } from "./screen.ts";
-import { Picker, type PickerRow } from "./picker.ts";
-import { sessionRows } from "./pickerui.ts";
+import { Picker, type PickerAction, type PickerRow } from "./picker.ts";
+import { sessionRows, setPickerWheelStep } from "./pickerui.ts";
 import { runTurn, VERSION } from "../loop/agent.ts";
 import { steer, peekSteer, withdrawSteer } from "../loop/steer.ts";
 import { projectView } from "../context/view.ts";
@@ -125,6 +125,7 @@ let frameArmRef: ((ms: number) => void) | null = null;
  */
 export function setTuiScrollStep(n: number): void {
   SCROLL_STEP = Math.max(1, Math.min(40, Math.floor(n)));
+  setPickerWheelStep(n); // pickers (/settings, /model, /sessions) scroll the same amount
 }
 
 /**
@@ -1030,9 +1031,8 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         p.sel = (p.sel + (name === "up" ? -1 : 1) + n) % Math.max(1, n);
         markDirty();
       } else if (name === "wheelup" || name === "wheeldown") {
-        // the wheel steps the open menu one row — granular, like the session
-        // picker overlay maps it to single steps; modal, so no scroll lost
-        p.sel = Math.max(0, Math.min(Math.max(0, n - 1), p.sel + (name === "wheelup" ? -1 : 1)));
+        // tuiScrollStep rows per notch, like every other scroll surface
+        p.sel = Math.max(0, Math.min(Math.max(0, n - 1), p.sel + (name === "wheelup" ? -SCROLL_STEP : SCROLL_STEP)));
         markDirty();
       } else if (name === "backspace") {
         if (p.filter) {
@@ -1253,12 +1253,15 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       markDirty();
       return true;
     }
-    const action =
-      k.type === "named" && (k.name === "wheelup" || k.name === "wheeldown")
-        ? (overlay.key({ name: k.name === "wheelup" ? "up" : "down" }), null)
-        : k.type === "char"
-          ? overlay.key({ ch: k.ch })
-          : overlay.key({ name: k.name, ctrl: k.ctrl });
+    let action: PickerAction | null = null;
+    if (k.type === "named" && (k.name === "wheelup" || k.name === "wheeldown")) {
+      // tuiScrollStep rows per notch, same repeat as the standalone picker;
+      // an action (delete confirm etc.) ends the repeat early
+      for (let i = 0; i < SCROLL_STEP && !action; i++) {
+        action = overlay.key({ name: k.name === "wheelup" ? "up" : "down" });
+      }
+    } else if (k.type === "char") action = overlay.key({ ch: k.ch });
+    else action = overlay.key({ name: k.name, ctrl: k.ctrl });
     markDirty();
     if (!action) return true;
     switch (action.kind) {

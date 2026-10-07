@@ -17,6 +17,18 @@ import { Picker, type PickerAction, type PickerRow } from "./picker.ts";
 
 import { liveTheme } from "./themes.ts";
 
+/**
+ * Picker rows moved per wheel notch (config `tuiScrollStep`, shared with the
+ * transcript scroll). The transcript reads its copy from app.ts's setter; the
+ * picker needs its own because it runs standalone (`fox -c`) before app.ts
+ * ever loads — one shared module-level value, set from the same two call
+ * sites, keeps the two surfaces in lockstep.
+ */
+let WHEEL_STEP = 1;
+export function setPickerWheelStep(n: number): void {
+  WHEEL_STEP = Math.max(1, Math.min(40, Math.floor(n)));
+}
+
 // Same live palette as the app; the picker may be the first UI shown, so honor
 // the configured theme here too (set by pickSession before runPicker).
 const C = liveTheme<"fg" | "dim" | "sel" | "selBg" | "accent" | "warn" | "barBg">({
@@ -127,12 +139,16 @@ export async function runPicker(
       return;
     }
     if (k.type === "mouse") return;
-    const action =
-      k.type === "named" && (k.name === "wheelup" || k.name === "wheeldown")
-        ? picker.key({ name: k.name === "wheelup" ? "up" : "down" })
-        : k.type === "char"
-          ? picker.key({ ch: k.ch })
-          : picker.key({ name: k.name, ctrl: k.ctrl });
+    let action: PickerAction | null;
+    if (k.type === "named" && (k.name === "wheelup" || k.name === "wheeldown")) {
+      // one notch = tuiScrollStep rows, same as the transcript; a returned
+      // action (delete confirm etc.) ends the repeat early
+      action = null;
+      for (let i = 0; i < WHEEL_STEP && !action; i++) {
+        action = picker.key({ name: k.name === "wheelup" ? "up" : "down" });
+      }
+    } else if (k.type === "char") action = picker.key({ ch: k.ch });
+    else action = picker.key({ name: k.name, ctrl: k.ctrl });
     dirty = true;
     if (!action) return;
     if (action.kind === "delete") {
