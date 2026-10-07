@@ -3706,15 +3706,26 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           term.flush();
           if (moved) lastCaretKey = caretKey;
         } catch (e) {
-          // painting over the grid with a stack trace is how raw errors leak;
-          // the log gets it, the transcript gets one line, and the UI exits
+          // painting over the grid with a stack trace is how raw errors leak.
+          // This used to gracefulExit(1): one bad row (a resume replaying an
+          // item the current renderer chokes on) took the whole session down —
+          // the "black screen on resume" and "randomly exits" reports were the
+          // same bug. Recover instead: drop every render cache (the bad row is
+          // almost certainly cached), log, tell the user once, and keep the
+          // session alive — the next tick re-renders from scratch.
           debugLog("tui frame error", e);
-          try {
-            push("error", `internal tui error — log: ${debugLogPath()}`);
-          } catch {}
-          gracefulExit(1);
+          lineCache.clear();
+          streamKernels.clear();
+          frameErrors++;
+          if (frameErrors <= 1 && !exitCode) {
+            try {
+              push("error", `render error (recovered) — log: ${debugLogPath()}`);
+            } catch {}
+          }
+          dirty = true; // next tick repaints everything from clean caches
         }
       };
+      let frameErrors = 0; // a second consecutive render error stays log-only
       let frameTimer: ReturnType<typeof setInterval> | null = null;
       const armFrameTimer = (ms: number) => {
         if (frameTimer) clearInterval(frameTimer);
