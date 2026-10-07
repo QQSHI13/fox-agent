@@ -3413,7 +3413,13 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           const b = Math.min(re, ir[1]);
           if (a >= b) continue;
           const wa = widthOf(it, a) - widthOf(it, rs);
-          const wb = widthOf(it, b) - widthOf(it, a);
+          // wb is the END COLUMN (width up to b relative to row start), not
+          // the selection's own width — `widthOf(b) - widthOf(a)` inverted
+          // the range whenever a > rs, so rightward drags restyled ZERO cells
+          // (no highlight at all) and leftward drags drew a short wrong strip
+          // (back-fill of unselected cells). State was always correct — only
+          // the highlight coordinates were.
+          const wb = widthOf(it, b) - widthOf(it, rs);
           screen.restyle(inputTop + (v - firstShown), 3 + wa, 3 + wb, C.selBg);
         }
       }
