@@ -126,6 +126,11 @@ export class Screen {
     return this.planes.get(name);
   }
 
+  /** all plane names (debug + plane-lifecycle sweeps) */
+  planeNames(): string[] {
+    return [...this.planes.keys()];
+  }
+
   /** fold every plane into the grid, bottom-most z first; ties by creation order */
   composite(): void {
     // the grid is a PURE PRODUCT of the planes: reset it first, or cells no

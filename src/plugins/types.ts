@@ -31,6 +31,7 @@
  * pairing holds whatever a plugin does.
  */
 import type { Tool } from "../tools/types.ts";
+import type { Style } from "../tui/screen.ts";
 import type { ChatFn, ChatMessage, ToolDef } from "../providers/types.ts";
 import type { ExternalAgentConfig, McpServerConfig } from "../core/config.ts";
 
@@ -156,6 +157,46 @@ export interface BeforeToolPatch {
   output?: string;
 }
 
+/**
+ * A TUI screen region a plugin owns. The plane is clip-rect bounded — a
+ * region can never paint outside `rect`, however buggy its painter, because
+ * the clamp lives in the plane's write primitives. Paint runs on the frame
+ * cadence only while the TUI is up; returning false hides the region for
+ * that frame (the plane goes empty and the screen underneath shows through).
+ */
+export interface TuiRegion {
+  /** stack order among regions; plugin regions should stay >= 50 (above all built-ins) */
+  z: number;
+  /**
+   * The band this region owns, [x0, y0, x1, y1) in screen cells. y may be
+   * negative or exceed the screen height — it is clamped against the live
+   * screen size every paint, so "bottom-anchored" regions can express
+   * themselves relative to a fixed max and simply not paint rows that do
+   * not exist this frame.
+   */
+  rect: [number, number, number, number];
+  /**
+   * Stamp this frame's content. Return false to hide the region this frame.
+   * Throwing is contained: the region is dropped for the frame and warned
+   * once. Keep it cheap — it runs at frame rate while anything repaints.
+   */
+  paint: (p: TuiRegionPlane) => boolean | void;
+}
+
+/**
+ * What a region's paint fn draws with: the same text/fillRow/restyle
+ * primitives the built-in regions use, pre-clipped to the region's rect.
+ */
+export interface TuiRegionPlane {
+  text(x: number, y: number, str: string, style: Style): void;
+  fillRow(y: number, x0: number, x1: number, style: Style): void;
+  /** highlight existing content with a background (selection-style) */
+  restyle(y: number, x0: number, x1: number, bg: string): void;
+  /** screen width/height this frame */
+  readonly w: number;
+  readonly h: number;
+}
+
 export interface FoxPlugin {
   /** identifies the plugin in warnings; the only required field */
   name: string;
@@ -190,4 +231,12 @@ export interface FoxPlugin {
    * once per name.
    */
   statusSegments?: Record<string, () => string | null>;
+  /**
+   * TUI screen regions this plugin contributes, keyed by name — a panel, a
+   * ticker, a custom status strip. Each gets its own compositing plane,
+   * clipped to the `rect` the region declares; regions appear/disappear with
+   * plugin load (`/reload` swaps them live) and hide per-frame by returning
+   * false from `paint`.
+   */
+  regions?: Record<string, TuiRegion>;
 }

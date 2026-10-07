@@ -399,6 +399,53 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     overlay: screen.createPlane("overlay", 30),
     status: screen.createPlane("status", 40),
   };
+  // plugin regions: resolved per statsRev (same live-swap cadence as
+  // statusBarSlots — /reload bumps it), each in a plane clipped to the rect
+  // the region declares, so a plugin physically cannot paint outside its
+  // region. Dropped regions just stop being created; their plane is removed
+  // and the screen underneath shows through at the next composite.
+  type PluginRegion = { key: string; z: number; rect: [number, number, number, number]; paint: (p: any) => boolean | void; plane: any; owner: string };
+  let pluginRegionsRev = -1;
+  let pluginRegions: PluginRegion[] = [];
+  const regionWarned = new Set<string>();
+  function resolvePluginRegions(): PluginRegion[] {
+    if (pluginRegionsRev === statsRev) return pluginRegions;
+    pluginRegionsRev = statsRev;
+    pluginRegions = [];
+    for (const p of activePlugins()) {
+      for (const [name, r] of Object.entries(p.regions ?? {})) {
+        const key = `${p.name}/${name}`;
+        const plane = screen.createPlane(`plugin:${key}`, r.z);
+        plane.clip = r.rect;
+        pluginRegions.push({ key, z: r.z, rect: r.rect, paint: r.paint, plane, owner: p.name });
+      }
+    }
+    // drop planes whose region vanished this reload
+    const live = new Set(pluginRegions.map((r) => `plugin:${r.key}`));
+    for (const name of screen.planeNames()) if (name.startsWith("plugin:") && !live.has(name)) screen.dropPlane(name);
+    return pluginRegions;
+  }
+  function paintPluginRegions(): void {
+    for (const r of resolvePluginRegions()) {
+      r.plane.clearRows(0, H);
+      let ok = false;
+      try {
+        ok = r.paint({
+          text: (x: number, y: number, str: string, style: any) => void r.plane.text(x, y, str, screen.sgr(style)),
+          fillRow: (y: number, x0: number, x1: number, style: any) => r.plane.fillRow(y, x0, x1, screen.sgr(style)),
+          restyle: (y: number, x0: number, x1: number, bg: string) => r.plane.restyle(y, x0, x1, bg),
+          w: W,
+          h: H,
+        }) !== false;
+      } catch (e) {
+        if (!regionWarned.has(r.key)) {
+          regionWarned.add(r.key);
+          push("error", `region '${r.key}' (${r.owner}) threw: ${(e as Error)?.message ?? e}`, { ephemeral: true });
+        }
+      }
+      if (!ok) r.plane.clearRows(0, H); // hid this frame: nothing composites
+    }
+  }
   let W = 0;
   let H = 0;
 
@@ -3303,6 +3350,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       lastStatusSig = ss;
       paintStatus();
     }
+
+    // ---- plugin regions (each decides its own repaint cost; cheap when idle) ----
+    paintPluginRegions();
   }
 
   function paintDock() {
