@@ -2981,6 +2981,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     inputBgRow: 0,
     barBgRow: 0,
     toolBgRow: 0,
+    panelBgRow: 0,
     hintOnBase: 0,
     think: 0,
     sbThumb: 0,
@@ -3004,6 +3005,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     S.inputBgRow = screen.sgr({ fg: C.fg, bg: C.inputBg });
     S.barBgRow = screen.sgr({ fg: C.fg, bg: C.barBg });
     S.toolBgRow = screen.sgr({ fg: C.fg, bg: C.toolBg });
+    S.panelBgRow = screen.sgr({ fg: C.fg, bg: C.panelBg ?? C.inputBg }); // floating cmd-output panels
     S.hintOnBase = screen.sgr({ fg: C.hint }); // floats over the transcript's own background
     S.think = screen.sgr({ fg: C.think }); // thinking blocks: distinct from tool/toolbody
     S.sbThumb = screen.sgr({ bg: C.hint }); // theme's muted tone: visible on both bar and transcript
@@ -3467,10 +3469,14 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       const cTop = inputTop - queueRowsH - cmdRowsH;
       floatPainted.push({ y0: cTop, y1: cTop + cmdRowsH });
       for (let i = 0; i < shown.length; i++) {
-        screen.text(1, cTop + i, clipW(shown[i], W - 2), S.hintOnBase);
+        // themed panel fill first: the box used to sit on the terminal's own
+        // background (plain black), unrelated to the theme
+        screen.fillRow(cTop + i, 0, W, S.panelBgRow);
+        screen.text(1, cTop + i, clipW(shown[i], W - 2), S.panelBgRow);
       }
       if (cmdOut.length > avail) {
-        screen.text(1, cTop + shown.length, clipW(`… ${cmdOut.length - avail} more lines`, W - 2), S.hintOnBase);
+        screen.fillRow(cTop + shown.length, 0, W, S.panelBgRow);
+        screen.text(1, cTop + shown.length, clipW(`… ${cmdOut.length - avail} more lines`, W - 2), S.panelBgRow);
       }
     }
 

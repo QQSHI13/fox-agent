@@ -32,6 +32,13 @@ export interface Theme {
   /** thinking/reasoning blocks — a distinct cool tone, not the tool amber */
   think: string;
   /**
+   * Floating command-output panels (/todo, /usage, /help boxes) — optional,
+   * falls back to inputBg so every theme gets a visible panel without edits.
+   * Unfilled, those boxes sat on the terminal's own background, which reads
+   * as a plain black slab unrelated to the theme.
+   */
+  panelBg?: string;
+  /**
    * Scrollbar track color (optional — falls back to a blend toward fg).
    * barBg was tried and is wrong: it is near-black on every theme, so the
    * track vanished against the terminal's default background wherever rows
