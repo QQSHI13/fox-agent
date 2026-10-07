@@ -110,6 +110,9 @@ export function setTuiRich(on: boolean): void {
 let SCROLLBAR = true;
 /** transcript rows moved per wheel notch / drag-edge tick (config `tuiScrollStep`). */
 let SCROLL_STEP = 1;
+/** wheel ticks closer than this share one frame (burst-coalesced scroll) */
+const WHEEL_COALESCE_MS = 24;
+let lastWheelPaint = 0;
 let clearKeyRef: () => void = () => {}; // set in startTui: forces full repaint
 /**
  * Re-arms the frame loop — set from inside startTui, exactly like clearKeyRef.
@@ -1496,6 +1499,8 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   function drainQueue() {
     if (!queued.length) return;
     const next = queued.shift()!;
+    markDirty(); // the queue box just shrank — that transition repaints NOW,
+    // not whenever the dispatched turn first happens to dirty something
     void dispatch(next.raw, next.lit);
   }
 
@@ -1802,7 +1807,16 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       scrollTop += dir;
       clampScroll();
       // re-stick at the bottom is paint()'s job now (scrollTop >= max)
-      paintNow(); // scroll must land THIS frame — a wheel notch waiting 33ms feels rubber-banded
+      // Burst-coalesce: a lone notch paints THIS frame (waiting 33ms feels
+      // rubber-banded), but mid-burst ticks only mark dirty — the next frame
+      // lands on the FINAL offset. Serializing a full paint per tick made
+      // fast scrolling crawl and queued older paints drown a newer reverse
+      // scroll: scroll input is a target, not a work queue.
+      const now = Date.now();
+      if (now - lastWheelPaint >= WHEEL_COALESCE_MS) {
+        lastWheelPaint = now;
+        paintNow();
+      } else markDirty();
       return;
     }
     if (name === "c" && ctrl) {
