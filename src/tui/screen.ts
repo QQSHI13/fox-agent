@@ -20,6 +20,7 @@ function rgb(hex?: string): number {
 
 export function charWidth(cp: number): number {
   if (cp === 0) return 0;
+  if (cp >= 0x20 && cp < 0x7f) return 1; // printable ASCII fast path
   if (
     (cp >= 0x0300 && cp <= 0x036f) ||
     (cp >= 0x200b && cp <= 0x200f) ||
@@ -50,7 +51,13 @@ export function charWidth(cp: number): number {
     (cp >= 0x30000 && cp <= 0x3fffd)
   )
     return 2;
-  return 1;
+  // Everything else: the tables above can never be exhaustive — the zero-width
+  // gaps (combining marks past U+036F, U+FEFF, soft hyphen, VS15/17, format
+  // chars) each made caret math count a cell the terminal never paints, which
+  // displaced the input cursor one cell per such char. Bun.stringWidth carries
+  // the real Unicode width tables; the fast paths keep the hot loops allocation-
+  // free for ASCII, CJK and the common combining ranges.
+  return Bun.stringWidth(String.fromCodePoint(cp));
 }
 
 export class Screen {
