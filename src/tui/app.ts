@@ -2214,9 +2214,12 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         return;
       }
       // Press inside the input dock: position the caret there; a following drag
-      // extends an input selection instead of a transcript one.
+      // extends an input selection instead of a transcript one. One selection
+      // at a time, region-scoped: the dock owns the press, so any transcript
+      // selection dies here.
       const ii = inputIndexAt(x, y);
       if (ii !== null) {
+        clearSel();
         cur = ii;
         inSelAnchor = ii;
         press = { x, y, moved: false, input: true };
@@ -2225,9 +2228,11 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       }
       const row = transcriptRow(y);
       press = { x, y, moved: false };
-      // Any press drops the previous selection; a new one is staged here but
-      // only becomes visible once movement makes this a drag.
+      // Any press drops the previous selection — BOTH kinds, region-scoped:
+      // the transcript owns the press, so a lingering input anchor dies too,
+      // or the dock would keep its highlight while the transcript selects.
       clearSel();
+      inSelAnchor = null;
       if (row !== null) {
         selA = { row, col: transcriptCol(x) };
         selB = selA;
@@ -2282,10 +2287,16 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     const wasScrollbar = press?.scrollbar;
     press = null;
     if (wasScrollbar) return; // a scrub is not a click
-    // An input-dock gesture: a drag leaves its selection for shift/ctrl+c; a tap
-    // just moved the caret, so drop the zero-width anchor.
+    // An input-dock gesture: a drag leaves its selection AND copies it (same
+    // contract as a transcript drag); a tap just moved the caret, so drop the
+    // zero-width anchor.
     if (wasInput) {
       if (inSelAnchor === cur) inSelAnchor = null; // a tap, not a drag
+      else if (inSelAnchor !== null) {
+        const it = inputText();
+        const [a, b] = [Math.min(inSelAnchor, cur), Math.max(inSelAnchor, cur)];
+        void copyText(it.slice(a, b));
+      }
       syncPaint();
       return;
     }
