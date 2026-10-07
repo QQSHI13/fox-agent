@@ -227,6 +227,27 @@ function glued(a: string | null, b: string): boolean {
   return false;
 }
 
+/**
+ * The span `[a, b)` of rows that actually carry segments: an item's leading and
+ * trailing blank rows are dropped, because `assemble` puts ONE blank between
+ * items itself, so an item must not bring extra edges of its own.
+ *
+ * `countItem` and `renderItem` in the app's `frameInput` BOTH go through this,
+ * on purpose — they have to agree, or three things break at once. Counting
+ * stripped while painting unstripped left `total` short by a row per
+ * newline-terminated message: the window cap `to = min(grand, …)` then closed
+ * early, the scroll clamp stopped at `grand - vh` instead of the real end, and
+ * the scrollbar, fed the same `grand`, stopped with it. The last screenful of a
+ * long session became unreachable.
+ */
+export function itemEdgeSpan(rows: readonly Row[]): [number, number] {
+  let a = 0;
+  let b = rows.length;
+  while (a < b && !rows[a].segs.length) a++;
+  while (b > a && !rows[b - 1].segs.length) b--;
+  return [a, b];
+}
+
 /** Scrollbar geometry for `rows` lines in a viewport of `vh`. */
 export interface ScrollbarGeom {
   showing: boolean;

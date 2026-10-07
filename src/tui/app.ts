@@ -4,7 +4,7 @@
 import { openTerm, type Term } from "./term.ts";
 import { appendFileSync } from "node:fs";
 import { Screen } from "./screen.ts";
-import { computeFrame, scrollbarScrollTop, viewportHeight, type Frame, type FrameInput, type Row } from "./layout.ts";
+import { computeFrame, itemEdgeSpan, scrollbarScrollTop, viewportHeight, type Frame, type FrameInput, type Row } from "./layout.ts";
 import { createDecoder, type Key } from "./keys.ts";
 import { graphemeBack, graphemeForward, type Ch } from "./edit.ts";
 import {
@@ -2724,13 +2724,20 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       scrollbar: SCROLLBAR,
       items,
       streamText,
-      renderItem: (it, w) => itemRows(it, w).rows.map((r) => ({ ...r, bg: it.kind === "toolhead" || it.toolResult ? S.toolBgRow : r.bg })),
-      countItem: (it, w) => {
-        // edge-stripped count: cache hit only, the rows were just built
+      renderItem: (it, w) => {
+        // edge-stripped, the very same span `countItem` reports — layout's
+        // spacing contract is "count and paint agree", and they cannot drift
+        // apart while both read this one span
         const rows = itemRows(it, w).rows;
-        let a = 0, b = rows.length;
-        while (a < b && !rows[a].segs.length) a++;
-        while (b > a && !rows[b - 1].segs.length) b--;
+        const [a, b] = itemEdgeSpan(rows);
+        const tool = it.kind === "toolhead" || it.toolResult;
+        const out: Row[] = [];
+        for (let i = a; i < b; i++) out.push({ ...rows[i], bg: tool ? S.toolBgRow : rows[i].bg });
+        return out;
+      },
+      countItem: (it, w) => {
+        const rows = itemRows(it, w).rows;
+        const [a, b] = itemEdgeSpan(rows);
         return b - a;
       },
       renderStream: (text, w) => streamRows(text, w),

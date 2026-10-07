@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { computeFrame, scrollbarGeom, scrollbarScrollTop, viewportHeight, type FrameInput } from "../src/tui/layout.ts";
+import { computeFrame, itemEdgeSpan, scrollbarGeom, scrollbarScrollTop, viewportHeight, type FrameInput, type Row } from "../src/tui/layout.ts";
+import { renderMarkdown } from "../src/tui/markdown.ts";
+import { wrapSegs } from "../src/tui/wrap.ts";
 
 const base: FrameInput = {
   W: 100, H: 30, scrollTop: 0, stick: true, scrollbar: true,
@@ -72,6 +74,46 @@ describe("computeFrame", () => {
     const fr2 = computeFrame({ ...base, items, stick: false, scrollTop: 5 });
     expect(fr2.stick).toBe(false);
     expect(fr2.scrollTop).toBe(5);
+  });
+
+  test("count and render agree: total is the rows actually painted, and the end is reachable", () => {
+    // md items whose text ends in a newline render a trailing blank row —
+    // exactly the shape that used to be counted stripped and painted whole,
+    // which shorted `total` by a row per message and left the tail unreachable
+    const mdRows = (text: string, w: number): Row[] =>
+      renderMarkdown(text).flatMap((m) => wrapSegs(m, w).map((segs) => ({ segs })));
+    const both = (it: any, w: number) => {
+      const rows = mdRows(it.text, w);
+      const [a, b] = itemEdgeSpan(rows);
+      return rows.slice(a, b);
+    };
+    const items = Array.from({ length: 100 }, (_, k) => ({ kind: "md", k, text: `message ${k}\n` }));
+    // what paint would lay down if every item were built whole: bodies + one
+    // blank between each pair
+    const trueRows = items.reduce((a, it) => a + both(it, 78).length, 0) + (items.length - 1);
+
+    const fr = computeFrame({
+      ...base,
+      W: 80,
+      H: 30,
+      items,
+      renderItem: both,
+      countItem: (it: any, w: number) => both(it, w).length,
+    });
+
+    expect(fr.total).toBe(trueRows);
+    expect(fr.total).toBeGreaterThan(fr.vh); // a real scroll range, not a trivial case
+    // at the bottom the last content row must be reachable — this is the line
+    // the old mismatch broke, by exactly one row per newline-terminated message
+    expect(fr.scrollTop).toBe(trueRows - fr.vh);
+  });
+
+  test("itemEdgeSpan trims an item's own edge blanks, keeps interior ones", () => {
+    const row = (t: string): Row => ({ segs: t === "" ? [] : [{ t }] });
+    expect(itemEdgeSpan([row("a"), row(""), row("b")])).toEqual([0, 3]); // interior blank stays
+    expect(itemEdgeSpan([row(""), row("a"), row("")])).toEqual([1, 2]); // both edges go
+    expect(itemEdgeSpan([row(""), row("")])).toEqual([2, 2]); // all-blank: nothing survives
+    expect(itemEdgeSpan([])).toEqual([0, 0]);
   });
 });
 
