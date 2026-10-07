@@ -36,6 +36,37 @@ describe("endpoint /models cache", () => {
       const models = endpointModels(base)!;
       expect(models.map((m) => m.id)).toEqual(["a-model", "b-model"]);
       expect(models[1].context).toBe(200_000);
+      expect(models[1].inputs).toBeUndefined(); // no modality fields reported
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("kimi-style modality fields land in inputs — a model declaring image support reads as vision", async () => {
+    const server = Bun.serve({
+      port: 0,
+      fetch: () =>
+        Response.json({
+          data: [
+            {
+              id: "kimi-for-coding",
+              context_length: 1_048_576,
+              supports_image_in: true,
+              supports_video_in: true,
+              modalities: { input: ["text", "image", "video"] },
+            },
+            { id: "text-only", context_length: 8192, modalities: { input: ["text"] } },
+          ],
+        }),
+    });
+    try {
+      const base = `http://127.0.0.1:${server.port}/v1`;
+      const { endpointModels, refreshEndpointModels } = await import("../src/providers/endpointmodels.ts");
+      expect(await refreshEndpointModels(base, "k")).toBe(true);
+      const [kimi, textOnly] = endpointModels(base)!;
+      expect(kimi.inputs).toContain("image");
+      expect(kimi.inputs).toContain("video");
+      expect(textOnly.inputs).toEqual(["text"]); // text-only declared as such
     } finally {
       server.stop(true);
     }

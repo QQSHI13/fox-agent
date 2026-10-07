@@ -27,8 +27,11 @@ function cachePath(baseUrl: string): string {
   // sha256, not sha1: the hash only names a cache file, but CodeQL flags MD5/
   // SHA-1 outright and the swap costs nothing. 12 hex chars is plenty of
   // collision room for the handful of endpoints a user configures.
+    // "v2": cache entries parsed by pre-modality code carried no inputs — the
+  // name bump forces every endpoint to re-fetch once, so models like
+  // kimi-for-coding stop reporting vision:false until the TTL expires
   const h = createHash("sha256").update(baseUrl).digest("hex").slice(0, 12);
-  return join(agentHome(), "endpoint-models", `${h}.json`);
+  return join(agentHome(), "endpoint-models", `${h}-v2.json`);
 }
 
 const memo = new Map<string, Entry | null>();
@@ -59,6 +62,34 @@ function contextOf(m: Record<string, unknown>): number | undefined {
     if (typeof v === "number" && v > 0) return v;
   }
   return undefined;
+}
+
+/**
+ * Input modalities across the shapes endpoints actually report:
+ * - `modalities.input: ["text","image",...]` (openai, kimi)
+ * - `supports_image_in` / `supports_video_in` / `supports_audio_in` booleans (kimi, glm)
+ * - `image_in` / `vision` / `audio_in` / `video_in` booleans (misc gateways)
+ * Without this, a model whose endpoint DECLARES image support looked like a
+ * text-only model to `modelAcceptsMedia` — reads of images errored even
+ * though the model accepts them.
+ */
+function inputsOf(m: Record<string, unknown>): string[] | undefined {
+  const out = new Set<string>();
+  const mods = m.modalities;
+  if (mods && typeof mods === "object" && Array.isArray((mods as { input?: unknown }).input)) {
+    for (const x of (mods as { input: unknown[] }).input) if (typeof x === "string") out.add(x);
+  }
+  const flags: [string, string][] = [
+    ["supports_image_in", "image"],
+    ["image_in", "image"],
+    ["vision", "image"],
+    ["supports_video_in", "video"],
+    ["video_in", "video"],
+    ["supports_audio_in", "audio"],
+    ["audio_in", "audio"],
+  ];
+  for (const [key, mod] of flags) if (m[key] === true) out.add(mod);
+  return out.size ? [...out] : undefined;
 }
 
 /**
@@ -97,6 +128,7 @@ export async function refreshEndpointModels(baseUrl: string, apiKey: string, for
         id,
         name: typeof m.display_name === "string" ? m.display_name : typeof m.displayName === "string" ? m.displayName : id,
         context: contextOf(m),
+        inputs: inputsOf(m),
       });
     }
     models.sort((a, b) => a.id.localeCompare(b.id));
