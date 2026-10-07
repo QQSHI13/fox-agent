@@ -28,7 +28,7 @@ import { steer, peekSteer, withdrawSteer } from "../loop/steer.ts";
 import { projectView } from "../context/view.ts";
 import { lookupModel } from "../providers/models.ts";
 import { listSessions } from "../store/db.ts";
-import { createSession, getSession, kvGet, kvSet, lastPromptTokens as storedPromptTokens, pinSession, unpinSession } from "../store/db.ts";
+import { allMessages, createSession, getSession, kvGet, kvSet, lastPromptTokens as storedPromptTokens, pinSession, unpinSession } from "../store/db.ts";
 import { acquireLock, releaseLock } from "../store/lock.ts";
 import {
   runSlashCommand,
@@ -560,14 +560,19 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   function loadItems(): Item[] {
     const out: Item[] = [];
     if (!state.sessionId) return out; // pending session: nothing stored yet
-    const nodes = projectView(state.sessionId).filter((n) => !n.deleted);
+    // The FULL message log, not the projected view. The view (compaction,
+    // ctx surgery) is what the MODEL sees — the transcript is the session's
+    // history, and hiding or truncating earlier stuff just because the model
+    // no longer carries it made the top of the transcript drift to whatever
+    // happened to survive first. Storage is append-only; display it all.
+    const msgs = allMessages(state.sessionId);
     const callLabel = new Map<string, string>();
     const callDetail = new Map<string, string>();
     const callName = new Map<string, string>();
-    for (const n of nodes) {
-      if (n.msg.role === "assistant" && n.msg.tool_calls) {
+    for (const m of msgs) {
+      if (m.role === "assistant" && m.tool_calls) {
         try {
-          for (const c of JSON.parse(n.msg.tool_calls) as { id: string; name: string; arguments: string }[]) {
+          for (const c of JSON.parse(m.tool_calls) as { id: string; name: string; arguments: string }[]) {
             callLabel.set(c.id, `${c.name}${argsSummary(c.arguments ?? "")}`);
             // the expanded view shows the FULL JSON call, pretty-printed —
             // not a reconstructed summary. What the model actually sent is
@@ -578,9 +583,8 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         } catch {}
       }
     }
-    for (const n of nodes) {
-      const m = n.msg;
-      if (m.role === "user") out.push({ k: nk(), kind: "user", text: `[${m.seq}] ❯ ${n.content}` });
+    for (const m of msgs) {
+      if (m.role === "user") out.push({ k: nk(), kind: "user", text: `[${m.seq}] ❯ ${m.content}` });
       else if (m.role === "tool") {
         // todo bodies are markdown task lists — rendered as md, always
         // visible (a task list hidden behind a click is useless)
@@ -590,7 +594,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         out.push({
           k: nk(),
           kind: "toolbody",
-          text: n.content.slice(0, KEPT_TOOL_CHARS * 4),
+          text: m.content.slice(0, KEPT_TOOL_CHARS * 4),
           ref: m.seq,
           toolResult: true,
           mdBody: isTodo || undefined,
@@ -598,8 +602,8 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           expanded: isTodo || expandedRefs.has(m.seq),
         });
       } else if (m.role === "think")
-        out.push({ k: nk(), kind: "think", text: n.content, ref: m.seq, expanded: expandedRefs.has(m.seq) });
-      else out.push({ k: nk(), kind: "md", text: n.content || "" });
+        out.push({ k: nk(), kind: "think", text: m.content, ref: m.seq, expanded: expandedRefs.has(m.seq) });
+      else out.push({ k: nk(), kind: "md", text: m.content || "" });
     }
     return out;
   }
