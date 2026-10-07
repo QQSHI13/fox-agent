@@ -4,7 +4,7 @@
 import { openTerm, type Term } from "./term.ts";
 import { appendFileSync } from "node:fs";
 import { Screen } from "./screen.ts";
-import { computeFrame, itemEdgeSpan, scrollbarScrollTop, viewportHeight, type Frame, type FrameInput, type Row } from "./layout.ts";
+import { computeFrame, dockRows, itemEdgeSpan, scrollbarScrollTop, viewportHeight, type Frame, type FrameInput, type Row } from "./layout.ts";
 import { createDecoder, type Key } from "./keys.ts";
 import { graphemeBack, graphemeForward, type Ch } from "./edit.ts";
 import {
@@ -2917,7 +2917,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     const fr = painted;
     if (fr) return { layout, caret, shownCount: fr.shownCount, firstShown: fr.firstShown, inputTop: fr.inputTop };
     const totalVis = layout.rows.length;
-    const shownCount = Math.max(1, Math.min(INPUT_MAX_ROWS, totalVis));
+    const shownCount = dockRows(H, totalVis, INPUT_MAX_ROWS); // matches computeFrame
     let firstShown = 0;
     if (totalVis > shownCount) {
       firstShown = Math.max(0, Math.min(caret.visRow - (shownCount - 1), totalVis - shownCount));
@@ -3396,14 +3396,19 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     } else {
       lx = screen.text(lx, barY, `ready`, S.ok);
     }
-    const stats = cachedStats();
-    const ro = state.readOnly ? " · read-only" : "";
-    const right = stats + ro;
-    const rightW = Math.min(Bun.stringWidth(right), W - lx - 2);
-    if (rightW > 0) {
-      const acc = clipW(right, rightW);
-      screen.text(W - 1 - Bun.stringWidth(acc), barY, acc, S.chromeOnBar);
+    // right side composed least-to-most important; a narrow window DROPS whole
+    // segments (stats first) instead of clipping mid-text — a truncated
+    // "ctx 9…" or "read-o…" reads as corruption
+    const avail = W - lx - 2;
+    const ro = state.readOnly ? "read-only" : null;
+    const segs = [cachedStats(), ro].filter((x): x is string => !!x);
+    let right = "";
+    for (const seg of segs) {
+      const cand = right ? `${right} · ${seg}` : seg;
+      if (Bun.stringWidth(cand) > avail) break;
+      right = cand;
     }
+    if (right) screen.text(W - 1 - Bun.stringWidth(right), barY, right, S.chromeOnBar);
   }
 
   /**

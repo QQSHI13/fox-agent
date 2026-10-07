@@ -99,8 +99,9 @@ export function computeFrame(inp: FrameInput): Frame {
     sbShowing = true;
   }
 
-  // dock geometry: the input box flexes with its wrapped rows
-  const shownCount = Math.max(1, Math.min(inp.INPUT_MAX_ROWS, inp.inputRows));
+  // dock geometry: the input box flexes with its wrapped rows, capped by what
+  // the window affords (dockRows — same cap viewportHeight assumed)
+  const shownCount = dockRows(inp.H, inp.inputRows, inp.INPUT_MAX_ROWS);
   const inputTop = inp.H - 1 - shownCount;
   let firstShown = 0;
   if (inp.inputRows > shownCount) {
@@ -276,6 +277,18 @@ export function scrollbarGeom(rows: number, vh: number, scrollTop: number): Scro
   return { showing: true, ty, th };
 }
 
+/**
+ * Dock height the window can actually afford: the editor's wrapped rows capped
+ * by INPUT_MAX_ROWS, then capped again so the status bar keeps its row and the
+ * viewport keeps its floor of 3. Every consumer (computeFrame, viewportHeight,
+ * the TUI's pre-paint dockGeom) must derive from this one helper or a short
+ * window overcommits rows — the dock's bottom landed on the status bar.
+ */
+export function dockRows(H: number, inputRows: number, INPUT_MAX_ROWS: number): number {
+  const wrapped = Math.max(1, Math.min(INPUT_MAX_ROWS, inputRows));
+  return Math.max(1, Math.min(wrapped, Math.max(1, H - 1 - 3)));
+}
+
 /** Inverse for the mouse scrub: a press at viewport row `y` maps to a scroll offset. */
 export function scrollbarScrollTop(rows: number, vh: number, y: number): number {
   const g = scrollbarGeom(rows, vh, 0);
@@ -285,7 +298,7 @@ export function scrollbarScrollTop(rows: number, vh: number, y: number): number 
 
 /** Transcript viewport height before a frame is built (scroll keys, clamps). */
 export function viewportHeight(inp: Pick<FrameInput, "H" | "inputRows" | "INPUT_MAX_ROWS" | "pendingCount">): number {
-  const n = Math.max(1, Math.min(inp.INPUT_MAX_ROWS, inp.inputRows));
+  const n = dockRows(inp.H, inp.inputRows, inp.INPUT_MAX_ROWS);
   const pend = inp.pendingCount;
   const qH = pend ? Math.min(pend, Math.max(1, inp.H - n - 5)) + (pend > Math.max(1, inp.H - n - 5) ? 1 : 0) : 0;
   // matches computeFrame: -1 status bar, no spacer row
