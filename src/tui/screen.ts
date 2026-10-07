@@ -128,6 +128,13 @@ export class Screen {
 
   /** fold every plane into the grid, bottom-most z first; ties by creation order */
   composite(): void {
+    // the grid is a PURE PRODUCT of the planes: reset it first, or cells no
+    // plane covers this frame would keep the PREVIOUS composite's content —
+    // the row-hash would then report "unchanged" for rows the terminal still
+    // shows (scrolled-away transcript staying on screen, duplicated rows)
+    // and flush's stale-tail erase would never fire (it looks for undefined
+    // cells, and stale cells are not undefined — they are old content)
+    this.clear();
     const sorted = [...this.planes.values()].sort((a, b) => a.z - b.z);
     for (const p of sorted) {
       const pc = p.chars;
