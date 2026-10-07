@@ -246,31 +246,41 @@ export class Picker {
       case "d":
         if (k.ctrl) return { kind: "cancel" };
         return null;
+      case "f":
+        // the verbs are Ctrl-prefixed so every plain letter filters (see the
+        // char path below); an unclaimed or disallowed chord is dropped
+        if (k.ctrl && this.opts.allowFork) {
+          const row = this.selected();
+          return row ? { kind: "fork", id: row.id } : null;
+        }
+        return null;
+      case "x":
+        if (k.ctrl && this.opts.allowDelete) {
+          const row = this.selected();
+          if (row && !row.current) {
+            // never `cells[0]`: that is the list position, so the prompt for an
+            // unrecoverable action read "delete  2?" — and a filter edit renumbers it
+            this.confirming = { action: "delete", id: row.id, label: row.label ?? row.id };
+          }
+        }
+        return null;
+      case "n":
+        if (k.ctrl && this.opts.allowNew) return { kind: "new" };
+        return null;
+      case "a":
+        // scope toggle — the caller owns what "all" means (every directory's
+        // sessions vs this one's) and answers with a fresh row set
+        if (k.ctrl && this.opts.allowAll) return { kind: "all" };
+        return null;
     }
 
     if (k.ch === undefined) return null;
 
-    // Single-key verbs, only where the caller allows them. They live outside the
-    // filter alphabet on purpose: typing is how you narrow the list, so the
-    // verbs are the keys you would not type in an id or a title.
-    if (this.opts.allowDelete && (k.ch === "x" || k.ch === "D")) {
-      const row = this.selected();
-      if (row && !row.current) {
-        // never `cells[0]`: that is the list position, so the prompt for an
-        // unrecoverable action read "delete  2?" — and a filter edit renumbers it
-        this.confirming = { action: "delete", id: row.id, label: row.label ?? row.id };
-      }
-      return null;
-    }
-    if (this.opts.allowFork && k.ch === "f") {
-      const row = this.selected();
-      return row ? { kind: "fork", id: row.id } : null;
-    }
-    if (this.opts.allowNew && k.ch === "n") return { kind: "new" };
-    // scope toggle — the caller owns what "all" means (every directory's
-    // sessions vs this one's) and answers with a fresh row set
-    if (this.opts.allowAll && k.ch === "a") return { kind: "all" };
-
+    // Plain printable keys are filter text, always: typing is how the list
+    // narrows, so the verbs moved behind Ctrl — ^f fork, ^x delete, ^n new,
+    // ^a all dirs (decoded as named keys with ctrl; the switch above never
+    // sees a bare letter, chars skip it entirely). "fox" used to fork, "n"
+    // started a new session, "a" threw the filter away.
     this.query += k.ch;
     return null;
   }
@@ -297,10 +307,10 @@ export class Picker {
     if (this.entering) return "type your answer · enter confirm · esc back to list";
     if (this.confirming) return `delete ${this.confirming.label}? this cannot be undone — y / n`;
     const keys = ["↑↓ move", "enter open"];
-    if (this.opts.allowFork) keys.push("f fork");
-    if (this.opts.allowDelete) keys.push("x delete");
-    if (this.opts.allowNew) keys.push("n new");
-    if (this.opts.allowAll) keys.push("a all dirs");
+    if (this.opts.allowFork) keys.push("^f fork");
+    if (this.opts.allowDelete) keys.push("^x delete");
+    if (this.opts.allowNew) keys.push("^n new");
+    if (this.opts.allowAll) keys.push("^a all dirs");
     keys.push("type to filter", "esc cancel");
     return keys.join(" · ");
   }

@@ -69,41 +69,56 @@ describe("picker selection", () => {
 });
 
 describe("picker verbs", () => {
-  test("enter chooses, f forks, n is new, escape and ctrl+c cancel", () => {
+  test("enter chooses, ctrl+f forks, ctrl+n is new, escape and ctrl+c cancel", () => {
     const p = new Picker(rows("a", "b"), ALL);
     expect(p.key({ name: "return" })).toEqual({ kind: "choose", id: "a" });
-    expect(p.key({ ch: "f" })).toEqual({ kind: "fork", id: "a" });
-    expect(p.key({ ch: "n" })).toEqual({ kind: "new" });
+    expect(p.key({ name: "f", ctrl: true })).toEqual({ kind: "fork", id: "a" });
+    expect(p.key({ name: "n", ctrl: true })).toEqual({ kind: "new" });
     expect(p.key({ name: "escape" })).toEqual({ kind: "cancel" });
     expect(p.key({ name: "c", ctrl: true })).toEqual({ kind: "cancel" });
     expect(p.key({ name: "d", ctrl: true })).toEqual({ kind: "cancel" });
   });
 
-  test("verbs the caller did not allow are filter characters instead", () => {
-    const p = new Picker(rows("fnx"), { title: "t" });
+  test("plain verb letters filter even where the verb is allowed — verbs are ctrl-prefixed", () => {
+    const p = new Picker(rows("fox", "next", "ax"), ALL);
     expect(p.key({ ch: "f" })).toBeNull();
     expect(p.key({ ch: "n" })).toBeNull();
     expect(p.key({ ch: "x" })).toBeNull();
     expect(p.filter()).toBe("fnx");
+    // and the chords still fire on a narrowed list
+    expect(p.key({ name: "a", ctrl: true })).toBeNull(); // allowAll not set -> dropped
+    expect(p.filter()).toBe("fnx");
+    expect(p.footer()).toContain("^f fork");
+  });
+
+  test("verbs the caller did not allow are dropped chords, not filter text", () => {
+    const p = new Picker(rows("fnx"), { title: "t" });
+    expect(p.key({ name: "f", ctrl: true })).toBeNull();
+    expect(p.key({ name: "n", ctrl: true })).toBeNull();
+    expect(p.key({ name: "x", ctrl: true })).toBeNull();
+    expect(p.key({ name: "a", ctrl: true })).toBeNull();
+    expect(p.filter()).toBe("");
     expect(p.footer()).not.toContain("fork");
     expect(p.footer()).not.toContain("delete");
   });
 
   test("delete arms a confirm, y fires it, anything else keeps the list", () => {
     const p = new Picker(rows("a", "b"), ALL);
-    expect(p.key({ ch: "x" })).toBeNull();
+    expect(p.key({ name: "x", ctrl: true })).toBeNull();
     expect(p.pendingConfirm()).toEqual({ action: "delete", id: "a", label: "a" });
     expect(p.footer()).toMatch(/cannot be undone/);
     expect(p.key({ ch: "y" })).toEqual({ kind: "delete", id: "a" });
     expect(p.pendingConfirm()).toBeNull();
 
     // a stray key disarms without closing the picker or moving the selection
-    p.key({ ch: "D" });
-    expect(p.pendingConfirm()).toBeTruthy();
+    p.key({ name: "x", ctrl: true }); // re-arm (selection never moved)
+    expect(p.pendingConfirm()).toEqual({ action: "delete", id: "a", label: "a" });
+    p.key({ ch: "D" }); // a stray key while armed: disarms, never fires, never types
+    expect(p.pendingConfirm()).toBeNull();
     expect(p.key({ name: "down" })).toBeNull();
     expect(p.pendingConfirm()).toBeNull();
-    expect(p.selected()!.id).toBe("a");
-    expect(p.filter()).toBe(""); // the disarming key was not typed into the filter
+    expect(p.selected()!.id).toBe("b");
+    expect(p.filter()).toBe(""); // the disarming key was swallowed, not typed
   });
 
   test("an armed delete stays bound to the row it armed, not to the cursor", () => {
@@ -111,7 +126,7 @@ describe("picker verbs", () => {
     // the cursor and `y` would destroy that one instead
     const p = new Picker(rows("keepme", "victim"), ALL);
     p.key({ name: "down" });
-    p.key({ ch: "x" });
+    p.key({ name: "x", ctrl: true });
     expect(p.pendingConfirm()!.id).toBe("victim");
     // a filter keystroke would land on `keepme` if this were index-based...
     expect(p.key({ ch: "y" })).toEqual({ kind: "delete", id: "victim" });
@@ -119,7 +134,7 @@ describe("picker verbs", () => {
 
   test("the current session cannot be armed for deletion", () => {
     const p = new Picker([{ id: "live", cells: ["live"], search: "live", current: true }], ALL);
-    expect(p.key({ ch: "x" })).toBeNull();
+    expect(p.key({ name: "x", ctrl: true })).toBeNull();
     expect(p.pendingConfirm()).toBeNull();
   });
 
@@ -135,14 +150,14 @@ describe("picker verbs", () => {
       ALL,
     );
     p.key({ name: "down" });
-    p.key({ ch: "x" });
+    p.key({ name: "x", ctrl: true });
     expect(p.footer()).toContain('s-two "fix the login bug"');
     expect(p.footer()).not.toMatch(/delete\s+2\?/);
 
     // and with no label supplied it falls back to the id, still not the index
     p.key({ name: "escape" });
     p.key({ name: "up" });
-    p.key({ ch: "x" });
+    p.key({ name: "x", ctrl: true });
     expect(p.pendingConfirm()!.label).toBe("s-one");
   });
 });
