@@ -160,7 +160,7 @@ export function setTuiScrollbar(on: boolean): void {
 }
 
 /**
- * Frame interval (config `tuiFrameMs`, default 33).
+ * Frame interval (config `tuiFrameMs`, default 16).
  *
  * The loop coalesces dirty work once per tick, so this trades wakeups against
  * repaint latency and nothing else. Clamped 8..250 the same way config loading
@@ -3957,7 +3957,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       }
 
       let lastCaretKey: string | null = null;
-      // Frame interval honors tuiFrameMs (config, default 33). The loop is a
+      // Frame interval honors tuiFrameMs (config, default 16). The loop is a
       // coalescer, not a pacer: dirty work runs at most once per interval,
       // and a spinner-only tick re-derives the status region alone.
       const frameTick = () => {
@@ -4051,7 +4051,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       };
       tickRef = frameTick;
       frameArmRef = armFrameTimer;
-      armFrameTimer(state.config?.tuiFrameMs ?? 33);
+      armFrameTimer(state.config?.tuiFrameMs ?? 16);
 
       try {
         await new Promise<void>((resolve) => {

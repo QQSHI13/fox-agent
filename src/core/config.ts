@@ -164,7 +164,7 @@ export interface Config {
    */
   tuiScrollStep: number;
   /**
-   * TUI frame loop interval in ms (default 33). Lower = smoother spinner and
+   * TUI frame loop interval in ms (default 16). Lower = smoother spinner and
    * faster stream echo at higher idle CPU; the loop skips work when nothing
    * is dirty, so the cost of a small value is only the wakeups. Keystrokes
    * are independent of this — they paint on the next tick regardless.
@@ -248,7 +248,7 @@ const DEFAULTS: Omit<Config, "projectInstructions"> = {
   tuiScrollStep: 1,
   statusBar: "cwd provider model ctx",
   debug: false,
-  tuiFrameMs: 33,
+  tuiFrameMs: 16,
   theme: "default",
   contextMarkers: true,
   trusted: true,
@@ -898,9 +898,9 @@ export const SETTINGS: SettingSpec[] = [
   {
     key: "tuiFrameMs",
     desc: "TUI frame interval in ms (8..250 — lower = snappier, more wakeups)",
-    def: "33",
+    def: "16",
     validate: num(8, 250),
-    fmt: (v) => (v === undefined ? "33" : String(v)),
+    fmt: (v) => (v === undefined ? "16" : String(v)),
   },
   { key: "diagnostics", desc: "post-edit language-server diagnostics", def: "true", validate: bool, fmt: showBool },
   {

@@ -759,7 +759,7 @@ describe("/settings", () => {
 
     // the value step prefills what is set and says what the default is
     const valueStep = p.steps[1];
-    expect(resolveField(valueStep.initial, { key: "tuiFrameMs" })).toBe("33");
+    expect(resolveField(valueStep.initial, { key: "tuiFrameMs" })).toBe("16");
     expect(resolveField(valueStep.initial, { key: "tuiRich" })).toBe("false"); // loader defaults, not blank
     expect(resolveField(valueStep.hint, { key: "compactAt" })).toContain("default 0.85");
 
@@ -769,7 +769,7 @@ describe("/settings", () => {
 
     // and an empty value is the reset the hint promises
     const reset = p.run({ key: "tuiFrameMs", value: "" }, state);
-    expect(reset.output).toContain("(default 33)");
+    expect(reset.output).toContain("(default 16)");
     expect(state.config.tuiFrameMs).toBeUndefined();
   });
 
