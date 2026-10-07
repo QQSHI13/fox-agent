@@ -2808,7 +2808,8 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     };
   }
 
-  function statusText(): string {
+  /** Status bar info segments, least-important first (drop order). */
+  function statusText(): string[] {
     try {
       // Context % comes from the provider's own last report (live this turn,
       // else the persisted one) — never a chars/4 estimate. Before the first
@@ -2828,26 +2829,26 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       // case here — an un-caching provider simply reports zero.
       const hit = cacheHit();
       const cache = hit.prompt > 0 ? ` · cache ${Math.round((hit.cached / hit.prompt) * 100)}%` : "";
-      return `${cwdShort} · ${providerDisplayName(state)} · ${state.provider.model} · ${ctx}${cache}`;
+      return [cwdShort, providerDisplayName(state), state.provider.model, `${ctx}${cache}`];
     } catch {
-      return state.cwd;
+      return [state.cwd];
     }
   }
 
   // stats involve a full log replay — cache per revision, never per frame
   let statsRev = 0;
   let statsCacheRev = -1;
-  let statsCacheStr = "";
-  function cachedStats(): string {
+  let statsCacheSegs: string[] = [];
+  function cachedStats(): string[] {
     // re-poll on an explicit revision bump, or on a timer only while a turn is
     // running (an idle session's log can't change under us)
     const stale = busy && Date.now() - lastStatsAt > 2_000;
     if (statsCacheRev !== statsRev || stale) {
-      statsCacheStr = statusText();
+      statsCacheSegs = statusText();
       statsCacheRev = statsRev;
       lastStatsAt = Date.now();
     }
-    return statsCacheStr;
+    return statsCacheSegs;
   }
   let lastStatsAt = 0;
 
@@ -3396,19 +3397,21 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     } else {
       lx = screen.text(lx, barY, `ready`, S.ok);
     }
-    // right side composed least-to-most important; a narrow window DROPS whole
-    // segments (stats first) instead of clipping mid-text — a truncated
-    // "ctx 9…" or "read-o…" reads as corruption
+    // right side composed least-to-most important; a narrow window DROPS
+    // whole segments from the LEFT (cwd first) only as many as needed —
+    // dropping everything because one segment overflows, or clipping
+    // mid-text ("ctx 9…"), both read as corruption
     const avail = W - lx - 2;
     const ro = state.readOnly ? "read-only" : null;
-    const segs = [cachedStats(), ro].filter((x): x is string => !!x);
+    const segs = [...cachedStats(), ...(ro ? [ro] : [])];
+    let from = 0;
     let right = "";
-    for (const seg of segs) {
-      const cand = right ? `${right} · ${seg}` : seg;
-      if (Bun.stringWidth(cand) > avail) break;
-      right = cand;
+    for (;;) {
+      right = segs.slice(from).join(" · ");
+      if (Bun.stringWidth(right) <= avail || from >= segs.length) break;
+      from++;
     }
-    if (right) screen.text(W - 1 - Bun.stringWidth(right), barY, right, S.chromeOnBar);
+    if (right && from < segs.length) screen.text(W - 1 - Bun.stringWidth(right), barY, right, S.chromeOnBar);
   }
 
   /**
