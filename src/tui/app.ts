@@ -107,6 +107,8 @@ export function setTuiRich(on: boolean): void {
  * reserved column: buildRows wraps at full width and the mouse scrub is dead.
  */
 let SCROLLBAR = true;
+/** transcript rows moved per wheel notch / drag-edge tick (config `tuiScrollStep`). */
+let SCROLL_STEP = 1;
 let clearKeyRef: () => void = () => {}; // set in startTui: forces full repaint
 /**
  * Re-arms the frame loop — set from inside startTui, exactly like clearKeyRef.
@@ -114,6 +116,15 @@ let clearKeyRef: () => void = () => {}; // set in startTui: forces full repaint
  * timer rather than wait for the next launch.
  */
 let frameArmRef: ((ms: number) => void) | null = null;
+
+/**
+ * Transcript rows per wheel notch / drag-past-edge tick (config `tuiScrollStep`,
+ * default 1). Clamped 1..40 the same way the config loader clamps it, because
+ * this is reachable without going through the loader.
+ */
+export function setTuiScrollStep(n: number): void {
+  SCROLL_STEP = Math.max(1, Math.min(40, Math.floor(n)));
+}
 
 export function setTuiScrollbar(on: boolean): void {
   if (SCROLLBAR === on) return;
@@ -1002,6 +1013,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       setTuiCaps(state.config?.tuiCollapsedChars ?? 240, state.config?.tuiKeptChars ?? 4_000);
       setTuiRich(!!state.config?.tuiRich);
       setTuiScrollbar(state.config?.tuiScrollbar ?? true);
+      setTuiScrollStep(state.config?.tuiScrollStep ?? 1);
       const wantTheme = state.config?.theme ?? "default";
       // plugin themes register on first buildRegistry, so an unknown name here
       // may just be a plugin theme that has not loaded yet — fall back silently
@@ -1736,7 +1748,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         moveCaretVertical(up ? -1 : 1, false);
         return;
       }
-      const dir = up ? -1 : 1; // one line per wheel tick — granular
+      const dir = up ? -SCROLL_STEP : SCROLL_STEP; // tuiScrollStep rows per wheel tick
       if (stick && dir < 0) stick = false;
       scrollTop += dir;
       clampScroll();
@@ -2133,7 +2145,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       // Dragging past an edge scrolls, so a selection can outrun the screen.
       if (y < 0 || y >= viewportH()) {
         stick = false;
-        scrollTop += y < 0 ? -1 : 1;
+        scrollTop += y < 0 ? -SCROLL_STEP : SCROLL_STEP;
         clampScroll();
       }
       const row = transcriptRow(Math.max(0, Math.min(viewportH() - 1, y)));

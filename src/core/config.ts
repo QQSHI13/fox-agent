@@ -145,6 +145,12 @@ export interface Config {
    */
   tuiScrollbar: boolean;
   /**
+   * Transcript rows moved per wheel notch / drag-past-edge tick (default 1).
+   * Higher values suit long sessions on small windows; pageup/pagedown ignore
+   * this and keep their proportional 80%-of-viewport jump.
+   */
+  tuiScrollStep: number;
+  /**
    * TUI frame loop interval in ms (default 33). Lower = smoother spinner and
    * faster stream echo at higher idle CPU; the loop skips work when nothing
    * is dirty, so the cost of a small value is only the wakeups. Keystrokes
@@ -226,6 +232,7 @@ const DEFAULTS: Omit<Config, "projectInstructions"> = {
   tuiKeptChars: 4_000,
   tuiRich: false,
   tuiScrollbar: true,
+  tuiScrollStep: 1,
   tuiFrameMs: 33,
   theme: "default",
   contextMarkers: true,
@@ -394,7 +401,7 @@ const KNOWN_KEYS = new Set([
   "model", "baseUrl", "apiKey", "provider", "maxSteps", "retryLimit", "compactAt", "compactAtTokens",
   "requestTimeoutMs", "diagnostics", "mcpServers", "agents", "lsp", "plugins",
   "providers", "disabledPlugins", "toolOutputCap", "sessionListLimit",
-  "tuiCollapsedChars", "tuiKeptChars", "tuiRich", "tuiScrollbar", "tuiFrameMs", "theme", "contextMarkers", "acpHistory",
+  "tuiCollapsedChars", "tuiKeptChars", "tuiRich", "tuiScrollbar", "tuiScrollStep", "tuiFrameMs", "theme", "contextMarkers", "acpHistory",
   "reasoningEffort",
 ]);
 
@@ -477,6 +484,7 @@ function applyTable(cfg: Config, t: Record<string, unknown> | null, scope: "glob
   if (typeof t.tuiKeptChars === "number" && t.tuiKeptChars >= 200) cfg.tuiKeptChars = Math.floor(t.tuiKeptChars);
   if (typeof t.tuiRich === "boolean") cfg.tuiRich = t.tuiRich;
   if (typeof t.tuiScrollbar === "boolean") cfg.tuiScrollbar = t.tuiScrollbar;
+  if (typeof t.tuiScrollStep === "number" && t.tuiScrollStep >= 1 && t.tuiScrollStep <= 40) cfg.tuiScrollStep = Math.floor(t.tuiScrollStep);
   if (typeof t.tuiFrameMs === "number" && t.tuiFrameMs >= 8 && t.tuiFrameMs <= 250) cfg.tuiFrameMs = Math.floor(t.tuiFrameMs);
   if (t.reasoningEffort === "low" || t.reasoningEffort === "medium" || t.reasoningEffort === "high") cfg.reasoningEffort = t.reasoningEffort;
   if (typeof t.theme === "string" && t.theme.trim()) cfg.theme = t.theme.trim();
@@ -844,6 +852,13 @@ export const SETTINGS: SettingSpec[] = [
     fmt: (v) => (v === undefined ? "4000" : String(v)),
   },
   { key: "tuiRich", desc: "rich markdown: syntax-tinted fences + diff colors", def: "false", validate: bool, fmt: showBool },
+  {
+    key: "tuiScrollStep",
+    desc: "transcript rows per wheel notch (1..40)",
+    def: "1",
+    validate: num(1, 40),
+    fmt: (v) => (v === undefined ? "1" : String(v)),
+  },
   { key: "tuiScrollbar", desc: "dedicated scrollbar column at the right edge", def: "true", validate: bool, fmt: showBool },
   {
     key: "tuiFrameMs",

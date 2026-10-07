@@ -85,6 +85,8 @@ function applyResultLive(state: HarnessState, key: string): void {
       } else if (key === "tuiScrollbar") {
         // wrap width changes with it, so the setter forces a full repaint
         app.setTuiScrollbar(state.config?.tuiScrollbar ?? true);
+      } else if (key === "tuiScrollStep") {
+        app.setTuiScrollStep(state.config?.tuiScrollStep ?? 1);
       } else if (key === "tuiFrameMs") {
         app.setTuiFrameMs(state.config?.tuiFrameMs ?? 33);
       }
