@@ -2190,26 +2190,16 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
    * for stream/spinner work.
    */
   let paintScheduled = false;
+  /**
+   * The name is historical: every caller used to paint synchronously, so a
+   * burst of queued pointer/scroll events serialized one full (stale) paint
+   * per event — each blocking the thread while the backlog grew, nothing
+   * ever overriding the frame in flight. All events now land on the
+   * coalescing schedule instead: each just raises the flag, and the single
+   * pending paint renders the LATEST state. Latest-wins overrides backlog.
+   */
   function paintNow() {
-    if (paintScheduled) return; // re-entered from a sync event storm: one paint
-    paintScheduled = true;
-    // flags clear BEFORE paint, mirroring frameTick: paint() itself can
-    // markDirty (a drain firing mid-paint), and a post-paint clear would
-    // erase that flag and strand the update on no future frame
-    dirty = false;
-    statusOnly = false;
-    try {
-      paint();
-      const caret = nextCaret ?? { x: 3, y: H - 2 };
-      screen.composite();
-      screen.flush();
-      term.setCursor(caret.x, caret.y);
-      term.flush();
-    } catch (e) {
-      debugLog("tui sync paint error", e);
-    } finally {
-      paintScheduled = false;
-    }
+    markDirty();
   }
 
   function onMouse(action: "down" | "drag" | "up", x: number, y: number) {
