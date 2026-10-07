@@ -12,6 +12,8 @@ import {
   setSessionModel,
   undoLastOp,
 } from "./store/db.ts";
+import { readFileSync } from "node:fs";
+import { debugLogPath } from "./core/debuglog.ts";
 import { projectView } from "./context/view.ts";
 import { formatPruneReport, pruneSession } from "./store/prune.ts";
 import { viewTokenEstimate } from "./context/render.ts";
@@ -212,6 +214,13 @@ export interface CommandSpec {
 export const COMMANDS: CommandSpec[] = [
   { name: "/help", aliases: ["/?"], desc: "show commands" },
   { name: "/new", desc: "start a fresh session" },
+  {
+    name: "/debug",
+    desc: "verbose diagnostics on/off, or tail debug.log",
+    usage: "[on|off|tail]",
+    arg: true,
+    help: "on/off set the debug key live (slow-frame timings land in debug.log); bare shows the log path; tail shows its last lines",
+  },
   {
     name: "/sessions",
     aliases: ["/ls"],
@@ -1875,6 +1884,25 @@ export function runSlashCommand(input: string, state: HarnessState): CommandResu
       return { handled: true, output: "usage: /plugin [on|off|add|rm|info <name>]" };
     }
 
+    case "/debug": {
+      const a = (arg ?? "").trim().toLowerCase();
+      if (a === "on" || a === "off") {
+        const spec = SETTINGS.find((s) => s.key === "debug");
+        if (!spec) return { handled: true, output: "debug setting missing" };
+        return applySetting(spec, a, state);
+      }
+      const path = debugLogPath();
+      if (a === "tail") {
+        try {
+          const lines = readFileSync(path, "utf8").trimEnd().split("\n");
+          const tail = lines.slice(-30).join("\n");
+          return { handled: true, output: tail || "(log is empty)" };
+        } catch {
+          return { handled: true, output: `(no log yet at ${path})` };
+        }
+      }
+      return { handled: true, output: `log: ${path}\non|off toggles verbose diagnostics (currently ${state.config?.debug ? "on" : "off"}) · tail shows the last 30 lines` };
+    }
     case "/settings": {
       // Obscure knobs that have no dedicated command. Interactive bare walks
       // them (pick a key, type a value); otherwise bare lists everything with

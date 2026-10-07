@@ -127,6 +127,19 @@ export function setTuiScrollStep(n: number): void {
   SCROLL_STEP = Math.max(1, Math.min(40, Math.floor(n)));
 }
 
+/**
+ * Verbose diagnostics (config `debug`, live via `/debug on|off`). The log is
+ * always written for errors; this only widens what gets logged — slow frames —
+ * and `/debug tail` reads the file back, so the flag needs no restart.
+ */
+let DEBUG_VERBOSE = false;
+export function setDebug(on: boolean): void {
+  DEBUG_VERBOSE = on;
+}
+export function debugVerbose(): boolean {
+  return DEBUG_VERBOSE;
+}
+
 export function setTuiScrollbar(on: boolean): void {
   if (SCROLLBAR === on) return;
   SCROLLBAR = on;
@@ -1015,6 +1028,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       setTuiRich(!!state.config?.tuiRich);
       setTuiScrollbar(state.config?.tuiScrollbar ?? true);
       setTuiScrollStep(state.config?.tuiScrollStep ?? 1);
+      setDebug(!!state.config?.debug);
       const wantTheme = state.config?.theme ?? "default";
       // plugin themes register on first buildRegistry, so an unknown name here
       // may just be a plugin theme that has not loaded yet — fall back silently
@@ -3732,6 +3746,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         const spinOnly = statusOnly && !dirty;
         statusOnly = false;
         dirty = false;
+        const t0 = DEBUG_VERBOSE ? performance.now() : 0;
         try {
           if (spinOnly) {
             // spinner path: status region only — no computeFrame, no
@@ -3771,6 +3786,10 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           term.setCursor(caret.x, caret.y);
           term.flush();
           if (moved) lastCaretKey = caretKey;
+          if (DEBUG_VERBOSE) {
+            const ms = performance.now() - t0;
+            if (ms > 16) debugLog(`slow frame ${ms.toFixed(0)}ms`, `items=${items.length} spinOnly=${spinOnly}`);
+          }
         } catch (e) {
           // painting over the grid with a stack trace is how raw errors leak.
           // This used to gracefulExit(1): one bad row (a resume replaying an

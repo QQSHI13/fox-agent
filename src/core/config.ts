@@ -152,6 +152,12 @@ export interface Config {
    */
   statusBar: string;
   /**
+   * Verbose diagnostics: slow-frame and paint-fault timings land in
+   * debug.log alongside the errors that are always there. `/debug on|off`
+   * toggles it live; the log file itself is always written.
+   */
+  debug: boolean;
+  /**
    * Transcript rows moved per wheel notch / drag-past-edge tick (default 1).
    * Higher values suit long sessions on small windows; pageup/pagedown ignore
    * this and keep their proportional 80%-of-viewport jump.
@@ -241,6 +247,7 @@ const DEFAULTS: Omit<Config, "projectInstructions"> = {
   tuiScrollbar: true,
   tuiScrollStep: 1,
   statusBar: "cwd provider model ctx",
+  debug: false,
   tuiFrameMs: 33,
   theme: "default",
   contextMarkers: true,
@@ -409,7 +416,7 @@ const KNOWN_KEYS = new Set([
   "model", "baseUrl", "apiKey", "provider", "maxSteps", "retryLimit", "compactAt", "compactAtTokens",
   "requestTimeoutMs", "diagnostics", "mcpServers", "agents", "lsp", "plugins",
   "providers", "disabledPlugins", "toolOutputCap", "sessionListLimit",
-  "tuiCollapsedChars", "tuiKeptChars", "tuiRich", "tuiScrollbar", "tuiScrollStep", "statusBar", "tuiFrameMs", "theme", "contextMarkers", "acpHistory",
+  "tuiCollapsedChars", "tuiKeptChars", "tuiRich", "tuiScrollbar", "tuiScrollStep", "statusBar", "debug", "tuiFrameMs", "theme", "contextMarkers", "acpHistory",
   "reasoningEffort",
 ]);
 
@@ -494,6 +501,7 @@ function applyTable(cfg: Config, t: Record<string, unknown> | null, scope: "glob
   if (typeof t.tuiScrollbar === "boolean") cfg.tuiScrollbar = t.tuiScrollbar;
   if (typeof t.tuiScrollStep === "number" && t.tuiScrollStep >= 1 && t.tuiScrollStep <= 40) cfg.tuiScrollStep = Math.floor(t.tuiScrollStep);
   if (typeof t.statusBar === "string" && t.statusBar.trim()) cfg.statusBar = t.statusBar.trim().split(/\s+/).join(" ");
+  if (typeof t.debug === "boolean") cfg.debug = t.debug;
   if (typeof t.tuiFrameMs === "number" && t.tuiFrameMs >= 8 && t.tuiFrameMs <= 250) cfg.tuiFrameMs = Math.floor(t.tuiFrameMs);
   if (t.reasoningEffort === "low" || t.reasoningEffort === "medium" || t.reasoningEffort === "high") cfg.reasoningEffort = t.reasoningEffort;
   if (typeof t.theme === "string" && t.theme.trim()) cfg.theme = t.theme.trim();
@@ -867,6 +875,13 @@ export const SETTINGS: SettingSpec[] = [
     def: "1",
     validate: num(1, 40),
     fmt: (v) => (v === undefined ? "1" : String(v)),
+  },
+  {
+    key: "debug",
+    desc: "verbose diagnostics in debug.log (slow frames) — /debug tail shows the log",
+    def: "false",
+    validate: bool,
+    fmt: showBool,
   },
   {
     key: "statusBar",

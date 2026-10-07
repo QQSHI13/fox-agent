@@ -61,6 +61,7 @@ const cfg = (): Config => ({
   tuiScrollbar: true,
   tuiScrollStep: 1,
   statusBar: "cwd provider model ctx",
+  debug: false,
   tuiFrameMs: 33,
   theme: "default",
   contextMarkers: true,
