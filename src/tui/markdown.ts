@@ -278,3 +278,25 @@ export function renderMarkdown(src: string, state?: MdState, width?: number): Se
   }
   return out;
 }
+
+
+/**
+ * Row classifiers for the code-fence hit test (click a code block to copy it).
+ * They encode THIS module's paint conventions so app.ts never hardcodes them:
+ * fence lines open with a `│ ` gutter seg in the code tint; wrap
+ * continuations are code-tinted but gutter-less; checklist rows share the
+ * code tint (their tick glyph) and are excluded by their line marker.
+ */
+export function codeGutterRow(segs: { t: string; fg?: string }[]): boolean {
+  const s0 = segs[0];
+  return !!s0 && s0.t.startsWith("\u2502") && s0.fg === MD.CODE_FG;
+}
+
+export function codeContRow(segs: { t: string; fg?: string }[]): boolean {
+  if (codeGutterRow(segs)) return false;
+  if (!segs.some((sg) => sg.fg === MD.CODE_FG)) return false;
+  // checklist/bullet/ordered rows tint their marker with the code color — a
+  // continuation of a wrapped code line never starts with one of these
+  const t = segs[0]?.t ?? "";
+  return !/^\s*[✔✘•\-*]\s/.test(t) && !/^\s*\d+\.\s/.test(t);
+}

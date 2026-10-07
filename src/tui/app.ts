@@ -18,6 +18,7 @@ import {
   type PressState,
 } from "./select.ts";
 import { renderMarkdown } from "./markdown.ts";
+import { codeContRow, codeGutterRow } from "./markdown.ts";
 import { createPlainRows, createStreamRows } from "./rows.ts";
 import { wrapSegs, type Seg } from "./wrap.ts";
 import { charWidth } from "./screen.ts";
@@ -2391,6 +2392,83 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     return s.replace(/\s+/g, " ").trim() || "(whitespace)";
   }
 
+  /**
+   * Text of the code-fence block containing the clicked window row, or null
+   * when that row is not fence content. Walks OUTWARD from the click across
+   * the contiguous gutter/continuation run — a fence split across streamed
+   * assistant chunks spans items, so the walk is per-item (lazy itemRows,
+   * cached for the walk), not per-window: the block may extend past the
+   * visible slice. Conventions (gutter seg shape, tints) live in
+   * markdown.ts's classifiers; this side only walks.
+   */
+  function codeBlockAround(winIdx: number): string | null {
+    const fr = painted;
+    if (!fr) return null;
+    const k0 = fr.owner[winIdx];
+    const i0 = items.findIndex((it) => it.k === k0);
+    if (i0 < 0) return null;
+    let first = winIdx;
+    while (first > 0 && fr.owner[first - 1] === k0) first--;
+    const w = fr.contentWidth;
+    const r0 = winIdx - first; // click row within its item's rendered rows
+    const isCode = (segs: Row["segs"]): boolean => {
+      try {
+        return codeGutterRow(segs) || codeContRow(segs);
+      } catch {
+        return false;
+      }
+    };
+    const cache = new Map<number, Row[]>();
+    const rowsOf = (i: number): Row[] => {
+      let rows = cache.get(i);
+      if (!rows) {
+        rows = itemRows(items[i], w).rows;
+        cache.set(i, rows);
+      }
+      return rows;
+    };
+    if (!isCode(rowsOf(i0)[r0]?.segs ?? [])) return null;
+    const picked = new Set<string>();
+    // upward
+    let i = i0;
+    let r = r0;
+    for (;;) {
+      const rows = rowsOf(i);
+      while (r >= 0 && isCode(rows[r].segs)) {
+        picked.add(`${i}:${r}`);
+        r--;
+      }
+      if (r >= 0 || i === 0) break;
+      const prev = rowsOf(i - 1);
+      r = prev.length - 1;
+      if (r < 0 || !isCode(prev[r].segs)) break;
+      i--;
+    }
+    // downward
+    i = i0;
+    r = r0;
+    for (;;) {
+      const rows = rowsOf(i);
+      while (r < rows.length && isCode(rows[r].segs)) {
+        picked.add(`${i}:${r}`);
+        r++;
+      }
+      if (r < rows.length || i === items.length - 1) break;
+      const next = rowsOf(i + 1);
+      r = 0;
+      if (!isCode(next[0]?.segs ?? [])) break;
+      i++;
+    }
+    const keys = [...picked].map((k) => k.split(":").map(Number) as [number, number]);
+    keys.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+    const lines = keys.map(([ci, cr]) => {
+      let t = rowsOf(ci)[cr].segs.map((sg) => sg.t).join("");
+      if (t.startsWith("\u2502")) t = t.slice(1).replace(/^ /, ""); // gutter bar + padding
+      return t;
+    });
+    return lines.join("\n");
+  }
+
   function onClick(x: number, y: number) {
     const vh = viewportH();
     const { inputTop } = dockGeom();
@@ -2459,6 +2537,15 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     if (winIdx < 0 || winIdx >= fr.owner.length) return;
     const it = items.find((i) => i.k === fr.owner[winIdx]);
     if (!it) return;
+    // single click on a code-fence row copies the whole block — the gesture
+    // users reach for on a command they want to run. Double/triple clicks
+    // took the word/line gestures earlier; clicks on non-code rows still
+    // toggle the item below.
+    const blockText = codeBlockAround(winIdx);
+    if (blockText !== null) {
+      void copyText(blockText);
+      return;
+    }
     // a toolhead whose input already fits has nothing to reveal: a click is
     // ignored rather than folding a line that is identical expanded
     if (it.kind === "toolhead" && !it.expanded && toolInputFits(it)) return;
