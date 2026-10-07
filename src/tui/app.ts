@@ -3794,6 +3794,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     paintedTheme = themeName();
     lineCache.clear();
     streamKernels.clear(); // cached stream rows carry old-theme seg colors
+    thinkKernels.clear(); // so do think kernels: C.think is baked into their segs at creation
     dirty = true;
   }
 
@@ -4034,6 +4035,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           debugLog("tui frame error", e);
           lineCache.clear();
           streamKernels.clear();
+          thinkKernels.clear();
           frameErrors++;
           if (frameErrors <= 1 && !exitCode) {
             try {
