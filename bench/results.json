@@ -1,5 +1,5 @@
 {
-  "generated": "2026-10-05T14:35:07Z",
+  "generated": "2026-10-07T04:07:23Z",
   "machine": "Linux x86_64 (6.17.0-1022-azure)",
   "method": "best of 4 `--version` runs; best of 5 PTY launches (no args) to first output byte; best of 3 PTY launches typing a probe and waiting for it on screen (log marker where a tool suppresses echo); PSS after 1.5s idle from /proc smaps_rollup; bundle = the binary itself, a launcher's exec target where a wrapper hands off, or the package dir for script CLIs (entry shims alone would pretend node_modules are free); fox TTFT = spawn to first text event of `fox -p \u2026 --json` vs the repo's scripted local provider (no key, no network); fox peak RSS of that turn via /usr/bin/time -v. Missing tools are n/a, never estimated.",
   "rows": [
@@ -10,32 +10,32 @@
       "version": "0.5.0-beta.1",
       "disk_mb": 89.3,
       "disk_kind": "bin",
-      "startup_ms": 11.3,
-      "tui_first_byte_ms": 12.0,
+      "startup_ms": 9.3,
+      "tui_first_byte_ms": 10.8,
       "tui_first_input_ms": null,
-      "idle_pss_mb": 32.9
+      "idle_pss_mb": 36.0
     },
     {
       "agent": "claude code",
       "installed": true,
       "bin": "/home/runner/.npm-global/bin/claude",
-      "version": "2.1.289 (Claude Code)",
-      "disk_mb": 246.1,
+      "version": "2.1.292 (Claude Code)",
+      "disk_mb": 251.5,
       "disk_kind": "bin",
       "startup_ms": 6.7,
-      "tui_first_byte_ms": 169.9,
+      "tui_first_byte_ms": 148.4,
       "tui_first_input_ms": null,
-      "idle_pss_mb": 180.0
+      "idle_pss_mb": 184.2
     },
     {
       "agent": "codex",
       "installed": true,
       "bin": "/home/runner/.npm-global/bin/codex",
-      "version": "codex-cli 0.160.0",
-      "disk_mb": 446.7,
+      "version": "codex-cli 0.160.1",
+      "disk_mb": 446.8,
       "disk_kind": "pkg",
-      "startup_ms": 32.9,
-      "tui_first_byte_ms": 35.0,
+      "startup_ms": 32.1,
+      "tui_first_byte_ms": 32.7,
       "tui_first_input_ms": null,
       "idle_pss_mb": 49.0
     },
@@ -43,13 +43,13 @@
       "agent": "opencode v1",
       "installed": true,
       "bin": "/home/runner/.local/bin/opencode-v1",
-      "version": "1.18.34",
-      "disk_mb": 185.6,
+      "version": "1.18.35",
+      "disk_mb": 185.7,
       "disk_kind": "bin",
-      "startup_ms": 495.2,
-      "tui_first_byte_ms": 800.9,
-      "tui_first_input_ms": 35.8,
-      "idle_pss_mb": 352.3
+      "startup_ms": 444.9,
+      "tui_first_byte_ms": 708.4,
+      "tui_first_input_ms": 27.0,
+      "idle_pss_mb": 355.5
     },
     {
       "agent": "opencode v2",
@@ -58,44 +58,44 @@
       "version": "opencode2 v0.0.0-beta-19271",
       "disk_mb": 207.4,
       "disk_kind": "bin",
-      "startup_ms": 68.2,
-      "tui_first_byte_ms": 111.0,
-      "tui_first_input_ms": 57.8,
-      "idle_pss_mb": 127.7
+      "startup_ms": 69.3,
+      "tui_first_byte_ms": 111.6,
+      "tui_first_input_ms": 52.3,
+      "idle_pss_mb": 125.1
     },
     {
       "agent": "jcode",
       "installed": true,
       "bin": "/home/runner/.local/bin/jcode",
-      "version": "jcode v0.90.1 (b0e48d8aa)",
-      "disk_mb": 134.7,
+      "version": "jcode v0.91.0 (439a243bb)",
+      "disk_mb": 135.1,
       "disk_kind": "bin",
-      "startup_ms": 6.7,
-      "tui_first_byte_ms": 7.7,
+      "startup_ms": 7.2,
+      "tui_first_byte_ms": 8.8,
       "tui_first_input_ms": null,
-      "idle_pss_mb": 26.6
+      "idle_pss_mb": 27.6
     },
     {
       "agent": "pi",
       "installed": true,
       "bin": "/home/runner/.npm-global/bin/pi",
-      "version": "1.0.3",
-      "disk_mb": 123.0,
+      "version": "1.0.4",
+      "disk_mb": 123.1,
       "disk_kind": "pkg",
-      "startup_ms": 179.6,
-      "tui_first_byte_ms": 247.3,
-      "tui_first_input_ms": 7.2,
-      "idle_pss_mb": 132.9
+      "startup_ms": 144.7,
+      "tui_first_byte_ms": 182.3,
+      "tui_first_input_ms": 5.2,
+      "idle_pss_mb": 133.0
     },
     {
       "agent": "gemini cli",
       "installed": true,
       "bin": "/home/runner/.npm-global/bin/gemini",
-      "version": "0.62.0",
-      "disk_mb": 102.2,
+      "version": "0.63.0",
+      "disk_mb": 102.3,
       "disk_kind": "pkg",
-      "startup_ms": 1166.1,
-      "tui_first_byte_ms": 1241.7,
+      "startup_ms": 911.7,
+      "tui_first_byte_ms": 968.6,
       "tui_first_input_ms": 0.1,
       "idle_pss_mb": null
     },
@@ -103,11 +103,11 @@
       "agent": "copilot cli",
       "installed": true,
       "bin": "/home/runner/.npm-global/bin/copilot",
-      "version": "GitHub Copilot CLI 1.0.91.",
-      "disk_mb": 178.6,
+      "version": "GitHub Copilot CLI 1.0.92.",
+      "disk_mb": 180.1,
       "disk_kind": "pkg",
-      "startup_ms": 85.8,
-      "tui_first_byte_ms": 697.6,
+      "startup_ms": 66.5,
+      "tui_first_byte_ms": 558.4,
       "tui_first_input_ms": null,
       "idle_pss_mb": 47.3
     },
@@ -118,8 +118,8 @@
       "version": "crush version v0.97.1",
       "disk_mb": 128.5,
       "disk_kind": "pkg",
-      "startup_ms": 125.7,
-      "tui_first_byte_ms": 513.7,
+      "startup_ms": 112.0,
+      "tui_first_byte_ms": 398.4,
       "tui_first_input_ms": null,
       "idle_pss_mb": 68.3
     },
@@ -130,9 +130,9 @@
       "version": "1.53.0",
       "disk_mb": 298.7,
       "disk_kind": "bin",
-      "startup_ms": 5.7,
-      "tui_first_byte_ms": 5.5,
-      "tui_first_input_ms": 0.1,
+      "startup_ms": 7.0,
+      "tui_first_byte_ms": 6.2,
+      "tui_first_input_ms": null,
       "idle_pss_mb": null
     },
     {
@@ -142,10 +142,10 @@
       "version": "aider 0.86.2",
       "disk_mb": 642.8,
       "disk_kind": "pkg",
-      "startup_ms": 579.7,
-      "tui_first_byte_ms": 532.8,
-      "tui_first_input_ms": 8.0,
-      "idle_pss_mb": 66.9
+      "startup_ms": 678.1,
+      "tui_first_byte_ms": 479.9,
+      "tui_first_input_ms": 6.3,
+      "idle_pss_mb": 66.8
     },
     {
       "agent": "amp",
@@ -162,10 +162,10 @@
       "version": "0.25.0",
       "disk_mb": 146.2,
       "disk_kind": "pkg",
-      "startup_ms": 28.5,
-      "tui_first_byte_ms": 613.7,
+      "startup_ms": 32.1,
+      "tui_first_byte_ms": 572.4,
       "tui_first_input_ms": null,
-      "idle_pss_mb": 304.7
+      "idle_pss_mb": 288.4
     },
     {
       "agent": "codebuff",
@@ -178,14 +178,14 @@
       "version": "7.8.3",
       "disk_mb": 542.3,
       "disk_kind": "pkg",
-      "startup_ms": 838.2,
-      "tui_first_byte_ms": 1512.6,
-      "tui_first_input_ms": 41.8,
+      "startup_ms": 768.0,
+      "tui_first_byte_ms": 1313.8,
+      "tui_first_input_ms": 33.8,
       "idle_pss_mb": 46.2
     }
   ],
   "fox": {
-    "ttft_ms": 53.2,
+    "ttft_ms": 47.4,
     "headless_peak_rss_mb": 64.0,
     "method": "headless `fox -p \u2026 --json` vs scripted local provider; RSS via /usr/bin/time -v; TUI bytes via PTY; TUI input = first typed byte to probe text on screen (log marker where echo is suppressed)"
   }
