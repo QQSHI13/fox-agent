@@ -19,18 +19,18 @@
     "bench": "bun run build && python3 scripts/bench/bench.py"
   },
   "devDependencies": {
-    "bun-types": "^1.4.0",
+    "bun-types": "^1.4.2",
     "typescript": "^7.0.2"
   },
   "dependencies": {
-    "@agentclientprotocol/sdk": "^1.4.0",
-    "@ai-sdk/anthropic": "^4.0.46",
-    "@ai-sdk/google": "^4.0.58",
-    "@ai-sdk/openai": "^4.0.52",
-    "@ai-sdk/openai-compatible": "^3.0.41",
-    "@modelcontextprotocol/sdk": "^1.30.0",
-    "ai": "^7.0.85",
-    "smol-toml": "^1.8.0"
+    "@agentclientprotocol/sdk": "^1.5.1",
+    "@ai-sdk/anthropic": "^4.0.69",
+    "@ai-sdk/google": "^4.0.86",
+    "@ai-sdk/openai": "^4.0.82",
+    "@ai-sdk/openai-compatible": "^3.0.60",
+    "@modelcontextprotocol/sdk": "^1.31.0",
+    "ai": "^7.0.123",
+    "smol-toml": "^1.9.0"
   },
   "license": "Apache-2.0",
   "repository": {
