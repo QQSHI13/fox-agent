@@ -2356,7 +2356,10 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
      *  the theme's toolBg so calls read as one block in the transcript */
     bg?: number;
   }
-  const lineCache = new Map<number, { rev: number; w: number; rows: Row[]; rich: number }>();
+  // span is the item's non-blank edge span, computed once at fill — countRows
+  // asks for it for EVERY item on EVERY frame (twice with the scrollbar), and
+  // rescanning the row arrays there was the O(nodes) render cost on long sessions
+  const lineCache = new Map<number, { rev: number; w: number; rows: Row[]; rich: number; span: [number, number] }>();
   const LINE_CACHE_MAX = 2_000;
 
   function itemStyle(kind: ItemKind): Partial<Seg> {
@@ -2404,7 +2407,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     return /^[{\[}"]/.test(t) || /^"[^"]*"\s*:/.test(t) || /^\d+[},{]/.test(t);
   }
 
-  function itemRows(it: Item, w: number): { rows: Row[] } {
+  function itemRows(it: Item, w: number): { rows: Row[]; span: [number, number] } {
     const cached = lineCache.get(it.k);
     if (cached && cached.rev === revs.get(it.k) && cached.w === w && cached.rich === richRev) return cached;
     let rows: Row[];
@@ -2518,7 +2521,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     } else {
       rows = wrapSegs([{ t: it.text, ...itemStyle(it.kind) }], w).map((segs) => ({ segs }));
     }
-    const entry = { rev: revs.get(it.k) ?? 0, w, rows, rich: richRev };
+    const entry = { rev: revs.get(it.k) ?? 0, w, rows, rich: richRev, span: itemEdgeSpan(rows) };
     lineCache.set(it.k, entry);
     // keys are re-minted on every refresh(), so without eviction this grows
     // unbounded across a long session
@@ -2755,16 +2758,17 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         // edge-stripped, the very same span `countItem` reports — layout's
         // spacing contract is "count and paint agree", and they cannot drift
         // apart while both read this one span
-        const rows = itemRows(it, w).rows;
-        const [a, b] = itemEdgeSpan(rows);
+        const cached = itemRows(it, w);
+        const [a, b] = cached.span;
         const tool = it.kind === "toolhead" || it.toolResult;
         const out: Row[] = [];
-        for (let i = a; i < b; i++) out.push({ ...rows[i], bg: tool ? S.toolBgRow : rows[i].bg });
+        const src = cached.rows;
+        for (let i = a; i < b; i++) out.push({ ...src[i], bg: tool ? S.toolBgRow : src[i].bg });
         return out;
       },
       countItem: (it, w) => {
-        const rows = itemRows(it, w).rows;
-        const [a, b] = itemEdgeSpan(rows);
+        const cached = itemRows(it, w);
+        const [a, b] = cached.span;
         return b - a;
       },
       renderStream: (text, w) => streamRows(text, w),
