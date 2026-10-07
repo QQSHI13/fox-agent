@@ -319,3 +319,90 @@ export function createStreamRows(w: number): StreamRows {
     },
   };
 }
+
+/**
+ * Incremental row production for PLAIN text — the think-item body. No
+ * markdown pass (thinking is shown as written), so the region model is
+ * simpler than StreamRows: every COMPLETED source line is wrapped exactly
+ * once and appended immutably; only the unterminated tail re-wraps per
+ * feed. Each line is wrapped with keepLeadSpaces so a line-by-line wrap
+ * is byte-identical to wrapping the whole text at once (a whole-wrap only
+ * suppresses leading spaces on its very first output line, and the header
+ * "▾ thinking\n" guarantees that first row is never a body line).
+ */
+export interface PlainRows {
+  /** all rows so far — treat as immutable; callers never mutate */
+  readonly rows: readonly Row[];
+  /** Feed more text. Returns the index in `rows` where repainting must
+   *  start: rows before it are untouched since the previous call. */
+  feed(delta: string): { from: number };
+  /** Width change: reflows everything; `rows` is rebuilt in full. */
+  resize(w: number): void;
+}
+
+export function createPlainRows(w: number, style?: Partial<Seg>): PlainRows {
+  const st = style ?? {};
+  let width = w;
+  let text = "";
+  let doneRows: Row[] = []; // wrapped lines ended by a newline — immutable
+  let doneChars = 0; // chars of `text` covered by doneRows
+  let tailRows: Row[] = []; // re-wrap of text.slice(doneChars)
+
+  const wrapTail = (): void => {
+    const tail = text.slice(doneChars);
+    if (!tail) {
+      tailRows = [];
+      return;
+    }
+    // a trailing incomplete surrogate pair cannot be wrapped yet
+    const last = tail.charCodeAt(tail.length - 1);
+    const safe = last >= 0xd800 && last <= 0xdbff ? tail.slice(0, -1) : tail;
+    tailRows = wrapSegs([{ t: safe, ...st }], width, undefined, { keepLeadSpaces: true }).map((segs) => ({ segs }));
+  };
+
+  const k: PlainRows = {
+    get rows() {
+      // wrapSegs("") === [[]] — one empty row. Match it so the app-side pop
+      // of a trailing empty row sees identical input either path.
+      if (!text) return [{ segs: [] }];
+      return doneRows.length ? [...doneRows, ...tailRows] : tailRows;
+    },
+    feed(delta) {
+      text += delta;
+      // settle: every source line terminated by a newline wraps once
+      let nl: number;
+      let scan = doneChars;
+      for (;;) {
+        nl = text.indexOf("\n", scan);
+        if (nl < 0) break;
+        const line = text.slice(doneChars, nl); // exclude the newline
+        for (const segs of wrapSegs([{ t: line, ...st }], width, undefined, { keepLeadSpaces: true })) {
+          doneRows.push({ segs });
+        }
+        doneChars = nl + 1;
+        scan = doneChars;
+      }
+      wrapTail();
+      return { from: doneRows.length };
+    },
+    resize(w2: number) {
+      width = w2;
+      // reflow everything from the source text
+      doneRows = [];
+      doneChars = 0;
+      // re-settle line by line (same code path, now under the new width)
+      let scan = 0;
+      for (;;) {
+        const nl = text.indexOf("\n", scan);
+        if (nl < 0) break;
+        for (const segs of wrapSegs([{ t: text.slice(scan, nl), ...st }], width, undefined, { keepLeadSpaces: true })) {
+          doneRows.push({ segs });
+        }
+        doneChars = nl + 1;
+        scan = doneChars;
+      }
+      wrapTail();
+    },
+  };
+  return k;
+}

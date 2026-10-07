@@ -18,7 +18,7 @@ import {
   type PressState,
 } from "./select.ts";
 import { renderMarkdown } from "./markdown.ts";
-import { createStreamRows } from "./rows.ts";
+import { createPlainRows, createStreamRows } from "./rows.ts";
 import { wrapSegs, type Seg } from "./wrap.ts";
 import { charWidth } from "./screen.ts";
 import { Picker, type PickerRow } from "./picker.ts";
@@ -2435,10 +2435,17 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       }
       rows.push(boxFill([{ t: `╰${"─".repeat(inner)}╯`, fg: C.info, bg: C.barBg }]));
     } else if (it.kind === "think") {
-      const words = it.text.trim().split(/\s+/).length;
-      rows = it.expanded
-        ? wrapSegs([{ t: `▾ thinking\n${it.text}`, fg: C.think }], w).map((segs) => ({ segs }))
-        : [{ segs: [{ t: `▸ thinking (${words} words)`, fg: C.think }] }];
+      if (it.expanded) {
+        const body = thinkRows(it, w);
+        rows = [{ segs: [{ t: "▾ thinking", fg: C.think }] }, ...body];
+        if (!rows[rows.length - 1].segs.length) rows.pop(); // empty body: wrap emits one [[]] caret row
+      } else {
+        // collapsed count rides the kernel's bookkeeping when the kernel is
+        // warm (mid-stream); cold, one split pays for it — same as before
+        const e = thinkKernels.get(it.k);
+        const words = e && e.fed === it.text.length ? e.words : it.text.trim() ? it.text.trim().split(/\s+/).length : 0;
+        rows = [{ segs: [{ t: `▸ thinking (${words} words)`, fg: C.think }] }];
+      }
     } else if (it.kind === "toolhead" && it.detail) {
       // a tool call whose input overflowed the head line: collapsed shows the
       // one-liner with a leading arrow (like thinking/output) plus a hint, so
@@ -2699,6 +2706,45 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   // the scrollbar shows, so alternating widths would thrash a single kernel
   // into a full rebuild every frame
   const streamKernels = new Map<number, { len: number; k: import("./rows.ts").StreamRows }>();
+
+  /**
+   * Incremental kernels for EXPANDED think bodies, keyed by item key: a
+   * streaming think delta used to `touch` the item and re-wrap its WHOLE
+   * text on the next frame (O(size) per delta — the last think chunk cost
+   * as much as the whole transcript). The kernel feeds only the delta;
+   * shrink or width change resets it. `words` rides along so the collapsed
+   * header's count is incremental too — no full-text split per frame.
+   */
+  const thinkKernels = new Map<number, { w: number; fed: number; k: import("./rows.ts").PlainRows; words: number; endsSpace: boolean }>();
+
+  function thinkRows(it: Item, w: number): Row[] {
+    let e = thinkKernels.get(it.k);
+    if (!e || e.w !== w || e.fed > it.text.length) {
+      e = { w, fed: 0, k: createPlainRows(w, { fg: C.think }), words: 0, endsSpace: true };
+      thinkKernels.set(it.k, e);
+      if (thinkKernels.size > 8) {
+        // items are re-minted on refresh(); drop kernels nothing points at
+        const live = new Set(items.map((i) => i.k));
+        for (const key of thinkKernels.keys()) if (!live.has(key)) thinkKernels.delete(key);
+      }
+    }
+    if (it.text.length > e.fed) {
+      const delta = it.text.slice(e.fed);
+      // incremental word count: a word is a maximal non-space run
+      let words = e.words;
+      let inWord = !e.endsSpace;
+      for (const ch of delta) {
+        const sp = /\s/.test(ch);
+        if (!sp && !inWord) words++;
+        inWord = !sp;
+      }
+      e.words = words;
+      e.endsSpace = /\s/.test(delta[delta.length - 1] ?? " ");
+      e.k.feed(delta);
+      e.fed = it.text.length;
+    }
+    return e.k.rows as Row[];
+  }
 
   function streamRows(text: string, w: number): Row[] {
     let entry = streamKernels.get(w);

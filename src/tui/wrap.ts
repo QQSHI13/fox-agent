@@ -29,8 +29,13 @@ export function segWidth(s: string): number {
  * means this line finished a seg; ending mid-seg is fine as long as the
  * NEXT line starts at the same raw index — see rows.ts).
  */
-export function wrapSegs(segs: Seg[], width: number, rawEnds?: number[]): Seg[][] {
+export function wrapSegs(segs: Seg[], width: number, rawEnds?: number[], opts?: { keepLeadSpaces?: boolean }): Seg[][] {
   if (width < 4) width = 4;
+  // per-line callers (the think kernel wraps one source line at a time) must
+  // see the same rule a whole-text wrap applies to every line AFTER the first:
+  // leading spaces are kept. Whole-text wraps keep the default — spaces at the
+  // very start of the output are layout noise and stay suppressed.
+  const leadKept = !!opts?.keepLeadSpaces;
   const out: Seg[][] = [];
   let line: Seg[] = [];
   let lineW = 0;
@@ -60,9 +65,7 @@ export function wrapSegs(segs: Seg[], width: number, rawEnds?: number[]): Seg[][
       if (/^ +$/.test(part)) {
         const room = width - 1 - lineW;
         const sp = Math.min(part.length, Math.max(0, room));
-        if (sp > 0 && !(line.length === 0 && out.length === 0)) {
-          push({ ...raw, t: " ".repeat(sp) });
-        } else if (sp > 0 && line.length === 0) {
+        if (sp > 0 && (leadKept || line.length > 0 || out.length > 0)) {
           push({ ...raw, t: " ".repeat(sp) });
         }
         continue;
