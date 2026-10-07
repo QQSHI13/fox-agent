@@ -207,7 +207,10 @@ export function renderMarkdown(src: string, state?: MdState, width?: number): Se
       // text wraps INSIDE the cell instead.
       const gutters = cols * 3 + 1; // │ + per-cell " x " + joins
       if (width !== undefined) {
-        const budget = Math.max(cols * 3, width - gutters);
+        // -1: the caller re-wraps composed rows at width-1 (wrapSegs keeps a
+        // continuation column), so a table composed to exactly `width` lost
+        // its final gutter off every row
+        const budget = Math.max(cols * 3, width - gutters - 1);
         while (widths.reduce((a, b) => a + b, 0) > budget) {
           const mi = widths.indexOf(Math.max(...widths));
           if (widths[mi] <= 3) break;
