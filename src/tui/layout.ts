@@ -77,23 +77,25 @@ export interface Frame {
 }
 
 /**
- * Assemble one frame. Two-pass width decision: build at full W; only if that
- * overflows the viewport rebuild at W-2 (text paints from column 1, so the
+ * Assemble one frame. Two-pass width decision: count at full W; only if that
+ * overflows the viewport recount at W-2 (text paints from column 1, so the
  * strip's column must come out of the text budget) and show the scrollbar.
  * The decision comes from THIS frame's data — keying it off the previous
  * frame's flag once made the wrap width flip-flop at the overflow boundary.
  */
 export function computeFrame(inp: FrameInput): Frame {
   const vh0 = viewportHeight(inp);
-  const wantSb = inp.scrollbar;
-  let assembled = assemble(inp, inp.W);
-  let { rows, owner, total: grand, winOffset: rawWinOffset } = assembled;
-  let contentWidth = inp.W;
+  // ---- pass 1: cheap row counts, per width, until the wrap width is known ----
+  // `total` is scrollTop-independent, which is what lets the scroll position be
+  // settled BEFORE any window is built around it.
+  let counted = countRows(inp, inp.W);
+  let grand = counted.total;
+  let w = inp.W;
   let sbShowing = false;
-  if (wantSb && inp.W >= 12 && grand > vh0) {
-    assembled = assemble(inp, inp.W - 2);
-    ({ rows, owner, total: grand, winOffset: rawWinOffset } = assembled);
-    contentWidth = inp.W - 2;
+  if (inp.scrollbar && inp.W >= 12 && grand > vh0) {
+    counted = countRows(inp, inp.W - 2);
+    grand = counted.total;
+    w = inp.W - 2;
     sbShowing = true;
   }
 
@@ -116,56 +118,66 @@ export function computeFrame(inp: FrameInput): Frame {
   const vh = Math.max(3, inp.H - 1 - shownCount - queueH);
 
   // scroll position: clamp first, then "at the bottom" IS stuck — every scroll
-  // path (scrub, wheel, pgdn, drag-past-edge) inherits follow-for-free
+  // path (scrub, wheel, pgdn, drag-past-edge) inherits follow-for-free. FINAL
+  // before assembly: the window has to wrap the range the viewport will show,
+  // not the offset that came in. Sticking can move scrollTop by more than a
+  // screen (first paint into a long session, a big tool dump, compaction), and
+  // building for the incoming offset left `winOffset` past `rowCount` — a
+  // frame that painted nothing.
   let scrollTop = Math.max(0, Math.min(inp.scrollTop, Math.max(0, grand - vh)));
   const stick = scrollTop >= Math.max(0, grand - vh) ? true : inp.stick;
   if (stick) scrollTop = Math.max(0, grand - vh);
 
-  // the clamp moved scrollTop: the margin above shrinks by the same amount,
-  // so winOffset tracks it (window base = scrollTop - winOffset must hold)
-  const winOffset = rawWinOffset - (inp.scrollTop - scrollTop);
+  const { rows, owner, winOffset } = assemble(inp, w, counted.counts, grand, vh, scrollTop);
   const sb = scrollbarGeom(grand, vh, scrollTop);
-  return { contentWidth, sbShowing, sb, scrollTop, stick, winOffset, vh, rows, owner, rowCount: rows.length, total: grand, inputTop, shownCount, firstShown, queueH };
+  return { contentWidth: w, sbShowing, sb, scrollTop, stick, winOffset, vh, rows, owner, rowCount: rows.length, total: grand, inputTop, shownCount, firstShown, queueH };
 }
 
-/** Build the transcript row array at one width, with the spacing rules.
- *  Returns rows plus the parallel owner array (item key per row, -1 for the
- *  streaming tail) so hit-testing has one consistent map. */
-function assemble(inp: FrameInput, w: number): { rows: Row[]; owner: number[]; total: number; winOffset: number } {
-  // ---- pass 1: cheap row counts (windowing needs the item->row offsets) ----
-  // renderItem is cached app-side (lineCache), so calling it twice per item
-  // costs ~a map lookup. The arrays returned are SHARED — never mutate them,
-  // which is why the old code copied before stripping edges. Estimated counts
-  // also carry the +1 blank BETWEEN items so offsets stay exact.
+/** Pass 1: cheap per-item row counts at width `w`, blank separators included.
+ *  The per-item counts ride along because pass 2 needs the same offsets, and
+ *  `countItem` is cached app-side — calling it twice per item costs a lookup,
+ *  so counts are computed once and shared. */
+function countRows(inp: FrameInput, w: number): { counts: number[]; total: number } {
   const counts: number[] = [];
   let total = 0;
   let prevKind: string | null = null;
   for (let i = 0; i < inp.items.length; i++) {
     const it = inp.items[i];
     let n = inp.countItem(it, w);
-    // interior blanks kept: countItem reports the POST-strip count via
-    // countItem; edges already excluded there
+    // interior blanks kept: countItem reports the POST-strip count, so the
+    // item's own edge blanks are already excluded from `n`
     if (i > 0 && n > 0 && !glued(prevKind, it.kind)) n += 1; // blank between
     counts.push(n);
     if (n > 0) prevKind = it.kind;
     total += n;
   }
-  let streamCount = 0;
-  if (inp.streamText !== null) streamCount = inp.countStream(inp.streamText, w);
-  const grand = total + streamCount;
+  if (inp.streamText !== null) total += inp.countStream(inp.streamText, w);
+  return { counts, total };
+}
 
+/** Build the transcript row array at one width, with the spacing rules.
+ *  Returns rows plus the parallel owner array (item key per row, -1 for the
+ *  streaming tail) so hit-testing has one consistent map. `counts`/`grand` are
+ *  pass 1's output and `scrollTop` the already-settled scroll position. */
+function assemble(
+  inp: FrameInput,
+  w: number,
+  counts: number[],
+  grand: number,
+  vh: number,
+  scrollTop: number,
+): { rows: Row[]; owner: number[]; winOffset: number } {
   // ---- pass 2: render only the window [from, to) ----
   // The caller (paint) scrolls; everything outside the window is estimated
   // rows — never rendered, so a 100k-row session scrolls as fast as a 50-row
   // one. The window covers the viewport plus a screenful of margin so wheel
   // and pgdn land inside already-rendered rows.
-  const vh = viewportHeight(inp);
-  const from = Math.max(0, inp.scrollTop - vh);
-  const to = Math.min(grand, inp.scrollTop + vh * 2);
+  const from = Math.max(0, scrollTop - vh);
+  const to = Math.min(grand, scrollTop + vh * 2);
   // rows[0] is absolute row `from`; the viewport begins at scrollTop, i.e.
   // winOffset rows INTO the built slice. Paint reads this — drawing rows[0]
   // at screen y=0 would show the margin as content.
-  const winOffset = inp.scrollTop - from;
+  const winOffset = scrollTop - from;
   const owner: number[] = [];
   const rows: Row[] = [];
   const skipAbove = from; // rows before the window: represented but not built
@@ -216,7 +228,7 @@ function assemble(inp: FrameInput, w: number): { rows: Row[]; owner: number[]; t
     idx += streamRows.length;
   }
   void skipAbove;
-  return { rows, owner, total: grand, winOffset };
+  return { rows, owner, winOffset };
 }
 
 /** toolhead->toolbody and think/toolbody->think and think->toolhead stay glued */

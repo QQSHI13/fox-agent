@@ -106,6 +106,8 @@ describe("computeFrame", () => {
     // at the bottom the last content row must be reachable — this is the line
     // the old mismatch broke, by exactly one row per newline-terminated message
     expect(fr.scrollTop).toBe(trueRows - fr.vh);
+    // and the window built for that offset still fills the viewport
+    expect(fr.rowCount - fr.winOffset).toBe(fr.vh);
   });
 
   test("itemEdgeSpan trims an item's own edge blanks, keeps interior ones", () => {
