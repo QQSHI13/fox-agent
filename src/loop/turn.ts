@@ -502,7 +502,7 @@ export async function* runTurnCore(
     }
 
     // weak models open their reply by echoing the [N] marker they saw on every
-    // message; storing it would render "[m13] [m12] …" next step and feed the loop
+    // message; storing it would render "[13] [12] …" next step and feed the loop
     if (outcome.text) outcome.text = stripEchoedMarkers(outcome.text);
 
     if (outcome.finish === "aborted") {

@@ -1567,7 +1567,7 @@ Verify what you write: run the commands you document (at least the build/test en
         return {
           handled: true,
           prompt: {
-            title: "fork — mN cuts this session at a marker, an id forks another session at its tip",
+            title: "fork — [N] cuts this session at a marker, an id forks another session at its tip",
             steps: [{ key: "at", label: "marker or session id", kind: "text", hint: "empty = fork here at the tip" }],
             run: (a, s) => {
               const at = (a.at ?? "").trim();
@@ -1584,20 +1584,20 @@ Verify what you write: run the commands you document (at least the build/test en
           },
         };
       }
-      // `/fork m3` cuts THIS session at a marker; `/fork <id>` forks another
+      // `/fork 3` cuts THIS session at a marker; `/fork <id>` forks another
       // session at its tip, which is what the picker's fork key sends. The two
-      // cannot be confused: a marker is `m` plus digits only, and a session id
-      // is base36 with at least one letter in its timestamp prefix.
+      // cannot be confused: a marker is digits only (legacy `m3` accepted), and
+      // a session id is base36 with at least one letter in its timestamp prefix.
       let source = state.sessionId;
       let upto: number | undefined;
       if (arg) {
         const m = /^m?(\d+)$/.exec(arg);
         if (m) {
           upto = Number(m[1]);
-          if (!getMessage(state.sessionId, upto)) return { handled: true, output: `no message m${upto}` };
+          if (!getMessage(state.sessionId, upto)) return { handled: true, output: `no message [${upto}]` };
         } else {
           const id = resolveSessionArg(arg, state.config?.sessionListLimit ?? 50);
-          if (!id) return { handled: true, output: `usage: /fork [mN|id|list-index]` };
+          if (!id) return { handled: true, output: `usage: /fork [[N]|id|list-index]` };
           source = id;
         }
       }

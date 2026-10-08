@@ -137,7 +137,7 @@ describe("slash commands", () => {
 
     // a bare number is still a marker in THIS session, never a list index —
     // otherwise `/fork 2` would mean two different things depending on history
-    expect(t.runSlashCommand("/fork 7", state)!.output).toBe("no message m7");
+    expect(t.runSlashCommand("/fork 7", state)!.output).toBe("no message [7]");
     expect(t.runSlashCommand("/fork nope", state)!.output).toMatch(/usage:/);
   });
 
