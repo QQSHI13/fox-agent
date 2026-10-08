@@ -39,6 +39,7 @@ import {
   providerDisplayName,
   sessionList,
   relTime,
+  shortResumeArg,
   type CommandSpec,
   type HarnessState,
   type PickerRequest,
@@ -1729,12 +1730,13 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     // or the printed number would resume a different session)
     try {
       if (state.sessionId && !process.env.FOX_AGENT_NO_RESUME_HINT) {
-        const idx = listSessions(state.config?.sessionListLimit ?? 50).findIndex((s) => s.id === state.sessionId);
-        console.error(
-          idx >= 0
-            ? `\x1b[90mto resume: fox -c ${idx + 1}\x1b[0m (or fox -c ${state.sessionId})`
-            : `\x1b[90mto resume: fox -c ${state.sessionId}\x1b[0m`,
-        );
+        // The short form is a DETERMINISTIC id prefix (unique across the
+        // session set, resolved by the same search-term path /sessions uses),
+        // not a list index — `fox -c 2` breaks the moment any session in the
+        // list is touched, a prefix survives that. Full id stays as the
+        // forever-valid fallback.
+        const short = shortResumeArg(state.sessionId, state.config?.sessionListLimit ?? 50);
+        console.error(`\x1b[90mto resume: fox -c ${short}\x1b[0m (or fox -c ${state.sessionId})`);
       }
     } catch {}
     finish?.();

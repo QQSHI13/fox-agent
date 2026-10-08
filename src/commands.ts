@@ -521,6 +521,27 @@ export function resolveSessionArg(arg: string, limit = 50): string | null {
   return hits.length === 1 ? hits[0].id : null;
 }
 
+/**
+ * A short, DETERMINISTIC resume selector for a session: the shortest prefix of
+ * its id that no other session's searchable text (id/title/cwd/model/preview)
+ * contains. Unlike the `fox -c N` index this never shifts when sessions are
+ * touched — it is a function of the id and the current session set, and the
+ * existing search-term resolution accepts it unchanged. Returns the full id
+ * when even that is not unique (then the resume attempt prints the
+ * candidates, which is the honest outcome).
+ */
+export function shortResumeArg(sessionId: string, limit = 50): string {
+  const others = sessionList({ limit })
+    .filter((s) => s.id !== sessionId)
+    .map(sessionSearchText);
+  const min = Math.min(6, sessionId.length); // ids open with a timestamp; 6 chars almost always diverge
+  for (let p = min; p < sessionId.length; p++) {
+    const prefix = sessionId.slice(0, p);
+    if (!others.some((t) => t.includes(prefix))) return prefix;
+  }
+  return sessionId;
+}
+
 interface LoginFields {
   provider?: string;
   apiKey?: string;
