@@ -241,7 +241,7 @@
       "startup_ms": 666.1,
       "tui_first_byte_ms": 807.2,
       "tui_first_input_ms": null,
-      "idle_pss_mb": 55.0
+      "idle_pss_mb": 55.1
     },
     {
       "agent": "continue",
