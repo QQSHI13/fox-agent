@@ -44,7 +44,7 @@ export const ctxDef: ToolDef = {
 
 function validateSeq(ctx: ToolContext, seq: number): string | null {
   if (typeof seq !== "number" || !Number.isInteger(seq)) return `error: invalid id ${seq}`;
-  if (!getMessage(ctx.sessionId, seq)) return `error: no message m${seq}`;
+  if (!getMessage(ctx.sessionId, seq)) return `error: no message [${seq}]`;
   return null;
 }
 
@@ -100,14 +100,14 @@ export async function ctxRun(args: { ops?: any[]; reason?: string }, ctx: ToolCo
       }
       viewOps.push({ kind: "delete", ids, summary: o.summary });
       hidden += ids.length;
-      out.push(`hidden: ${ids.map((s) => `m${s}`).join(", ")}`);
+      out.push(`hidden: ${ids.map((s) => `[${s}]`).join(", ")}`);
     } else if (o.op === "replace") {
       const bad = validateSeq(ctx, o.id);
       if (bad) return fail(bad);
       if (typeof o.content !== "string") return fail("error: replace needs content");
       viewOps.push({ kind: "replace", id: o.id, content: o.content });
       replaced++;
-      out.push(`replaced: m${o.id}`);
+      out.push(`replaced: [${o.id}]`);
     } else if (o.op === "restore") {
       const ids: number[] = o.ids ?? [];
       if (!ids.length) return fail("error: restore needs ids");
@@ -117,7 +117,7 @@ export async function ctxRun(args: { ops?: any[]; reason?: string }, ctx: ToolCo
       }
       viewOps.push({ kind: "restore", ids });
       restored += ids.length;
-      out.push(`restored: ${ids.map((s) => `m${s}`).join(", ")}`);
+      out.push(`restored: ${ids.map((s) => `[${s}]`).join(", ")}`);
     } else if (o.op === "search") {
       if (o.role !== undefined && typeof o.role !== "string") return fail("error: role must be a string");
       const found = searchNodes(ctx, o.pattern, o.role, o.limit);
@@ -139,7 +139,7 @@ export async function ctxRun(args: { ops?: any[]; reason?: string }, ctx: ToolCo
       const ids = found.hits.map((h) => h.seq);
       viewOps.push({ kind: "delete", ids, summary: o.summary });
       hidden += ids.length;
-      out.push(`hidden by query ${JSON.stringify(o.pattern)}: ${ids.map((s) => `m${s}`).join(", ")}`);
+      out.push(`hidden by query ${JSON.stringify(o.pattern)}: ${ids.map((s) => `[${s}]`).join(", ")}`);
     } else if (o.op === "stats") {
       const nodes = projectView(ctx.sessionId).filter((x) => !x.deleted);
       const stored = allMessages(ctx.sessionId).length;

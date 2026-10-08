@@ -199,7 +199,7 @@ Two things to know:
 - **Provider-first /model wizard** that lists each logged-in provider's own `/models` (cached), plus config-described and catalog models. Switch mid-session, saved globally.
 - **Steering mid-turn**: queue messages (stacked above the input until sent, ctrl+up withdraws the last one back into the editor) or ctrl+s to inject after the current tool finishes.
 - **@path mentions and drag-and-drop**: paste or drop file paths and their contents are inlined at dispatch (binary-sniffed, size-capped).
-- **TUI on custom ANSI renderer**: streaming markdown, inline `[mN]` markers, slash commands, `!` shell mode, esc interrupt, mouse selection, themes.
+- **TUI on custom ANSI renderer**: streaming markdown, inline `[N]` message markers, slash commands, `!` shell mode, esc interrupt, mouse selection, themes.
 - **Headless**: `-p "prompt"` one-shot, `fox json` NDJSON event stream, stdin piping, `fox mini` plain REPL (runtime header, colors, tab completion, `!` shell, queued turns — everything but markdown rendering and live rewrites) -- plus a library API (`createAgent`).
 - **SQLite event-sourced sessions**: one database per session. Append-only log + view ops + refs (reverts/forks are queries, not rewrites).
 - **Production turn loop**: step caps, retry/backoff on 429/5xx, parallel tool execution, abort-safe partial persistence, auto-compaction near the context limit.

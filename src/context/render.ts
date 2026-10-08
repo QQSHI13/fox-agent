@@ -9,7 +9,7 @@ function marker(seq: number): string {
 /**
  * Marker echo stripper. Weak models see `[N]` on every message and start
  * "predicting" one at the top of their own reply; stored verbatim, the next
- * render shows `[m13] [m12] …` and the echo compounds. Applied at store time
+ * render shows `[13] [12] …` and the echo compounds. Applied at store time
  * only (turn.ts) — rendering stays verbatim, so the transcript is the truth
  * and a pre-fix poisoned session is the agent's to ctx_edit away.
  */
