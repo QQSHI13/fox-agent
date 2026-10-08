@@ -49,14 +49,10 @@ FAKE = os.path.join(ROOT, "test", "fixtures", "fake-provider.ts")
 
 # (label, candidate binary names). Rows are labeled by the version the binary
 # REPORTS, so a renamed/vendored install cannot silently pose as something else.
-# opencode is measured separately below: v1 and v2 ship overlapping binary
-# names, and the v2 installer wipes v1's `opencode` — so the bench workflow
-# preserves v1 under an explicit `opencode-v1` name (see bench.yml). Labels
-# come from the BINARY NAME, not the version: the v2 beta reports 0.0.0-beta-N
-# (zero-ver), so major-based labeling miscategorized it as v1 and the v2 row
-# silently vanished. The reported version still rides along in the row, so a
-# surprise is visible, never silent. `opencode` (bare) falls back to major.
-OPENCODE_BINS = (("opencode-v1", "opencode v1"), ("opencode", None), ("opencode2", "opencode v2"))
+# opencode v2 is measured separately below (bin `opencode2`, installed from
+# @opencode-ai/cli@beta). v1 was dropped: v2 is the current product and the
+# v1 row only added a n/a-or-stale line to the table.
+OPENCODE_BINS = (("opencode2", "opencode v2"),)
 AGENTS = [
     ("fox-agent", ["bin/fox"]),
     ("claude code", ["claude"]),
@@ -69,10 +65,18 @@ AGENTS = [
     ("goose", ["goose"]),
     ("aider", ["aider"]),
     ("amp", ["amp"]),
-    ("cursor-agent", ["cursor-agent"]),
+    # cursor renamed the primary binary to `agent`; cursor-agent stays as the
+    # legacy symlink the installer also ships
+    ("cursor-agent", ["cursor-agent", "agent"]),
     ("qwen code", ["qwen"]),
     ("codebuff", ["codebuff"]),
     ("kilo code", ["kilocode", "kilo"]),
+    ("droid", ["droid"]),
+    ("kimi code", ["kimi"]),
+    ("devin", ["devin"]),
+    ("cline", ["cline"]),
+    ("continue", ["cn"]),
+    ("iflow cli", ["iflow"]),
 ]
 
 VERSION_FALLBACKS = [["--version"], ["-v"], ["version"], ["--help"]]
@@ -721,11 +725,8 @@ def main():
             continue
         rows.append(measure(label, path, n_start, n_probes, n_input))
 
-    # opencode v1+v2: fixed names where upstream gives distinct binaries,
-    # version fallback for the shared `opencode` name. Duplicate labels
-    # collapse to the first binary in OPENCODE_BINS order, so a machine with
-    # only v2's `opencode` gets one v2 row, while the workflow (v1 preserved
-    # as `opencode-v1`) gets both rows.
+    # opencode v2: fixed binary name `opencode2`. (The loop stays generic so a
+    # future bare-`opencode` fallback can be re-added as another tuple entry.)
     oc_rows: list = []
     seen_oc = set()
     for bin_name, fixed in OPENCODE_BINS:
@@ -746,7 +747,7 @@ def main():
             continue
         seen_oc.add(label)
         oc_rows.append(measure(label, path, n_start, n_probes, n_input))
-    for want in ("opencode v1", "opencode v2"):
+    for want in ("opencode v2",):
         if want not in seen_oc:
             oc_rows.append({"agent": want, "installed": False})
             print(f"{want}: not installed")

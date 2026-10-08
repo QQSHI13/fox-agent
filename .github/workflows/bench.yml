@@ -53,7 +53,7 @@ jobs:
           # Comma-separated — a space-joined string is silently ignored as an
           # unparseable .npmrc entry (measured in CI logs), which blocks every
           # postinstall and installs binary-less stubs.
-          npm config set allow-scripts "@anthropic-ai/claude-code,@openai/codex,opencode-ai,@opencode-ai/cli,@earendil-works/pi-coding-agent,@google/gemini-cli,@github/copilot,@charmland/crush,@qwen-code/qwen-code,@kilocode/cli"
+          npm config set allow-scripts "@anthropic-ai/claude-code,@openai/codex,@opencode-ai/cli,@earendil-works/pi-coding-agent,@google/gemini-cli,@github/copilot,@charmland/crush,@qwen-code/qwen-code,@kilocode/cli,codebuff,cline,@continuedev/cli,@iflow-ai/iflow-cli"
           echo "$HOME/.npm-global/bin" >> "$GITHUB_PATH"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           node --version
@@ -83,46 +83,40 @@ jobs:
       - run: bun run build
 
       - name: install competitor CLIs (best effort — failures become n/a rows)
-        # Sources: opencode.ai docs (v1 = `opencode` via opencode-ai, v2 = `opencode2`
-        # via @opencode-ai/cli), pi.dev (npm @earendil-works/pi-coding-agent, bin `pi`),
-        # DeepSeek/crush docs (npm @charmland/crush), Qwen Code docs (npm
-        # @qwen-code/qwen-code), kilo.ai docs (npm @kilocode/cli), 1jehuang/jcode
-        # README (install.sh), block/goose docs (download_cli.sh + CONFIGURE=false).
-        # amp / cursor-agent / codebuff have no reliable one-line install and are
-        # probed from PATH only — n/a when absent.
-        #
-        # opencode needs care: the v2 installer wipes v1's `opencode` binary, so
-        # v1 is installed FIRST and copied aside under an explicit `opencode-v1`
-        # name before v2 goes in. The bench script labels each by reported major.
+        # Sources (verified against official docs 2026-10-08, see the research
+        # notes in the bench run summary): opencode v2 = @opencode-ai/cli@beta
+        # (bin opencode2); amp = ampcode.com installer (npm name moved to
+        # @ampcode/cli); cursor-agent = cursor.com/install (bins cursor-agent
+        # + agent); codebuff = npm `codebuff` (NOT codebuff-cli — impersonator;
+        # first run downloads the real binary, keep network up); droid =
+        # factory.ai installer; kimi code = code.kimi.com installer; devin =
+        # cli.devin.ai installer; cline/continue/iflow = npm. Everything is
+        # best-effort (`|| true`): a failed install becomes an n/a row.
         run: |
           set +e
           npm i -g @anthropic-ai/claude-code          # claude
           npm i -g @openai/codex                      # codex
-          npm i -g opencode-ai                        # opencode v1 (bin opencode)
-          mkdir -p "$HOME/.local/bin"
-          # A symlink, not a copy or wrapper script: the bench measures footprint
-          # via realpath, so a symlink still weighs v1's real package dir —
-          # while a copied file or shell wrapper would measure as a weightless
-          # "entry" shim. Safe because npm never removes the v1 package when
-          # the (differently-named) v2 package goes in, and node resolves
-          # __dirname through the link, so sibling lookups keep working.
-          if command -v opencode >/dev/null; then
-            ln -sf "$(command -v opencode)" "$HOME/.local/bin/opencode-v1"
-          else
-            echo "WARN: opencode v1 install failed — no opencode-v1"
-          fi
-          npm i -g @opencode-ai/cli@beta              # opencode v2 (bin opencode2; wipes v1's opencode)
+          npm i -g @opencode-ai/cli@beta              # opencode v2 (bin opencode2)
           npm i -g @earendil-works/pi-coding-agent    # pi
           npm i -g @google/gemini-cli                 # gemini
           npm i -g @github/copilot                    # copilot
           npm i -g @charmland/crush                   # crush
           npm i -g @qwen-code/qwen-code               # qwen
           npm i -g @kilocode/cli                      # kilo code (bins kilo + kilocode)
+          npm i -g codebuff                           # codebuff (impersonator: codebuff-cli)
+          npm i -g cline                              # cline
+          npm i -g @continuedev/cli                   # continue (bin cn)
+          npm i -g @iflow-ai/iflow-cli                # iflow
           .venv-bench/bin/pip install aider-chat      # aider, into the venv
           curl -fsSL https://jcode.sh/install | bash  # jcode (official installer per 1jehuang/jcode README)
           curl -fsSL https://github.com/block/goose/releases/download/stable/download_cli.sh | CONFIGURE=false bash  # goose
+          curl -fsSL https://ampcode.com/install.sh | bash                       # amp
+          curl https://cursor.com/install -fsS | bash                            # cursor-agent (also bins `agent`)
+          curl -fsSL https://app.factory.ai/cli | sh                             # droid
+          curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash           # kimi code
+          curl -fsSL https://cli.devin.ai/install.sh | bash                      # devin
           echo "--- installed versions ---"
-          for b in claude codex opencode-v1 opencode opencode2 pi gemini copilot crush qwen aider jcode goose kilo kilocode; do
+          for b in claude codex opencode2 pi gemini copilot crush qwen aider jcode goose kilo kilocode amp cursor-agent agent codebuff droid kimi devin cline cn iflow; do
             command -v "$b" >/dev/null && echo "$b: $(timeout 20 "$b" --version 2>&1 | head -1)" || echo "$b: MISSING";
           done
           exit 0
@@ -149,10 +143,14 @@ jobs:
         run: cat bench/table.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: commit refreshed results
-        # Rebase + retry: a release commit (or another bench run) may land on
-        # main between checkout and push — losing the race must not lose the
-        # data (measured once at CI cost). bench/ + README rebase cleanly onto
-        # anything that doesn't touch them.
+        # Merge, never rebase: a rebase that hits conflicts (two bench runs
+        # racing on the same bench/ + README files) leaves UNMERGED files in
+        # the worktree, and the retry loop then cannot even pull (measured —
+        # that deadlocked a run until it gave up). `merge -X ours` auto-
+        # resolves every conflicting hunk in favor of OUR fresh results, which
+        # is exactly right for bench-vs-bench: both sides are "latest table",
+        # and ours is the one this run measured. Unrelated changes merge
+        # normally. No unmerged state can exist, so the loop cannot wedge.
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -160,8 +158,13 @@ jobs:
           git diff --cached --quiet && echo "no bench changes" && exit 0
           git commit -m "bench: refresh results"
           for i in 1 2 3; do
-            git pull --rebase origin main && git push origin HEAD:main && exit 0
-            echo "push race lost (attempt $i) — rebasing and retrying"
+            git fetch -q origin main
+            if git merge-base --is-ancestor origin/main HEAD; then
+              git push origin HEAD:main && exit 0
+            fi
+            git merge --no-edit -X ours origin/main
+            git push origin HEAD:main && exit 0
+            echo "push race lost (attempt $i) — merging origin and retrying"
             sleep 10
           done
           echo "could not push bench results after 3 attempts"
