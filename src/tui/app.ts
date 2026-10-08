@@ -29,7 +29,7 @@ import { steer, peekSteer, withdrawSteer } from "../loop/steer.ts";
 import { projectView } from "../context/view.ts";
 import { lookupModel } from "../providers/models.ts";
 import { listSessions } from "../store/db.ts";
-import { allMessages, createSession, getSession, kvGet, kvSet, lastPromptTokens as storedPromptTokens, pinSession, unpinSession } from "../store/db.ts";
+import { allMessages, allMessagesLite, createSession, getSession, kvGet, kvSet, lastPromptTokens as storedPromptTokens, pinSession, unpinSession } from "../store/db.ts";
 import { acquireLock, releaseLock } from "../store/lock.ts";
 import {
   runSlashCommand,
@@ -76,6 +76,10 @@ interface Item {
   /** tool result whose body is markdown (todo task lists) — expanded
    *  rendering goes through the markdown parser instead of plain lines */
   mdBody?: boolean;
+  /** raw tool-call arguments; argsJson (the pretty-print) is deferred to first
+   *  render/expand — pretty-printing every call in history at load was 416ms
+   *  on a 4k-message session for data only an expanded head ever shows */
+  argsRaw?: string;
 }
 
 /**
@@ -672,9 +676,12 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     // history, and hiding or truncating earlier stuff just because the model
     // no longer carries it made the top of the transcript drift to whatever
     // happened to survive first. Storage is append-only; display it all.
-    const msgs = allMessages(state.sessionId);
+    // Lite columns: the transcript never displays media/tokens/error, and
+    // dragging stored base64 blobs through the projection showed up as a
+    // large slice of resume time on media-heavy sessions.
+    const msgs = allMessagesLite(state.sessionId);
     const callLabel = new Map<string, string>();
-    const callDetail = new Map<string, string>();
+    const callRaw = new Map<string, string>();
     const callName = new Map<string, string>();
     for (const m of msgs) {
       if (m.role === "assistant" && m.tool_calls) {
@@ -684,7 +691,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
             // the expanded view shows the FULL JSON call, pretty-printed —
             // not a reconstructed summary. What the model actually sent is
             // the ground truth, and it is what you want when auditing.
-            callDetail.set(c.id, argsJson(c.arguments ?? ""));
+            // argsJson runs lazily (fillDetail) — only a head someone actually
+            // expands (or that must be width-tested) ever pays for it.
+            callRaw.set(c.id, c.arguments ?? "");
             callName.set(c.id, c.name);
           }
         } catch {}
@@ -696,7 +705,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         // todo bodies are markdown task lists — rendered as md, always
         // visible (a task list hidden behind a click is useless)
         const isTodo = callName.get(m.tool_call_id ?? "") === "todo";
-        out.push({ k: seqKey(m.seq, 1), kind: "toolhead", text: `[${m.seq}] » ${callLabel.get(m.tool_call_id ?? "") ?? "tool"}`, detail: callDetail.get(m.tool_call_id ?? "") });
+        out.push({ k: seqKey(m.seq, 1), kind: "toolhead", text: `[${m.seq}] » ${callLabel.get(m.tool_call_id ?? "") ?? "tool"}`, argsRaw: callRaw.get(m.tool_call_id ?? "") });
         // raw text — collapsed/expanded rendering lives in itemRows
         out.push({
           k: seqKey(m.seq, 2),
@@ -1816,6 +1825,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     // when argsFull produced a detail, and without this branch clicking it did
     // nothing — the reported "tool call content doesn't display" bug
     if (it.kind !== "think" && it.kind !== "toolbody" && it.kind !== "toolhead") return;
+    if (!it.expanded) fillDetail(it); // first expand pays the pretty-print, not the load
     it.expanded = !it.expanded;
     if (it.ref != null) {
       if (it.expanded) expandedRefs.add(it.ref);
@@ -1830,10 +1840,27 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
    * single-line detail that fits the screen width. There is nothing left to
    * reveal, so the affordance text is noise and a click must not fold/unfold.
    * Head renders as "▸ " + text + " · " + detail from column 1.
+   *
+   * Called per collapsed head per frame, so it must not trigger the lazy
+   * pretty-print: real args ALWAYS pretty-print multi-line (the brace lines
+   * alone), so a deferred head with any content never fits — only the
+   * degenerate "{}"/one-liner cases fill and take the width test.
    */
   function toolInputFits(it: Item): boolean {
-    if (it.kind !== "toolhead" || !it.detail || it.detail.includes("\n")) return false;
+    if (it.kind !== "toolhead") return false;
+    if (!it.detail) {
+      const raw = (it.argsRaw ?? "").trim();
+      if (raw && raw !== "{}") return false;
+      fillDetail(it); // degenerate args: cheap, and it.detail is now real
+    }
+    if (!it.detail || it.detail.includes("\n")) return false;
     return 2 + Bun.stringWidth(it.text) + 3 + it.detail.length <= W;
+  }
+
+  /** Deferred argsJson: fill once, on first expand/degenerate width-test. */
+  function fillDetail(it: Item): void {
+    if (it.detail || it.argsRaw === undefined) return;
+    it.detail = argsJson(it.argsRaw);
   }
 
   // ---- keyboard ----
@@ -1983,12 +2010,16 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     }
     if (name === "t" && ctrl) {
       // unfold/fold everything expandable — thinking blocks, tool outputs, long tool heads
-      const expandable = (it: Item) => it.kind === "think" || it.kind === "toolbody" || (it.kind === "toolhead" && !!it.detail);
+      const expandable = (it: Item) =>
+        it.kind === "think" || it.kind === "toolbody" || (it.kind === "toolhead" && (!!it.detail || it.argsRaw !== undefined));
       const anyFolded = items.some((it) => expandable(it) && !isExpanded(it));
       for (const it of items) {
         if (!expandable(it)) continue;
         const want = anyFolded;
-        if (isExpanded(it) !== want) toggleExpand(it);
+        if (isExpanded(it) !== want) {
+          if (!want) fillDetail(it); // about to expand: defer-pay here too
+          toggleExpand(it);
+        }
       }
       flash(anyFolded ? "all unfolded" : "all folded");
       return;
@@ -2682,15 +2713,16 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         const words = e && e.fed === it.text.length ? e.words : it.text.trim() ? it.text.trim().split(/\s+/).length : 0;
         rows = [{ segs: [{ t: `▸ thinking (${words} words)`, fg: C.think }] }];
       }
-    } else if (it.kind === "toolhead" && it.detail) {
+    } else if (it.kind === "toolhead" && (it.detail || it.argsRaw !== undefined)) {
       // a tool call whose input overflowed the head line: collapsed shows the
       // one-liner with a leading arrow (like thinking/output) plus a hint, so
       // the affordance is visible without reading to the end of the line;
       // expanded wraps the FULL input across the whole screen width instead of
       // stopping at 60 chars
       if (it.expanded) {
+        fillDetail(it);
         rows = wrapSegs([{ t: `▾ ${it.text}`, fg: C.tool }], w).map((segs) => ({ segs }));
-        rows.push(...wrapSegs([{ t: `  ${it.detail}`, fg: C.chrome }], w).map((segs) => ({ segs })));
+        rows.push(...wrapSegs([{ t: `  ${it.detail ?? ""}`, fg: C.chrome }], w).map((segs) => ({ segs })));
       } else {
         rows = [
           {
