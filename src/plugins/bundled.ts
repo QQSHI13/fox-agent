@@ -15,6 +15,7 @@ import { ptyDef, drivePty, cleanupPty, ptySessionName } from "../tools/pty.ts";
 import { todoDef, todoRun } from "../tools/todo.ts";
 import { fetchDef, fetchRun } from "../tools/fetch.ts";
 import { replDef, replRun, cleanupRepl } from "../tools/repl.ts";
+import costPlugin, { costSegment } from "./cost.ts";
 
 const ptyPlugin: FoxPlugin = {
   name: "bundled:pty",
@@ -40,8 +41,16 @@ const replPlugin: FoxPlugin = {
 
 /** All bundled plugins. Order matters only for shadowing: user plugins load after. */
 export function bundledPlugins(): FoxPlugin[] {
-  return [ptyPlugin, todoPlugin, fetchPlugin, replPlugin];
+  return [ptyPlugin, todoPlugin, fetchPlugin, replPlugin, costPlugin];
 }
+
+/**
+ * The cost plugin's TUI segment. Lives beside the plugin (not inside it)
+ * because plugin statusSegments resolve without session context; the TUI
+ * calls this per frame with the active session. `disabledPlugins` keeps it
+ * consistent: disabling bundled:cost removes the tally everywhere.
+ */
+export { costSegment };
 
 /**
  * Does a disabledPlugins entry name this bundled plugin? Accepts "pty" and

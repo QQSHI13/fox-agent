@@ -60,7 +60,7 @@ const cfg = (): Config => ({
   tuiRich: false,
   tuiScrollbar: true,
   tuiScrollStep: 2,
-  statusBar: "cwd provider model ctx",
+  statusBar: "cwd provider model ctx cost",
   debug: false,
   tuiFrameMs: 33,
   theme: "default",

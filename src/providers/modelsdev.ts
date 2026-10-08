@@ -24,6 +24,8 @@ export interface CatalogModel {
   reasoning?: boolean;
   /** input modalities beyond text, e.g. ["image", "audio", "video"] */
   inputs?: string[];
+  /** USD per Mtok, straight from the catalog — cost is a derived view, never stored in code */
+  cost?: { input?: number; output?: number; cache_read?: number; cache_write?: number };
 }
 
 export interface CatalogProvider {
@@ -113,6 +115,7 @@ export async function refreshCatalog(): Promise<boolean> {
         reasoning?: boolean;
         limit?: { context?: number; output?: number };
         modalities?: { input?: string[] };
+        cost?: { input?: number; output?: number; cache_read?: number; cache_write?: number };
       }>;
     }>;
     const providers: CatalogProvider[] = [];
@@ -126,6 +129,7 @@ export async function refreshCatalog(): Promise<boolean> {
           output: m.limit?.output,
           reasoning: m.reasoning,
           inputs: m.modalities?.input?.filter((x) => x !== "text"),
+          cost: m.cost,
         });
       }
       models.sort((a, b) => a.id.localeCompare(b.id));
@@ -208,6 +212,9 @@ export function lookupCatalogModel(modelId: string): CatalogModel | undefined {
       merged.output = Math.max(merged.output ?? 0, model.output ?? 0) || undefined;
       merged.reasoning = merged.reasoning || model.reasoning;
       merged.inputs = [...new Set([...(merged.inputs ?? []), ...(model.inputs ?? [])])];
+      // resellers list the same model with missing or skewed prices; the first
+      // record that carries one wins (the source provider usually sorts first)
+      merged.cost ??= model.cost;
     }
   }
   return merged;

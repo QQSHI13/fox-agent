@@ -28,6 +28,8 @@ import { runTurn, VERSION } from "../loop/agent.ts";
 import { steer, peekSteer, withdrawSteer } from "../loop/steer.ts";
 import { projectView } from "../context/view.ts";
 import { lookupModel } from "../providers/models.ts";
+import { bundledDisabled } from "../plugins/bundled.ts";
+import { costSegment } from "../plugins/cost.ts";
 import { listSessions } from "../store/db.ts";
 import { allMessages, allMessagesLite, createSession, getSession, kvGet, kvSet, lastPromptTokens as storedPromptTokens, pinSession, unpinSession } from "../store/db.ts";
 import { acquireLock, releaseLock } from "../store/lock.ts";
@@ -2678,7 +2680,13 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   function itemRows(it: Item, w: number): { rows: Row[]; span: [number, number] } {
     const perWidth = lineCache.get(it.k);
     const cached = perWidth?.get(w);
-    if (cached && cached.rev === revs.get(it.k) && cached.rich === richRev) return cached;
+    if (cached && cached.rev === revs.get(it.k) && cached.rich === richRev) {
+      // LRU touch: delete+set refreshes Map iteration order so the eviction
+      // scan below (oldest-first) drops the width not used the longest
+      perWidth!.delete(w);
+      perWidth!.set(w, cached);
+      return cached;
+    }
     let rows: Row[];
     if (it.kind === "md") {
       // no trailing blank: spacing between items is buildRows' job
@@ -2805,6 +2813,17 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       lineCache.set(it.k, pw);
     }
     pw.set(w, entry);
+    // Cap widths per item: every terminal resize (and the scrollbar's W/W-2
+    // dual pass) used to add a FULL set of wrapped rows per width and keep it
+    // forever — on a long session that was hundreds of MB of stale Row/Seg
+    // objects. Two warm (current + scrollbar partner), everything else evicted
+    // oldest-first; re-wrap on a re-widened window costs one pass, same as a
+    // cache-cold frame.
+    while (pw.size > 2) {
+      const oldest = pw.keys().next().value;
+      if (oldest === undefined) break;
+      pw.delete(oldest);
+    }
     return entry;
   }
 
@@ -3720,7 +3739,14 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       else if (name === "provider") segs.push(stats[1]);
       else if (name === "model") segs.push(stats[2]);
       else if (name === "ctx") segs.push(stats[3]);
-      else if (name === "readOnly") {
+      else if (name === "cost") {
+        // bundled:cost's tally — hidden when the plugin is disabled or there
+        // is nothing to show yet (no model, no rate, or zero spend)
+        if (!bundledDisabled("bundled:cost", state.config?.disabledPlugins ?? [])) {
+          const c = costSegment(state.sessionId);
+          if (c) segs.push(c);
+        }
+      } else if (name === "readOnly") {
         if (ro) segs.push(ro);
       } else {
         const seg = pluginSegment(name);

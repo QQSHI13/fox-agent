@@ -9,6 +9,8 @@ let dir: string;
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "fox-compact-"));
   process.env.FOX_AGENT_HOME = dir;
+  // afterEach clears registrations; re-arm the fixture model every test
+  setConfiguredModels([{ id: MODEL, contextWindow: WINDOW }]);
 });
 
 afterEach(() => {
@@ -16,8 +18,10 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-// deepseek-chat has the smallest window in the registry (65_536), which keeps
-// the fixtures small enough to build quickly.
+// The window is REGISTERED, not looked up: deepseek-chat's 65_536 used to come
+// from a hardcoded table that no longer exists (cost/catalog rework), and the
+// test must not depend on the models.dev cache. setConfiguredModels is the
+// supported override path (re-armed in beforeEach, cleared in afterEach).
 const MODEL = "deepseek-chat";
 const WINDOW = 65_536;
 const cfg = { baseUrl: "http://localhost:9", apiKey: "test", model: MODEL };
@@ -151,7 +155,11 @@ describe("auto-compaction", () => {
 
   test("the trigger is the smaller of the window fraction and the ceiling", async () => {
     const { triggerTokens } = await import("../src/context/budget.ts");
-    setConfiguredModels([{ id: "overstated-window", contextWindow: 1_000_000 }]);
+    // replaces (not merges) the registration — keep the fixture model in it
+    setConfiguredModels([
+      { id: MODEL, contextWindow: WINDOW },
+      { id: "overstated-window", contextWindow: 1_000_000 },
+    ]);
     expect(triggerTokens("overstated-window", 0.85, 131_072)).toBe(131_072);
     expect(triggerTokens("overstated-window", 0.85, 0)).toBe(850_000); // ceiling off -> fraction only
     expect(triggerTokens(MODEL, 0.85, 131_072)).toBe(55_705); // a small window still binds first

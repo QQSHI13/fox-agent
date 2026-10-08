@@ -214,7 +214,12 @@ describe("command matching", () => {
       if (c.usage) expect(help).toContain(`${c.name} ${c.usage}`);
       expect(help).toContain(c.help ?? c.desc);
     }
-    expect(help.split("\n")).toHaveLength(t.COMMANDS.length);
+    const lines = help.split("\n");
+    const pcAt = lines.indexOf("plugin commands:");
+    // bundled plugin commands append their own section: blank line + header +
+    // one line per command — derived from the output itself, since whether
+    // plugins are loaded depends on what earlier tests configured
+    expect(lines).toHaveLength(t.COMMANDS.length + (pcAt >= 0 ? lines.length - pcAt + 1 : 0));
     expect(help).not.toContain("/resume");
   });
 });

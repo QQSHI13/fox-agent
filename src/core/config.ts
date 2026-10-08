@@ -59,6 +59,12 @@ export interface LspConfig {
  * Everything but `id` is optional; unset fields fall back to the models.dev
  * catalog, then the static table, then conservative defaults.
  */
+/**
+ * A model entry under `[providers.*.models]`. Model facts (context/output
+ * caps, modalities, reasoning) describe THIS model when no catalog knows it;
+ * pricing is never configured — cost tallying derives from the models.dev
+ * catalog in the bundled:cost plugin.
+ */
 export interface ModelConfig {
   id: string;
   name?: string;
@@ -67,9 +73,6 @@ export interface ModelConfig {
   reasoning?: boolean;
   /** input modalities, e.g. ["text", "image", "audio", "video"] */
   input?: string[];
-  /** per-Mtok USD, informational */
-  costIn?: number;
-  costOut?: number;
   /** merged verbatim onto the request's sampling fields (temperature, topP, …) */
   sampling?: Record<string, unknown>;
   /** extra headers for this model only, on top of the profile's */
@@ -246,7 +249,7 @@ const DEFAULTS: Omit<Config, "projectInstructions"> = {
   tuiRich: false,
   tuiScrollbar: true,
   tuiScrollStep: 2,
-  statusBar: "cwd provider model ctx",
+  statusBar: "cwd provider model ctx cost",
   debug: false,
   tuiFrameMs: 16,
   theme: "default",
@@ -430,8 +433,6 @@ function parseModelConfig(v: unknown): ModelConfig | null {
   if (typeof m.maxOutput === "number" && m.maxOutput > 0) out.maxOutput = Math.floor(m.maxOutput);
   if (typeof m.reasoning === "boolean") out.reasoning = m.reasoning;
   if (Array.isArray(m.input)) out.input = m.input.filter((x): x is string => typeof x === "string");
-  if (typeof m.costIn === "number") out.costIn = m.costIn;
-  if (typeof m.costOut === "number") out.costOut = m.costOut;
   if (m.sampling && typeof m.sampling === "object") out.sampling = m.sampling as Record<string, unknown>;
   if (m.headers && typeof m.headers === "object") {
     out.headers = Object.fromEntries(Object.entries(m.headers as Record<string, unknown>).filter((e): e is [string, string] => typeof e[1] === "string"));

@@ -48,9 +48,12 @@ describe("models.dev catalog", () => {
     expect(info.reasoning).toBe(true);
   });
 
-  test("an unknown model still falls back to the static table, then UNKNOWN", async () => {
+  test("unknown models fall back to conservative UNKNOWN (no hardcoded table)", async () => {
     const { lookupModel } = await import("../src/providers/models.ts");
-    expect(lookupModel("gpt-4o").contextWindow).toBe(128_000);
+    // The static TABLE is gone deliberately: the catalog is the single source.
+    // Without a cache and without config, every unknown id gets the same
+    // conservative defaults so budget checks stay safe.
+    expect(lookupModel("gpt-4o").contextWindow).toBe(131_072);
     expect(lookupModel("never-heard-of-this").contextWindow).toBe(131_072);
   });
 
