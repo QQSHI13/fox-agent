@@ -501,11 +501,15 @@ def tui_first_input(path, label, probes=3, timeout=30):
                         break
                     if not data:
                         break
-                    # per-chunk match, not whole-stream: a diffing TUI repaints
-                    # its input line every frame, so the probe text recurs in
-                    # the full stream and a whole-stream search would match
-                    # stale repaints rather than the first real echo
-                    if PROBE_TEXT.encode() in ANSI_RE.sub(b"", data):
+                    seen += data
+                    # strip + search over the ACCUMULATED stream, not one
+                    # chunk: tools echo keystroke-by-keystroke ("h", "he",
+                    # "hel" in separate reads) or paint the input cell-by-cell,
+                    # so the full probe rarely lands contiguous in a single
+                    # chunk — that is how the 2026-10-08 run filled the column
+                    # with n/a. Only the FIRST occurrence counts, so input-line
+                    # repaints after the echo can never clock a faster number.
+                    if PROBE_TEXT.encode() in ANSI_RE.sub(b"", seen):
                         hit = time.perf_counter() - t0
                         break
                 if hit is not None:

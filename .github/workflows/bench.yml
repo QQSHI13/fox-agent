@@ -115,6 +115,13 @@ jobs:
           curl -fsSL https://app.factory.ai/cli | sh                             # droid
           curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash           # kimi code
           curl -fsSL https://cli.devin.ai/install.sh | bash                      # devin
+          # curl-installed CLIs land off the npm prefix; put every install dir
+          # on PATH for the later steps (fresh shell per step — plain export
+          # is lost). kimi-code installs to ~/.kimi-code/bin (measured: the
+          # 2026-10-08 run missed it and reported the row n/a).
+          for d in "$HOME/.local/bin" "$HOME/.cursor/bin" "$HOME/.kimi-code/bin" "$HOME/.factory/bin" "$HOME/bin"; do
+            [ -d "$d" ] && echo "$d" >> "$GITHUB_PATH"
+          done
           echo "--- installed versions ---"
           for b in claude codex opencode2 pi gemini copilot crush qwen aider jcode goose kilo kilocode amp cursor-agent agent codebuff droid kimi devin cline cn iflow; do
             command -v "$b" >/dev/null && echo "$b: $(timeout 20 "$b" --version 2>&1 | head -1)" || echo "$b: MISSING";
