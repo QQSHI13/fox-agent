@@ -37,7 +37,7 @@
       "startup_ms": 41.3,
       "tui_first_byte_ms": 42.5,
       "tui_first_input_ms": null,
-      "idle_pss_mb": 49.1
+      "idle_pss_mb": 49.0
     },
     {
       "agent": "opencode v2",
@@ -58,8 +58,8 @@
       "version": "jcode v0.91.0 (439a243bb)",
       "disk_mb": 135.1,
       "disk_kind": "bin",
-      "startup_ms": 8.8,
-      "tui_first_byte_ms": 11.2,
+      "startup_ms": 9.6,
+      "tui_first_byte_ms": 12.0,
       "tui_first_input_ms": null,
       "idle_pss_mb": 27.3
     },
@@ -181,7 +181,7 @@
       "startup_ms": 875.6,
       "tui_first_byte_ms": 874.1,
       "tui_first_input_ms": null,
-      "idle_pss_mb": 57.6
+      "idle_pss_mb": 57.5
     },
     {
       "agent": "kilo code",
@@ -241,7 +241,7 @@
       "startup_ms": 812.3,
       "tui_first_byte_ms": 1085.5,
       "tui_first_input_ms": null,
-      "idle_pss_mb": 55.0
+      "idle_pss_mb": 55.1
     },
     {
       "agent": "continue",

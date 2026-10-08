@@ -57,7 +57,7 @@ describe.skipIf(!CAN_RUN)("mcp bridge against a live server", () => {
 
     expect(warnings).toEqual([]);
     // the namespacing that keeps two servers with an `echo` apiece apart
-    expect([...tools.keys()]).toEqual(["mcp__fix__echo", "mcp__fix__boom", "mcp__fix__big"]);
+    expect([...tools.keys()]).toEqual(["mcp__fix__echo", "mcp__fix__boom", "mcp__fix__big", "mcp__fix__shot", "mcp__fix__textonly"]);
 
     const echo = tools.get("mcp__fix__echo")!;
     expect(echo.def.description).toStartWith("[mcp:fix] ");
@@ -101,6 +101,32 @@ describe.skipIf(!CAN_RUN)("mcp bridge against a live server", () => {
     // call could swallow the window
     expect(res.output).toHaveLength(OUT_CAP_MCP);
     expect(res.ok).toBe(true);
+  }, 30_000);
+
+  test("image content parts become MediaParts, not stringified base64", async () => {
+    const { mcpTools } = await import("../src/tools/mcp.ts");
+    const { tools } = await mcpTools(fixtureCfg());
+    const res = (await tools.get("mcp__fix__shot")!.run({}, {} as never)) as {
+      ok: boolean;
+      output: string;
+      media?: { mimeType: string; data: string }[];
+    };
+    // the text part stays output…
+    expect(res.output).toBe("screenshot attached");
+    // …and the image part is a real MediaPart — the provider layer maps it to
+    // image content for vision models instead of the model reading megabytes
+    // of JSON-stringified base64 out of the text
+    expect(res.media).toHaveLength(1);
+    expect(res.media![0].mimeType).toBe("image/png");
+    expect(res.media![0].data).toStartWith("iVBORw0KGgo");
+  }, 30_000);
+
+  test("text-only results carry no media field", async () => {
+    const { mcpTools } = await import("../src/tools/mcp.ts");
+    const { tools } = await mcpTools(fixtureCfg());
+    const res = (await tools.get("mcp__fix__textonly")!.run({}, {} as never)) as { ok: boolean; media?: unknown };
+    expect(res.ok).toBe(true);
+    expect(res.media).toBeUndefined();
   }, 30_000);
 
   test("one unreachable server warns and leaves the others working", async () => {
@@ -174,3 +200,6 @@ describe.skipIf(!CAN_RUN)("mcp bridge against a live server", () => {
     expect(prompt).toContain("mcp__fix__echo");
   }, 30_000);
 });
+
+// image content parts become real MediaParts, not stringified base64
+// (chrome-devtools screenshots used to arrive as megabytes of base64 text)

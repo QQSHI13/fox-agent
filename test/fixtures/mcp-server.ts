@@ -41,6 +41,16 @@ const TOOLS = [
     description: `Return ${BIG_LEN} characters.`,
     inputSchema: { type: "object", properties: {} },
   },
+  {
+    name: "shot",
+    description: "Return one PNG image part plus a text caption.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "textonly",
+    description: "Return plain text only (no image part).",
+    inputSchema: { type: "object", properties: {} },
+  },
 ];
 
 const server = new Server({ name: "fox-test-fixture", version: "1.0.0" }, { capabilities: { tools: {} } });
@@ -59,6 +69,16 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       return { content: [{ type: "text", text: "boom: deliberate tool failure" }], isError: true };
     case "big":
       return { content: [{ type: "text", text: "x".repeat(BIG_LEN) }] };
+    case "shot":
+      // a 1x1 transparent PNG, base64 — the shape chrome-devtools screenshots arrive in
+      return {
+        content: [
+          { type: "text", text: "screenshot attached" },
+          { type: "image", data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==", mimeType: "image/png" },
+        ],
+      };
+    case "textonly":
+      return { content: [{ type: "text", text: "no media here" }] };
     default:
       return { content: [{ type: "text", text: `unknown tool ${name}` }], isError: true };
   }
