@@ -2036,7 +2036,10 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     }
     if (name === "escape") {
       // escape sheds one thing at a time: input selection, transcript
-      // selection, then the turn, then input
+      // selection, then the turn — and then NOTHING. The old final branch
+      // cleared the draft, so a stray esc (or the esc an SS3/alt chord
+      // degraded from) wiped a typed message the user wanted back; the draft
+      // is recoverable only by retyping, so escape never touches it.
       if (inSelRange()) {
         inSelAnchor = null;
         markDirty();
@@ -2047,12 +2050,6 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         return;
       }
       if (busy) ac?.abort();
-      else {
-        buf = [];
-        cur = 0;
-        inputRev++;
-        markDirty();
-      }
       return;
     }
     // Page/home/end keys are transcript-first: they scroll (pgup/pgdn by a
