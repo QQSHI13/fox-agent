@@ -191,6 +191,13 @@ export interface CommandResult {
    * turn, not a printout — the model does the work with its ordinary tools.
    */
   submit?: string;
+  /**
+   * The command mutated this session's stored log (prune renumbering, ctx
+   * surgery in a task…). The host reloads its items from the store so the
+   * transcript reflects what is on disk — stale [N] markers on screen would
+   * lie about what the next turn sends.
+   */
+  storeChanged?: boolean;
 }
 
 /**
@@ -247,10 +254,12 @@ export const COMMANDS: CommandSpec[] = [
   { name: "/undo", desc: "revert last ctx_edit op (append-only)" },
   {
     name: "/prune",
-    desc: "reclaim disk from hidden context (needs 'yes')",
-    usage: "[yes]",
+    desc: "reclaim disk from hidden context",
+    usage: "[compact] [yes]",
     arg: true,
-    help: 'report reclaimable disk; "/prune yes" deletes hidden context + VACUUM',
+    help:
+      'report reclaimable disk; "/prune yes" vacuums hidden context (summary anchors kept); ' +
+      '"/prune compact yes" also removes the hidden context entirely, splices summaries back as real rows and renumbers [N] markers 1..n. Bare in the TUI: a menu pick, no "yes" typing.',
   },
   { name: "/ops", desc: "show context surgery ops" },
   { name: "/view", desc: "preview visible nodes ([N] role preview)" },
@@ -1605,9 +1614,19 @@ Verify what you write: run the commands you document (at least the build/test en
     }
 
     case "/prune": {
-      // Bare in the TUI: make the destructive choice an explicit menu pick
-      // instead of a "did you mean yes?" second round-trip.
-      if (!arg && state.interactive) {
+      // arg grammar: "compact [yes]" | "yes" | "" — the destructive mode word
+      // comes first, the (now optional in the TUI) confirmation last.
+      const words = (arg ?? "").trim().split(/\s+/).filter(Boolean);
+      const compact = words[0] === "compact";
+      const confirm = words[words.length - 1] === "yes";
+      if (words.length > (compact ? 2 : 1) || (words.length && words[0] !== "compact" && words[0] !== "yes")) {
+        return { handled: true, output: 'usage: /prune [compact] [yes]' };
+      }
+      const mode = compact ? "compact" : "default";
+      // Interactive and unconfirmed: an explicit menu pick instead of a
+      // "did you mean yes?" second round-trip. Non-interactive hosts keep the
+      // printed two-step — they cannot block on a keypress here.
+      if (!confirm && state.interactive) {
         return {
           handled: true,
           prompt: {
@@ -1617,27 +1636,32 @@ Verify what you write: run the commands you document (at least the build/test en
                 key: "mode",
                 label: "mode",
                 kind: "select",
-                options: [
-                  { value: "", label: "report only — nothing is deleted" },
-                  { value: "yes", label: "delete hidden context + VACUUM (cannot be undone by /undo)" },
-                ],
+                options: compact
+                  ? [
+                      { value: "compact", label: "compact — remove hidden context entirely, renumber [N] 1..n (even /undo history goes)" },
+                      { value: "", label: "report only — nothing is deleted" },
+                    ]
+                  : [
+                      { value: "", label: "report only — nothing is deleted" },
+                      { value: "yes", label: "vacuum — delete hidden context bodies, summary anchors kept" },
+                      { value: "compact", label: "compact — remove hidden context entirely, renumber [N] 1..n (even /undo history goes)" },
+                    ],
                 initial: "",
               },
             ],
             run: (a, s) => {
+              const picked = a.mode;
+              if (!picked) return { handled: true, output: "prune cancelled" };
               // direct call, not runSlashCommand("/prune") — that would just
               // open this prompt again in an interactive host
-              const report = pruneSession(s.sessionId, { dryRun: a.mode !== "yes" });
-              return { handled: true, output: formatPruneReport(report) };
+              const report = pruneSession(s.sessionId, { mode: picked === "compact" ? "compact" : "default" });
+              return { handled: true, output: formatPruneReport(report), storeChanged: report.applied };
             },
           },
         };
       }
-      // two-step rather than an interactive prompt: this runs identically in the
-      // TUI, plain mode and -p, none of which can block on a keypress here
-      if (arg && arg !== "yes") return { handled: true, output: "usage: /prune  (report only)  |  /prune yes  (do it)" };
-      const report = pruneSession(state.sessionId, { dryRun: arg !== "yes" });
-      return { handled: true, output: formatPruneReport(report) };
+      const report = pruneSession(state.sessionId, { mode, dryRun: !confirm });
+      return { handled: true, output: formatPruneReport(report), storeChanged: report.applied };
     }
 
     case "/ops": {

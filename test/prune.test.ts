@@ -179,9 +179,53 @@ describe("/prune slash command", () => {
     const before = allMessages(s.id).map((m) => m.content);
     const res = runSlashCommand("/prune", state(s.id))!;
     expect(res.output).toMatch(/would delete 1 hidden message/);
-    expect(res.output).toMatch(/one-way/);
+    expect(res.output).toMatch(/one-way/i);
     // dry run: every body still there
     expect(allMessages(s.id).map((m) => m.content)).toEqual(before);
+  });
+
+  test("/prune compact yes renumbers markers 1..n and splices summaries back as real rows", async () => {
+    const { runSlashCommand } = await import("../src/commands.ts");
+    const { allMessages } = await import("../src/store/db.ts");
+    const { s } = await compactedSession();
+
+    const res = runSlashCommand("/prune compact yes", state(s.id))!;
+    expect(res.output).toMatch(/renumbered 1../);
+    const rows = allMessages(s.id);
+    // no gaps: seqs are exactly 1..n — 2 hidden rows deleted, 1 summary
+    // spliced in, 1 visible row kept
+    expect(rows.map((m) => m.seq)).toEqual([1, 2]);
+    // hidden bodies gone, summary back as a REAL assistant row at the span's
+    // position (before the surviving visible message), visible row intact
+    expect(rows.map((m) => [m.role, m.content])).toEqual([
+      ["assistant", "SUMMARY: discussed X, decided Y"],
+      ["user", "recent question"],
+    ]);
+    // storeChanged rides so the TUI replays
+    expect(res.storeChanged).toBe(true);
+  });
+
+  test("/prune compact without yes is a dry run", async () => {
+    const { runSlashCommand } = await import("../src/commands.ts");
+    const { allMessages } = await import("../src/store/db.ts");
+    const { s } = await compactedSession();
+    const res = runSlashCommand("/prune compact", state(s.id))!;
+    expect(res.storeChanged).toBeFalsy();
+    expect(allMessages(s.id)).toHaveLength(3);
+  });
+
+  test("bare /prune in an interactive host opens the mode picker — no 'yes' typing", async () => {
+    const { runSlashCommand } = await import("../src/commands.ts");
+    const { allMessages } = await import("../src/store/db.ts");
+    const { s } = await compactedSession();
+    const res = runSlashCommand("/prune", { ...state(s.id), interactive: true })!;
+    expect(res.prompt).toBeDefined();
+    expect(allMessages(s.id)).toHaveLength(3); // nothing happened yet
+    // the picker offers compact; picking it prunes WITHOUT any yes
+    const run = res.prompt!.run;
+    const applied = run({ mode: "compact" }, { ...state(s.id), interactive: true });
+    expect(applied.output).toMatch(/renumbered 1../);
+    expect(allMessages(s.id).map((m) => m.seq)).toEqual([1, 2]);
   });
 
   test("/prune yes performs it and reports what was freed", async () => {

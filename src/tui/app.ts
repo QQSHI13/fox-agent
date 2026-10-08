@@ -814,6 +814,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     // Same for the startup block: it is pushed once and would otherwise freeze
     // the pre-command provider, key state and model on screen.
     statsRev++;
+    // a command that rewrote the stored log (/prune compact) must be followed
+    // by a replay, or the screen keeps showing seqs/rows that no longer exist
+    if (res.storeChanged) refresh();
     refreshWelcome();
     markDirty();
     if (res.exit) gracefulExit(0);
