@@ -19,8 +19,7 @@ Plus fox-agent only (hermetic, no API key, no network):
   - rss: peak resident set of that same headless turn (`/usr/bin/time -v`)
 
 Outputs (all under bench/):
-  results.json, table.md, snippet.md, bundle.svg, tui-first-char.svg,
-  tui-first-input.svg, memory.svg
+  results.json, table.md, snippet.md, bench.svg (one dashboard image)
 
 snippet.md is the top-of-README block: the bench workflow splices it between
 <!-- bench:start --> and <!-- bench:end --> markers so the graphs and numbers
@@ -230,6 +229,18 @@ def footprint(path):
     if target:
         try:
             return os.path.getsize(target) / 1e6, "bin"
+        except OSError:
+            pass
+    # a first-run downloader spawns its real binary from a data dir via
+    # child_process, not an exec line — the walk above cannot see it
+    # (codebuff: 3MB npm shim -> 133MB ELF in ~/.config/manicode). The
+    # FRESH-download caveat lives in the workflow comment: CI installs are
+    # cold, so this only pays off after the probe launches have warmed it.
+    for d in (os.path.join(".config", "manicode"),):  # (tool, dir) pairs as needed
+        cand = os.path.join(os.path.expanduser("~"), d, "codebuff")
+        try:
+            if os.path.isfile(cand) and is_binary_file(cand):
+                return os.path.getsize(cand) / 1e6, "bin"
         except OSError:
             pass
     d = os.path.dirname(real)
@@ -501,11 +512,15 @@ def tui_first_input(path, label, probes=3, timeout=30):
                         break
                     if not data:
                         break
-                    # per-chunk match, not whole-stream: a diffing TUI repaints
-                    # its input line every frame, so the probe text recurs in
-                    # the full stream and a whole-stream search would match
-                    # stale repaints rather than the first real echo
-                    if PROBE_TEXT.encode() in ANSI_RE.sub(b"", data):
+                    seen += data
+                    # strip + search over the ACCUMULATED stream, not one
+                    # chunk: tools echo keystroke-by-keystroke ("h", "he",
+                    # "hel" in separate reads) or paint the input cell-by-cell,
+                    # so the full probe rarely lands contiguous in a single
+                    # chunk — that is how the 2026-10-08 run filled the column
+                    # with n/a. Only the FIRST occurrence counts, so input-line
+                    # repaints after the echo can never clock a faster number.
+                    if PROBE_TEXT.encode() in ANSI_RE.sub(b"", seen):
                         hit = time.perf_counter() - t0
                         break
                 if hit is not None:
@@ -632,36 +647,69 @@ ACC = "#e0803c"
 BAR = "#5b7fa6"
 BAR_NA = "#3a382f"
 BG = "#141310"
+BG2 = "#1b1916"
+GRID = "#2e2b25"
 
 
 def esc(s):
     return str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
-def bars_svg(title, subtitle, rows, unit, fmt, out_path):
-    """rows: [(label, value_or_None, is_fox)]. Horizontal bars, sorted best-first."""
-    W = 720
-    have = sorted([r for r in rows if r[1] is not None], key=lambda r: r[1])
-    missing = [r for r in rows if r[1] is None]
-    ordered = have + missing
-    row_h, top, label_w = 26, 64, 170
-    H = top + 26 * len(ordered) + 30
-    maxv = max([r[1] for r in have] or [1])
-    L = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" font-family="monospace">']
-    L.append(f'<rect width="{W}" height="{H}" fill="{BG}"/>')
-    L.append(f'<text x="16" y="26" fill="{INK}" font-size="16">{esc(title)}</text>')
-    L.append(f'<text x="16" y="46" fill="{MUT}" font-size="11">{esc(subtitle)}</text>')
-    for i, (label, v, is_fox) in enumerate(ordered):
-        y = top + i * row_h
-        L.append(f'<text x="16" y="{y + 15}" fill="{INK if is_fox else MUT}" font-size="12">{esc(label[:24])}</text>')
-        bx, bw = label_w, W - label_w - 110
-        if v is None:
-            L.append(f'<rect x="{bx}" y="{y + 3}" width="{bw}" height="16" fill="{BAR_NA}"/>')
-            L.append(f'<text x="{bx + 6}" y="{y + 16}" fill="{MUT}" font-size="11">n/a — not installed</text>')
-        else:
-            w = max(3, (v / maxv) * bw)
-            L.append(f'<rect x="{bx}" y="{y + 3}" width="{w:.0f}" height="16" fill="{ACC if is_fox else BAR}"/>')
-            L.append(f'<text x="{bx + w + 8:.0f}" y="{y + 16}" fill="{INK}" font-size="12">{fmt(v)} {unit}</text>')
+def dashboard_svg(panels, out_path):
+    """panels: [(title, subtitle, rows, unit, fmt)] rendered as one image.
+
+    A 2x2 dashboard replaces four separate SVGs: GitHub renders one image
+    with one row height regardless of how the four charts would wrap, and
+    the shared header carries the method note that used to live in each
+    per-chart subtitle. fox-agent is orange everywhere else; the podium
+    rows get medal markers so the top-3 is scannable without reading
+    numbers.
+    """
+    W, GUT, PAD, LANE_LABEL = 1180, 24, 28, 150
+    COLW = (W - PAD * 2 - GUT) // 2
+    HEADER_H, LANE_H, SUB_H, FOOT_H = 84, 30, 18, 34
+    n_rows = max(len(p[2]) for p in panels)
+    H = HEADER_H + SUB_H + 2 * (LANE_H * n_rows + SUB_H) + FOOT_H
+    L = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" font-family="ui-monospace,Menlo,Consolas,monospace">',
+        # base + header band
+        f'<rect width="{W}" height="{H}" fill="{BG}"/>',
+        f'<rect width="{W}" height="{HEADER_H}" fill="{BG2}"/>',
+        f'<rect x="0" y="{HEADER_H - 2}" width="{W}" height="2" fill="{ACC}"/>',
+        f'<text x="{PAD}" y="36" fill="{INK}" font-size="20" font-weight="bold">fox-agent · harness bench</text>',
+        f'<text x="{PAD}" y="58" fill="{MUT}" font-size="12">startup · TUI latency · footprint · idle memory — github actions ubuntu-latest, refreshed on every push</text>',
+        f'<text x="{PAD}" y="76" fill="{MUT}" font-size="11">{esc("1st byte = PTY launch, best of 5 · 1st input = probe typed + echoed, best of 3 · bundle = binary or pkg dir · PSS at rest")}</text>',
+    ]
+    for pi_, (title, subtitle, rows, unit, fmt) in enumerate(panels):
+        col, row = pi_ % 2, pi_ // 2
+        x0 = PAD + col * (COLW + GUT)
+        y0 = HEADER_H + row * (LANE_H * n_rows + SUB_H + SUB_H) + SUB_H
+        # panel header + hairline
+        L.append(f'<text x="{x0}" y="{y0 - 6}" fill="{INK}" font-size="14">{esc(title)}</text>')
+        L.append(f'<rect x="{x0}" y="{y0 - 2}" width="{COLW}" height="1" fill="{GRID}"/>')
+        have = sorted([r for r in rows if r[1] is not None], key=lambda r: r[1])
+        missing = [r for r in rows if r[1] is None]
+        maxv = max([r[1] for r in have] or [1])
+        bx = x0 + LANE_LABEL
+        bw = COLW - LANE_LABEL - 78
+        for i, (label, v, is_fox) in enumerate(have + missing):
+            y = y0 + i * LANE_H
+            medal = {0: "\U0001F947", 1: "\U0001F948", 2: "\U0001F949"}.get(i, "") if v is not None else ""
+            label_col = ACC if is_fox else (INK if v is not None and i < 3 else MUT)
+            L.append(f'<text x="{x0}" y="{y + 14}" fill="{label_col}" font-size="12">{esc(label[:19]):<19}</text>' if False else
+                     f'<text x="{x0}" y="{y + 14}" fill="{label_col}" font-size="12">{esc(label[:19])}</text>')
+            if v is None:
+                L.append(f'<rect x="{bx}" y="{y + 2}" width="{bw}" height="14" rx="3" fill="{BAR_NA}"/>')
+                L.append(f'<text x="{bx + 8}" y="{y + 13}" fill="{MUT}" font-size="10">n/a</text>')
+            else:
+                w = max(4, (v / maxv) * bw)
+                fill = ACC if is_fox else BAR
+                L.append(f'<rect x="{bx}" y="{y + 2}" width="{w:.0f}" height="14" rx="3" fill="{fill}"/>')
+                vt = f"{fmt(v)} {unit}"
+                L.append(f'<text x="{bx + bw + 6}" y="{y + 13}" fill="{INK if is_fox else MUT}" font-size="11">{medal}{esc(vt)}</text>')
+        if subtitle:
+            L.append(f'<text x="{x0}" y="{y0 + LANE_H * n_rows + 12}" fill="{MUT}" font-size="10">{esc(subtitle)}</text>')
+    L.append(f'<text x="{PAD}" y="{H - 12}" fill="{MUT}" font-size="10">lower is better on every lane · medals mark the top 3 · fox-agent in orange · full method + raw numbers in bench/table.md</text>')
     L.append("</svg>")
     with open(out_path, "w") as f:
         f.write("\n".join(L) + "\n")
@@ -796,37 +844,38 @@ def main():
         json.dump(payload, f, indent=2)
 
     is_fox = lambda r: r["agent"] == "fox-agent"  # noqa: E731
-    bars_svg(
-        "bundle size",
-        "full install footprint: the binary, or the package dir for script CLIs · lower is better",
-        [(r["agent"], r.get("disk_mb"), is_fox(r)) for r in rows],
-        "MB",
-        lambda v: f"{v:.1f}",
-        os.path.join(out, "bundle.svg"),
-    )
-    bars_svg(
-        "time to first char — actual TUI launch",
-        "PTY launch with no args to first output byte, best of 5 · lower is better",
-        [(r["agent"], r.get("tui_first_byte_ms"), is_fox(r)) for r in rows],
-        "ms",
-        fmt_ms,
-        os.path.join(out, "tui-first-char.svg"),
-    )
-    bars_svg(
-        "time to first input — typed text on screen",
-        "PTY launch, type a probe, wait for it to render, best of 3 · lower is better",
-        [(r["agent"], r.get("tui_first_input_ms"), is_fox(r)) for r in rows],
-        "ms",
-        fmt_ms,
-        os.path.join(out, "tui-first-input.svg"),
-    )
-    bars_svg(
-        "idle memory — TUI at rest",
-        "PSS after 1.5s idle, before any model traffic · lower is better",
-        [(r["agent"], r.get("idle_pss_mb"), is_fox(r)) for r in rows],
-        "MB",
-        lambda v: f"{v:.0f}",
-        os.path.join(out, "memory.svg"),
+    dashboard_svg(
+        [
+            (
+                "time to first char — TUI launch",
+                "PTY launch, no args, to first output byte · best of 5 · lower is better",
+                [(r["agent"], r.get("tui_first_byte_ms"), is_fox(r)) for r in rows],
+                "ms",
+                fmt_ms,
+            ),
+            (
+                "time to first input",
+                "launch, type a probe, wait for the echo · best of 3 · lower is better",
+                [(r["agent"], r.get("tui_first_input_ms"), is_fox(r)) for r in rows],
+                "ms",
+                fmt_ms,
+            ),
+            (
+                "bundle size",
+                "binary, or package dir for script CLIs · lower is better",
+                [(r["agent"], r.get("disk_mb"), is_fox(r)) for r in rows],
+                "MB",
+                lambda v: f"{v:.0f}",
+            ),
+            (
+                "idle memory — TUI at rest",
+                "PSS after 1.5s idle, before any model traffic · lower is better",
+                [(r["agent"], r.get("idle_pss_mb"), is_fox(r)) for r in rows],
+                "MB",
+                lambda v: f"{v:.0f}",
+            ),
+        ],
+        os.path.join(out, "bench.svg"),
     )
 
     # markdown table for the README snapshot + job summary
@@ -854,10 +903,7 @@ def main():
     # <!-- bench:start --> and <!-- bench:end --> so the top-of-README
     # numbers refresh with every run instead of going stale.
     S = [
-        "![bundle size](bench/bundle.svg)",
-        "![time to first char](bench/tui-first-char.svg)",
-        "![time to first input](bench/tui-first-input.svg)",
-        "![idle memory](bench/memory.svg)",
+        "![harness bench dashboard](bench/bench.svg)",
         "",
         table_md.rstrip(),
         "",

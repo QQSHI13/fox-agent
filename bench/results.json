@@ -97,7 +97,7 @@
       "startup_ms": 107.1,
       "tui_first_byte_ms": 879.1,
       "tui_first_input_ms": null,
-      "idle_pss_mb": 47.5
+      "idle_pss_mb": 47.4
     },
     {
       "agent": "crush",

@@ -15,10 +15,7 @@ Full machine control, zero permission prompts. Production turn loop with step ca
 ## Performance
 
 <!-- bench:start -->
-![bundle size](bench/bundle.svg)
-![time to first char](bench/tui-first-char.svg)
-![time to first input](bench/tui-first-input.svg)
-![idle memory](bench/memory.svg)
+![harness bench — one dashboard: startup, TUI latency, bundle, idle memory](bench/bench.svg)
 
 | agent | version | bundle | `--version` | TUI 1st byte | TUI 1st input | idle PSS |
 |---|---|---|---|---|---|---|

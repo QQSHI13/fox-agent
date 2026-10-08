@@ -2,7 +2,7 @@
 // into the registry under mcp__<server>__<tool>. The SDK is a dynamic import
 // so fox-agent still runs (without MCP) if it isn't installed.
 import type { McpServerConfig } from "../core/config.ts";
-import type { ToolDef } from "../providers/types.ts";
+import type { MediaPart, ToolDef } from "../providers/types.ts";
 import type { Tool, ToolResult } from "./types.ts";
 import { fail, ok } from "./types.ts";
 import { childEnv } from "../core/childenv.ts";
@@ -16,13 +16,31 @@ interface LiveClient {
 }
 let cache: { key: string; tools: Map<string, Tool>; warnings: string[]; clients: LiveClient[] } | null = null;
 
-function textify(content: unknown): string {
-  const parts = content as { type?: string; text?: string }[] | null;
-  if (!Array.isArray(parts)) return JSON.stringify(content ?? {});
-  return parts
-    .map((p) => (typeof p?.text === "string" ? p.text : JSON.stringify(p)))
-    .join("\n")
-    .slice(0, OUT_CAP_MCP);
+/**
+ * MCP content parts -> ToolResult. Text joins as output; image parts become
+ * real MediaParts so a vision-capable model sees the picture instead of a
+ * JSON-stringified base64 blob (which is how chrome-devtools screenshots
+ * used to arrive — megabytes of base64 as plain text).
+ */
+function toResult(content: unknown, isError: boolean): ToolResult {
+  const parts = content as { type?: string; text?: string; data?: string; mimeType?: string }[] | null;
+  if (!Array.isArray(parts)) {
+    const s = JSON.stringify(content ?? {});
+    return isError ? fail(s) : ok(s);
+  }
+  const text: string[] = [];
+  const media: MediaPart[] = [];
+  for (const p of parts) {
+    if (p?.type === "image" && typeof p.data === "string") {
+      media.push({ mimeType: p.mimeType ?? "image/png", data: p.data });
+    } else if (typeof p?.text === "string") {
+      text.push(p.text);
+    } else {
+      text.push(JSON.stringify(p));
+    }
+  }
+  const base = isError ? fail(text.join("\n").slice(0, OUT_CAP_MCP)) : ok(text.join("\n").slice(0, OUT_CAP_MCP));
+  return media.length ? { ...base, media } : base;
 }
 
 export async function mcpTools(
@@ -66,7 +84,7 @@ export async function mcpTools(
           run: async (args: any): Promise<ToolResult> => {
             try {
               const r = await client.callTool({ name: t.name, arguments: args });
-              return r.isError ? fail(textify(r.content)) : ok(textify(r.content));
+              return toResult(r.content, r.isError === true);
             } catch (e) {
               return fail(`error: mcp call failed: ${(e as Error).message}`);
             }
