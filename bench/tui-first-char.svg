@@ -1,56 +1,71 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="720" height="536" font-family="monospace">
-<rect width="720" height="536" fill="#141310"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="666" font-family="monospace">
+<rect width="720" height="666" fill="#141310"/>
 <text x="16" y="26" fill="#e6e1d8" font-size="16">time to first char — actual TUI launch</text>
 <text x="16" y="46" fill="#8a8578" font-size="11">PTY launch with no args to first output byte, best of 5 · lower is better</text>
 <text x="16" y="79" fill="#8a8578" font-size="12">goose</text>
 <rect x="170" y="67" width="3" height="16" fill="#5b7fa6"/>
-<text x="181" y="80" fill="#e6e1d8" font-size="12">7.2 ms</text>
+<text x="181" y="80" fill="#e6e1d8" font-size="12">8.4 ms</text>
 <text x="16" y="105" fill="#8a8578" font-size="12">jcode</text>
 <rect x="170" y="93" width="3" height="16" fill="#5b7fa6"/>
-<text x="181" y="106" fill="#e6e1d8" font-size="12">11.9 ms</text>
+<text x="181" y="106" fill="#e6e1d8" font-size="12">13.0 ms</text>
 <text x="16" y="131" fill="#e6e1d8" font-size="12">fox-agent</text>
 <rect x="170" y="119" width="3" height="16" fill="#e0803c"/>
-<text x="181" y="132" fill="#e6e1d8" font-size="12">15.5 ms</text>
+<text x="181" y="132" fill="#e6e1d8" font-size="12">19.9 ms</text>
 <text x="16" y="157" fill="#8a8578" font-size="12">codex</text>
-<rect x="170" y="145" width="8" height="16" fill="#5b7fa6"/>
-<text x="186" y="158" fill="#e6e1d8" font-size="12">44.7 ms</text>
-<text x="16" y="183" fill="#8a8578" font-size="12">opencode v2</text>
-<rect x="170" y="171" width="23" height="16" fill="#5b7fa6"/>
-<text x="201" y="184" fill="#e6e1d8" font-size="12">138 ms</text>
-<text x="16" y="209" fill="#8a8578" font-size="12">claude code</text>
-<rect x="170" y="197" width="36" height="16" fill="#5b7fa6"/>
-<text x="214" y="210" fill="#e6e1d8" font-size="12">213 ms</text>
-<text x="16" y="235" fill="#8a8578" font-size="12">pi</text>
-<rect x="170" y="223" width="55" height="16" fill="#5b7fa6"/>
-<text x="233" y="236" fill="#e6e1d8" font-size="12">326 ms</text>
-<text x="16" y="261" fill="#8a8578" font-size="12">crush</text>
-<rect x="170" y="249" width="86" height="16" fill="#5b7fa6"/>
-<text x="264" y="262" fill="#e6e1d8" font-size="12">512 ms</text>
-<text x="16" y="287" fill="#8a8578" font-size="12">aider</text>
-<rect x="170" y="275" width="126" height="16" fill="#5b7fa6"/>
-<text x="304" y="288" fill="#e6e1d8" font-size="12">749 ms</text>
-<text x="16" y="313" fill="#8a8578" font-size="12">qwen code</text>
-<rect x="170" y="301" width="138" height="16" fill="#5b7fa6"/>
-<text x="316" y="314" fill="#e6e1d8" font-size="12">818 ms</text>
-<text x="16" y="339" fill="#8a8578" font-size="12">copilot cli</text>
-<rect x="170" y="327" width="146" height="16" fill="#5b7fa6"/>
-<text x="324" y="340" fill="#e6e1d8" font-size="12">868 ms</text>
-<text x="16" y="365" fill="#8a8578" font-size="12">opencode v1</text>
-<rect x="170" y="353" width="172" height="16" fill="#5b7fa6"/>
-<text x="350" y="366" fill="#e6e1d8" font-size="12">1,021 ms</text>
-<text x="16" y="391" fill="#8a8578" font-size="12">gemini cli</text>
-<rect x="170" y="379" width="279" height="16" fill="#5b7fa6"/>
-<text x="457" y="392" fill="#e6e1d8" font-size="12">1,657 ms</text>
-<text x="16" y="417" fill="#8a8578" font-size="12">kilo code</text>
-<rect x="170" y="405" width="440" height="16" fill="#5b7fa6"/>
-<text x="618" y="418" fill="#e6e1d8" font-size="12">2,617 ms</text>
-<text x="16" y="443" fill="#8a8578" font-size="12">amp</text>
-<rect x="170" y="431" width="440" height="16" fill="#3a382f"/>
-<text x="176" y="444" fill="#8a8578" font-size="11">n/a — not installed</text>
-<text x="16" y="469" fill="#8a8578" font-size="12">cursor-agent</text>
-<rect x="170" y="457" width="440" height="16" fill="#3a382f"/>
-<text x="176" y="470" fill="#8a8578" font-size="11">n/a — not installed</text>
-<text x="16" y="495" fill="#8a8578" font-size="12">codebuff</text>
-<rect x="170" y="483" width="440" height="16" fill="#3a382f"/>
-<text x="176" y="496" fill="#8a8578" font-size="11">n/a — not installed</text>
+<rect x="170" y="145" width="7" height="16" fill="#5b7fa6"/>
+<text x="185" y="158" fill="#e6e1d8" font-size="12">44.8 ms</text>
+<text x="16" y="183" fill="#8a8578" font-size="12">devin</text>
+<rect x="170" y="171" width="8" height="16" fill="#5b7fa6"/>
+<text x="186" y="184" fill="#e6e1d8" font-size="12">50.9 ms</text>
+<text x="16" y="209" fill="#8a8578" font-size="12">droid</text>
+<rect x="170" y="197" width="19" height="16" fill="#5b7fa6"/>
+<text x="197" y="210" fill="#e6e1d8" font-size="12">114 ms</text>
+<text x="16" y="235" fill="#8a8578" font-size="12">opencode v2</text>
+<rect x="170" y="223" width="23" height="16" fill="#5b7fa6"/>
+<text x="201" y="236" fill="#e6e1d8" font-size="12">140 ms</text>
+<text x="16" y="261" fill="#8a8578" font-size="12">claude code</text>
+<rect x="170" y="249" width="36" height="16" fill="#5b7fa6"/>
+<text x="214" y="262" fill="#e6e1d8" font-size="12">217 ms</text>
+<text x="16" y="287" fill="#8a8578" font-size="12">amp</text>
+<rect x="170" y="275" width="45" height="16" fill="#5b7fa6"/>
+<text x="223" y="288" fill="#e6e1d8" font-size="12">275 ms</text>
+<text x="16" y="313" fill="#8a8578" font-size="12">pi</text>
+<rect x="170" y="301" width="52" height="16" fill="#5b7fa6"/>
+<text x="230" y="314" fill="#e6e1d8" font-size="12">319 ms</text>
+<text x="16" y="339" fill="#8a8578" font-size="12">cursor-agent</text>
+<rect x="170" y="327" width="71" height="16" fill="#5b7fa6"/>
+<text x="249" y="340" fill="#e6e1d8" font-size="12">435 ms</text>
+<text x="16" y="365" fill="#8a8578" font-size="12">crush</text>
+<rect x="170" y="353" width="74" height="16" fill="#5b7fa6"/>
+<text x="252" y="366" fill="#e6e1d8" font-size="12">450 ms</text>
+<text x="16" y="391" fill="#8a8578" font-size="12">aider</text>
+<rect x="170" y="379" width="118" height="16" fill="#5b7fa6"/>
+<text x="296" y="392" fill="#e6e1d8" font-size="12">722 ms</text>
+<text x="16" y="417" fill="#8a8578" font-size="12">qwen code</text>
+<rect x="170" y="405" width="137" height="16" fill="#5b7fa6"/>
+<text x="315" y="418" fill="#e6e1d8" font-size="12">835 ms</text>
+<text x="16" y="443" fill="#8a8578" font-size="12">copilot cli</text>
+<rect x="170" y="431" width="144" height="16" fill="#5b7fa6"/>
+<text x="322" y="444" fill="#e6e1d8" font-size="12">879 ms</text>
+<text x="16" y="469" fill="#8a8578" font-size="12">codebuff</text>
+<rect x="170" y="457" width="156" height="16" fill="#5b7fa6"/>
+<text x="334" y="470" fill="#e6e1d8" font-size="12">956 ms</text>
+<text x="16" y="495" fill="#8a8578" font-size="12">cline</text>
+<rect x="170" y="483" width="183" height="16" fill="#5b7fa6"/>
+<text x="361" y="496" fill="#e6e1d8" font-size="12">1,119 ms</text>
+<text x="16" y="521" fill="#8a8578" font-size="12">iflow cli</text>
+<rect x="170" y="509" width="217" height="16" fill="#5b7fa6"/>
+<text x="395" y="522" fill="#e6e1d8" font-size="12">1,328 ms</text>
+<text x="16" y="547" fill="#8a8578" font-size="12">gemini cli</text>
+<rect x="170" y="535" width="262" height="16" fill="#5b7fa6"/>
+<text x="440" y="548" fill="#e6e1d8" font-size="12">1,602 ms</text>
+<text x="16" y="573" fill="#8a8578" font-size="12">kilo code</text>
+<rect x="170" y="561" width="440" height="16" fill="#5b7fa6"/>
+<text x="618" y="574" fill="#e6e1d8" font-size="12">2,688 ms</text>
+<text x="16" y="599" fill="#8a8578" font-size="12">kimi code</text>
+<rect x="170" y="587" width="440" height="16" fill="#3a382f"/>
+<text x="176" y="600" fill="#8a8578" font-size="11">n/a — not installed</text>
+<text x="16" y="625" fill="#8a8578" font-size="12">continue</text>
+<rect x="170" y="613" width="440" height="16" fill="#3a382f"/>
+<text x="176" y="626" fill="#8a8578" font-size="11">n/a — not installed</text>
 </svg>
