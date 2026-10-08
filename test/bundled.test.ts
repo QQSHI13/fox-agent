@@ -18,11 +18,16 @@ beforeEach(async () => {
   work = join(home, "work");
   mkdirSync(work, { recursive: true });
   process.env.FOX_AGENT_HOME = home;
+  // hermetic config too: without this, loadConfig reads the developer's real
+  // global toml — its [mcpServers] entries (npx spawns) got loaded by every
+  // buildRegistry test and blew the 5s test timeout when npm was slow
+  process.env.FOX_AGENT_CONFIG = join(home, "config.toml");
   (await import("../src/plugins/load.ts")).resetPlugins();
 });
 
 afterEach(async () => {
   (await import("../src/store/db.ts")).closeAll();
+  delete process.env.FOX_AGENT_CONFIG;
   rmSync(home, { recursive: true, force: true });
 });
 
