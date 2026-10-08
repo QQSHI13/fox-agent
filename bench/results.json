@@ -37,7 +37,7 @@
       "startup_ms": 44.5,
       "tui_first_byte_ms": 46.3,
       "tui_first_input_ms": null,
-      "idle_pss_mb": 49.1
+      "idle_pss_mb": 49.0
     },
     {
       "agent": "opencode v2",
@@ -241,7 +241,7 @@
       "startup_ms": 877.4,
       "tui_first_byte_ms": 1073.2,
       "tui_first_input_ms": null,
-      "idle_pss_mb": 55.0
+      "idle_pss_mb": 55.1
     },
     {
       "agent": "continue",
