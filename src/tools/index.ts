@@ -194,8 +194,30 @@ export async function buildRegistry(
   return { tools: map, warnings, plugins, agents };
 }
 
+/**
+ * Exit-path concurrency: the slow closers (plugin session-end hooks, MCP
+ * children, the polite per-server LSP exit window) used to run strictly after
+ * the TUI had torn down its screen and printed the resume hint — serially that
+ * read as a hang after exit. beginShutdown starts the work the moment exit is
+ * requested so it overlaps the terminal teardown; the caller's awaited
+ * shutdownTools then joins the same in-flight promise instead of running a
+ * second pass. Idempotent: the first caller's sessionId wins, which is the
+ * live one. Test seams reset it via resetShutdownForTests.
+ */
+let shutdownInFlight: Promise<void> | null = null;
+export function beginShutdown(sessionId: string): Promise<void> {
+  if (!shutdownInFlight) shutdownInFlight = shutdownTools(sessionId).catch(() => {});
+  return shutdownInFlight;
+}
+
+/** Test seam: drop the in-flight handle so suites start from a clean slate. */
+export function resetShutdownForTests(): void {
+  shutdownInFlight = null;
+}
+
 /** Cleanup live pty + MCP children + language servers when a session ends. */
 export async function shutdownTools(sessionId: string): Promise<void> {
+  if (shutdownInFlight) return shutdownInFlight;
   const { fireSessionEnd } = await import("../plugins/load.ts");
   // plugin cleanup hooks first (the bundled pty plugin kills its tmux session
   // here), then the harness's own children

@@ -1685,6 +1685,14 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     try {
       ac?.abort();
     } catch {}
+    // Start the tool teardown NOW, so the slow closers (MCP children, the
+    // polite LSP exit window, plugin session-end hooks) overlap the terminal
+    // teardown + resume hint below instead of stacking after them — that
+    // serial stretch read as a hang after exit. The await in cli.ts's finally
+    // joins this same in-flight pass (shutdownTools is idempotent during it).
+    try {
+      void import("../tools/index.ts").then((m) => m.beginShutdown(state.sessionId));
+    } catch {}
     try {
       if (state.sessionId) unpinSession(state.sessionId);
     } catch {}
