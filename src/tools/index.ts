@@ -222,6 +222,10 @@ export async function shutdownTools(sessionId: string): Promise<void> {
   // plugin cleanup hooks first (the bundled pty plugin kills its tmux session
   // here), then the harness's own children
   await fireSessionEnd(sessionId, "exit");
+  // pty calls in a step run chained; join the chain so a queued call cannot
+  // re-spawn the tmux session after the kill below
+  const { joinPtyChain } = await import("./pty.ts");
+  await joinPtyChain().catch(() => {});
   await cleanupPty(ptySessionName(sessionId)); // belt and braces when no registry was ever built
   const { cleanupRepl } = await import("./repl.ts");
   cleanupRepl(sessionId);

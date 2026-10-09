@@ -57,7 +57,10 @@ async function tmux(...argv: string[]): Promise<{ code: number; out: string }> {
 
 /** tmux session name for a fox-agent session — single definition for both sides. */
 export function ptySessionName(sessionId: string): string {
-  return `fox-agent-${sessionId.slice(0, 12)}`;
+  // Full id, no truncation: ids are timestamp+8 random hex (~16 chars), and a
+  // 12-char prefix once collided two sessions created in the same millisecond
+  // — spawnSession's kill-session then murdered the other live shell.
+  return `fox-agent-${sessionId}`;
 }
 
 /**
@@ -73,6 +76,28 @@ const paneTarget = (name: string) => `=${name}:`;
 async function hasSession(name: string): Promise<boolean> {
   const { code } = await tmux("has-session", "-t", sessionTarget(name));
   return code === 0;
+}
+
+/**
+ * Kill fox-agent tmux sessions left behind by a crashed process.
+ *
+ * If the harness dies without `shutdownTools` (SIGKILL, power loss), its
+ * `fox-agent-*` sessions and pipe-pane logs survive forever — the next run only
+ * ever killed its own name. Called from `spawnSession` (i.e. on the first pty
+ * use of a live session): kill every `fox-agent-*` session EXCEPT the one about
+ * to be (re)created — tmux sessions are strictly per-process-property here, so
+ * anything stale belongs to a dead fox.
+ */
+async function sweepStalePtys(keep: string): Promise<void> {
+  if (!tmuxPath()) return;
+  const { code, out } = await tmux("list-sessions", "-F", "#{session_name}").catch(() => ({ code: 1, out: "" }));
+  if (code !== 0) return;
+  for (const line of out.split("\n")) {
+    const name = line.trim();
+    if (name.startsWith("fox-agent-") && name !== keep) {
+      await tmux("kill-session", "-t", sessionTarget(name)).catch(() => {});
+    }
+  }
 }
 
 /** Where tmux says the pane actually is, or null if it won't say. */
@@ -102,6 +127,7 @@ function landedElsewhere(requested: string, actual: string): boolean {
 /** Create the tmux session and wire pipe-pane. Assumes nothing exists yet. */
 async function spawnSession(sessionId: string, cwd: string): Promise<PtyState> {
   const name = ptySessionName(sessionId);
+  await sweepStalePtys(name);
   await tmux("kill-session", "-t", sessionTarget(name)).catch(() => {});
   // -c is what pins the starting directory. Without it tmux inherits the *client's*
   // cwd (fox-agent's own process.cwd()), which is not necessarily the session's dir.
@@ -274,6 +300,16 @@ export function drivePty(args: { keys?: string; quiet_ms?: number }, ctx: ToolCo
     () => {},
   );
   return run;
+}
+
+/**
+ * Resolve when every queued/in-flight pty call has finished. `shutdownTools`
+ * awaits this BEFORE killing the tmux session: a `drivePty` still queued behind
+ * the chain would otherwise pass `ensurePty` after the kill and re-spawn the
+ * session, leaking it past session end.
+ */
+export function joinPtyChain(): Promise<unknown> {
+  return ptyChain;
 }
 
 async function drivePtyInner(args: { keys?: string; quiet_ms?: number }, ctx: ToolContext): Promise<ToolResult> {
