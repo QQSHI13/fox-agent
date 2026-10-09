@@ -51,6 +51,8 @@ ${flag("--request-timeout-ms <n>", "abort a provider request silent this long (d
 ${flag("--config <path>", "config file override")}
 ${flag("--trust", "mark this directory trusted and skip the TUI trust prompt", "(trust = project fox-agent.toml / AGENTS.md may run code as you)")}
 ${flag("ls", "list sessions")}
+${flag("export <id> [file]", "pack a session into a .zip to move to another device")}
+${flag("import <file>", "install a session .zip from another device")}
 ${flag("plugin [on|off|add|rm|info <name>]", "manage plugins without the TUI")}
 ${flag("json", "headless NDJSON event stream (use with -p \"prompt\" or piped stdin)")}
 ${flag("mini", "plain streaming REPL, no TUI")}
@@ -141,6 +143,8 @@ export function commandHelp(cmd: string): string {
     json: `usage: fox json [-p "prompt"]\n\nheadless NDJSON agent events on stdout (same as -p ... --json).\nReads stdin when no prompt is given or stdin is piped.`,
     mini: `usage: fox mini [-p "prompt"]\n\nplain streaming REPL, no TUI: runtime header, colors, tab completion\nfor /commands, ! shell mode, queued turns. Piped stdin stays non-interactive.`,
     acp: `usage: fox acp\n\nserve the Agent Client Protocol on stdio, for Zed, acpx and other\nACP clients. Stdout is the protocol stream: nothing else may be written to it.`,
+    export: `usage: fox export <session-id|current> [file]\n\npack a session's database into a .fox.zip you can move to any device\nwith fox-agent (scp, syncthing, a usb stick). Inside fox the same\ncommand is /export. Import on the other machine: fox import <file>.`,
+    import: `usage: fox import <file.zip>\n\ninstall a session exported from another device. It lands under its\nown id and appears in fox ls / fox -c like a local session; an\nexisting session with the same id is replaced. Inside fox: /import.`,
   };
   return H[cmd] ?? usage();
 }
@@ -157,7 +161,7 @@ async function main() {
   if (parsed.flags.get("help") || parsed.rest[0] === "help") {
     // `fox help <cmd>` documents one subcommand; bare help stays the overview
     const topic = parsed.rest[0] === "help" ? parsed.rest[1] : undefined;
-    const known: Record<string, string> = { ls: "ls", plugin: "plugin", plugins: "plugin", upgrade: "upgrade", json: "json", mini: "mini", acp: "acp" };
+    const known: Record<string, string> = { ls: "ls", plugin: "plugin", plugins: "plugin", upgrade: "upgrade", json: "json", mini: "mini", acp: "acp", export: "export", import: "import" };
     if (topic && known[topic]) return console.log(commandHelp(known[topic]));
     return console.log(usage(cliColor()));
   }
@@ -201,6 +205,27 @@ async function main() {
     // here looks stale there too — this used to be its own loop over
     // `created_at` and disagreed with every other listing about ordering
     console.log(formatSessionList(sessionList({ limit: loadConfig({ cwd: process.cwd() }).sessionListLimit }), { color: cliColor() }));
+    return;
+  }
+  if (parsed.rest[0] === "export" || parsed.rest[0] === "import") {
+    const verb = parsed.rest[0];
+    if (parsed.rest[1] === "--help" || parsed.rest[1] === "-h" || !parsed.rest[1]) return console.log(commandHelp(verb));
+    const { exportSession, importSession } = await import("./store/transfer.ts");
+    try {
+      if (verb === "export") {
+        // "current" = this directory's latest session (the one `fox -c` resumes)
+        const target = parsed.rest[1] === "current" ? (await import("./store/db.ts")).latestSessionFor(process.cwd())?.id : parsed.rest[1];
+        if (!target) return console.log(`no session found for ${process.cwd()}`);
+        const dest = exportSession(target, parsed.rest[2] || undefined, VERSION);
+        console.log(`exported ${target} -> ${dest}`);
+      } else {
+        const r = importSession(parsed.rest[1]);
+        console.log(`${r.replaced ? "replaced" : "imported"} session ${r.id} (${r.messages} messages) — resume with: fox -c ${r.id}`);
+      }
+    } catch (e) {
+      console.error(`fox-agent error: ${errMsg(e)}`);
+      process.exitCode = 1;
+    }
     return;
   }
   if (parsed.rest[0] === "upgrade") {

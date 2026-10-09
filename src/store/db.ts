@@ -325,6 +325,16 @@ export function unpinSession(sessionId: string): void {
 }
 
 /** Drop cached handles — tests point FOX_AGENT_HOME at a fresh dir between cases. */
+/**
+ * Close one session's cached handle (import replaces the file under it; a
+ * stale handle would keep answering queries for the file that was just
+ * swapped, and on Windows the open handle blocks the write).
+ */
+export function closeSessionHandle(sessionId: string): void {
+  _sessions.get(sessionId)?.close();
+  _sessions.delete(sessionId);
+}
+
 export function closeAll(): void {
   for (const d of _sessions.values()) d.close();
   _sessions.clear();
