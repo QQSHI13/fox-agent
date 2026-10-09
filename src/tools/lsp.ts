@@ -1,15 +1,13 @@
 /**
  * The `lsp` tool — on-demand navigation queries against the project's language
- * server (opencode's experimental pattern). Diagnostics already flow to the
- * model automatically after edits; this tool is for the OTHER direction:
+ * server (opencode's pattern). Diagnostics already flow to the model
+ * automatically after edits; this tool is for the OTHER direction:
  * "where is this defined", "who calls it", "what is this symbol" — questions
  * grep answers badly (same-name symbols, re-exports, type positions).
  *
- * Env-gated OFF by default (FOX_AGENT_ENABLE_LSP_TOOL=1), matching opencode's
- * stance: LSP is a net negative on some projects (server drift, cold-start
- * cost, version skew), and the model can always fall back to grep. When the
- * flag is set AND a server exists for the file, this is the sharpest
- * navigation instrument the harness has.
+ * Ships as a normal bundled plugin: it is only reachable when a language server
+ * for the file exists, costs nothing until called, and turns off like any
+ * bundled plugin (`disabledPlugins = ["lsp"]`).
  */
 import type { Tool } from "./types.ts";
 import type { ToolDef } from "../providers/types.ts";
@@ -17,12 +15,10 @@ import { ok, fail } from "./types.ts";
 import { relative } from "node:path";
 import * as nav from "../lsp/client.ts";
 
-export const lspEnabled = () => process.env.FOX_AGENT_ENABLE_LSP_TOOL === "1";
-
 export const lspDef: ToolDef = {
   name: "lsp",
   description:
-    "Language-server navigation: exact definition/reference/hover/symbol lookups for the file's language (TypeScript, Python, Rust built in; [lsp.*] config adds more). Sharper than grep for finding where a symbol is DEFINED vs mentioned, or every real call site. Each query is one of: definition|implementation|references|hover|symbols (file outline)|workspace (project-wide symbol search). Position args are 1-based line/character, matching read/grep output. Answers come from a real language server: first query may take seconds (cold start), later ones are fast. Only enabled when FOX_AGENT_ENABLE_LSP_TOOL=1.",
+    "Language-server navigation: exact definition/reference/hover/symbol lookups for the file's language (TypeScript, Python, Rust built in; [lsp.*] config adds more). Sharper than grep for finding where a symbol is DEFINED vs mentioned, or every real call site. Each query is one of: definition|implementation|references|hover|symbols (file outline)|workspace (project-wide symbol search). Position args are 1-based line/character, matching read/grep output. Answers come from a real language server: first query may take seconds (cold start), later ones are fast. Turn off with disabledPlugins = [\"lsp\"] if you don't want it.",
   parameters: {
     type: "object",
     properties: {
@@ -54,9 +50,6 @@ export async function lspRun(args: any, ctx: import("./types.ts").ToolContext): 
   const q: string = args?.query;
   const file: string = args?.file;
   if (!q || !file) return fail("error: query and file are required");
-  if (!lspEnabled()) {
-    return fail("error: the lsp tool is disabled — set FOX_AGENT_ENABLE_LSP_TOOL=1 to enable it (or use grep/read)");
-  }
   const opts = { cwd: ctx.cwd };
   const at = { line: Number(args?.line ?? 1), character: Number(args?.character ?? 1) };
 
