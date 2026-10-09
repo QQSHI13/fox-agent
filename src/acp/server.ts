@@ -194,17 +194,26 @@ export function buildAgent(opts: AcpServerOptions): acp.AgentApp {
       checkId(params.sessionId);
       const forked = forkSession(params.sessionId);
       if (!forked) throw RequestError.resourceNotFound(params.sessionId);
+      acquireLock(forked.id, "acp");
       return { sessionId: forked.id };
     })
     .onRequest(acp.methods.agent.session.delete, async ({ params }) => {
       checkId(params.sessionId);
+      // a turn still running for a deleted session must not keep appending to
+      // its DB — same teardown close does, before the row disappears
+      const ctl = running.get(params.sessionId);
+      ctl?.abort();
+      if (ctl) running.delete(params.sessionId);
+      await shutdownTools(params.sessionId);
+      releaseLock(params.sessionId);
       if (!deleteSession(params.sessionId)) throw RequestError.resourceNotFound(params.sessionId);
       return {};
     })
     .onRequest(acp.methods.agent.session.close, async ({ params }) => {
       checkId(params.sessionId);
-      running.get(params.sessionId)?.abort();
-      running.delete(params.sessionId);
+      const ctl = running.get(params.sessionId);
+      ctl?.abort();
+      if (ctl) running.delete(params.sessionId);
       await shutdownTools(params.sessionId);
       releaseLock(params.sessionId);
       return {};
@@ -275,7 +284,10 @@ export function buildAgent(opts: AcpServerOptions): acp.AgentApp {
         }
       } finally {
         signal.removeEventListener("abort", onAbort);
-        running.delete(params.sessionId);
+        // keyed delete: close may have already removed this entry and a NEW
+        // prompt may hold the slot — deleting unconditionally would drop the
+        // new controller and unguard `running.has` above
+        if (running.get(params.sessionId) === ctl) running.delete(params.sessionId);
       }
       return { stopReason: stop };
     });

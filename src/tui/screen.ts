@@ -537,15 +537,7 @@ export function scrollbarGeom(rows: number, vh: number, scrollTop: number): Scro
   return { showing: true, ty, th };
 }
 
-/**
- * Inverse of scrollbarGeom for the mouse: a press at viewport row `y` maps to
- * a scroll offset. Only meaningful when showing; returns 0 otherwise.
- */
-export function scrollbarScrollTop(rows: number, vh: number, y: number): number {
-  const g = scrollbarGeom(rows, vh, 0);
-  if (!g.showing || rows <= vh) return 0;
-  return Math.round((Math.max(0, Math.min(vh - 1, y)) / Math.max(1, vh - 1)) * (rows - vh));
-}
+
 
 function sgrOf(s: Style): string {
   let out = "";

@@ -222,10 +222,8 @@ export async function fetchRun(args: { url?: string }, ctx: ToolContext): Promis
         media: [{ mimeType: ctype, data: buf.toString("base64"), filename: url.pathname.split("/").pop() || undefined }],
       };
     }
-    if (Number.isFinite(lenHeader) && lenHeader > MAX_TEXT_BUFFER) {
-      // Still fetch a bounded head rather than refusing outright: the model gets
-      // the start of the page with a truncation note.
-    }
+    // readCapped bounds the body either way; the Content-Length header is
+    // advisory (chunked/gzip responses have none), so no pre-flight refusal.
     const signal = AbortSignal.any([AbortSignal.timeout(20_000), ...(ctx.signal ? [ctx.signal] : [])]);
     const { bytes } = await readCapped(res.body, MAX_TEXT_BUFFER, signal);
     let body = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("utf8");

@@ -88,7 +88,6 @@ export async function createAgent(opts: {
         projectInstructions: config.projectInstructions,
         config,
         chat: resolveChat,
-        ...runOpts.turn,
       })) {
         runOpts.onEvent?.(ev);
         if (ev.type === "text") text += ev.delta;

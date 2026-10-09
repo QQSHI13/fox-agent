@@ -7,7 +7,6 @@ import {
   forkSession,
   getMessage,
   getSession,
-  latestSessionFor,
   listSessions,
   setSessionModel,
   undoLastOp,
@@ -16,6 +15,8 @@ import { readFileSync } from "node:fs";
 import { debugLogPath } from "./core/debuglog.ts";
 import { projectView } from "./context/view.ts";
 import { formatPruneReport, pruneSession } from "./store/prune.ts";
+import { exportSession, importSession } from "./store/transfer.ts";
+import { VERSION } from "./core/version.ts";
 import { viewTokenEstimate } from "./context/render.ts";
 import { checkBudget, triggerTokens } from "./context/budget.ts";
 import type { ProviderConfig } from "./providers/types.ts";
@@ -262,6 +263,8 @@ export const COMMANDS: CommandSpec[] = [
       '"/prune compact yes" also removes the hidden context entirely, splices summaries back as real rows and renumbers [N] markers 1..n. Bare in the TUI: a menu pick, no "yes" typing.',
   },
   { name: "/ops", desc: "show context surgery ops" },
+  { name: "/export", desc: "pack this session into a .zip you can move to any device", usage: "[file]", arg: true, help: "bare: writes fox-session-<id>.zip into cwd; with a path, writes there. Pair with /import on the other machine." },
+  { name: "/import", desc: "install a session .zip exported from another device", usage: "<file>", arg: true, help: "lands the session under its own id — it then appears in /sessions and fox -c like a local one; an existing session with the same id is replaced" },
   { name: "/view", desc: "preview visible nodes ([N] role preview)" },
   { name: "/todo", aliases: ["/todos"], desc: "show agent todo list" },
   { name: "/usage", desc: "token totals + budget" },
@@ -1634,6 +1637,28 @@ Verify what you write: run the commands you document (at least the build/test en
       return { handled: true, output: msg ? `undid: ${msg}` : "nothing to undo" };
     }
 
+    case "/export": {
+      const dest = exportSession(state.sessionId, arg?.trim() || undefined, VERSION);
+      return {
+        handled: true,
+        output: `exported ${state.sessionId} -> ${dest}\nmove it to the other device and run: fox import ${dest.split("/").pop()} (or /import <file> inside fox)`,
+      };
+    }
+
+    case "/import": {
+      const file = arg?.trim();
+      if (!file) return { handled: true, output: "usage: /import <file.zip>" };
+      try {
+        const r = importSession(file);
+        return {
+          handled: true,
+          output: `${r.replaced ? "replaced" : "imported"} session ${r.id} (${r.messages} messages) — /sessions to switch to it${r.replaced ? " (a local session with this id was overwritten)" : ""}`,
+        };
+      } catch (e) {
+        return { handled: true, output: `import failed: ${(e as Error).message}` };
+      }
+    }
+
     case "/prune": {
       // arg grammar: "compact [yes]" | "yes" | "" — the destructive mode word
       // comes first, the (now optional in the TUI) confirmation last.
@@ -2058,8 +2083,4 @@ Verify what you write: run the commands you document (at least the build/test en
 }
 
 // convenience for plain mode
-export function continueLatest(cwd: string): string | undefined {
-  return latestSessionFor(cwd)?.id;
-}
-
 export { createSession };

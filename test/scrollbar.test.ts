@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { scrollbarGeom, scrollbarScrollTop } from "../src/tui/screen.ts";
+import { scrollbarGeom, scrollbarScrollTop } from "../src/tui/layout.ts";
 
 describe("scrollbarGeom", () => {
   test("hidden when content fits", () => {

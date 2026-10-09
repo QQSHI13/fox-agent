@@ -92,10 +92,10 @@ export async function mcpTools(
         });
       }
     } catch (e) {
-      // every failing server is reported, not just the last one
-      const w = `mcp server '${name}' unavailable: ${(e as Error).message.slice(0, 200)}`;
-      warnings.push(w);
-      console.error(`fox-agent: ${w}`);
+      // every failing server is reported, not just the last one. console.error
+      // would smear the parent TUI (same reason server stderr is "ignore"
+      // above) — the warnings channel is what callers actually surface.
+      warnings.push(`mcp server '${name}' unavailable: ${(e as Error).message.slice(0, 200)}`);
     }
   }
 

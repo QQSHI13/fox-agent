@@ -124,12 +124,40 @@ export async function replRun(
     // (declarations, loops, multi-statement blocks — end those with an
     // explicit `return`) falls back to statement form. Only SyntaxError falls
     // through: runtime failures are the answer, not a retry signal.
+    // vm's `timeout` only bounds SYNCHRONOUS execution; these evals are async
+    // IIFEs, so a hung `await` would ignore it forever. Race the eval against
+    // a real timer — the loser's microtasks keep running but this tool call
+    // returns, freeing the tool slot (a still-referenced AbortSignal would be
+    // nicer; vm contexts expose no async interruption primitive).
     const expr = args.code.replace(/;+\s*$/, "");
     let value: unknown;
+    // raceEval: eval vs a real timer, with the timer CLEARED when the eval
+    // wins — a left-running timer rejects a promise nobody awaits anymore,
+    // which surfaces as an unhandled rejection and fails the turn's teardown.
+    // vm's `timeout` only bounds SYNCHRONOUS execution; these evals are async
+    // IIFEs, so a hung `await` would otherwise ignore it forever. The loser's
+    // microtasks keep running, but this tool call returns and frees the slot
+    // (vm contexts expose no async interruption primitive).
+    const raceEval = (body: string) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const hang = new Promise<never>((_, rej) => {
+        timer = setTimeout(() => rej(new Error(`eval exceeded timeout_ms (${timeout}ms) — likely a hung await; the eval keeps running detached and cannot be killed`)), timeout);
+        (timer as { unref?: () => void }).unref?.();
+      });
+      try {
+        // a SYNCHRONOUS infinite loop throws straight out of runInContext —
+        // clear the timer there too, or it fires later and rejects a promise
+        // nobody is awaiting (unhandled rejection, blames the next tool call)
+        return Promise.race([vm.runInContext(`(async () => ${body})()`, state.context, { timeout }), hang]).finally(() => clearTimeout(timer));
+      } catch (e) {
+        clearTimeout(timer);
+        throw e;
+      }
+    };
     try {
-      value = await vm.runInContext(`(async () => (${expr}))()`, state.context, { timeout });
+      value = await raceEval(`(${expr})`);
     } catch (e) {
-      if (e instanceof SyntaxError) value = await vm.runInContext(`(async () => {\n${args.code}\n})()`, state.context, { timeout });
+      if (e instanceof SyntaxError) value = await raceEval(`{\n${args.code}\n}`);
       else throw e;
     }
     const body = [state.log.join("\n"), fmt(value)].filter(Boolean).join("\n").trimEnd() || "(no output)";
