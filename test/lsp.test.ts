@@ -301,9 +301,14 @@ describe("diagnose: the paths that must never break an edit", () => {
 // this; this is the only test that can catch a wrong `initialize` shape, a
 // misread `publishDiagnostics`, or a version-bump mistake in didChange.
 const TSLS = Bun.which("typescript-language-server");
-/** This repo's own typescript, which the fixture lends to its temp project. */
+/** This repo's own typescript, which the fixture lends to its temp project.
+ *  Must be the CLASSIC (JS) compiler: typescript-language-server drives
+ *  tsserver.js, and the Go-native port (typescript@7 / tsgo) ships no
+ *  tsserver.js at all — its `initialize` then fails with "provides no
+ *  tsserver.js" and every file looks silently clean. The guard checks the
+ *  file, not the package, so a TS7 checkout skips honestly instead of failing. */
 const TS_LIB = join(import.meta.dir, "..", "node_modules", "typescript");
-const CAN_RUN = !!TSLS && existsSync(TS_LIB);
+const CAN_RUN = !!TSLS && existsSync(join(TS_LIB, "lib", "tsserver.js"));
 
 /**
  * A temp project a real tsserver will actually analyze. Both halves are load-bearing,
