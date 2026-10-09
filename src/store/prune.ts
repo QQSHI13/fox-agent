@@ -15,6 +15,7 @@
  */
 import { sessionDb, rid } from "./db.ts";
 import { projectView, dropViewCache } from "../context/view.ts";
+import { dropRenderCache } from "../context/render.ts";
 import type { DeleteOp, ViewOp } from "./db.ts";
 import { allOps } from "./db.ts";
 
@@ -230,7 +231,10 @@ export function pruneSession(
   d.exec("VACUUM;");
   // Prune is the one place the append-only contract is broken (rows deleted,
   // stubs blanked), so the incremental projection cache must not survive it.
+  // The render cache rides along: its key is the projection's watermark, and
+  // dropping both keeps the two caches from ever disagreeing about the view.
   dropViewCache(sessionId);
+  dropRenderCache();
   return { messages: toDelete.length, stubs: toStub.length, usage: usageRemoved, bytesBefore, bytesAfter: dbBytes(sessionId), applied: true, compacted };
 }
 
