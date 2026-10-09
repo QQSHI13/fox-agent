@@ -201,5 +201,56 @@ describe.skipIf(!CAN_RUN)("mcp bridge against a live server", () => {
   }, 30_000);
 });
 
+describe("closeMcp: a wedged server must not hang shutdown", () => {
+  // The hang this pins: fox printed its resume hint and looked exited, but the
+  // process sat on closeMcp's unbounded Promise.all because one stdio server's
+  // client.close() never settles (measured with the npx chrome-devtools bridge
+  // over WSL interop). closeClients must return on its own and SIGKILL the child.
+  test("a close() that never settles returns within the deadline and kills the child", async () => {
+    const { closeClients } = await import("../src/tools/mcp.ts");
+    // a real live child, so the kill path is exercised against a real pid
+    const child = Bun.spawn(["sleep", "300"]);
+    let closeCalled = false;
+    const wedged = {
+      close: () =>
+        new Promise<void>(() => {
+          closeCalled = true; // never resolves
+        }),
+      pid: child.pid,
+    };
+    const t0 = Date.now();
+    await closeClients([wedged]);
+    const took = Date.now() - t0;
+    expect(closeCalled).toBe(true);
+    // bounded: the polite window, not forever (give the race a wide margin)
+    expect(took).toBeLessThan(10_000);
+    // the wedged server's child was force-killed, not left behind
+    await Bun.sleep(100); // signal delivery
+    const alive = Bun.spawnSync(["kill", "-0", String(child.pid)]).exitCode === 0;
+    expect(alive).toBe(false);
+  }, 30_000);
+
+  test("a well-behaved close still wins the race (no premature kill of a live close)", async () => {
+    const { closeClients } = await import("../src/tools/mcp.ts");
+    const child = Bun.spawn(["sleep", "300"]);
+    let resolved = false;
+    const good = {
+      close: async () => {
+        await Bun.sleep(50);
+        resolved = true;
+      },
+      pid: child.pid,
+    };
+    await closeClients([good]);
+    expect(resolved).toBe(true);
+    // close() settled before the deadline; the pid was already gone or just
+    // reaped — either way ESRCH must be swallowed, not thrown. Signal delivery
+    // is async, so give the kernel a beat before probing liveness.
+    await Bun.sleep(100);
+    const alive = Bun.spawnSync(["kill", "-0", String(child.pid)]).exitCode === 0;
+    expect(alive).toBe(false);
+  });
+});
+
 // image content parts become real MediaParts, not stringified base64
 // (chrome-devtools screenshots used to arrive as megabytes of base64 text)
