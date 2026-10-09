@@ -498,6 +498,15 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
    */
   let liveThink: Item | null = null;
   const expandedRefs = new Set<number>(); // think nodes expanded across refreshes
+  /**
+   * Persistent expand mode from ctrl+t: true = "unfold all" (new thinking and
+   * tool results arrive expanded), false = "fold all" (they arrive collapsed),
+   * null = untouched defaults. Without this, ctrl+t only mutated the items
+   * that existed at press time — fold-all, then every new tool body expanded
+   * itself again and unfold-all left new thinking collapsed, so the toggle
+   * appeared to keep losing.
+   */
+  let expandMode: boolean | null = null;
   // provider-reported usage for the CURRENT turn's last step (real numbers,
   // not estimates) — the only token figure the status bar is willing to show
   let lastPromptTokens = 0;
@@ -648,7 +657,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       liveThink.text += delta;
       touch(liveThink.k);
     } else {
-      liveThink = push("think", delta, { expanded: false });
+      liveThink = push("think", delta, { expanded: expandMode ?? false });
     }
     markDirty();
   }
@@ -1289,6 +1298,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     state.sessionId = id;
     pinSession(id);
     expandedRefs.clear(); // refs are per-session seqs; carrying them over expands unrelated nodes
+    expandMode = null; // likewise the ctrl+t fold direction — the new session starts on defaults
     refresh();
     attachLock(id);
   }
@@ -1490,8 +1500,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
             live = {
               head: push("toolhead", `» ${callLabels.get(ev.id) ?? "exec"} — running`, {
                 detail: argsJson(callArgs.get(ev.id) ?? ""),
+                expanded: expandMode === true || undefined,
               }),
-              body: push("toolbody", "", { toolResult: true, expanded: true }), // live output streams in full
+              body: push("toolbody", "", { toolResult: true, expanded: expandMode !== false }), // live output streams in full unless the user folded all
               text: "",
             };
             liveTools.set(ev.id, live);
@@ -1522,8 +1533,8 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           // raw text, newlines intact: collapsed rendering shows an arrow line,
           // the expanded view gets the real lines (see itemRows)
           const detail = argsJson(ev.args);
-          push("toolhead", `[${ev.seq}] » ${callLabels.get(ev.id) ?? `${ev.name}${argsSummary(ev.args)}`}${ev.ok ? "" : " — failed"}`, { detail, expanded: headOpen || undefined });
-          const bodyOpenFinal = expandedRefs.has(ev.seq) || bodyOpen;
+          push("toolhead", `[${ev.seq}] » ${callLabels.get(ev.id) ?? `${ev.name}${argsSummary(ev.args)}`}${ev.ok ? "" : " — failed"}`, { detail, expanded: headOpen || expandMode === true || undefined });
+          const bodyOpenFinal = expandedRefs.has(ev.seq) || bodyOpen || expandMode === true;
           if (bodyOpenFinal) expandedRefs.add(ev.seq);
           // todo bodies are markdown task lists — always visible, rendered
           // as md (see itemRows mdBody); a task list hidden behind a click is
@@ -1882,7 +1893,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   function onKey(k: Key) {
     // any real input dismisses transient help/command output first — a glance,
     // not something to scroll past forever
-    if (cmdOut) {
+    // popups shed on any key — except escape, which owns dismissal itself so
+    // one press can't both close a popup and fall through to aborting the turn
+    if (cmdOut && !(k.type === "named" && k.name === "escape")) {
       cmdOut = null;
       markDirty();
     }
@@ -2020,6 +2033,10 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       const expandable = (it: Item) =>
         it.kind === "think" || it.kind === "toolbody" || (it.kind === "toolhead" && (!!it.detail || it.argsRaw !== undefined));
       const anyFolded = items.some((it) => expandable(it) && !isExpanded(it));
+      // remember the direction: every expandable item born from now on
+      // (a streaming tool body, the next think block, a replayed transcript)
+      // must arrive in the mode the user chose, or the toggle keeps losing
+      expandMode = anyFolded;
       for (const it of items) {
         if (!expandable(it)) continue;
         const want = anyFolded;
@@ -2039,11 +2056,19 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       return;
     }
     if (name === "escape") {
-      // escape sheds one thing at a time: input selection, transcript
-      // selection, then the turn — and then NOTHING. The old final branch
-      // cleared the draft, so a stray esc (or the esc an SS3/alt chord
-      // degraded from) wiped a typed message the user wanted back; the draft
-      // is recoverable only by retyping, so escape never touches it.
+      // escape sheds one thing at a time: a command-output popup, input
+      // selection, transcript selection, then the turn — and then NOTHING.
+      // A popup on screen is what the user is most plausibly dismissing, and
+      // it must cost the escape alone, not also the running turn (overlay and
+      // question wizards already refused above). The old final branch cleared
+      // the draft, so a stray esc (or the esc an SS3/alt chord degraded from)
+      // wiped a typed message the user wanted back; the draft is recoverable
+      // only by retyping, so escape never touches it.
+      if (cmdOut) {
+        cmdOut = null;
+        markDirty();
+        return;
+      }
       if (inSelRange()) {
         inSelAnchor = null;
         markDirty();
