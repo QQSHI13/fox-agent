@@ -204,6 +204,12 @@ let _home: string | null = null;
 function open(path: string, schema: string): Database {
   const d = new Database(path);
   d.exec("PRAGMA journal_mode = WAL;");
+  // NORMAL, not FULL: in WAL mode NORMAL is the standard pairing and still
+  // corruption-safe — the worst case on an OS crash is losing the last few
+  // commits, never a damaged file. FULL made every checkpoint fsync the WAL,
+  // and a long session pays that per append: measured 0.15ms per message on a
+  // small db but 2.5ms average once the db reached 8k rows (checkpoint bursts).
+  d.exec("PRAGMA synchronous = NORMAL;");
   // Two writers (TUI + fox --acp on one session) must wait, not fail with
   // immediate SQLITE_BUSY. Advisory locks in lock.ts are best-effort only.
   d.exec("PRAGMA busy_timeout = 5000;");

@@ -1,6 +1,6 @@
 import type { ChatMessage } from "../providers/types.ts";
 import { estimateTokens } from "../providers/models.ts";
-import { projectView, parseToolCalls, type ViewNode } from "./view.ts";
+import { projectView, parseToolCalls, viewStamp, type ViewNode } from "./view.ts";
 
 function marker(seq: number): string {
   return `[${seq}]`;
@@ -46,6 +46,21 @@ interface RenderedNode {
 }
 const renderedNodes = new Map<string, RenderedNode>();
 const RENDER_CACHE_MAX = 50_000;
+
+/**
+ * Assembled-history cache: the walk below is O(view) even with every node a
+ * memo hit (10k Map lookups + array pushes per step on a long session), and
+ * within a turn the view differs from the previous step only by the tail.
+ * The whole visible view is a pure function of (projectView result, markers),
+ * and the view itself is a pure function of its watermark (see viewStamp),
+ * so an unchanged stamp lets the prefix — everything before `trailing` — be
+ * returned as-is. `dropRenderCache` runs on /reload and session delete, where
+ * markers can flip or node ids could collide.
+ */
+let historyCache: { key: string; out: ChatMessage[] } | null = null;
+export function dropRenderCache(): void {
+  historyCache = null;
+}
 
 function renderNode(n: ViewNode, callsKey: string, visibleToolIds: Set<string>, markers: boolean): RenderedNode {
   const m = n.msg;
@@ -103,6 +118,17 @@ export function renderContext(
   opts: { markers?: boolean; trailing?: string } = {},
 ): ChatMessage[] {
   const markers = opts.markers ?? true;
+  // assembled-history hit: same session, same watermark, same markers — the
+  // walk below would rebuild byte-identical messages. The outer array is
+  // always fresh so a caller mutating it can't corrupt the cache; only the
+  // per-node construction is skipped, which is the O(view) part.
+  const hKey = `${sessionId}:${viewStamp(sessionId)}:${markers ? 1 : 0}`;
+  const cached = historyCache?.key === hKey ? historyCache.out : null;
+  if (cached) {
+    const out: ChatMessage[] = [{ role: "system", content: systemPrompt }, ...cached];
+    if (opts.trailing) out.push({ role: "user", content: opts.trailing });
+    return out;
+  }
   const out: ChatMessage[] = [{ role: "system", content: systemPrompt }];
   const view = projectView(sessionId);
   const visibleToolIds = new Set(
@@ -164,6 +190,10 @@ export function renderContext(
     out.push(r.msg);
   }
   flush();
+  // cache the prefix (everything before trailing) under the watermark — the
+  // next call with an unchanged stamp reuses it wholesale (see historyCache)
+  const prefix = out.slice(1);
+  historyCache = { key: hKey, out: prefix };
   // Ephemeral and last: rebuilt every step, never written to storage. Only the
   // bytes after this point may vary, and there are none — so the whole prefix
   // [system … history] above keeps its provider cache breakpoint intact.

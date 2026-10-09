@@ -35,34 +35,58 @@ export interface ViewNode {
   orphan?: boolean; // hidden because its parent assistant is hidden
 }
 
-function applyOp(bySeq: Map<number, ViewNode>, op: ViewOp): void {
+function applyOp(c: ViewCache, op: ViewOp): void {
   if (op.kind === "replace") {
     const { id, content } = op as ReplaceOp;
-    const n = bySeq.get(id);
+    const n = c.bySeq.get(id);
     if (n) n.content = content;
   } else if (op.kind === "restore") {
     const { ids } = op as RestoreOp;
     for (const id of ids) {
-      const n = bySeq.get(id);
-      // no orphan check needed: repairOrphans runs after the op batch, so it
-      // re-hides anything a restore un-hid that shouldn't be visible
+      const n = c.bySeq.get(id);
+      // no orphan check needed here: restoring a parent re-adds its calls to
+      // the visible set and rechecks every dependent tool node below
       if (n) {
         n.hidden = false;
         n.summary = undefined;
+        n.deleted = !!n.orphan;
+        const calls = c.callsOf.get(n.msg.seq);
+        if (calls) {
+          for (const cid of calls) c.visibleCalls.add(cid);
+          recheckTools(c, calls);
+        }
       }
     }
   } else {
     const { ids, summary } = op as DeleteOp;
     let first = true;
     for (const id of ids) {
-      const n = bySeq.get(id);
+      const n = c.bySeq.get(id);
       if (!n || n.hidden) continue;
       n.hidden = true;
+      n.deleted = true;
       if (summary && first) {
         n.summary = summary;
         first = false;
       }
+      // an op-hidden assistant's calls are gone from the request — its tool
+      // results just became orphans, and only those need rechecking
+      const calls = c.callsOf.get(n.msg.seq);
+      if (calls) {
+        for (const cid of calls) c.visibleCalls.delete(cid);
+        recheckTools(c, calls);
+      }
     }
+  }
+}
+
+/** Recompute orphan/deleted for the tool nodes of exactly these call ids. */
+function recheckTools(c: ViewCache, callIds: string[]): void {
+  for (const cid of callIds) {
+    const t = c.toolByCall.get(cid);
+    if (!t || t.hidden) continue;
+    t.orphan = !c.visibleCalls.has(cid) || undefined;
+    t.deleted = !!t.orphan;
   }
 }
 
@@ -73,13 +97,19 @@ function applyOp(bySeq: Map<number, ViewNode>, op: ViewOp): void {
  * parent assistant visible again must un-hide its tool results, which is only
  * possible because the op-driven half lives in its own field.
  */
-function repairOrphans(nodes: ViewNode[]) {
-  const visibleCallIds = new Set<string>();
+function repairOrphans(c: ViewCache, nodes: ViewNode[]) {
+  const visibleCallIds = c.visibleCalls;
   for (const n of nodes) {
     if (n.hidden || n.msg.role !== "assistant" || !n.msg.tool_calls) continue;
-    for (const c of parseToolCalls(n.msg)) visibleCallIds.add(c.id);
+    for (const call of parseToolCalls(n.msg)) {
+      visibleCallIds.add(call.id);
+      const existing = c.callsOf.get(n.msg.seq);
+      if (!existing) c.callsOf.set(n.msg.seq, [call.id]);
+      else if (!existing.includes(call.id)) existing.push(call.id);
+    }
   }
   for (const n of nodes) {
+    if (n.msg.role === "tool" && n.msg.tool_call_id) c.toolByCall.set(n.msg.tool_call_id, n);
     const orphan = n.msg.role === "tool" && !!n.msg.tool_call_id && !visibleCallIds.has(n.msg.tool_call_id);
     n.orphan = orphan || undefined;
     n.deleted = !!n.hidden || orphan;
@@ -107,6 +137,12 @@ interface ViewCache {
   lastOpSeq: number;
   nodes: ViewNode[];
   bySeq: Map<number, ViewNode>;
+  /** tool_call ids currently visible (their assistant is not op-hidden) */
+  visibleCalls: Set<string>;
+  /** tool_call_id -> tool node, for orphan rechecks when a parent flips */
+  toolByCall: Map<string, ViewNode>;
+  /** assistant seq -> its tool_call ids (empty arrays omitted) */
+  callsOf: Map<number, string[]>;
 }
 const views = new Map<string, ViewCache>();
 
@@ -127,7 +163,7 @@ export function dropViewCache(sessionId?: string): void {
 export function projectView(sessionId: string): ViewNode[] {
   let c = views.get(sessionId);
   if (!c) {
-    c = { lastMsgSeq: 0, lastOpSeq: 0, nodes: [], bySeq: new Map() };
+    c = { lastMsgSeq: 0, lastOpSeq: 0, nodes: [], bySeq: new Map(), visibleCalls: new Set(), toolByCall: new Map(), callsOf: new Map() };
     views.set(sessionId, c);
   }
 
@@ -137,17 +173,44 @@ export function projectView(sessionId: string): ViewNode[] {
     const n: ViewNode = { msg: m, content: m.content, deleted: false };
     c.nodes.push(n);
     c.bySeq.set(m.seq, n);
+    // incremental-orphan indexes (see applyOp): tool nodes keyed by the call
+    // they answer, and each assistant's call ids — applyOp flips exactly the
+    // affected nodes instead of rescanning the whole session per op batch
+    if (m.role === "tool" && m.tool_call_id) c.toolByCall.set(m.tool_call_id, n);
+    if (m.role === "assistant" && m.tool_calls && !n.hidden) {
+      const calls = parseToolCalls(m).map((x) => x.id);
+      if (calls.length) {
+        c.callsOf.set(m.seq, calls);
+        if (!n.hidden) for (const cid of calls) c.visibleCalls.add(cid);
+      }
+    }
     if (m.seq > c.lastMsgSeq) c.lastMsgSeq = m.seq;
   }
 
+  const hadNewMsgs = newMsgs.length > 0;
   const newOps = c.lastOpSeq === 0 ? allOps(sessionId) : opsAfter(sessionId, c.lastOpSeq);
   for (const row of newOps) {
-    applyOp(c.bySeq, JSON.parse(row.payload) as ViewOp);
+    applyOp(c, JSON.parse(row.payload) as ViewOp);
     if (row.seq > c.lastOpSeq) c.lastOpSeq = row.seq;
   }
 
-  repairOrphans(c.nodes);
+  // applyOp now maintains orphan state for op-driven changes; the full pass
+  // is only needed when the message log itself grew (new nodes never seen by
+  // any op) or on the very first build of the session
+  if (hadNewMsgs || newOps.length === 0) repairOrphans(c, c.nodes);
   return c.nodes;
+}
+
+/**
+ * The view's watermark: `<last message seq>:<last op seq>`. Both logs are
+ * append-only and every mutation of an old node (a replace, a delete, a
+ * restore) is an op, so equal stamps mean a byte-identical visible view.
+ * `renderContext` uses this to reuse the whole assembled history array
+ * instead of re-walking 10k memo hits on every step of a long session.
+ */
+export function viewStamp(sessionId: string): string {
+  const c = views.get(sessionId);
+  return c ? `${c.lastMsgSeq}:${c.lastOpSeq}` : "0:0";
 }
 
 export function visibleNodes(nodes: ViewNode[]): ViewNode[] {
