@@ -15,6 +15,8 @@ import { ptyDef, drivePty, cleanupPty, ptySessionName } from "../tools/pty.ts";
 import { todoDef, todoRun } from "../tools/todo.ts";
 import { fetchDef, fetchRun } from "../tools/fetch.ts";
 import { replDef, replRun, cleanupRepl } from "../tools/repl.ts";
+import { questionPlugin } from "../tools/question.ts";
+import { lspPlugin } from "../tools/lsp.ts";
 import costPlugin, { costSegment } from "./cost.ts";
 
 const ptyPlugin: FoxPlugin = {
@@ -41,7 +43,7 @@ const replPlugin: FoxPlugin = {
 
 /** All bundled plugins. Order matters only for shadowing: user plugins load after. */
 export function bundledPlugins(): FoxPlugin[] {
-  return [ptyPlugin, todoPlugin, fetchPlugin, replPlugin, costPlugin];
+  return [ptyPlugin, todoPlugin, fetchPlugin, replPlugin, questionPlugin, lspPlugin, costPlugin];
 }
 
 /**

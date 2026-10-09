@@ -1,5 +1,6 @@
 import { pathToFileURL } from "node:url";
 import { relative } from "node:path";
+import { readFileSync } from "node:fs";
 import { childEnv } from "../core/childenv.ts";
 import { encode, FrameReader } from "./codec.ts";
 import { formatDiagnostics, type Diagnostic } from "./types.ts";
@@ -41,6 +42,8 @@ interface Session {
   /** true until the first request completes, to allow the cold-start budget */
   cold: boolean;
   dead: boolean;
+  /** pending request/response correlation, by request id (navigation requests) */
+  pending: Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>;
 }
 
 /** Keyed by `<server name>\0<project root>`: one server process per project. */
@@ -77,6 +80,7 @@ function start(name: string, cfg: LspServerConfig, root: string): Session {
     nextId: 1,
     cold: true,
     dead: false,
+    pending: new Map(),
   };
 
   let resolveReady!: (ok: boolean) => void;
@@ -154,6 +158,14 @@ function handle(s: Session, msg: unknown, resolveReady: (ok: boolean) => void) {
   // strict server blocks waiting for one. Null result is the spec's "nothing".
   if (m.id !== undefined && m.method) {
     send(s, { jsonrpc: "2.0", id: m.id, result: null });
+    return;
+  }
+  // Responses to OUR requests (navigation): correlate by id.
+  if (m.id !== undefined && s.pending.has(m.id as number)) {
+    const p = s.pending.get(m.id as number)!;
+    s.pending.delete(m.id as number);
+    if (m.error) p.reject(new Error(String((m.error as { message?: string })?.message ?? "lsp request failed")));
+    else p.resolve(m.result);
   }
 }
 
@@ -184,70 +196,102 @@ function send(s: Session, msg: unknown): boolean {
  * The file's *new* content is passed in rather than read back, so the server sees
  * exactly what was written even if something else touches the file afterwards.
  */
+/**
+ * Resolve the live (or freshly started) session for a file, or null when no
+ * server applies. Shared by `diagnose` and the navigation requests — same
+ * server table, same root logic, same dead-session replacement.
+ */
+async function sessionFor(
+  file: string,
+  opts: { servers?: Record<string, LspServerConfig>; timeoutMs?: number } = {},
+): Promise<{ s: Session; k: string; found: { name: string; cfg: LspServerConfig }; root: string } | null> {
+  const found = serverFor(file, opts.servers ?? {});
+  if (!found) return null;
+  const root = projectRoot(file, found.cfg);
+  const k = key(found.name, root);
+
+  let s = sessions.get(k);
+  if (s?.dead) {
+    sessions.delete(k);
+    s = undefined;
+  }
+  if (!s) {
+    s = start(found.name, found.cfg, root);
+    sessions.set(k, s);
+  }
+  const budget = opts.timeoutMs ?? (s.cold ? FIRST_REQUEST_TIMEOUT_MS : DEFAULT_TIMEOUT_MS);
+  const started = await withDeadline(s.ready, budget);
+  if (!started) {
+    // It may still answer later, but this call is over. Drop it so the next
+    // edit starts a fresh one rather than inheriting a process we gave up on.
+    if (!s.dead) {
+      sessions.delete(k);
+      s.dead = true;
+      try {
+        s.proc.kill();
+      } catch {}
+    }
+    return null;
+  }
+  return { s, k, found, root };
+}
+
+/**
+ * didOpen/didChange a document so requests that need server-side position
+ * info work on files the model has not edited this session. Full-document
+ * sync (same reasoning as `diagnose`'s didChange).
+ */
+function openDoc(s: Session, file: string, content?: string): string {
+  const uri = uriOf(file);
+  const version = (s.open.get(uri) ?? 0) + 1;
+  if (version === 1) {
+    send(s, {
+      jsonrpc: "2.0",
+      method: "textDocument/didOpen",
+      params: { textDocument: { uri, languageId: languageId(file), version, text: content ?? readOrEmpty(file) } },
+    });
+  } else if (content !== undefined) {
+    send(s, {
+      jsonrpc: "2.0",
+      method: "textDocument/didChange",
+      params: { textDocument: { uri, version }, contentChanges: [{ text: content }] },
+    });
+  } else {
+    send(s, {
+      jsonrpc: "2.0",
+      method: "textDocument/didChange",
+      params: { textDocument: { uri, version }, contentChanges: [{ text: readOrEmpty(file) }] },
+    });
+  }
+  s.open.set(uri, version);
+  return uri;
+}
+
+function readOrEmpty(file: string): string {
+  try {
+    return readFileSync(file, "utf8");
+  } catch {
+    return "";
+  }
+}
+
 export async function diagnose(
   file: string,
   content: string,
   opts: { servers?: Record<string, LspServerConfig>; cwd?: string; timeoutMs?: number } = {},
 ): Promise<string | null> {
   try {
-    const found = serverFor(file, opts.servers ?? {});
-    if (!found) return null;
-    const root = projectRoot(file, found.cfg);
-    const k = key(found.name, root);
-
-    let s = sessions.get(k);
-    if (s?.dead) {
-      sessions.delete(k);
-      s = undefined;
-    }
-    if (!s) {
-      s = start(found.name, found.cfg, root);
-      sessions.set(k, s);
-    }
+    const got = await sessionFor(file, opts);
+    if (!got) return null;
+    const { s, found, root } = got;
     const budget = opts.timeoutMs ?? (s.cold ? FIRST_REQUEST_TIMEOUT_MS : DEFAULT_TIMEOUT_MS);
     const deadline = Date.now() + budget;
 
-    // The whole budget bounds `initialize` too, not just the publish wait. A
-    // server that accepts stdin and never replies (measured: any process that
-    // simply does not speak LSP) would otherwise hold the edit open until it
-    // exits on its own.
-    const started = await withDeadline(s.ready, budget);
-    if (!started) {
-      // It may still answer later, but this call is over. Drop it so the next
-      // edit starts a fresh one rather than inheriting a process we gave up on.
-      if (!s.dead) {
-        sessions.delete(k);
-        s.dead = true;
-        try {
-          s.proc.kill();
-        } catch {}
-      }
-      return null;
-    }
+    const uri = openDoc(s, file, content);
 
-    const uri = uriOf(file);
-    const version = (s.open.get(uri) ?? 0) + 1;
-    if (version === 1) {
-      send(s, {
-        jsonrpc: "2.0",
-        method: "textDocument/didOpen",
-        params: { textDocument: { uri, languageId: languageId(file), version, text: content } },
-      });
-    } else {
-      // full-document sync: fox-agent always has the whole new text, and computing
-      // incremental ranges would be effort spent to send fewer bytes to a
-      // localhost process
-      send(s, {
-        jsonrpc: "2.0",
-        method: "textDocument/didChange",
-        params: { textDocument: { uri, version }, contentChanges: [{ text: content }] },
-      });
-    }
-    s.open.set(uri, version);
-
-    const got = await waitForPublish(s, uri, version, Math.max(0, deadline - Date.now()));
+    const published = await waitForPublish(s, uri, s.open.get(uri) ?? 1, Math.max(0, deadline - Date.now()));
     s.cold = false;
-    if (!got) return null;
+    if (!published) return null;
 
     const rel = relative(opts.cwd ?? root, file) || file;
     return formatDiagnostics(rel, found.name, s.diagnostics.get(uri) ?? []);
@@ -359,4 +403,164 @@ export async function shutdownLsp(): Promise<void> {
 /** Test seam: how many servers are currently running. */
 export function liveServerCount(): number {
   return [...sessions.values()].filter((s) => !s.dead).length;
+}
+
+// ---- navigation (requests, not notifications) ------------------------------
+
+/** One position in a file, 1-based everywhere (matches read/grep output). */
+export interface LspLocation {
+  file: string;
+  line: number;
+  character: number;
+}
+
+interface RawLocation {
+  uri: string;
+  range: { start: { line: number; character: number } };
+}
+
+function fromRaw(l: RawLocation | null): LspLocation | null {
+  if (!l?.uri?.startsWith("file://")) return null;
+  let path = decodeURIComponent(l.uri.slice("file://".length));
+  // file://localhost/... hosts are rare; strip a leading empty host
+  path = path.replace(/^localhost/, "");
+  return { file: path, line: l.range.start.line + 1, character: l.range.start.character + 1 };
+}
+
+/**
+ * Issue one LSP request against a session and await its correlated response.
+ *
+ * Reads the file off disk and didOpen/didChange it first — a navigation query
+ * must see the CURRENT text, and the file may never have been touched by an
+ * edit this session. Bounded by the same cold/warm budgets as diagnostics.
+ */
+async function request<T>(
+  file: string,
+  method: string,
+  params: (uri: string) => unknown,
+  opts: { servers?: Record<string, LspServerConfig>; timeoutMs?: number } = {},
+): Promise<T | null> {
+  const got = await sessionFor(file, opts);
+  if (!got) return null;
+  const { s } = got;
+  s.cold = false;
+  const uri = openDoc(s, file);
+  const id = s.nextId++;
+  const p = new Promise<T>((resolve, reject) => s.pending.set(id, { resolve: resolve as (v: unknown) => void, reject }));
+  if (!send(s, { jsonrpc: "2.0", id, method, params: params(uri) })) {
+    s.pending.delete(id);
+    return null;
+  }
+  const budget = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  return Promise.race([
+    p.catch(() => null),
+    new Promise<null>((resolve) => {
+      const t = setTimeout(() => {
+        s.pending.delete(id);
+        resolve(null);
+      }, budget);
+      (t as { unref?: () => void }).unref?.();
+    }),
+  ]);
+}
+
+function posArgs(line: number, character: number) {
+  return { position: { line: Math.max(0, line - 1), character: Math.max(0, character - 1) } };
+}
+
+async function locate(method: string, args: { file: string; line: number; character: number }, opts?: { servers?: Record<string, LspServerConfig>; timeoutMs?: number }): Promise<LspLocation[] | null> {
+  const r = await request<RawLocation | RawLocation[] | null>(args.file, method, (uri) => ({ textDocument: { uri }, ...posArgs(args.line, args.character) }), opts);
+  if (r === null) return null;
+  const list = Array.isArray(r) ? r : [r];
+  return list.map(fromRaw).filter((x): x is LspLocation => x !== null);
+}
+
+/** Where the symbol under (line, character) is defined. */
+export function definition(file: string, at: { line: number; character: number }, opts?: { servers?: Record<string, LspServerConfig>; timeoutMs?: number }) {
+  return locate("textDocument/definition", { file, ...at }, opts);
+}
+
+export function implementation(file: string, at: { line: number; character: number }, opts?: { servers?: Record<string, LspServerConfig>; timeoutMs?: number }) {
+  return locate("textDocument/implementation", { file, ...at }, opts);
+}
+
+/** Every reference to the symbol under (line, character). */
+export async function references(file: string, at: { line: number; character: number }, opts?: { servers?: Record<string, LspServerConfig>; timeoutMs?: number; includeDeclaration?: boolean }) {
+  const got = await request<RawLocation[] | null>(
+    file,
+    "textDocument/references",
+    (uri) => ({ textDocument: { uri }, ...posArgs(at.line, at.character), context: { includeDeclaration: opts?.includeDeclaration ?? false } }),
+    opts,
+  );
+  return got === null ? null : got.map(fromRaw).filter((x): x is LspLocation => x !== null);
+}
+
+export interface HoverInfo {
+  /** the marked-up contents the server offers (markdown/plaintext, concatenated) */
+  text: string;
+}
+
+interface RawHover {
+  contents: { kind?: string; value?: string } | { kind?: string; value?: string }[] | string;
+}
+
+/** Type/signature documentation for the symbol under (line, character). */
+export async function hover(file: string, at: { line: number; character: number }, opts?: { servers?: Record<string, LspServerConfig>; timeoutMs?: number }): Promise<HoverInfo | null> {
+  const r = await request<RawHover | null>(file, "textDocument/hover", (uri) => ({ textDocument: { uri }, ...posArgs(at.line, at.character) }), opts);
+  if (!r?.contents) return null;
+  const parts = Array.isArray(r.contents) ? r.contents : [r.contents];
+  const text = parts.map((c) => (typeof c === "string" ? c : c.value ?? "")).join("\n").trim();
+  return text ? { text } : null;
+}
+
+export interface SymbolInfo {
+  name: string;
+  kind: string;
+  line: number;
+  character: number;
+  /** set only where the server reports a file URI (workspace/symbol); document symbols omit it */
+  file?: string;
+}
+
+const SYM_KIND: Record<number, string> = {
+  1: "file", 2: "module", 3: "namespace", 4: "package", 5: "class", 6: "method", 7: "property", 8: "field",
+  9: "constructor", 10: "enum", 11: "interface", 12: "function", 13: "variable", 14: "constant", 15: "string",
+  16: "number", 17: "boolean", 18: "array", 19: "object", 20: "key", 21: "null", 22: "enum-member", 23: "struct",
+  24: "event", 25: "operator", 26: "type-parameter",
+};
+
+interface RawSymbol {
+  name: string;
+  kind: number;
+  location?: RawLocation;
+  range?: { start: { line: number; character: number } };
+  children?: RawSymbol[];
+}
+
+function flattenSymbols(r: RawSymbol[], out: SymbolInfo[] = []): SymbolInfo[] {
+  for (const s of r) {
+    const loc = s.location ?? (s.range ? { uri: "", range: s.range } : undefined);
+    if (loc)
+      out.push({
+        name: s.name,
+        kind: SYM_KIND[s.kind] ?? "symbol",
+        line: loc.range.start.line + 1,
+        character: loc.range.start.character + 1,
+        ...(loc.uri.startsWith("file://") ? { file: decodeURIComponent(loc.uri.slice("file://".length)) } : {}),
+      });
+    if (s.children?.length) flattenSymbols(s.children, out);
+  }
+  return out;
+}
+
+/** All symbols in a document (functions, classes, methods — the file's outline). */
+export async function documentSymbols(file: string, opts?: { servers?: Record<string, LspServerConfig>; timeoutMs?: number }): Promise<SymbolInfo[] | null> {
+  const r = await request<RawSymbol[] | null>(file, "textDocument/documentSymbol", (uri) => ({ textDocument: { uri } }), opts);
+  return r === null ? null : flattenSymbols(r);
+}
+
+/** Workspace-wide symbol search (fuzzy in most servers). */
+export async function workspaceSymbols(query: string, file: string, opts?: { servers?: Record<string, LspServerConfig>; timeoutMs?: number }): Promise<SymbolInfo[] | null> {
+  const r = await request<RawSymbol[] | null>(file, "workspace/symbol", () => ({ query }), opts);
+  return r === null ? null : flattenSymbols(r);
 }
