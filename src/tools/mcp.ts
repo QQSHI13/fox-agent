@@ -13,6 +13,8 @@ const OUT_CAP_MCP = 30_000;
 /** Live clients, so shutdownTools() can reap the stdio children. */
 interface LiveClient {
   close: () => Promise<void>;
+  /** the stdio child's pid — closeMcp SIGKILLs it when a polite close hangs */
+  pid?: number;
 }
 let cache: { key: string; tools: Map<string, Tool>; warnings: string[]; clients: LiveClient[] } | null = null;
 
@@ -71,7 +73,7 @@ export async function mcpTools(
         stderr: "ignore",
       });
       await client.connect(transport);
-      clients.push({ close: () => client.close() });
+      clients.push({ close: () => client.close(), pid: transport.pid ?? undefined });
       const res = await client.listTools();
       for (const t of res.tools) {
         const def: ToolDef = {
@@ -103,9 +105,38 @@ export async function mcpTools(
   return { tools, warnings };
 }
 
-/** Disconnect every live MCP client, killing their stdio children. */
+/**
+ * Disconnect every live MCP client, killing their stdio children.
+ *
+ * Each close is raced against a deadline, and a server that will not die is
+ * SIGKILLed rather than awaited. Without this, one wedged server (measured:
+ * an npx chrome-devtools bridge over WSL interop whose close never settles)
+ * hung shutdownTools forever — the TUI had printed its resume hint and looked
+ * exited, but the process sat on this Promise.all until the user opened a
+ * second shell to kill it.
+ */
+const MCP_CLOSE_TIMEOUT_MS = 3_000;
 export async function closeMcp(): Promise<void> {
   const live = cache?.clients ?? [];
   cache = null;
-  await Promise.all(live.map((c) => c.close().catch(() => {})));
+  await closeClients(live);
+}
+
+/** The bounded close + SIGKILL fallback, exposed so tests can pin it. */
+export async function closeClients(clients: LiveClient[]): Promise<void> {
+  await Promise.all(
+    clients.map(async (c) => {
+      try {
+        await Promise.race([c.close(), Bun.sleep(MCP_CLOSE_TIMEOUT_MS)]);
+      } catch {}
+      // still alive after the polite window (close rejected, hung, or the
+      // promise settled while the child lingers) — the kill is unconditional:
+      // ESRCH for an already-dead pid is not an error state here
+      if (c.pid) {
+        try {
+          process.kill(c.pid, "SIGKILL");
+        } catch {}
+      }
+    }),
+  );
 }

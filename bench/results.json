@@ -61,7 +61,7 @@
       "startup_ms": 7.9,
       "tui_first_byte_ms": 10.4,
       "tui_first_input_ms": null,
-      "idle_pss_mb": 26.6
+      "idle_pss_mb": 27.2
     },
     {
       "agent": "pi",
@@ -109,7 +109,7 @@
       "startup_ms": 121.7,
       "tui_first_byte_ms": 269.1,
       "tui_first_input_ms": null,
-      "idle_pss_mb": 68.7
+      "idle_pss_mb": 68.6
     },
     {
       "agent": "goose",
