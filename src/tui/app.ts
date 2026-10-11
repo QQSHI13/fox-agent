@@ -3618,12 +3618,21 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     const leadCh = buf.find((c) => c.c.trim().length > 0);
     const dockMode =
       !prompt && leadCh && !leadCh.lit && leadCh.c === "/" ? "cmd" : !prompt && leadCh && !leadCh.lit && leadCh.c === "!" ? "shell" : "plain";
+    // the arrow itself carries the mode color (cmd=info, shell=ok, else accent);
+    // the / or ! stays plain — coloring the arrow reads cleaner than tinting a
+    // bare punctuation char and matches how prompts signal "you are in X mode".
+    const pfxArrow = prompt ? "›" : "❯";
+    const pfxStyle = dockMode === "cmd" ? S.cmd : dockMode === "shell" ? S.shell : S.prompt;
+    const drawPrefix = (y: number, style = pfxStyle) => {
+      P.dock.text(1, y, pfxArrow, style);
+      P.dock.text(1 + charWidth(pfxArrow.codePointAt(0)!), y, " ", S.prompt);
+    };
     if (selectFilter) {
       // a select step's keystrokes go to the filter — show them in the dock,
       // not just in the floating header, or typing feels dead
-      P.dock.text(1, inputTop, pfx, S.prompt);
-      P.dock.text(3, inputTop, selectFilter, S.inputFg);
+      P.dock.text(1, inputTop, selectFilter, S.inputFg);
       pendingCaret = { x: 3 + [...selectFilter].reduce((w, ch) => w + charWidth(ch.codePointAt(0)!), 0), y: inputTop };
+      drawPrefix(inputTop);
     } else if (empty) {
       const placeholder = prompt
         ? prompt.entering
@@ -3632,7 +3641,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
             ? "(type to filter · ↑↓ choose · enter confirms · esc cancels)"
             : `(${resolveField(st0!.hint, prompt!.answers) ?? "type your answer"} · enter submits · esc cancels)`
         : "(type here — / commands · \\ escapes · ! shell · wheel/pgup scroll · click expands · drag/dbl-click selects)";
-      P.dock.text(1, inputTop, pfx, prompt ? S.prompt : S.dim);
+      drawPrefix(inputTop, prompt ? S.prompt : S.dim);
       P.dock.text(3, inputTop, placeholder, S.dim);
       pendingCaret = { x: 3, y: inputTop };
     } else {
@@ -3642,14 +3651,10 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         const yy = inputTop + (v - firstShown);
         const isFirstVisual = vr.index === 0 && vr.startCol === 0;
         const prefix = isFirstVisual ? pfx : "  ";
-        P.dock.text(1, yy, prefix, S.prompt);
-        if (isFirstVisual && dockMode !== "plain" && vr.text.length > 0) {
-          // tint the leading / or ! marker; the rest of the line is inputFg
-          P.dock.text(3, yy, vr.text[0], dockMode === "cmd" ? S.cmd : S.shell);
-          P.dock.text(4, yy, vr.text.slice(1), S.inputFg);
-        } else {
-          P.dock.text(3, yy, vr.text, S.inputFg);
-        }
+        if (isFirstVisual) drawPrefix(yy);
+        else P.dock.text(1, yy, prefix, S.prompt);
+        // the leading / or ! stays plain; the arrow above carries the mode color
+        P.dock.text(3, yy, vr.text, S.inputFg);
       }
       // input selection: same restyle-over-cells trick as the transcript
       const ir = inSelRange();

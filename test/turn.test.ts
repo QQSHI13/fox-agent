@@ -188,6 +188,28 @@ describe("turn manager", () => {
     expect(msgs.some((m: any) => m.role === "assistant" && m.content === "partial answ")).toBe(true);
   });
 
+  test("a steer parked mid-call persists as a user message when the turn is interrupted", async () => {
+    const t = await setup();
+    const s = t.createSession("/w", "m1");
+    const ac = new AbortController();
+    const { steer } = await import("../src/loop/steer.ts");
+    const slow = async function* (): AsyncGenerator<any> {
+      steer(s.id, "wait, also do this");
+      ac.abort();
+      const e = new Error("aborted");
+      e.name = "AbortError";
+      throw e;
+    };
+    const events = await collect(t.runTurnCore(s.id, cfg(), "hi", ac.signal, { chat: slow as any, quiet: true }));
+    expect((events.at(-1) as any).reason).toBe("aborted");
+    // the parked steer must NOT vanish — it persists as a user node so the next
+    // turn answers it, instead of being dropped by the abort exit path
+    const msgs = t.allMessages(s.id);
+    expect(msgs.some((m: any) => m.role === "user" && m.content === "wait, also do this")).toBe(true);
+    const { peekSteer } = await import("../src/loop/steer.ts");
+    expect(peekSteer(s.id)).toHaveLength(0); // drained, not leaked
+  });
+
   test("parallel tool failures are isolated — one throwing tool does not kill siblings", async () => {
     const t = await setup();
     const s = t.createSession("/w", "m1");
