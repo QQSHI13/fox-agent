@@ -113,7 +113,15 @@ jobs:
           curl -fsSL https://ampcode.com/install.sh | bash                       # amp
           curl https://cursor.com/install -fsS | bash                            # cursor-agent (also bins `agent`)
           curl -fsSL https://app.factory.ai/cli | sh                             # droid
-          curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash           # kimi code
+          # kimi code: retry the installer (a single flaky curl|bash otherwise
+          # silently leaves the row MISSING), then verify the binary landed;
+          # fall back to the npm package the installer itself recommends so the
+          # row is measured rather than n/a.
+          for attempt in 1 2 3; do
+            curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash && break
+            echo "kimi installer attempt $attempt failed — retrying"; sleep 3
+          done
+          command -v kimi >/dev/null || [ -x "$HOME/.kimi-code/bin/kimi" ] || npm i -g @moonshot-ai/kimi-code
           curl -fsSL https://cli.devin.ai/install.sh | bash                      # devin
           # curl-installed CLIs land off the npm prefix; put every install dir
           # on PATH for the later steps (fresh shell per step — plain export
@@ -122,6 +130,11 @@ jobs:
           for d in "$HOME/.local/bin" "$HOME/.cursor/bin" "$HOME/.kimi-code/bin" "$HOME/.factory/bin" "$HOME/bin"; do
             [ -d "$d" ] && echo "$d" >> "$GITHUB_PATH"
           done
+          # verify against the same PATH the bench step will see: $GITHUB_PATH
+          # only affects LATER steps, so this shell still cannot resolve kimi by
+          # `command -v` even when the install succeeded — prepend the install
+          # dirs here too, or a good install still reports MISSING.
+          export PATH="$HOME/.local/bin:$HOME/.cursor/bin:$HOME/.kimi-code/bin:$HOME/.factory/bin:$HOME/bin:$PATH"
           echo "--- installed versions ---"
           for b in claude codex opencode2 pi gemini copilot crush qwen aider jcode goose kilo kilocode amp cursor-agent agent codebuff droid kimi devin cline cn iflow; do
             command -v "$b" >/dev/null && echo "$b: $(timeout 20 "$b" --version 2>&1 | head -1)" || echo "$b: MISSING";
