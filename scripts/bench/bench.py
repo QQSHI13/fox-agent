@@ -446,7 +446,11 @@ def idle_pss(path, settle=1.5):
     return pss
 
 
-PROBE_TEXT = "hello bench"
+# No whitespace: a tool still in cooked mode has the terminal line discipline
+# echo its keys, and that discipline eats spaces — "hello bench" arrived as
+# "hellobench" and never matched, so cooked-mode tools (claude, jcode) timed
+# out as n/a even though they echoed fine. A bare word survives both modes.
+PROBE_TEXT = "hellobench"
 
 # Tools whose input readiness cannot be read off the screen: {"log": file to
 # tail, "marker": regex ending the probe}. The motivating case is a sign-in
