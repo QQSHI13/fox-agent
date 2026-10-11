@@ -379,6 +379,17 @@ export async function* runTurnCore(
     return { type: "done" as const, reason };
   };
 
+  // A steer parked while the provider call was in flight is drained at the next
+  // step boundary — but an interrupt ends the turn WITHOUT reaching that boundary,
+  // silently dropping the user's message. Persisting it here (as a real user node,
+  // parented like a steered message) keeps it in the context so it is answered on
+  // the next turn instead of vanishing. Called on every abort exit path.
+  const persistParkedSteers = (parentId: string) => {
+    for (const text of drainSteer(sessionId)) {
+      appendMessage(sessionId, { parent_id: parentId, role: "user", content: text, tokens: estTok(text) });
+    }
+  };
+
   for (const p of hooked) {
     if (!p.hooks?.onTurnStart) continue;
     await runHook(p, "onTurnStart", () => p.hooks!.onTurnStart!({ sessionId, cwd: session.cwd, model: cfg.model, userText }), hookWarn);
@@ -402,6 +413,7 @@ export async function* runTurnCore(
 
   for (let step = 1; ; step++) {
     if (signal?.aborted) {
+      persistParkedSteers(stepParentId); // a steer parked mid-call must survive the interrupt
       yield await endTurn("aborted", step);
       return;
     }
@@ -507,6 +519,7 @@ export async function* runTurnCore(
 
     if (outcome.finish === "aborted") {
       if (outcome.text) appendMessage(sessionId, { parent_id: stepParentId, role: "assistant", content: outcome.text, tokens: estTok(outcome.text) });
+      persistParkedSteers(stepParentId); // steer parked during this in-flight call
       yield await endTurn("aborted", step);
       return;
     }
