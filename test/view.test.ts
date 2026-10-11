@@ -64,7 +64,7 @@ describe("view projection", () => {
     });
     appendMessage(s.id, { parent_id: asst.id, role: "tool", content: "exit 0", tool_call_id: "c1", tokens: 2 });
 
-    // hide the whole span like ctx_edit would
+    // hide the whole span like ctx would
     appendOps(s.id, [{ kind: "delete", ids: [asst.seq], summary: "ran exec ok" }]);
     const view = projectView(s.id);
     const toolNode = view.find((n) => n.msg.role === "tool")!;

@@ -11,7 +11,7 @@ function marker(seq: number): string {
  * "predicting" one at the top of their own reply; stored verbatim, the next
  * render shows `[13] [12] …` and the echo compounds. Applied at store time
  * only (turn.ts) — rendering stays verbatim, so the transcript is the truth
- * and a pre-fix poisoned session is the agent's to ctx_edit away.
+ * and a pre-fix poisoned session is the agent's to ctx away.
  */
 export function stripEchoedMarkers(text: string): string {
   // accepts BOTH dialects: sessions poisoned before the [mN] -> [N] rename
@@ -81,7 +81,7 @@ function renderNode(n: ViewNode, callsKey: string, visibleToolIds: Set<string>, 
       if (kept.length) calls = kept;
     }
     // stored content renders verbatim (markers were already stripped at store
-    // time); a session poisoned before that fix is the agent's to ctx_edit away
+    // time); a session poisoned before that fix is the agent's to ctx away
     const text = n.content ? `${tag}${n.content}` : "";
     if (!text && !calls) return base; // renders to nothing
     const msg: ChatMessage = { role: "assistant", content: text };

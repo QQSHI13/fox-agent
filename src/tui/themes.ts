@@ -24,6 +24,23 @@ export interface Theme {
   hintSel: string;
   accent: string;
   ok: string;
+  /**
+   * Input-dock prompt prefix (❯ / ›). Optional — falls back to `accent`.
+   * Distinct so themes can color the prompt marker independently of the
+   * generic accent (spinner, slash-list headers, flash messages).
+   */
+  prompt?: string;
+  /**
+   * Leading `/` of an unescaped slash command in the input dock. Optional —
+   * falls back to `info`. Only the marker char is tinted; the rest of the
+   * command text stays `inputFg`.
+   */
+  cmd?: string;
+  /**
+   * Leading `!` of a shell escape in the input dock. Optional — falls back
+   * to `ok`. Same treatment as `cmd`.
+   */
+  shell?: string;
   barBg: string;
   inputBg: string;
   selBg: string;
@@ -61,6 +78,9 @@ export const THEME_PRESETS: Record<string, Theme> = {
     chrome: "#828ac0",
     hintSel: "#c0caf5",
     accent: "#bb9af7",
+    prompt: "#c792ea",
+    cmd: "#89ddff",
+    shell: "#9ece6a",
     ok: "#9ece6a",
     barBg: "#16161e",
     inputBg: "#1f2335",
@@ -79,6 +99,9 @@ export const THEME_PRESETS: Record<string, Theme> = {
     chrome: "#585e7e",
     hintSel: "#1f2335",
     accent: "#7847bd",
+    prompt: "#9d7cd8",
+    cmd: "#007197",
+    shell: "#587539",
     ok: "#587539",
     barBg: "#e4e6f0",
     inputBg: "#dde0ec",
@@ -97,6 +120,9 @@ export const THEME_PRESETS: Record<string, Theme> = {
     chrome: "#9a9a9a",
     hintSel: "#ffffff",
     accent: "#e0e0e0",
+    prompt: "#e0e0e0",
+    cmd: "#d0d0d0",
+    shell: "#c0c0c0",
     ok: "#c0c0c0",
     barBg: "#1a1a1a",
     inputBg: "#242424",
@@ -117,6 +143,9 @@ export const THEME_PRESETS: Record<string, Theme> = {
     chrome: "#839496",
     hintSel: "#eee8d5",
     accent: "#6c71c4",
+    prompt: "#8a8fd4",
+    cmd: "#2aa198",
+    shell: "#859900",
     ok: "#859900",
     barBg: "#002b36",
     inputBg: "#073642",
@@ -135,6 +164,9 @@ export const THEME_PRESETS: Record<string, Theme> = {
     chrome: "#8794cd",
     hintSel: "#f8f8f2",
     accent: "#bd93f9",
+    prompt: "#d6b3ff",
+    cmd: "#8be9fd",
+    shell: "#50fa7b",
     ok: "#50fa7b",
     barBg: "#21222c",
     inputBg: "#282a36",
@@ -156,6 +188,9 @@ export const THEME_PRESETS: Record<string, Theme> = {
     chrome: "#8f9cbf",
     hintSel: "#eceff4",
     accent: "#bf9ab4",
+    prompt: "#d8b4c8",
+    cmd: "#88c0d0",
+    shell: "#a3be8c",
     ok: "#a3be8c",
     barBg: "#242933",
     inputBg: "#2e3440",
@@ -174,6 +209,9 @@ export const THEME_PRESETS: Record<string, Theme> = {
     chrome: "#8c93c4",
     hintSel: "#cdd6f4",
     accent: "#cba6f7",
+    prompt: "#e0b0ff",
+    cmd: "#89dceb",
+    shell: "#a6e3a1",
     ok: "#a6e3a1",
     barBg: "#181825",
     inputBg: "#1e1e2e",
@@ -192,6 +230,9 @@ export const THEME_PRESETS: Record<string, Theme> = {
     chrome: "#b0a48e",
     hintSel: "#ebdbb2",
     accent: "#d3869b",
+    prompt: "#e6a8b8",
+    cmd: "#8ec07c",
+    shell: "#b8bb26",
     ok: "#b8bb26",
     barBg: "#282828",
     inputBg: "#32302f",
@@ -210,6 +251,9 @@ export const THEME_PRESETS: Record<string, Theme> = {
     chrome: "#a8a3c3",
     hintSel: "#e0def4",
     accent: "#c4a7e7",
+    prompt: "#d8c4f0",
+    cmd: "#c4a7e7",
+    shell: "#6ea8b8",
     ok: "#6ea8b8",
     barBg: "#191724",
     inputBg: "#1f1d2e",
@@ -228,6 +272,9 @@ export const THEME_PRESETS: Record<string, Theme> = {
     chrome: "#4d5480",
     hintSel: "#343a55",
     accent: "#7a3ab8",
+    prompt: "#9d5fd0",
+    cmd: "#00597a",
+    shell: "#485e30",
     ok: "#485e30",
     barBg: "#d5d9e6",
     inputBg: "#e1e4ee",
@@ -246,6 +293,9 @@ export const THEME_PRESETS: Record<string, Theme> = {
     chrome: "#b0a697",
     hintSel: "#d3c6aa",
     accent: "#d699b6",
+    prompt: "#e0b0c0",
+    cmd: "#83c092",
+    shell: "#a7c080",
     ok: "#a7c080",
     barBg: "#2b3339",
     inputBg: "#343f44",

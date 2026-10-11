@@ -7,7 +7,7 @@ import * as F from "./files.ts";
 import { execDef, execRun } from "./exec.ts";
 import { cleanupPty, ptySessionName } from "./pty.ts";
 import { setOutputCap } from "./files.ts";
-import { ctxDef, ctxRun } from "./ctxedit.ts";
+import { ctxDef, ctxRun } from "./ctx.ts";
 import { taskDef, taskRun } from "./task.ts";
 import { mcpTools, closeMcp } from "./mcp.ts";
 import { loadPlugins, setActivePlugins } from "../plugins/load.ts";
@@ -35,9 +35,6 @@ export function baseRegistry(): Map<string, Tool> {
   add(F.grepDef, F.grepRun);
   add(execDef, execRun);
   add(ctxDef, ctxRun);
-  // ctx_edit is GONE from the registry: two tools editing the same store made
-  // models split their ops between them (and ctx's ops are a superset). The
-  // name now exists only as a documented alias inside ctx's own description.
   add(taskDef, taskRun);
   return map;
 }
@@ -138,7 +135,7 @@ export async function buildRegistry(
   // switches the whole bridge off. First in the list: least specific wins.
   const mcpPlugin: FoxPlugin = { name: "bundled:mcp", tools: [] };
   if (bundledDisabled("mcp", disabled)) {
-    await closeMcp(); // an earlier config may have connected; don't leak the children
+    closeMcp(); // an earlier config may have connected; detached reap, don't leak the children
   } else {
     const mc = await mcpTools(servers);
     warnings.push(...mc.warnings);
@@ -233,7 +230,7 @@ export async function shutdownTools(sessionId: string): Promise<void> {
   killExecJobs(sessionId);
   const { killTasks } = await import("./task.ts");
   killTasks(sessionId);
-  await closeMcp();
+  closeMcp(); // detached: hands the terminal back while children reap in the background
   // an idle tsserver holds a project's worth of memory; leaving one per fox-agent run
   // behind would accumulate across a day of sessions in the same shell
   await shutdownLsp();

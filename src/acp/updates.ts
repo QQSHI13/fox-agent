@@ -20,7 +20,7 @@ import type { AgentEvent } from "../core/events.ts";
  * fox-agent tool -> ACP ToolKind. Clients pick icons and UI affordances from this, so
  * a wrong kind is a visibly wrong icon, not a protocol error.
  *
- * `ctx_edit` is `think`: it rewrites the agent's own context, touching no file
+ * `ctx` is `think`: it rewrites the agent's own context, touching no file
  * and running no command, which is closer to reasoning than to editing. MCP
  * tools and anything unlisted fall through to `other` — the honest answer for a
  * tool whose semantics fox-agent does not know.
@@ -35,7 +35,6 @@ export const TOOL_KIND: Record<string, ToolKind> = {
   pty: "execute",
   fetch: "fetch",
   ctx: "think",
-  ctx_edit: "think",
   repl: "execute",
   todo: "other",
   task: "other",

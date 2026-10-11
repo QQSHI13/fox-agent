@@ -13,7 +13,7 @@ export { VERSION };
  * Every section below is gated on this rather than written as prose, because a
  * prompt that describes a tool the registry doesn't have is worse than saying
  * nothing: a subagent used to be handed the whole "context window management"
- * doctrine while `ctx_edit` was excluded from its registry, so its only possible
+ * doctrine while `ctx` was excluded from its registry, so its only possible
  * move was to call a tool that did not exist.
  */
 function toolNames(tools: ToolDef[]): Set<string> {
@@ -148,7 +148,7 @@ function localClock(): { date: string; tz: string } {
     mins === 0 ? "UTC" : `UTC${mins < 0 ? "-" : "+"}${Math.floor(abs / 60)}${abs % 60 ? `:${p2(abs % 60)}` : ""}`;
   const zone = Intl.DateTimeFormat().resolvedOptions().timeZone || offset;
   return {
-    date: `${now.getFullYear()}-${p2(now.getMonth() + 1)}-${p2(now.getDate())} ${p2(now.getHours())}:${p2(now.getMinutes())}`,
+    date: `${now.getFullYear()}-${p2(now.getMonth() + 1)}-${p2(now.getDate())}`,
     tz: zone === offset ? offset : `${zone} ${offset}`,
   };
 }

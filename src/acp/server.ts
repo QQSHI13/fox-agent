@@ -71,7 +71,7 @@ function promptText(blocks: acp.ContentBlock[]): string {
  * Replay a stored transcript as session updates for `session/load`.
  *
  * Uses `projectView`, not `allMessages`, so a loading client sees exactly what
- * the model sees: compacted and `ctx_edit`-deleted spans stay hidden. Tool calls
+ * the model sees: compacted and ctx-deleted spans stay hidden. Tool calls
  * replay as already-`completed` — they ran in a previous process, so there is no
  * in-flight state to report.
  */

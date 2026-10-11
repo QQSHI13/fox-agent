@@ -2,7 +2,7 @@
 // reaches the compaction trigger (see budget.ts), the oldest span — everything
 // above a protected tail of the newest KEEP_TOKENS — is summarized by the model
 // itself and hidden with a single delete+summary op — the same machinery
-// ctx_edit uses, so /undo reverts it too.
+// ctx uses, so /undo reverts it too.
 import { appendOps, lastPromptTokens } from "../store/db.ts";
 import type { ChatMessage, ChatFn } from "../providers/types.ts";
 import { estimateTokens } from "../providers/models.ts";

@@ -229,11 +229,11 @@ describe("tools are presented honestly", () => {
 describe("nothing describes a tool the registry lacks", () => {
   const def = (name: string): ToolDef => ({ name, description: `does ${name}. Second sentence.`, parameters: { type: "object", properties: {} } });
 
-  test("a registry without ctx_edit gets no context-surgery doctrine", async () => {
+  test("a registry without ctx gets no context-surgery doctrine", async () => {
     // this is exactly what subagents used to receive: the whole "your core
     // ability" section, describing a tool excluded from their registry
     const p = await build({ tools: [def("read"), def("write")] });
-    expect(p).not.toContain("ctx_edit");
+    expect(p).not.toContain("ctx");
     expect(p).not.toContain("Context window management");
     expect(p).not.toContain("[mN]");
   });
@@ -298,7 +298,7 @@ describe("the rest of the prompt still assembles", () => {
 
   test("the clock is local and the offset reads as a zone, not a timestamp", async () => {
     const h = await header();
-    expect(h).toMatch(/^date: \d{4}-\d{2}-\d{2} \d{2}:\d{2}$/m);
+    expect(h).toMatch(/^date: \d{4}-\d{2}-\d{2}$/m);
     // UTC+8 / UTC-5:30 / plain UTC (a machine at offset 0 has no zone name to
     // disambiguate) — never the raw +08:00 timestamp form, which would read as
     // part of the date and needs a lookup to convert
@@ -326,7 +326,7 @@ describe("live context figure in the prompt", () => {
     expect(over).toContain("one ctx call");
   });
 
-  test("without ctx_edit the figure is omitted — nothing to act on it with", async () => {
+  test("without ctx the figure is omitted — nothing to act on it with", async () => {
     const h = await header({
       tools: [{ name: "read", description: "reads", parameters: { type: "object", properties: {} } }],
       budget: { reported: 120_000, limit: 128_000, ratio: 0.94, over: true },

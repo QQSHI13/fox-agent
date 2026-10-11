@@ -231,8 +231,8 @@ describe("task background mode", () => {
   });
 });
 
-describe("ctx_edit (retired alias)", () => {
-  test("the tool is gone from the registry — ctx is the one context tool", async () => {
+describe("ctx is the one context tool", () => {
+  test("no retired alias sits beside it in the registry", async () => {
     const { baseRegistry } = await import("../src/tools/index.ts");
     const tools = baseRegistry();
     expect(tools.has("ctx")).toBe(true);
@@ -243,7 +243,7 @@ describe("ctx_edit (retired alias)", () => {
 describe("ctx search, stats and query ops", () => {
   async function seeded() {
     const { createSession, appendMessage } = await import("../src/store/db.ts");
-    const { ctxRun } = await import("../src/tools/ctxedit.ts");
+    const { ctxRun } = await import("../src/tools/ctx.ts");
     const s = createSession(dir, "m1");
     const mine = { ...ctx, sessionId: s.id };
     const run = (ops: any[]) => ctxRun({ ops }, mine);
@@ -335,10 +335,10 @@ describe("registry", () => {
   });
 
   test("exclude drops the named tools", async () => {
-    const { tools } = await buildRegistry({ mcpServers: {} } as any, new Set(["task", "pty", "ctx_edit"]));
+    const { tools } = await buildRegistry({ mcpServers: {} } as any, new Set(["task", "pty", "ctx"]));
     expect(tools.has("task")).toBe(false);
     expect(tools.has("pty")).toBe(false);
-    expect(tools.has("ctx_edit")).toBe(false);
+    expect(tools.has("ctx")).toBe(false);
     expect(tools.has("read")).toBe(true);
   });
 

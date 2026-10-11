@@ -715,8 +715,15 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       if (m.role === "user") out.push({ k: seqKey(m.seq, 0), kind: "user", text: `[${m.seq}] ❯ ${m.content}` });
       else if (m.role === "tool") {
         // todo bodies are markdown task lists — rendered as md, always
-        // visible (a task list hidden behind a click is useless)
-        const isTodo = callName.get(m.tool_call_id ?? "") === "todo";
+        // visible (a task list hidden behind a click is useless). ctx bodies
+        // stay expanded too: the tool edits the agent's own context, and its
+        // per-op report (hidden/replaced/restored) is the audit trail for what
+        // the model just did to its view — burying it behind a fold hides the
+        // one record of a lossy operation.
+        const name = callName.get(m.tool_call_id ?? "");
+        const isTodo = name === "todo";
+        const isCtx = name === "ctx";
+        const pinned = isTodo || isCtx;
         out.push({ k: seqKey(m.seq, 1), kind: "toolhead", text: `[${m.seq}] » ${callLabel.get(m.tool_call_id ?? "") ?? "tool"}`, argsRaw: callRaw.get(m.tool_call_id ?? "") });
         // raw text — collapsed/expanded rendering lives in itemRows
         out.push({
@@ -727,7 +734,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           toolResult: true,
           mdBody: isTodo || undefined,
           // collapsed by default, but an explicit expand survives refresh()
-          expanded: isTodo || expandedRefs.has(m.seq),
+          expanded: pinned || expandedRefs.has(m.seq),
         });
       } else if (m.role === "think")
         out.push({ k: seqKey(m.seq, 0), kind: "think", text: m.content, ref: m.seq, expanded: expandedRefs.has(m.seq) });
@@ -1299,6 +1306,11 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     pinSession(id);
     expandedRefs.clear(); // refs are per-session seqs; carrying them over expands unrelated nodes
     expandMode = null; // likewise the ctrl+t fold direction — the new session starts on defaults
+    // per-session token state, same reasoning: statusText() prefers the live
+    // figure over the persisted one, so a stale one would override the new
+    // session's stored last report until its first call lands
+    lastPromptTokens = 0;
+    hitTotals = null;
     refresh();
     attachLock(id);
   }
@@ -3289,6 +3301,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     sbTrack: 0,
     overlayRow: 0,
     overlaySel: 0,
+    prompt: 0,
+    cmd: 0,
+    shell: 0,
   };
   function initStyles() {
     S.base = screen.sgr({ fg: C.fg });
@@ -3316,6 +3331,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     S.sbTrack = screen.sgr({ bg: C.sbTrack ?? C.inputBg });
     S.overlayRow = screen.sgr({ fg: C.fg, bg: C.inputBg });
     S.overlaySel = screen.sgr({ fg: C.hintSel, bg: C.selBg });
+    S.prompt = screen.sgr({ fg: C.prompt ?? C.accent }); // input-dock ❯ / › prefix
+    S.cmd = screen.sgr({ fg: C.cmd ?? C.info, bg: C.inputBg }); // leading / of a slash command
+    S.shell = screen.sgr({ fg: C.shell ?? C.ok, bg: C.inputBg }); // leading ! of a shell escape
   }
 
   /** shared dock geometry for paint + click mapping */
@@ -3594,10 +3612,16 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     // filter — the two would otherwise fight over the same line
     const selectFilter = prompt && st0?.kind === "select" && !prompt.entering ? prompt.filter : "";
     const pfx = prompt ? "› " : "❯ ";
+    // unescaped leading / (slash command) or ! (shell escape) gets its own
+    // marker color; the rest of the line stays inputFg. Escaped (\/) stays
+    // plain. Detection mirrors dispatch(): first non-whitespace char + !lit.
+    const leadCh = buf.find((c) => c.c.trim().length > 0);
+    const dockMode =
+      !prompt && leadCh && !leadCh.lit && leadCh.c === "/" ? "cmd" : !prompt && leadCh && !leadCh.lit && leadCh.c === "!" ? "shell" : "plain";
     if (selectFilter) {
       // a select step's keystrokes go to the filter — show them in the dock,
       // not just in the floating header, or typing feels dead
-      P.dock.text(1, inputTop, pfx, S.accent);
+      P.dock.text(1, inputTop, pfx, S.prompt);
       P.dock.text(3, inputTop, selectFilter, S.inputFg);
       pendingCaret = { x: 3 + [...selectFilter].reduce((w, ch) => w + charWidth(ch.codePointAt(0)!), 0), y: inputTop };
     } else if (empty) {
@@ -3608,7 +3632,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
             ? "(type to filter · ↑↓ choose · enter confirms · esc cancels)"
             : `(${resolveField(st0!.hint, prompt!.answers) ?? "type your answer"} · enter submits · esc cancels)`
         : "(type here — / commands · \\ escapes · ! shell · wheel/pgup scroll · click expands · drag/dbl-click selects)";
-      P.dock.text(1, inputTop, pfx, prompt ? S.accent : S.dim);
+      P.dock.text(1, inputTop, pfx, prompt ? S.prompt : S.dim);
       P.dock.text(3, inputTop, placeholder, S.dim);
       pendingCaret = { x: 3, y: inputTop };
     } else {
@@ -3618,8 +3642,14 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         const yy = inputTop + (v - firstShown);
         const isFirstVisual = vr.index === 0 && vr.startCol === 0;
         const prefix = isFirstVisual ? pfx : "  ";
-        P.dock.text(1, yy, prefix, S.accent);
-        P.dock.text(3, yy, vr.text, S.inputFg);
+        P.dock.text(1, yy, prefix, S.prompt);
+        if (isFirstVisual && dockMode !== "plain" && vr.text.length > 0) {
+          // tint the leading / or ! marker; the rest of the line is inputFg
+          P.dock.text(3, yy, vr.text[0], dockMode === "cmd" ? S.cmd : S.shell);
+          P.dock.text(4, yy, vr.text.slice(1), S.inputFg);
+        } else {
+          P.dock.text(3, yy, vr.text, S.inputFg);
+        }
       }
       // input selection: same restyle-over-cells trick as the transcript
       const ir = inSelRange();

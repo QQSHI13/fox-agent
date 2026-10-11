@@ -178,7 +178,7 @@ export interface Config {
   /** TUI color theme: a preset name or a plugin-registered one (default "default") */
   theme: string;
   /**
-   * Render [N] markers on messages and give the agent ctx_edit (default true).
+   * Render [N] markers on messages and give the agent ctx (default true).
    * Weak models echo the markers instead of acting on them — set false for
    * them; the render and store paths strip echoed markers regardless.
    */

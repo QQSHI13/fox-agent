@@ -12,7 +12,7 @@ const STATS_MAX_TOP = 20;
 export const ctxDef: ToolDef = {
   name: "ctx",
   description:
-    "Your own context window: view, search and surgically edit what you see (view only — storage is never touched). Messages appear as [N] markers (ctx_edit, the old delete/replace-only tool, is an alias of this one). search finds nodes by pattern and shows snippets instead of whole bodies — query instead of reading; stats shows sizes and the biggest nodes; delete hides nodes (optional summary keeps a tiny note); delete_by_query hides by pattern; replace rewrites text; restore un-hides. Batch multiple ops in one call.",
+    "Your own context window: view, search and surgically edit what you see (view only — storage is never touched). Messages appear as [N] markers. search finds nodes by pattern and shows snippets instead of whole bodies — query instead of reading; stats shows sizes and the biggest nodes; delete hides nodes (optional summary keeps a tiny note); delete_by_query hides by pattern; replace rewrites text; restore un-hides. Batch multiple ops in one call.",
   parameters: {
     type: "object",
     properties: {
@@ -161,5 +161,3 @@ export async function ctxRun(args: { ops?: any[]; reason?: string }, ctx: ToolCo
   out.push(`ctx ok: ${hidden} hidden, ${replaced} replaced, ${restored} restored (view only; log untouched, ${total} nodes stored).${args.reason ? ` reason: ${args.reason}` : ""}`);
   return ok(out.join("\n"));
 }
-
-/** Deprecated alias entry point — delete/replace only; anything else names ctx. */

@@ -169,8 +169,10 @@ describe.skipIf(!CAN_RUN)("mcp bridge against a live server", () => {
     const first = await mcpTools(fixtureCfg());
     expect(fixtureProcs()).toBeGreaterThan(0);
 
-    await closeMcp();
-    await Bun.sleep(200);
+    closeMcp(); // detached reap — the cache clears now, children SIGKILL in the background
+    // poll instead of a fixed sleep: the reap is fire-and-forget, so give the
+    // background closeClients time to deliver the kill without baking in a race
+    for (let i = 0; i < 50 && fixtureProcs() > 0; i++) await Bun.sleep(100);
     expect(fixtureProcs()).toBe(0);
 
     // the cache went with them, so the next call is a genuine reconnect rather

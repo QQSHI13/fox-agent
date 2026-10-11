@@ -10,8 +10,10 @@ invented):
   - startup: best of 4 `--version` runs (the harness floor, for reference)
   - tui_first_byte: best of 5 PTY launches with no args, time to first output
     byte — the real "time to first char" of an interactive launch
-  - tui_first_input: best of 3 PTY launches typing a probe and waiting for it
-    to render — time to interactive, not just time to paint
+  - tui_first_input: best of 3 PTY launches — time from spawn, once the TUI is
+    alive and quiet, to a typed probe rendering on screen (time to interactive
+  - tui_input_latency: best of 3 PTY launches, settled 1s, then the same probe —
+    isolates input-handling latency from startup cost
 
 Plus fox-agent only (hermetic, no API key, no network):
   - ttft: headless `fox -p … --json` against the repo's scripted fake
@@ -392,18 +394,150 @@ def _wait_output(fd, timeout):
     return None
 
 
-def tui_first_input(path, label, probes=3, timeout=30):
-    """Time from first typed byte to the probe text appearing on screen.
+def _await_quiet(fd, budget_s):
+    """Drain until the TUI goes quiet (ready to read keys) or budget expires.
 
-    Launch under a PTY, wait until the app is alive AND quiet (typing into a
-    process still starting up proves nothing), type PROBE_TEXT, then poll
-    until it shows up in the newly rendered output — per-chunk, not the whole
-    stream, because diffing TUIs repaint their input box forever and a
-    whole-stream search would false-positive on any historical occurrence.
-    Best of N; None when it never appears (a tool that drops early keystrokes
-    or never echoes honestly reports n/a rather than a number). Tools are
-    expected to own the terminal in raw mode, like every interactive TUI must
-    to read keys at all.
+    Returns nothing; callers type immediately after. Two windows: a brief one
+    for an app that painted and stopped, then a longer grace for apps whose
+    first frames keep coming. A spinner that never goes quiet exhausts the
+    budget and is typed into anyway — the retype round in the caller catches
+    swallowed keys, so worst case is a slower number, not a wrong one.
+    """
+    quiet_end = time.perf_counter() + 0.75
+    init_cap = time.perf_counter() + min(8, budget_s)
+    while time.perf_counter() < min(quiet_end, init_cap):
+        r, _, _ = select.select([fd], [], [], max(0, min(quiet_end, init_cap) - time.perf_counter()))
+        if not r:
+            break
+        try:
+            if not os.read(fd, 65536):
+                break
+        except OSError:
+            break
+    drain_end = time.perf_counter() + max(0, budget_s - 0.75)
+    while time.perf_counter() < drain_end:
+        r, _, _ = select.select([fd], [], [], max(0, drain_end - time.perf_counter()))
+        if not r:
+            break
+        try:
+            if not os.read(fd, 65536):
+                break
+        except OSError:
+            break
+
+
+def _await_echo(fd, t0, deadline, logf, cfg):
+    """Type PROBE_TEXT and wait for it to render. Returns ms from t0, or None.
+
+    Up to two typing rounds against one deadline: a tool still starting up may
+    swallow early keystrokes, and the honest number is "how long until MY input
+    appears", not n/a — but a tool that never echoes still times out honestly.
+    The echo is matched over the accumulated ANSI-stripped stream, not one
+    chunk, because tools echo keystroke-by-keystroke.
+    """
+    for attempt in (1, 2):
+        if attempt == 2:
+            quiet_end = time.perf_counter() + 1.0
+            while time.perf_counter() < min(quiet_end, deadline):
+                r, _, _ = select.select([fd], [], [], max(0, min(quiet_end, deadline) - time.perf_counter()))
+                if not r:
+                    break
+                try:
+                    if not os.read(fd, 65536):
+                        break
+                except OSError:
+                    break
+        try:
+            os.write(fd, PROBE_TEXT.encode())
+        except OSError:
+            return None if attempt == 2 else None
+        seen = b""
+        while time.perf_counter() < deadline:
+            if logf is not None:
+                try:
+                    chunk = logf.read()
+                except OSError:
+                    break
+                if chunk:
+                    seen += chunk
+                    if re.search(cfg["marker"], seen.decode("utf-8", "replace")):
+                        return time.perf_counter() - t0
+                time.sleep(0.2)
+                continue
+            r, _, _ = select.select([fd], [], [], max(0, deadline - time.perf_counter()))
+            if not r:
+                continue
+            try:
+                data = os.read(fd, 65536)
+            except OSError:
+                break
+            if not data:
+                break
+            seen += data
+            if PROBE_TEXT.encode() in ANSI_RE.sub(b"", seen):
+                return time.perf_counter() - t0
+    return None
+
+
+def tui_first_input(path, label, probes=3, timeout=30):
+    """Time to interactive since startup: launch, wait until the TUI is alive
+    AND quiet (typing into a process still starting up proves nothing), type a
+    probe, and measure from process spawn to the probe text appearing on screen.
+
+    This is the real "how long until I can use it" figure — from launch, not
+    from the first typed byte. Best of N; None when the probe never appears (a
+    tool that never echoes honestly reports n/a rather than a number).
+    """
+    cfg = INPUT_MARKERS.get(label)
+    samples = []
+    for _ in range(probes):
+        try:
+            pid, fd = pty.fork()
+        except OSError:
+            return None
+        if pid == 0:
+            os.environ["TERM"] = "xterm-256color"
+            try:
+                os.execv(path, [path])
+            except Exception:
+                os._exit(127)
+        logf = None
+        try:
+            start = time.perf_counter()
+            if _wait_output(fd, 15) is None:
+                continue
+            _await_quiet(fd, budget_s=6.0)
+            if cfg:
+                try:
+                    logf = open(os.path.expanduser(cfg["log"]), "rb")
+                    logf.seek(0, os.SEEK_END)
+                except OSError:
+                    logf = None
+            hit = _await_echo(fd, start, start + timeout, logf, cfg)
+            if hit is not None:
+                samples.append(hit * 1000)
+        finally:
+            try:
+                if logf is not None:
+                    logf.close()
+            except Exception:
+                pass
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            try:
+                os.kill(pid, signal.SIGKILL)
+                os.waitpid(pid, 0)
+            except (ProcessLookupError, ChildProcessError, OSError):
+                pass
+    return min(samples) if samples else None
+
+
+def tui_input_latency(path, label, settle_s=1.0, probes=3, timeout=15):
+    """Input latency after a fixed settle: launch, wait `settle_s`, then measure
+    how fast a typed probe renders. Isolates input-handling latency from startup
+    cost — how responsive the TUI is once it is already up. Best of N.
     """
     cfg = INPUT_MARKERS.get(label)
     samples = []
@@ -422,109 +556,20 @@ def tui_first_input(path, label, probes=3, timeout=30):
         try:
             if _wait_output(fd, 15) is None:
                 continue
-            # settle twice: once briefly (an app that painted and went quiet
-            # is ready), then a grace window for apps whose first frames keep
-            # coming — typing into a TUI that is still painting swallows the
-            # probe. The long settle is capped so a chatty spinner cannot
-            # stall the probe forever; the retyping round below catches the
-            # rest, so worst case is a slower number, not a wrong one.
-            quiet_end = time.perf_counter() + 0.75
-            init_cap = time.perf_counter() + 8
-            while time.perf_counter() < min(quiet_end, init_cap):
-                r, _, _ = select.select([fd], [], [], max(0, min(quiet_end, init_cap) - time.perf_counter()))
-                if not r:
-                    break
-                try:
-                    if not os.read(fd, 65536):
-                        break
-                except OSError:
-                    break
-            # did the app actually go quiet, or is it still painting? A
-            # spinner re-painting every frame means keys are not being read
-            # yet — wait out the paint (bounded at 6s; a tool that never goes
-            # quiet gets its number from the retype round below, honestly late
-            # rather than dishonestly never).
-            drain_end = time.perf_counter() + 6.0
-            while time.perf_counter() < drain_end:
-                r, _, _ = select.select([fd], [], [], max(0, drain_end - time.perf_counter()))
-                if not r:
-                    break
-                try:
-                    if not os.read(fd, 65536):
-                        break
-                except OSError:
-                    break
+            # fixed settle: the point is a stable, reproducible post-startup
+            # baseline, NOT "whenever the app felt quiet" — that is what
+            # tui_first_input measures. Sleep the remainder of settle_s after
+            # the first byte so slow paint does not eat the settle window.
+            time.sleep(settle_s)
+            _await_quiet(fd, budget_s=2.0)
             if cfg:
-                # marker path: seek past stale lines so only this probe's
-                # marker can complete it, then type like everyone else
                 try:
                     logf = open(os.path.expanduser(cfg["log"]), "rb")
                     logf.seek(0, os.SEEK_END)
                 except OSError:
                     logf = None
             t0 = time.perf_counter()
-            try:
-                os.write(fd, PROBE_TEXT.encode())
-            except OSError:
-                continue
-            deadline = t0 + timeout
-            seen = b""
-            hit = None
-            # up to two typing rounds against one deadline: a tool still
-            # starting up may swallow early keystrokes, and the honest number
-            # for that is "how long until MY input appears", not n/a — but a
-            # tool that never echoes still times out honestly
-            for attempt in (1, 2):
-                if attempt == 2:
-                    quiet_end = time.perf_counter() + 1.0
-                    while time.perf_counter() < min(quiet_end, deadline):
-                        r, _, _ = select.select([fd], [], [], max(0, min(quiet_end, deadline) - time.perf_counter()))
-                        if not r:
-                            break
-                        try:
-                            if not os.read(fd, 65536):
-                                break
-                        except OSError:
-                            break
-                    try:
-                        os.write(fd, PROBE_TEXT.encode())
-                    except OSError:
-                        break
-                while time.perf_counter() < deadline:
-                    if logf is not None:
-                        try:
-                            chunk = logf.read()
-                        except OSError:
-                            break
-                        if chunk:
-                            seen += chunk
-                            if re.search(cfg["marker"], seen.decode("utf-8", "replace")):
-                                hit = time.perf_counter() - t0
-                                break
-                        time.sleep(0.2)
-                        continue
-                    r, _, _ = select.select([fd], [], [], max(0, deadline - time.perf_counter()))
-                    if not r:
-                        continue
-                    try:
-                        data = os.read(fd, 65536)
-                    except OSError:
-                        break
-                    if not data:
-                        break
-                    seen += data
-                    # strip + search over the ACCUMULATED stream, not one
-                    # chunk: tools echo keystroke-by-keystroke ("h", "he",
-                    # "hel" in separate reads) or paint the input cell-by-cell,
-                    # so the full probe rarely lands contiguous in a single
-                    # chunk — that is how the 2026-10-08 run filled the column
-                    # with n/a. Only the FIRST occurrence counts, so input-line
-                    # repaints after the echo can never clock a faster number.
-                    if PROBE_TEXT.encode() in ANSI_RE.sub(b"", seen):
-                        hit = time.perf_counter() - t0
-                        break
-                if hit is not None:
-                    break
+            hit = _await_echo(fd, t0, t0 + timeout, logf, cfg)
             if hit is not None:
                 samples.append(hit * 1000)
         finally:
@@ -665,11 +710,13 @@ def dashboard_svg(panels, out_path):
     rows get medal markers so the top-3 is scannable without reading
     numbers.
     """
-    W, GUT, PAD, LANE_LABEL = 1180, 24, 28, 150
-    COLW = (W - PAD * 2 - GUT) // 2
+    W, GUT, PAD, LANE_LABEL = 1180, 20, 24, 148
+    NCOL = 3
+    COLW = (W - PAD * 2 - GUT * (NCOL - 1)) // NCOL
     HEADER_H, LANE_H, SUB_H, FOOT_H = 84, 30, 18, 34
+    NROW = -(-len(panels) // NCOL)  # ceil division
     n_rows = max(len(p[2]) for p in panels)
-    H = HEADER_H + SUB_H + 2 * (LANE_H * n_rows + SUB_H) + FOOT_H
+    H = HEADER_H + SUB_H + NROW * (LANE_H * n_rows + SUB_H + SUB_H) + FOOT_H
     L = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" font-family="ui-monospace,Menlo,Consolas,monospace">',
         # base + header band
@@ -678,13 +725,12 @@ def dashboard_svg(panels, out_path):
         f'<rect x="0" y="{HEADER_H - 2}" width="{W}" height="2" fill="{ACC}"/>',
         f'<text x="{PAD}" y="36" fill="{INK}" font-size="20" font-weight="bold">fox-agent · harness bench</text>',
         f'<text x="{PAD}" y="58" fill="{MUT}" font-size="12">startup · TUI latency · footprint · idle memory — github actions ubuntu-latest, refreshed on every push</text>',
-        f'<text x="{PAD}" y="76" fill="{MUT}" font-size="11">{esc("1st byte = PTY launch, best of 5 · 1st input = probe typed + echoed, best of 3 · bundle = binary or pkg dir · PSS at rest")}</text>',
+        f'<text x="{PAD}" y="76" fill="{MUT}" font-size="11">{esc("1st byte = PTY launch, best of 5 · 1st input = spawn→quiet→typed→echo, best of 3 · latency = echo after a 1s settle · bundle = binary or pkg dir · PSS at rest")}</text>',
     ]
     for pi_, (title, subtitle, rows, unit, fmt) in enumerate(panels):
-        col, row = pi_ % 2, pi_ // 2
+        col, row = pi_ % NCOL, pi_ // NCOL
         x0 = PAD + col * (COLW + GUT)
         y0 = HEADER_H + row * (LANE_H * n_rows + SUB_H + SUB_H) + SUB_H
-        # panel header + hairline
         L.append(f'<text x="{x0}" y="{y0 - 6}" fill="{INK}" font-size="14">{esc(title)}</text>')
         L.append(f'<rect x="{x0}" y="{y0 - 2}" width="{COLW}" height="1" fill="{GRID}"/>')
         have = sorted([r for r in rows if r[1] is not None], key=lambda r: r[1])
@@ -725,20 +771,23 @@ def measure(label, path, n_start, n_probes, n_input):
     startup = best_startup(path, n_start)
     ttfb = tui_first_byte(path, n_probes)
     tfin = tui_first_input(path, label, n_input)
+    latency = tui_input_latency(path, label, probes=n_input)
     pss = idle_pss(path)
     row = {
         "agent": label,
         "installed": True,
         "bin": path,
         "version": ver,
-        "disk_mb": round(disk, 1) if disk is not None else None,
+        # full precision in the JSON; the md table and SVG round for display
+        "disk_mb": disk,
         "disk_kind": kind,
-        "startup_ms": round(startup, 1) if startup is not None else None,
-        "tui_first_byte_ms": round(ttfb, 1) if ttfb is not None else None,
-        "tui_first_input_ms": round(tfin, 1) if tfin is not None else None,
-        "idle_pss_mb": round(pss, 1) if pss is not None else None,
+        "startup_ms": startup,
+        "tui_first_byte_ms": ttfb,
+        "tui_first_input_ms": tfin,
+        "tui_input_latency_ms": latency,
+        "idle_pss_mb": pss,
     }
-    print(f"{label}: {ver} disk={row['disk_mb']}MB({kind}) startup={row['startup_ms']}ms ttfb={row['tui_first_byte_ms']}ms tfin={row['tui_first_input_ms']}ms pss={row['idle_pss_mb']}MB")
+    print(f"{label}: {ver} disk={disk:.1f}MB({kind}) startup={startup:.1f}ms ttfb={ttfb:.1f}ms tfin={tfin:.1f}ms latency={latency:.1f}ms pss={pss:.1f}MB" if all(x is not None for x in (disk, startup, ttfb, tfin, latency, pss)) else f"{label}: {ver} disk={disk}({kind}) startup={startup} ttfb={ttfb} tfin={tfin} latency={latency} pss={pss}")
     return row
 
 
@@ -819,7 +868,7 @@ def main():
                 fake.kill()
         else:
             print("fox extra: fake provider unavailable")
-    fox_extra["method"] = "headless `fox -p … --json` vs scripted local provider; RSS via /usr/bin/time -v; TUI bytes via PTY; TUI input = first typed byte to probe text on screen (log marker where echo is suppressed)"
+    fox_extra["method"] = "headless `fox -p … --json` vs scripted local provider; RSS via /usr/bin/time -v; TUI bytes via PTY; TUI input = spawn→quiet→typed→echo on screen (log marker where echo is suppressed); input latency = echo after a 1s settle"
 
     import platform
 
@@ -828,8 +877,10 @@ def main():
         "machine": f"{platform.system()} {platform.machine()} ({platform.release()})",
         "method": (
             "best of 4 `--version` runs; best of 5 PTY launches (no args) to first output byte; "
-            "best of 3 PTY launches typing a probe and waiting for it on screen (log marker "
-            "where a tool suppresses echo); "
+            "best of 3 PTY launches measuring time-to-interactive since spawn (TUI alive+quiet, then "
+            "probe typed → rendered on screen; log marker where a tool suppresses echo); "
+            "best of 3 PTY launches measuring input latency after a 1s settle (echo round-trip, "
+            "startup cost removed); "
             "PSS after 1.5s idle from /proc smaps_rollup; bundle = the binary itself, a launcher's "
             "exec target where a wrapper hands off, or the package "
             "dir for script CLIs (entry shims alone would pretend node_modules are free); "
@@ -843,6 +894,9 @@ def main():
     with open(os.path.join(out, "results.json"), "w") as f:
         json.dump(payload, f, indent=2)
 
+    # expandable dashboard: 3 columns x 2 rows of metric lanes, one <details>
+    # per lane so the README can show the headline graphs and tuck the rest
+    # behind a click. Full numbers live in table.md regardless.
     is_fox = lambda r: r["agent"] == "fox-agent"  # noqa: E731
     dashboard_svg(
         [
@@ -854,9 +908,16 @@ def main():
                 fmt_ms,
             ),
             (
-                "time to first input",
-                "launch, type a probe, wait for the echo · best of 3 · lower is better",
+                "time to first input (since startup)",
+                "spawn → TUI quiet → probe typed → echo on screen · best of 3 · lower is better",
                 [(r["agent"], r.get("tui_first_input_ms"), is_fox(r)) for r in rows],
+                "ms",
+                fmt_ms,
+            ),
+            (
+                "input latency after 1s settle",
+                "launch, settle 1s, type probe, measure echo · best of 3 · lower is better",
+                [(r["agent"], r.get("tui_input_latency_ms"), is_fox(r)) for r in rows],
                 "ms",
                 fmt_ms,
             ),
@@ -874,38 +935,74 @@ def main():
                 "MB",
                 lambda v: f"{v:.0f}",
             ),
+            (
+                "`--version` (harness floor)",
+                "best of 4 · reference only, several tools short-circuit this before loading their bundle",
+                [(r["agent"], r.get("startup_ms"), is_fox(r)) for r in rows],
+                "ms",
+                fmt_ms,
+            ),
         ],
         os.path.join(out, "bench.svg"),
     )
 
-    # markdown table for the README snapshot + job summary
-    T = ["| agent | version | bundle | `--version` | TUI 1st byte | TUI 1st input | idle PSS |", "|---|---|---|---|---|---|---|"]
+    # markdown table — EVERY collected field at full precision. The README
+    # snapshot trims to a headline subset; this is the complete record.
+    def cell(v, unit="", nd=1):
+        if v is None:
+            return "—"
+        return f"{v:.{nd}f}{unit}"
+
+    T = [
+        "| agent | version | bin | bundle (MB) | bundle kind | `--version` (ms) | TUI 1st byte (ms) | TUI 1st input (ms) | input latency 1s (ms) | idle PSS (MB) |",
+        "|---|---|---|---|---|---|---|---|---|---|",
+    ]
     for r in rows:
         if not r.get("installed"):
-            T.append(f"| {r['agent']} | n/a (not installed) | — | — | — | — | — |")
+            T.append(f"| {r['agent']} | n/a (not installed) | — | — | — | — | — | — | — | — |")
             continue
-        disk = f"{r['disk_mb']:.1f} MB" if r.get("disk_mb") is not None else "—"
-        if r.get("disk_kind") == "pkg":
-            disk += " (pkg)"
-        elif r.get("disk_kind") == "entry":
-            disk += " (entry)"
-        st = f"{r['startup_ms']:.0f} ms" if r.get("startup_ms") is not None else "—"
-        tb = f"**{r['tui_first_byte_ms']:.0f} ms**" if r.get("tui_first_byte_ms") is not None else "—"
-        ti = f"**{r['tui_first_input_ms']:.0f} ms**" if r.get("tui_first_input_ms") is not None else "—"
-        pss = f"{r['idle_pss_mb']:.0f} MB" if r.get("idle_pss_mb") is not None else "—"
         name = f"**{r['agent']}**" if r["agent"] == "fox-agent" else r["agent"]
-        T.append(f"| {name} | {r['version']} | {disk} | {st} | {tb} | {ti} | {pss} |")
+        T.append(
+            f"| {name} | {r['version']} | `{r['bin']}` | {cell(r.get('disk_mb'))} | {r.get('disk_kind','—')} | "
+            f"{cell(r.get('startup_ms'))} | {cell(r.get('tui_first_byte_ms'))} | {cell(r.get('tui_first_input_ms'))} | "
+            f"{cell(r.get('tui_input_latency_ms'))} | {cell(r.get('idle_pss_mb'))} |"
+        )
     table_md = "\n".join(T) + "\n"
     with open(os.path.join(out, "table.md"), "w") as f:
         f.write(table_md)
 
     # README snapshot block: the bench workflow splices this between
     # <!-- bench:start --> and <!-- bench:end --> so the top-of-README
-    # numbers refresh with every run instead of going stale.
+    # numbers refresh with every run instead of going stale. The README shows a
+    # compact headline table; the full-precision 10-column record stays in
+    # bench/table.md (linked) so the README top stays readable.
+    HT = [
+        "| agent | bundle | `--version` | TUI 1st byte | TUI 1st input | input latency 1s | idle PSS |",
+        "|---|---|---|---|---|---|---|",
+    ]
+    for r in rows:
+        if not r.get("installed"):
+            HT.append(f"| {r['agent']} | — | — | — | — | — | — |")
+            continue
+        name = f"**{r['agent']}**" if r["agent"] == "fox-agent" else r["agent"]
+        disk = f"{r['disk_mb']:.0f} MB" if r.get("disk_mb") is not None else "—"
+        st = f"{r['startup_ms']:.0f} ms" if r.get("startup_ms") is not None else "—"
+        tb = f"**{r['tui_first_byte_ms']:.0f} ms**" if r.get("tui_first_byte_ms") is not None else "—"
+        ti = f"**{r['tui_first_input_ms']:.0f} ms**" if r.get("tui_first_input_ms") is not None else "—"
+        la = f"**{r['tui_input_latency_ms']:.0f} ms**" if r.get("tui_input_latency_ms") is not None else "—"
+        pss = f"{r['idle_pss_mb']:.0f} MB" if r.get("idle_pss_mb") is not None else "—"
+        HT.append(f"| {name} | {disk} | {st} | {tb} | {ti} | {la} | {pss} |")
+    headline_md = "\n".join(HT)
     S = [
         "![harness bench dashboard](bench/bench.svg)",
         "",
+        headline_md,
+        "",
+        "<details><summary>full precision · all collected fields</summary>",
+        "",
         table_md.rstrip(),
+        "",
+        "</details>",
         "",
     ]
     if fox_extra.get("ttft_ms") is not None:

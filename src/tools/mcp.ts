@@ -51,7 +51,9 @@ export async function mcpTools(
   const key = JSON.stringify(servers);
   if (cache?.key === key) return { tools: cache.tools, warnings: cache.warnings };
   // config changed — drop the old children before standing up new ones
-  if (cache) await closeMcp();
+  // (fire-and-forget: the cache is cleared synchronously so the new pool
+  // builds fresh; the old children's SIGKILL reap runs in the background)
+  if (cache) closeMcp();
 
   const tools = new Map<string, Tool>();
   const warnings: string[] = [];
@@ -108,21 +110,33 @@ export async function mcpTools(
 /**
  * Disconnect every live MCP client, killing their stdio children.
  *
- * Each close is raced against a deadline, and a server that will not die is
- * SIGKILLed rather than awaited. Without this, one wedged server (measured:
- * an npx chrome-devtools bridge over WSL interop whose close never settles)
- * hung shutdownTools forever — the TUI had printed its resume hint and looked
- * exited, but the process sat on this Promise.all until the user opened a
- * second shell to kill it.
+ * Detached: the snapshot of live clients is taken and the cache cleared
+ * synchronously (so a follow-up session builds a fresh pool), but the actual
+ * close — and the SIGKILL safety net for a wedged child — runs in the
+ * background and is NOT awaited. Each close used to be raced against a 3s
+ * deadline inside the awaited shutdown path, so one hung server (measured: an
+ * npx chrome-devtools bridge over WSL interop whose close never settles)
+ * stalled the terminal handoff for the whole deadline even though the user
+ * had already been shown the resume hint. The polite window per server is
+ * unchanged; it now just overlaps process teardown instead of gating it.
  */
-const MCP_CLOSE_TIMEOUT_MS = 3_000;
-export async function closeMcp(): Promise<void> {
+export function closeMcp(): void {
   const live = cache?.clients ?? [];
   cache = null;
-  await closeClients(live);
+  if (!live.length) return;
+  // fire-and-forget: callers must not await; the SIGKILL fallback in
+  // closeClients still reaps a child whose polite close hangs
+  void closeClients(live);
 }
 
-/** The bounded close + SIGKILL fallback, exposed so tests can pin it. */
+/** The bounded close + SIGKILL fallback, exposed so tests can pin it.
+ *
+ * Runs detached from shutdown (closeMcp no longer awaits it), but stays
+ * bounded internally: a wedged client.close() that never settles must still
+ * yield to the SIGKILL within the polite window, or the background reaper
+ * would itself leak a hung promise and a live child.
+ */
+const MCP_CLOSE_TIMEOUT_MS = 3_000;
 export async function closeClients(clients: LiveClient[]): Promise<void> {
   await Promise.all(
     clients.map(async (c) => {

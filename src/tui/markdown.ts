@@ -184,7 +184,33 @@ export function renderMarkdown(src: string, state?: MdState, width?: number): Se
       if (!t || !/^[\s:|-]+$/.test(t)) return false;
       return (t.match(/-/g) ?? []).length >= 3; // `--- | ---`, `|:--|:--:|`
     };
-    const splitRow = (l: string) => l.trim().replace(/^\||\|$/g, "").split("|").map((c) => c.trim());
+    // Split a row into cells WITHOUT splitting inside a backtick span and
+    // honoring the GFM `\|` escape (literal pipe). Models emit code cells
+    // containing `|` constantly ("a `b | c` code cell"); a naive split() on
+    // every `|` turned that into a phantom column — the composed table
+    // overflowed, the caller's re-wrap at `width` clipped the final gutter,
+    // and a vertical pipe "went missing".
+    const splitRow = (l: string) => {
+      const body = l.trim().replace(/^\||\|$/g, "");
+      const cells: string[] = [];
+      let cur = "";
+      let inCode = false;
+      for (let k = 0; k < body.length; k++) {
+        const ch = body[k];
+        if (ch === "\\" && body[k + 1] === "|") {
+          cur += "|"; // `\|` is a literal pipe, not a column break
+          k++;
+        } else if (ch === "`") {
+          inCode = !inCode;
+          cur += ch;
+        } else if (ch === "|" && !inCode) {
+          cells.push(cur.trim());
+          cur = "";
+        } else cur += ch;
+      }
+      cells.push(cur.trim());
+      return cells;
+    };
     if (isTableLine(line) && i + 1 < lines.length && isSep(lines[i + 1])) {
       const aligns = splitRow(lines[i + 1]).map((cell) => {
         const left = cell.startsWith(":");

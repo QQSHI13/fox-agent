@@ -252,7 +252,7 @@ export const COMMANDS: CommandSpec[] = [
     arg: true,
     help: "delete that session's database for good — not the current one, and /undo cannot reach it",
   },
-  { name: "/undo", desc: "revert last ctx_edit op (append-only)" },
+  { name: "/undo", desc: "revert last ctx op (append-only)" },
   {
     name: "/prune",
     desc: "reclaim disk from hidden context",
