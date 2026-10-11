@@ -28,8 +28,12 @@ snippet.md is the top-of-README block: the bench workflow splices it between
 at the top of the README refresh with every run.
 
 Usage:
-  python3 scripts/bench/bench.py [--quick] [--out bench]
+  python3 scripts/bench/bench.py [--quick] [--out bench] [--debug]
   bun run bench   # build + bench in one step (see package.json)
+
+--debug: verbose per-step timing + decision logging to stderr. Same
+measurements, just narrated — use it to see why a tool got n/a or where the
+wall-clock went.
 """
 import json
 import os
@@ -43,6 +47,26 @@ import subprocess
 import sys
 import tempfile
 import time
+
+DEBUG = "--debug" in sys.argv
+
+
+def dbg(msg):
+    """Debug narration to stderr (--debug only). Timestamped so a slow step is
+    attributable at a glance; goes to stderr so stdout stays the clean result."""
+    if DEBUG:
+        print(f"[bench {time.strftime('%H:%M:%S')}.{int(time.time()*1000)%1000:03d}] {msg}", file=sys.stderr, flush=True)
+
+
+def step(tool, what, detail=""):
+    """Live progress line to stderr: WHERE we are and WHAT is being tested, so a
+    long serial run is legible in CI logs (a tool that hangs is visible at a
+    glance). Always on — this is status, not debug detail.
+
+    \r keeps it to one updating line on a terminal; CI captures each as a row.
+    """
+    suffix = f" — {detail}" if detail else ""
+    print(f"\r[bench] {tool:<14} {what}{suffix}   ", file=sys.stderr, flush=True)
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 FOX = os.path.join(ROOT, "bin", "fox")
@@ -116,9 +140,14 @@ def run_quiet(argv, timeout=30, env=None):
         return None, ""
 
 
-def best_startup(path, n):
+def best_startup(path, n, ver=None):
+    # `ver` lets the caller pass the version it already looked up, so a slow
+    # CLI (gemini: ~1s per --version) is not spawned an extra time just to pick
+    # argv. Falls back to a local probe when not given.
+    if ver is None:
+        ver = version_of(path)
     argv = [path, "--version"]
-    if version_of(path) == "n/a":
+    if ver == "n/a":
         argv = [path, "--help"]
     ts = []
     for _ in range(n):
@@ -182,26 +211,90 @@ def _exec_target_of_script(path):
     return None
 
 
-def du_bytes(path):
-    """Disk use of a file or tree in bytes. du -sb when present (it sees
-    sparse files and dir overhead); a plain walk otherwise."""
+def _looks_like_js_runtime(path):
+    """True when `path` is an embedded/shared JavaScript runtime binary (node or
+    bun), not the tool's own code. These CLIs bundle a full Node/Bun runtime
+    (~90-150MB) that dominates the package dir and makes every tool report the
+    same ~140MB regardless of its actual code size (pi's own cli.js is 160 bytes).
+    The runtime is identified by name + ELF magic; versioned runtime dirs
+    (pi-node, */node_modules/node/*) are caught by the dir prunes in du_bytes.
+    """
+    base = os.path.basename(path).lower()
+    if base not in ("node", "node.exe", "bun", "bun.exe"):
+        return False
+    try:
+        with open(path, "rb") as f:
+            return f.read(4) == b"\x7fELF"
+    except OSError:
+        return False
+
+
+def _runtime_dirs_under(path):
+    """Subdirectories of `path` that hold only an embedded JS runtime (pi's
+    pi-node, any node_modules/{node,bun} install). These ship a full Node/Bun
+    (~90-150MB) that dominates the package dir; excluding them measures the
+    tool's own code, not the interpreter. Returns relative dir names for
+    `du --exclude`.
+    """
+    found = []
+    if not os.path.isdir(path):
+        return found
+    for root, dirs, _files in os.walk(path):
+        for d in dirs:
+            low = d.lower()
+            if low == "pi-node" or (low in ("node", "bun") and os.path.basename(root) == "node_modules"):
+                found.append(os.path.relpath(os.path.join(root, d), path))
+        # don't recurse into a found runtime dir looking for nested ones
+        dirs[:] = [d for d in dirs if os.path.relpath(os.path.join(root, d), path) not in found]
+    return found
+
+
+def du_bytes(path, exclude_runtimes=True):
+    """Disk use of a file or tree in bytes. When exclude_runtimes and `path` is a
+    dir, any embedded JS runtime (node/bun) is left out so the tool's own code is
+    measured, not the ~140MB interpreter it ships. du -sb (with --exclude for the
+    runtime dirs) when present; a portable walk that prunes them otherwise.
+    """
+    if os.path.isfile(path):
+        if exclude_runtimes and _looks_like_js_runtime(path):
+            return 0
+        try:
+            return os.path.getsize(path)
+        except OSError:
+            return 0
+    excludes = _runtime_dirs_under(path) if exclude_runtimes else []
+    if excludes:
+        try:
+            p = subprocess.run(
+                ["du", "-sb", "--exclude=" + " --exclude=".join(excludes), path],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=60,
+            )
+            return int(p.stdout.split()[0])
+        except Exception:
+            pass
     try:
         p = subprocess.run(["du", "-sb", path], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=60)
         return int(p.stdout.split()[0])
     except Exception:
-        total = 0
-        try:
-            if os.path.isfile(path):
-                return os.path.getsize(path)
-            for root, _dirs, files in os.walk(path):
-                for f in files:
-                    try:
-                        total += os.path.getsize(os.path.join(root, f))
-                    except OSError:
-                        pass
-        except OSError:
-            pass
-        return total
+        pass
+    skip = set(excludes)
+    total = 0
+    for root, dirs, files in os.walk(path):
+        dirs[:] = [d for d in dirs if os.path.relpath(os.path.join(root, d), path) not in skip]
+        for f in files:
+            fp = os.path.join(root, f)
+            if exclude_runtimes and _looks_like_js_runtime(fp):
+                continue
+            try:
+                total += os.path.getsize(fp)
+            except OSError:
+                pass
+    return total
+
+
+def _contains_js_runtime(path):
+    """True when the dir `path` bundles an embedded node/bun runtime."""
+    return bool(_runtime_dirs_under(path))
 
 
 def footprint(path):
@@ -248,7 +341,11 @@ def footprint(path):
     d = os.path.dirname(real)
     for _ in range(5):
         if os.path.isfile(os.path.join(d, "package.json")) or os.path.isfile(os.path.join(d, "pyvenv.cfg")):
-            return du_bytes(d) / 1e6, "pkg"
+            # a bundled runtime (node/bun) is the interpreter, not the tool's
+            # code — excluding it yields the tool's own footprint; the kind
+            # says which was measured. Without a runtime, pkg == app.
+            has_rt = _contains_js_runtime(d)
+            return du_bytes(d, exclude_runtimes=True) / 1e6, ("app" if has_rt else "pkg")
         nd = os.path.dirname(d)
         if nd == d:
             break
@@ -397,28 +494,23 @@ def _wait_output(fd, timeout):
 def _await_quiet(fd, budget_s):
     """Drain until the TUI goes quiet (ready to read keys) or budget expires.
 
-    Returns nothing; callers type immediately after. Two windows: a brief one
-    for an app that painted and stopped, then a longer grace for apps whose
-    first frames keep coming. A spinner that never goes quiet exhausts the
-    budget and is typed into anyway — the retype round in the caller catches
-    swallowed keys, so worst case is a slower number, not a wrong one.
+    Polls in ~120ms slices and stops after a few consecutive slices with nothing
+    to read — a quiet app finishes in well under a second instead of blocking for
+    the whole budget. A spinner that never goes quiet exhausts the budget and is
+    typed into anyway; the retype round in the caller catches swallowed keys, so
+    worst case is a slower number, not a wrong one.
     """
-    quiet_end = time.perf_counter() + 0.75
-    init_cap = time.perf_counter() + min(8, budget_s)
-    while time.perf_counter() < min(quiet_end, init_cap):
-        r, _, _ = select.select([fd], [], [], max(0, min(quiet_end, init_cap) - time.perf_counter()))
+    deadline = time.perf_counter() + budget_s
+    quiet_streak = 0
+    while time.perf_counter() < deadline:
+        slice_left = max(0.0, min(0.12, deadline - time.perf_counter()))
+        r, _, _ = select.select([fd], [], [], slice_left)
         if not r:
-            break
-        try:
-            if not os.read(fd, 65536):
+            quiet_streak += 1
+            if quiet_streak >= 3:  # ~3 quiet slices ≈ settled
                 break
-        except OSError:
-            break
-    drain_end = time.perf_counter() + max(0, budget_s - 0.75)
-    while time.perf_counter() < drain_end:
-        r, _, _ = select.select([fd], [], [], max(0, drain_end - time.perf_counter()))
-        if not r:
-            break
+            continue
+        quiet_streak = 0
         try:
             if not os.read(fd, 65536):
                 break
@@ -472,14 +564,19 @@ def _await_echo(fd, t0, deadline, logf, cfg):
             except OSError:
                 break
             if not data:
-                break
+                # EOF on the PTY master: the child exited (a tool that prints
+                # "not a terminal" and quits does this). The result is the same
+                # n/a, just reached in ms instead of waiting out the full
+                # timeout — this is what devin/cline/continue hit every probe.
+                dbg("echo: child closed PTY (exited) — abandoning probe early")
+                return None
             seen += data
             if PROBE_TEXT.encode() in ANSI_RE.sub(b"", seen):
                 return time.perf_counter() - t0
     return None
 
 
-def tui_first_input(path, label, probes=3, timeout=30):
+def tui_first_input(path, label, probes=3, timeout=15):
     """Time to interactive since startup: launch, wait until the TUI is alive
     AND quiet (typing into a process still starting up proves nothing), type a
     probe, and measure from process spawn to the probe text appearing on screen.
@@ -766,12 +863,19 @@ def fmt_ms(v):
 
 
 def measure(label, path, n_start, n_probes, n_input):
+    step(label, "probing version")
     ver = version_of(path)
+    step(label, "measuring on-disk footprint", os.path.basename(path))
     disk, kind = footprint(path)
-    startup = best_startup(path, n_start)
+    step(label, f"timing `--version` startup (best of {n_start})")
+    startup = best_startup(path, n_start, ver=ver)  # reuse ver: no extra spawn
+    step(label, f"timing TUI first byte (best of {n_probes} PTY launches)")
     ttfb = tui_first_byte(path, n_probes)
+    step(label, f"timing time-to-interactive (best of {n_input} PTY launches)")
     tfin = tui_first_input(path, label, n_input)
+    step(label, f"timing input latency after 1s settle (best of {n_input})")
     latency = tui_input_latency(path, label, probes=n_input)
+    step(label, "measuring idle memory (PSS)")
     pss = idle_pss(path)
     row = {
         "agent": label,
@@ -814,13 +918,16 @@ def main():
     n_input = 2 if quick else 3
 
     rows = []
-    for label, bins in AGENTS:
+    n_tools = len(AGENTS) + len(OPENCODE_BINS)
+    for i, (label, bins) in enumerate(AGENTS):
         path = which(bins)
+        step(label, f"[{i+1}/{n_tools}] locating", " ".join(bins))
         if not path:
             rows.append({"agent": label, "installed": False})
-            print(f"{label}: not installed")
+            print(f"{label}: not installed", flush=True)
             continue
         rows.append(measure(label, path, n_start, n_probes, n_input))
+        print(flush=True)  # end the \r progress line for this tool
 
     # opencode v2: fixed binary name `opencode2`. (The loop stays generic so a
     # future bare-`opencode` fallback can be re-added as another tuple entry.)
