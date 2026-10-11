@@ -28,8 +28,12 @@ snippet.md is the top-of-README block: the bench workflow splices it between
 at the top of the README refresh with every run.
 
 Usage:
-  python3 scripts/bench/bench.py [--quick] [--out bench]
+  python3 scripts/bench/bench.py [--quick] [--out bench] [--debug]
   bun run bench   # build + bench in one step (see package.json)
+
+--debug: verbose per-step timing + decision logging to stderr. Same
+measurements, just narrated — use it to see why a tool got n/a or where the
+wall-clock went.
 """
 import json
 import os
@@ -43,6 +47,26 @@ import subprocess
 import sys
 import tempfile
 import time
+
+DEBUG = "--debug" in sys.argv
+
+
+def dbg(msg):
+    """Debug narration to stderr (--debug only). Timestamped so a slow step is
+    attributable at a glance; goes to stderr so stdout stays the clean result."""
+    if DEBUG:
+        print(f"[bench {time.strftime('%H:%M:%S')}.{int(time.time()*1000)%1000:03d}] {msg}", file=sys.stderr, flush=True)
+
+
+def step(tool, what, detail=""):
+    """Live progress line to stderr: WHERE we are and WHAT is being tested, so a
+    long serial run is legible in CI logs (a tool that hangs is visible at a
+    glance). Always on — this is status, not debug detail.
+
+    \r keeps it to one updating line on a terminal; CI captures each as a row.
+    """
+    suffix = f" — {detail}" if detail else ""
+    print(f"\r[bench] {tool:<14} {what}{suffix}   ", file=sys.stderr, flush=True)
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 FOX = os.path.join(ROOT, "bin", "fox")
@@ -540,7 +564,12 @@ def _await_echo(fd, t0, deadline, logf, cfg):
             except OSError:
                 break
             if not data:
-                break
+                # EOF on the PTY master: the child exited (a tool that prints
+                # "not a terminal" and quits does this). The result is the same
+                # n/a, just reached in ms instead of waiting out the full
+                # timeout — this is what devin/cline/continue hit every probe.
+                dbg("echo: child closed PTY (exited) — abandoning probe early")
+                return None
             seen += data
             if PROBE_TEXT.encode() in ANSI_RE.sub(b"", seen):
                 return time.perf_counter() - t0
@@ -834,12 +863,19 @@ def fmt_ms(v):
 
 
 def measure(label, path, n_start, n_probes, n_input):
+    step(label, "probing version")
     ver = version_of(path)
+    step(label, "measuring on-disk footprint", os.path.basename(path))
     disk, kind = footprint(path)
+    step(label, f"timing `--version` startup (best of {n_start})")
     startup = best_startup(path, n_start, ver=ver)  # reuse ver: no extra spawn
+    step(label, f"timing TUI first byte (best of {n_probes} PTY launches)")
     ttfb = tui_first_byte(path, n_probes)
+    step(label, f"timing time-to-interactive (best of {n_input} PTY launches)")
     tfin = tui_first_input(path, label, n_input)
+    step(label, f"timing input latency after 1s settle (best of {n_input})")
     latency = tui_input_latency(path, label, probes=n_input)
+    step(label, "measuring idle memory (PSS)")
     pss = idle_pss(path)
     row = {
         "agent": label,
@@ -882,13 +918,16 @@ def main():
     n_input = 2 if quick else 3
 
     rows = []
-    for label, bins in AGENTS:
+    n_tools = len(AGENTS) + len(OPENCODE_BINS)
+    for i, (label, bins) in enumerate(AGENTS):
         path = which(bins)
+        step(label, f"[{i+1}/{n_tools}] locating", " ".join(bins))
         if not path:
             rows.append({"agent": label, "installed": False})
-            print(f"{label}: not installed")
+            print(f"{label}: not installed", flush=True)
             continue
         rows.append(measure(label, path, n_start, n_probes, n_input))
+        print(flush=True)  # end the \r progress line for this tool
 
     # opencode v2: fixed binary name `opencode2`. (The loop stays generic so a
     # future bare-`opencode` fallback can be re-added as another tuple entry.)
