@@ -51,26 +51,21 @@ function fixtureProcs(): number {
 }
 
 describe.skipIf(!CAN_RUN)("mcp bridge against a live server", () => {
-  test("spawns, handshakes, and merges the server's tools into the registry", async () => {
+  test("spawns, handshakes, and exposes ONE mcp tool routing to the server", async () => {
     const { mcpTools } = await import("../src/tools/mcp.ts");
     const { tools, warnings } = await mcpTools(fixtureCfg());
 
     expect(warnings).toEqual([]);
-    // the namespacing that keeps two servers with an `echo` apiece apart
-    expect([...tools.keys()]).toEqual(["mcp__fix__echo", "mcp__fix__boom", "mcp__fix__big", "mcp__fix__shot", "mcp__fix__textonly"]);
+    // the collapse: a single `mcp` entry, not one per server tool
+    expect([...tools.keys()]).toEqual(["mcp"]);
 
-    const echo = tools.get("mcp__fix__echo")!;
-    expect(echo.def.description).toStartWith("[mcp:fix] ");
-    // the full description survives — this one contains a ". ", which the old
-    // prompt-side formatter used to cut at (see src/loop/prompt.ts's comment)
-    expect(echo.def.description).toContain("would cut it here");
-    // the server's JSON Schema reaches def.parameters verbatim, because that is
-    // what the provider sends to the model
-    expect(echo.def.parameters).toEqual({
-      type: "object",
-      properties: { message: { type: "string" } },
-      required: ["message"],
-    });
+    const mcp = tools.get("mcp")!;
+    // the description enumerates the reachable server/tool pairs so the model
+    // can pick among them
+    expect(mcp.def.description).toContain("fix");
+    expect(mcp.def.description).toContain("echo");
+    // the `server` param is a typed enum so the model cannot invent a server
+    expect((mcp.def.parameters as any).properties.server.enum).toEqual(["fix"]);
   }, 30_000);
 
   test("callTool round-trips through the real server", async () => {
@@ -78,14 +73,14 @@ describe.skipIf(!CAN_RUN)("mcp bridge against a live server", () => {
     const { tools } = await mcpTools(fixtureCfg());
     // the output is computed by the fixture, so this cannot pass unless the
     // spawn, the initialize handshake and the tools/call round trip all happened
-    const res = await tools.get("mcp__fix__echo")!.run({ message: "hi" }, {} as never);
+    const res = await tools.get("mcp")!.run({ server: "fix", tool: "echo", arguments: { message: "hi" } }, {} as never);
     expect(res).toEqual({ ok: true, output: "echo: hi" });
   }, 30_000);
 
   test("a tool result flagged isError becomes a failure, not a throw", async () => {
     const { mcpTools } = await import("../src/tools/mcp.ts");
     const { tools } = await mcpTools(fixtureCfg());
-    const res = await tools.get("mcp__fix__boom")!.run({}, {} as never);
+    const res = await tools.get("mcp")!.run({ server: "fix", tool: "boom" }, {} as never);
     // `isError: true` is a protocol-level result, distinct from a transport
     // failure; both must reach the model as text it can react to
     expect(res).toEqual({ ok: false, output: "boom: deliberate tool failure" });
@@ -94,7 +89,7 @@ describe.skipIf(!CAN_RUN)("mcp bridge against a live server", () => {
   test("oversized output is capped where the bridge caps it", async () => {
     const { mcpTools } = await import("../src/tools/mcp.ts");
     const { tools } = await mcpTools(fixtureCfg());
-    const res = (await tools.get("mcp__fix__big")!.run({}, {} as never)) as { ok: boolean; output: string };
+    const res = (await tools.get("mcp")!.run({ server: "fix", tool: "big" }, {} as never)) as { ok: boolean; output: string };
     expect(BIG_LEN).toBeGreaterThan(OUT_CAP_MCP); // the fixture must actually overflow
     // capped here rather than left to the turn loop's tail-cap: an MCP server can
     // return a whole file and the loop's cap is 2x larger, so without this one
@@ -106,7 +101,7 @@ describe.skipIf(!CAN_RUN)("mcp bridge against a live server", () => {
   test("image content parts become MediaParts, not stringified base64", async () => {
     const { mcpTools } = await import("../src/tools/mcp.ts");
     const { tools } = await mcpTools(fixtureCfg());
-    const res = (await tools.get("mcp__fix__shot")!.run({}, {} as never)) as {
+    const res = (await tools.get("mcp")!.run({ server: "fix", tool: "shot" }, {} as never)) as {
       ok: boolean;
       output: string;
       media?: { mimeType: string; data: string }[];
@@ -124,9 +119,20 @@ describe.skipIf(!CAN_RUN)("mcp bridge against a live server", () => {
   test("text-only results carry no media field", async () => {
     const { mcpTools } = await import("../src/tools/mcp.ts");
     const { tools } = await mcpTools(fixtureCfg());
-    const res = (await tools.get("mcp__fix__textonly")!.run({}, {} as never)) as { ok: boolean; media?: unknown };
+    const res = (await tools.get("mcp")!.run({ server: "fix", tool: "textonly" }, {} as never)) as { ok: boolean; media?: unknown };
     expect(res.ok).toBe(true);
     expect(res.media).toBeUndefined();
+  }, 30_000);
+
+  test("routing to an unknown server or tool fails cleanly with the reachable set", async () => {
+    const { mcpTools } = await import("../src/tools/mcp.ts");
+    const { tools } = await mcpTools(fixtureCfg());
+    const bad = (await tools.get("mcp")!.run({ server: "nope", tool: "echo" }, {} as never)) as { ok: boolean; output: string };
+    expect(bad.ok).toBe(false);
+    expect(bad.output).toContain("no MCP server 'nope'");
+    const badTool = (await tools.get("mcp")!.run({ server: "fix", tool: "nope" }, {} as never)) as { ok: boolean; output: string };
+    expect(badTool.ok).toBe(false);
+    expect(badTool.output).toContain("no tool 'nope'");
   }, 30_000);
 
   test("one unreachable server warns and leaves the others working", async () => {
@@ -140,8 +146,8 @@ describe.skipIf(!CAN_RUN)("mcp bridge against a live server", () => {
     expect(warnings[0]).toContain("mcp server 'bad' unavailable");
     // the good server is unaffected — a typo'd entry must not cost the user
     // every other server they configured
-    expect(tools.has("mcp__good__echo")).toBe(true);
-    expect([...tools.keys()].some((k) => k.startsWith("mcp__bad__"))).toBe(false);
+    const res = await tools.get("mcp")!.run({ server: "good", tool: "echo", arguments: { message: "ok" } }, {} as never);
+    expect(res).toEqual({ ok: true, output: "echo: ok" });
   }, 30_000);
 
   test("the same config is cached; a changed one reaps the old children first", async () => {
@@ -159,7 +165,8 @@ describe.skipIf(!CAN_RUN)("mcp bridge against a live server", () => {
     // otherwise a config reload per ACP run would leak a child every time
     const changed = await mcpTools(fixtureCfg("renamed"));
     expect(changed.tools).not.toBe(first.tools);
-    expect(changed.tools.has("mcp__renamed__echo")).toBe(true);
+    const res = await changed.tools.get("mcp")!.run({ server: "renamed", tool: "echo", arguments: { message: "r" } }, {} as never);
+    expect(res).toEqual({ ok: true, output: "echo: r" });
     await Bun.sleep(200);
     expect(fixtureProcs()).toBe(before);
   }, 30_000);
@@ -179,13 +186,13 @@ describe.skipIf(!CAN_RUN)("mcp bridge against a live server", () => {
     // than a Map of tools whose transport is dead
     const second = await mcpTools(fixtureCfg());
     expect(second.tools).not.toBe(first.tools);
-    expect(await second.tools.get("mcp__fix__echo")!.run({ message: "again" }, {} as never)).toEqual({
+    expect(await second.tools.get("mcp")!.run({ server: "fix", tool: "echo", arguments: { message: "again" } }, {} as never)).toEqual({
       ok: true,
       output: "echo: again",
     });
   }, 30_000);
 
-  test("buildRegistry serves built-ins and MCP tools from one map", async () => {
+  test("buildRegistry serves built-ins and the single mcp tool from one map", async () => {
     const { buildRegistry } = await import("../src/tools/index.ts");
     const { loadConfig } = await import("../src/core/config.ts");
     const cfg = loadConfig({ cwd: home, model: "test-model", apiKey: "k" }, {});
@@ -194,12 +201,12 @@ describe.skipIf(!CAN_RUN)("mcp bridge against a live server", () => {
     const { tools, warnings } = await buildRegistry(cfg);
     expect(warnings).toEqual([]);
     expect(tools.has("read")).toBe(true); // built-ins still there
-    expect(tools.has("mcp__fix__echo")).toBe(true);
-    // and the prompt roster is derived from this map, so an MCP tool is described
+    expect(tools.has("mcp")).toBe(true);
+    // and the prompt roster is derived from this map, so the mcp tool is described
     // to the model with no prompt-side work
     const { buildSystemPrompt } = await import("../src/loop/prompt.ts");
     const prompt = buildSystemPrompt({ tools: [...tools.values()].map((t) => t.def) });
-    expect(prompt).toContain("mcp__fix__echo");
+    expect(prompt).toContain("mcp");
   }, 30_000);
 });
 
