@@ -3,7 +3,7 @@ import type { Seg } from "./wrap.ts";
 import { liveTheme } from "./themes.ts";
 import { charWidth } from "./screen.ts";
 import { wrapSegs } from "./wrap.ts";
-import { highlightLine, highlightBlockRich, diffFenceLine, jsonSegs } from "./highlight.ts";
+import { highlightBlockRich, diffFenceLine, jsonSegs } from "./highlight.ts";
 
 // live theme lookups: a /theme switch recolors markdown on the next frame
 const MD = liveTheme<"ACCENT" | "CODE_FG" | "HEAD" | "DIM" | "LINK">({

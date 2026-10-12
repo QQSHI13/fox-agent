@@ -91,6 +91,23 @@ const pendingBlocks = new Set<string>();
 const BLOCK_CACHE_MAX = 256;
 let lastKick = 0;
 const KICK_MS = 60;
+// Bumped every time a block finishes tokenizing. Renderers cache their rows;
+// keying that cache on this version makes a settled item re-render once its
+// grammar lands, instead of staying flat forever (the "colors never appear"
+// bug — the first paint happens while Shiki is still async, and nothing
+// invalidated the cached flat rows when the block warmed).
+let version = 0;
+export function highlightVersion(): number {
+  return version;
+}
+// Set by the TUI: called (off the async tokenize) each time a block lands, so
+// the frame loop repaints cached-flat rows in their grammar colors. Without
+// this the first paint freezes the lines flat until some unrelated input
+// happens — the "code never highlights" bug.
+let onDone: (() => void) | null = null;
+export function setHighlightDone(fn: (() => void) | null): void {
+  onDone = fn;
+}
 
 async function tokenizeBlock(lang: string, text: string): Promise<void> {
   const key = lang + "\0" + text;
@@ -107,6 +124,8 @@ async function tokenizeBlock(lang: string, text: string): Promise<void> {
     });
     if (blockCache.size >= BLOCK_CACHE_MAX) blockCache.clear();
     blockCache.set(key, lines);
+    version++; // a block landed — cached flat rows must re-render
+    onDone?.();
   } catch {
     blockCache.set(key, null);
   } finally {
@@ -117,8 +136,8 @@ async function tokenizeBlock(lang: string, text: string): Promise<void> {
 /**
  * Grammar-highlight a whole fence block with Shiki, cached per (lang, text).
  * Returns the per-line segments, or null while tokenization is still running
- * or on failure — the caller then falls back to the regex `highlightLine` per
- * line. Kicks off async tokenization once per block (throttled).
+ * or on failure — the caller then shows the line flat (diff/json keep their
+ * dedicated paths). Kicks off async tokenization once per block (throttled).
  */
 export function highlightBlockRich(lang: string, text: string): (Seg[] | null)[] | null {
   const key = lang + "\0" + text;
@@ -132,84 +151,7 @@ export function highlightBlockRich(lang: string, text: string): (Seg[] | null)[]
   return null;
 }
 
-// legacy line-level entry kept for callers that only have a single line
-const lineCache = new Map<string, Seg[] | null>();
-
-const KEYWORDS = new Set(
-  (`const let var function return if else for while do switch case default break continue new class extends super this import export from
-async await try catch finally throw typeof instanceof of in delete void yield static get set null undefined true false
-def elif fi end begin rescue ensure lambda pass global nonlocal with as except raise assert match nonlocal del is not and or
-pub fn struct enum impl trait where mut ref use mod macro crate self Self
-local then function end repeat until goto nil true false do end
-package func interface map chan go defer select range type int string bool byte rune float64 any error
-SELECT FROM WHERE INSERT UPDATE DELETE JOIN ON GROUP BY ORDER LIMIT CREATE TABLE INDEX INTO VALUES SET AND OR NOT NULL PRIMARY KEY
-abstract final private protected public synchronized volatile transient implements throws interface enum record sealed permits
-instanceof strictfp native transient volatile assert synchronized goto const`).split(/\s+/),
-);
-
-/**
- * Languages the regex highlighter has a real keyword table / comment style
- * for. Anything else (an unknown fence tag like `someunknownlang`, or an
- * empty one) returns plain — the old cross-language union tinted `fn`, `in`,
- * and bare numbers in code that was never that language.
- */
-const REGEX_LANGS =
-  /^(js|jsx|ts|tsx|mts|cts|mjs|cjs|javascript|typescript|py|python|sh|bash|zsh|shell|ruby|rb|lua|sql|hs|haskell|elm|c|cc|cpp|h|hpp|cs|csharp|go|golang|rs|rust|swift|kt|kotlin|scala|java|php|css|html|xml|vue|svelte|yml|yaml|toml|ini|cfg|r|make|docker|dockerfile|ps1|vb|vbnet|fs|fsharp|ada|vhd)$/i;
-
-/** Comment introducer per language family. */
-function commentStyle(lang: string): { line?: RegExp; block?: boolean } {
-  const l = lang.toLowerCase();
-  if (/(js|jsx|ts|tsx|java|c|cc|cpp|h|hpp|cs|go|rs|rust|swift|kt|scala|php|css)/.test(l)) return { line: /\/\//, block: true };
-  if (/(py|sh|bash|zsh|rb|pl|pm|yaml|yml|toml|ini|cfg|r|make|docker|ps1)/.test(l)) return { line: /#/, block: false };
-  if (/(sql|lua|hs|elm|ada|vhd)/.test(l)) return { line: /--/, block: false };
-  if (/(html|xml|vue|svelte)/.test(l)) return { block: true }; // <!-- --> blocks only
-  return { line: /\/\//, block: true }; // guess C-family
-}
-
-const TOKEN =
-  /(\/\/.*$|#.*$|--.*$)|("(?:[^"\\\n]|\\.)*"?|'(?:[^'\\\n]|\\.)*'?|`(?:[^`\\]|\\.)*`?)|(\b\d[\d_]*(?:\.\d+)?(?:[eE][+-]?\d+)?\b)|(\b[A-Za-z_$][A-Za-z0-9_$]*\b)/g;
-
-/**
- * Tint one line of code. Line-local on purpose: a string opened on a previous
- * line paints plain until it closes — a wrong tint on a wrapped line is far
- * better than a stateful parser in the frame loop.
- */
-export function highlightLine(line: string, lang: string): Seg[] {
-  // Unknown / empty fence language: no grammar, no keyword table — plain text.
-  // The old cross-language union tinted `fn`/`in`/bare numbers in code that was
-  // never that language.
-  if (!REGEX_LANGS.test(lang)) return [{ t: line }];
-  const style = commentStyle(lang);
-  const segs: Seg[] = [];
-  let i = 0;
-  TOKEN.lastIndex = 0;
-  let m: RegExpExecArray | null;
-  while ((m = TOKEN.exec(line))) {
-    if (m.index > i) segs.push({ t: line.slice(i, m.index) });
-    const tok = m[0];
-    const isCommentTok = m[1] !== undefined;
-    if (isCommentTok) {
-      // only treat it as a comment when this language uses that introducer
-      if (style.line && style.line.test(tok)) segs.push({ t: tok, fg: R.COM, italic: true });
-      else segs.push({ t: tok });
-    } else if (m[2] !== undefined) segs.push({ t: tok, fg: R.STR });
-    else if (m[3] !== undefined) segs.push({ t: tok, fg: R.NUM });
-    else if (m[4] !== undefined) {
-      const isType = /^[A-Z]/.test(tok) && tok.length > 1;
-      if (KEYWORDS.has(tok)) segs.push({ t: tok, fg: R.KW, bold: isType });
-      else if (isType) segs.push({ t: tok, fg: R.NUM });
-      else segs.push({ t: tok });
-    }
-    i = TOKEN.lastIndex;
-  }
-  if (i < line.length) segs.push({ t: line.slice(i) });
-  return segs.length ? segs : [{ t: line }];
-}
-
-/**
- * Diff coloring for a tool-output line: unified-diff and git-style markers get
- * their own colors, everything else stays plain. Returns null for plain lines.
- */
+// ---- diff / json / structural tool-output tinting ----
 export function diffSegs(line: string): Seg[] | null {
   if (/^\+(?!\+\+)|^!/.test(line)) return [{ t: line, fg: R.DADD }];
   if (/^-(?!---)|^</.test(line)) return [{ t: line, fg: R.DDEL }];
