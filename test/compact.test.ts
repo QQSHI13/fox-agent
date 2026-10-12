@@ -146,17 +146,21 @@ describe("auto-compaction", () => {
     expect(ev).not.toBeNull();
   });
 
-  test("the absolute ceiling compacts a window the fraction would never reach", async () => {
-    // the shipped defect: the registry claims a 1M window, so `0.85 * window`
-    // is unreachable in practice and the context grows monotonically to the
-    // provider's real limit, re-billed in full on every step
+  test("the absolute ceiling compacts a window the fraction would never reach, when set", async () => {
+    // the shipped defect this guards: a registry can claim a 1M window the
+    // endpoint does not actually serve, so `0.85 * window` is unreachable and
+    // the context grows monotonically. The ceiling is now OPT-IN (default 0 =
+    // window fraction only), so an overstated window must set `compactAtTokens`
+    // in config to get the guard — but when set it still fires below the fraction.
     const { compactIfNeeded } = await import("../src/context/compact.ts");
     setConfiguredModels([{ id: "overstated-window", contextWindow: 1_000_000 }]);
     const big = { ...cfg, model: "overstated-window" };
-    const { id } = await fillSession(60, 4_000, 150_000); // over the 131_072 ceiling, far under 850_000
+    const { id } = await fillSession(60, 4_000, 150_000); // under the 850k fraction
 
-    expect(await compactIfNeeded(id, big as any, summarizer("s") as any, { compactAtTokens: 0 })).toBeNull();
-    expect(await compactIfNeeded(id, big as any, summarizer("s") as any)).not.toBeNull();
+    // default: fraction only, 150k is well under 850k -> no compaction
+    expect(await compactIfNeeded(id, big as any, summarizer("s") as any)).toBeNull();
+    // explicit ceiling 131072: 150k is over it -> compacts, guarding the overstated window
+    expect(await compactIfNeeded(id, big as any, summarizer("s") as any, { compactAtTokens: 131_072 })).not.toBeNull();
   });
 
   test("the trigger is the smaller of the window fraction and the ceiling", async () => {

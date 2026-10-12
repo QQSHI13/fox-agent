@@ -235,7 +235,7 @@ const DEFAULTS: Omit<Config, "projectInstructions"> = {
   maxSteps: 0, // 0 = no step cap; a turn ends when the model stops calling tools
   retryLimit: 3,
   compactAt: 0.85,
-  compactAtTokens: 131_072,
+  compactAtTokens: 0, // 0 = window fraction only; set a ceiling in config for an overstated window
   requestTimeoutMs: 120_000,
   mcpServers: {},
   agents: {},
@@ -829,9 +829,9 @@ export const SETTINGS: SettingSpec[] = [
   {
     key: "compactAtTokens",
     desc: "absolute prompt-token ceiling for auto-compact (0 = window fraction only)",
-    def: "131072",
+    def: "0",
     validate: num(0),
-    fmt: (v) => (v === undefined ? "131072" : v === 0 ? "0 (window fraction only)" : String(v)),
+    fmt: (v) => (v === undefined ? "0" : v === 0 ? "0 (window fraction only)" : String(v)),
   },
   {
     key: "requestTimeoutMs",

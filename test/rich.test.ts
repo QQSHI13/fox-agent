@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { diffFenceLine, jsonSegs, statusSegs, pathSegs, wordDiff, ansiSegs } from "../src/tui/highlight.ts";
-import { renderMarkdown, setRichMarkdown, type MdState } from "../src/tui/markdown.ts";
+import { renderMarkdown, type MdState } from "../src/tui/markdown.ts";
 import { Screen } from "../src/tui/screen.ts";
 
 /** parse text as the TUI's incremental stream cache does */
@@ -53,10 +53,9 @@ describe("markdown inline: strikethrough, links, images", () => {
   });
 });
 
-describe("rich fences: diff and json routing", () => {
+describe("fences: diff and json routing", () => {
   test("a ```diff fence colors markers and keeps non-marker lines plain", () => {
-    setRichMarkdown(true);
-    try {
+    {
       const rows = renderMarkdown("```diff\n- old\n+ new\n ctx\n```");
       const text = rows.map((r) => r.map((s) => s.t).join(""));
       expect(text).toEqual(["│ - old", "│ + new", "│  ctx"]);
@@ -65,14 +64,11 @@ describe("rich fences: diff and json routing", () => {
       // context stays plain CODE_FG (same hex as the gutter), i.e. unstyled
       // relative to a flat fence — not accent/ok/error
       expect(rows[2][1].fg).toBe(rows[2][0].fg);
-    } finally {
-      setRichMarkdown(false);
     }
   });
 
   test("a ```json fence tints keys, strings and numbers", () => {
-    setRichMarkdown(true);
-    try {
+    {
       const rows = renderMarkdown('```json\n{"name": "fox", "n": 42}\n```');
       expect(flat(rows)).toBe('│ {"name": "fox", "n": 42}');
       const line = rows[0].slice(1);
@@ -83,13 +79,10 @@ describe("rich fences: diff and json routing", () => {
       expect(str?.fg).toBeDefined();
       expect(num?.fg).toBeDefined();
       expect(key?.fg).not.toBe(str?.fg); // key vs value differ
-    } finally {
-      setRichMarkdown(false);
     }
   });
 
-  test("rich off: fences stay flat, split-parse still matches", () => {
-    setRichMarkdown(false);
+  test("split-parse (streaming boundary) matches whole-document render", () => {
     const doc = "```diff\n- old\n+ new\n```\nafter";
     const whole = flat(renderMarkdown(doc));
     let at = -1;

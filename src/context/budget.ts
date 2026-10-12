@@ -38,14 +38,19 @@ export function sessionContextTokens(sessionId: string): number {
  * The window fraction alone is exactly as trustworthy as `lookupModel`'s idea of
  * the window, and that number is best-effort: the endpoint's own `/models`
  * listing often omits a context field, and the models.dev catalog then answers
- * with a size the endpoint does not actually serve — 1,048,576 for
- * `glm-5.3-flash`, 100,000,000 for one local proxy. Against such a window
- * `0.85 * window` is unreachable, so compaction never fired and the context
- * grew monotonically to the provider's real limit, re-billed in full on every
- * step. This ceiling is the quota-side guard that holds regardless of whether
- * the window is right.
+ * with a size the endpoint does not actually serve — 100,000,000 for one local
+ * proxy. Against such a window `0.85 * window` is unreachable, so compaction
+ * never fired and the context grew monotonically to the provider's real limit,
+ * re-billed in full on every step.
+ *
+ * This default is therefore 0 (window fraction only): for a model whose window
+ * is known-correct — user config, or the endpoint's own /models listing, which
+ * outranks the catalog — the fraction is the right trigger and an absolute cap
+ * only throws away usable context (131072 on a real 1M window is 12.5%). Set
+ * `compactAtTokens` in config to re-enable the ceiling for a window the
+ * registry overstates.
  */
-export const DEFAULT_COMPACT_AT_TOKENS = 131_072;
+export const DEFAULT_COMPACT_AT_TOKENS = 0;
 
 /**
  * Prompt tokens at which compaction fires: the smaller of the window fraction

@@ -15,13 +15,10 @@ const MD = liveTheme<"ACCENT" | "CODE_FG" | "HEAD" | "DIM" | "LINK">({
 });
 
 /**
- * Rich rendering mode (config `tuiRich`, default off): code fences get
- * per-token syntax tinting instead of one flat color.
+ * Grammar highlighting is always on (there is no "rich" toggle): code fences
+ * get per-token syntax tinting (Shiki), falling back per line to the fast
+ * diff/json/regex paths while the async block tokenization is still running.
  */
-let rich = false;
-export function setRichMarkdown(on: boolean): void {
-  rich = on;
-}
 
 /**
  * Parser state that can cross a call boundary. The streaming path in the TUI
@@ -52,18 +49,17 @@ export function renderMarkdown(src: string, state?: MdState, width?: number): Se
   // Render the buffered fence body. Grammar highlighting tokenizes the WHOLE
   // block at once (per-line tokenizing starves Shiki of context and collapses
   // each line to one color); while that async tokenization is still running we
-  // fall back per line to the fast diff/json paths or the regex highlighter,
   // so a frame never blocks on grammar load. diff/json keep their dedicated
-  // paths even after the block cache warms.
+  // paths even after the block cache warms; other languages show flat until the
+  // grammar tokenizes (the regex fallback was removed — Shiki is the one path).
   const flushFence = (): void => {
-    const block = rich ? highlightBlockRich(fenceLang, fenceBody.join("\n")) : null;
+    const block = highlightBlockRich(fenceLang, fenceBody.join("\n"));
     for (let li = 0; li < fenceBody.length; li++) {
       const body = fenceBody[li];
       let lineSegs: Seg[] | null = block?.[li] ?? null;
-      if (rich && !lineSegs) {
+      if (!lineSegs) {
         if (/^(diff|patch)$/i.test(fenceLang)) lineSegs = diffFenceLine(body) ?? [{ t: body }];
         else if (/^(json|jsonc)$/i.test(fenceLang)) lineSegs = jsonSegs(body);
-        else lineSegs = highlightLine(body, fenceLang);
       }
       out.push(lineSegs ? [{ t: "│ ", fg: MD.CODE_FG }, ...lineSegs.map((s) => ({ fg: MD.CODE_FG, ...s }))] : [{ t: "│ " + body, fg: MD.CODE_FG }]);
     }

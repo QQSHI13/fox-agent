@@ -55,7 +55,6 @@ import { killTree } from "../tools/exec.ts";
 import { debugLog, debugLogPath } from "../core/debuglog.ts";
 import { droppedPath, expandMentions } from "../core/mentions.ts";
 import { liveTheme, setTheme, themeName, type Theme } from "./themes.ts";
-import { setRichMarkdown } from "./markdown.ts";
 import { diffSegs, jsonSegs, statusSegs, pathSegs, wordDiff, ansiSegs } from "./highlight.ts";
 
 type ItemKind = "user" | "toolhead" | "toolbody" | "info" | "error" | "md" | "think";
@@ -108,17 +107,14 @@ export function setTuiCaps(collapsed: number, kept: number): void {
 }
 
 /**
- * Rich rendering mode (config `tuiRich`, default off): syntax-tinted code
- * fences and diff-colored tool output.
+ * Rich rendering is ALWAYS on (the `tuiRich` config toggle was removed):
+ * syntax-tinted code fences and diff-colored tool output are the only path.
+ * `richRev` is kept (always 0 now) so the cached-row invalidation logic is
+ * unchanged; `setTuiRich` is a no-op kept for the config-apply call site.
  */
-let RICH = false;
-/** Bumped on every rich-mode flip: cached item rows embed flat vs diff-colored
- *  lines, so flipping must invalidate them or earlier history keeps the old look. */
 let richRev = 0;
-export function setTuiRich(on: boolean): void {
-  RICH = on;
+export function setTuiRich(_on: boolean): void {
   richRev++;
-  setRichMarkdown(on);
 }
 
 /**
@@ -2980,7 +2976,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           }
           for (let li = 0; li < lines.length; li++) {
             let colored: Seg[] | null = null;
-            if (RICH) {
+            {
               const line = lines[li];
               const paired = pairOf.has(li) ? wordDiffSegs(line, lines[pairOf.get(li)!]) : null;
               // word-diff (partial change) beats whole-line diff coloring;
@@ -3621,7 +3617,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     // dock height, and paintDock stamped into the stale geometry.
     const layout = inputLayout();
     const caret = caretPos(layout);
-    return `${W}x${H}|${revSum}|${items.length}|${scrollTop}|${stick}|${streamText?.length ?? -1}|${streamText?.slice(-24) ?? ""}|${SCROLLBAR}|${hasSel() ? `${selA!.row},${selA!.col},${selB!.row},${selB!.col}` : "-"}|${themeName()}|${RICH}|${state.readOnly}|${pendingLines().length}|${inputRev}|${layout.rows.length}|${caret.visRow}`;
+    return `${W}x${H}|${revSum}|${items.length}|${scrollTop}|${stick}|${streamText?.length ?? -1}|${streamText?.slice(-24) ?? ""}|${SCROLLBAR}|${hasSel() ? `${selA!.row},${selA!.col},${selB!.row},${selB!.col}` : "-"}|${themeName()}|${state.readOnly}|${pendingLines().length}|${inputRev}|${layout.rows.length}|${caret.visRow}`;
   }
 
   function statusSig(): string {
