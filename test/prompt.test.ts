@@ -277,9 +277,9 @@ describe("the rest of the prompt still assembles", () => {
 
   test("the tail announces itself so a model never reads it as user speech", async () => {
     const h = await header();
-    expect(h).toContain("[harness metadata");
     expect(h).toContain("<runtime>");
     expect(h).toContain("</runtime>");
+    expect(h).not.toContain("[harness metadata");
   });
 
   test("the tail carries provider, machine and clock facts", async () => {
@@ -288,7 +288,7 @@ describe("the rest of the prompt still assembles", () => {
     expect(h).toMatch(/^host: \S+/m);
     expect(h).toMatch(/^os: \S+ \S+ \S+ · \d+ cpu · shell=\S+/m);
     expect(h).toMatch(/^runtime: (bun|node) /m);
-    expect(h).toMatch(/^fox-agent: v/m);
+    expect(h).toMatch(/^ver: v/m);
 
     // profile name alone (a bare format with no name is the honest fallback)
     expect(await header({ provider: { format: "anthropic" } })).toContain("provider: anthropic");
@@ -310,10 +310,10 @@ describe("the rest of the prompt still assembles", () => {
 describe("live context figure in the prompt", () => {
   test("no report yet -> no figure; a report -> the figure, no nudge below threshold", async () => {
     const none = await header();
-    expect(none).not.toContain("Context used at your last step");
+    expect(none).not.toContain("ctx:");
 
     const under = await header({ budget: { reported: 10_000, limit: 128_000, ratio: 10_000 / 128_000, over: false } });
-    expect(under).toContain("Context used at your last step: 10000/128000 tokens (8%)");
+    expect(under).toContain("ctx: 10000");
     expect(under).not.toContain("over the compaction threshold");
   });
 
@@ -331,6 +331,6 @@ describe("live context figure in the prompt", () => {
       tools: [{ name: "read", description: "reads", parameters: { type: "object", properties: {} } }],
       budget: { reported: 120_000, limit: 128_000, ratio: 0.94, over: true },
     });
-    expect(h).not.toContain("Context used at your last step");
+    expect(h).not.toContain("ctx:");
   });
 });

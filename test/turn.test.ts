@@ -446,7 +446,7 @@ describe("prompt cache prefix", () => {
     expect(first[0].role).toBe("system");
     expect(second[0]).toEqual(first[0]);
     expect(first[0].content).not.toContain("<runtime>");
-    expect(first[0].content).not.toContain("Context used at your last step");
+    expect(first[0].content).not.toContain("ctx:");
 
     // everything step 1 sent ahead of its tail is still at the head of step 2,
     // unchanged — that shared run is what a provider prefix cache hits on, and
