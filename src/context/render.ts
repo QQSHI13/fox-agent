@@ -206,12 +206,19 @@ export function viewTokenEstimate(nodes: ViewNode[]): number {
   let total = 0;
   for (const n of nodes) {
     if (n.deleted) continue;
-    total += estimateTokens(n.content) + estimateTokens(marker(n.msg.seq)) + 4;
-    // flat per-attachment estimate, matching what turn.ts bills at append time
-    if (n.msg.media) total += 1500;
-    if (n.msg.role === "assistant" && n.msg.tool_calls) {
-      for (const c of parseToolCalls(n.msg)) total += estimateTokens(c.arguments);
-    }
+    total += nodeTokenEstimate(n);
+  }
+  return total;
+}
+
+/** Estimated tokens a single node costs to send: content, its [N] marker,
+ *  per-message framing, attachments, and any tool-call arguments. */
+export function nodeTokenEstimate(n: ViewNode): number {
+  let total = estimateTokens(n.content) + estimateTokens(marker(n.msg.seq)) + 4;
+  // flat per-attachment estimate, matching what turn.ts bills at append time
+  if (n.msg.media) total += 1500;
+  if (n.msg.role === "assistant" && n.msg.tool_calls) {
+    for (const c of parseToolCalls(n.msg)) total += estimateTokens(c.arguments);
   }
   return total;
 }

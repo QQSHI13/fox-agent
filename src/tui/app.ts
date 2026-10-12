@@ -27,11 +27,12 @@ import { sessionRows, setPickerWheelStep } from "./pickerui.ts";
 import { runTurn, VERSION } from "../loop/agent.ts";
 import { steer, peekSteer, withdrawSteer } from "../loop/steer.ts";
 import { projectView } from "../context/view.ts";
+import { sessionContextTokens } from "../context/budget.ts";
 import { lookupModel } from "../providers/models.ts";
 import { bundledDisabled } from "../plugins/bundled.ts";
 import { costSegment } from "../plugins/cost.ts";
 import { listSessions } from "../store/db.ts";
-import { allMessages, allMessagesLite, createSession, getSession, kvGet, kvSet, lastPromptTokens as storedPromptTokens, pinSession, unpinSession } from "../store/db.ts";
+import { allMessages, allMessagesLite, createSession, getSession, kvGet, kvSet, pinSession, unpinSession } from "../store/db.ts";
 import { acquireLock, releaseLock } from "../store/lock.ts";
 import {
   runSlashCommand,
@@ -3201,10 +3202,12 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   /** Status bar info segments, least-important first (drop order). */
   function statusText(): string[] {
     try {
-      // Context % comes from the provider's own last report (live this turn,
-      // else the persisted one) — never a chars/4 estimate. Before the first
-      // report there is simply nothing honest to show.
-      const reported = lastPromptTokens || (state.sessionId ? storedPromptTokens(state.sessionId) : 0);
+      // Context size is the provider's last report plus a chars/4 estimate of
+      // the visible messages appended since (sessionContextTokens) — some
+      // endpoints report only uncached input, so the raw report alone reads
+      // far below what is actually on the wire. The in-turn live figure
+      // (lastPromptTokens) is replaced by that combined view.
+      const reported = state.sessionId ? sessionContextTokens(state.sessionId) : lastPromptTokens;
       const info = lookupModel(state.provider.model);
       const k = (n: number) => `${Math.round(n / 1000)}k`;
       const ctx = reported

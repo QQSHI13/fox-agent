@@ -3,12 +3,12 @@
 // above a protected tail of the newest KEEP_TOKENS — is summarized by the model
 // itself and hidden with a single delete+summary op — the same machinery
 // ctx uses, so /undo reverts it too.
-import { appendOps, lastPromptTokens } from "../store/db.ts";
+import { appendOps } from "../store/db.ts";
 import type { ChatMessage, ChatFn } from "../providers/types.ts";
 import { estimateTokens } from "../providers/models.ts";
 import { projectView, visibleNodes } from "./view.ts";
 import { viewTokenEstimate } from "./render.ts";
-import { DEFAULT_COMPACT_AT_TOKENS, triggerTokens } from "./budget.ts";
+import { DEFAULT_COMPACT_AT_TOKENS, sessionContextTokens, triggerTokens } from "./budget.ts";
 import type { AgentEvent } from "../core/events.ts";
 
 /**
@@ -68,8 +68,8 @@ export async function compactIfNeeded(
    * evidence that the window is really that large.
    */
   const trigger = triggerTokens(cfg.model, opts.compactAt ?? 0.85, opts.compactAtTokens ?? DEFAULT_COMPACT_AT_TOKENS);
-  const reported = lastPromptTokens(sessionId);
-  if (!reported || reported < trigger) return null;
+  const reported = sessionContextTokens(sessionId);
+  if (reported < trigger) return null;
   const before = reported;
   // half the trigger at most: a compaction that frees nothing is a billable
   // summarization call that leaves the next step just as expensive

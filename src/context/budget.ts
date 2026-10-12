@@ -1,8 +1,35 @@
 import { lookupModel, type ModelInfo } from "../providers/models.ts";
 import { lastPromptTokens } from "../store/db.ts";
+import { projectView, visibleNodes } from "./view.ts";
+import { nodeTokenEstimate } from "./render.ts";
 
 export function modelBudget(model: string): ModelInfo {
   return lookupModel(model);
+}
+
+/**
+ * Current context size: the larger of the provider's last report and the
+ * chars/4 estimate of the whole visible history. The report alone under-reads
+ * whenever the endpoint tokenizes loosely (probed on kimi-for-coding: ~1
+ * token/word, ~25% under chars/4) and lags the live window by everything
+ * appended since it; the estimate alone misses system-prompt/tool-schema
+ * overhead the report captures. `max` tracks the window better than either —
+ * and never double-counts, since both are totals of the same history.
+ */
+export function sessionContextTokens(sessionId: string): number {
+  const measured = lastPromptTokens(sessionId);
+  const vis = visibleNodes(projectView(sessionId));
+  let estimated = 0;
+  for (const n of vis) {
+    if (n.msg.role === "assistant" && n.msg.tool_calls) {
+      // assistant nodes render as the tool calls they carry — estimate the
+      // calls, not the (empty) content
+      const p = n.msg.parent_id;
+      if (p && vis.some((m) => m.msg.id === p && m.msg.role === "user")) continue;
+    }
+    estimated += nodeTokenEstimate(n);
+  }
+  return Math.max(measured, estimated);
 }
 
 /**
@@ -60,7 +87,7 @@ export function checkBudget(
   compactAtTokens = DEFAULT_COMPACT_AT_TOKENS,
 ): BudgetCheck {
   const info = modelBudget(model);
-  const reported = lastPromptTokens(sessionId);
+  const reported = sessionContextTokens(sessionId);
   return {
     reported,
     limit: info.contextWindow,

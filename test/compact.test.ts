@@ -32,9 +32,10 @@ const summarizer = (text: string) =>
     yield { type: "done", reason: "stop" };
   };
 
-/** Fill a session and record a provider usage report of `reported` prompt tokens
- *  (compaction triggers on the provider's number, never on an estimate). */
-async function fillSession(nodes: number, charsEach: number, reported = 0) {
+/** Fill a session and record a provider usage report of `reported` prompt tokens.
+ *  Compaction triggers on measured (report) + estimated (text appended since),
+ *  never on the raw report alone — see budget.ts `sessionContextTokens`. */
+async function fillSession(nodes: number, charsEach: number, reported = 0, cached = 0) {
   const { createSession, appendMessage, recordUsage } = await import("../src/store/db.ts");
   const s = createSession("/w", MODEL);
   const seqs: number[] = [];
@@ -48,7 +49,7 @@ async function fillSession(nodes: number, charsEach: number, reported = 0) {
     });
     seqs.push(m.seq);
   }
-  if (reported) recordUsage(s.id, null, reported, 100);
+  if (reported) recordUsage(s.id, null, reported, 100, cached);
   return { id: s.id, seqs };
 }
 
@@ -134,8 +135,13 @@ describe("auto-compaction", () => {
 
   test("a lower compactAt threshold triggers on a smaller view", async () => {
     const { compactIfNeeded } = await import("../src/context/compact.ts");
-    const { id } = await fillSession(60, 3_000, 45_000); // provider reports 45k: under 0.85, over 0.6
-    expect(await compactIfNeeded(id, cfg as any, summarizer("s") as any)).toBeNull();
+    // The trigger reads max(report, chars/4 estimate of the visible history).
+    // These 80 nodes tally ~60k by chars/4 — over 0.85 * 65_536 (= 55_705)
+    // even though the provider's report (40k) is under it, because the
+    // endpoint tokenizes loosely (~1 token/word). The estimate is what
+    // crosses the threshold.
+    const { id } = await fillSession(80, 3_000, 40_000);
+    expect(await compactIfNeeded(id, cfg as any, summarizer("s") as any)).not.toBeNull();
     const ev = await compactIfNeeded(id, cfg as any, summarizer("s") as any, { compactAt: 0.6 });
     expect(ev).not.toBeNull();
   });
@@ -163,5 +169,32 @@ describe("auto-compaction", () => {
     expect(triggerTokens("overstated-window", 0.85, 131_072)).toBe(131_072);
     expect(triggerTokens("overstated-window", 0.85, 0)).toBe(850_000); // ceiling off -> fraction only
     expect(triggerTokens(MODEL, 0.85, 131_072)).toBe(55_705); // a small window still binds first
+  });
+
+  test("the provider's prompt_tokens is the total, not the uncached subset", async () => {
+    // Probed on kimi-for-coding: a fully cache-hit call still reports the full
+    // prompt in `prompt_tokens` and repeats it in `cached_tokens` (a subset
+    // flag, not a third bucket). So lastPromptTokens must read `prompt_tokens`
+    // alone — summing the two would double-count every cache hit.
+    const { lastPromptTokens } = await import("../src/store/db.ts");
+    const { id } = await fillSession(4, 100, 500, 9_500); // report 500 total, all cache-read
+    expect(lastPromptTokens(id)).toBe(500);
+  });
+
+  test("the context size adds a chars/4 estimate of the text since the last report", async () => {
+    const { sessionContextTokens } = await import("../src/context/budget.ts");
+    const { createSession, appendMessage, recordUsage } = await import("../src/store/db.ts");
+    const s = createSession("/w", MODEL);
+    // A measurable prefix, a usage report, then new text the report cannot see.
+    for (let i = 0; i < 20; i++) {
+      appendMessage(s.id, { parent_id: null, role: i % 2 ? "assistant" : "user", content: `x`.padEnd(1_600, "x"), tokens: 400 });
+    }
+    recordUsage(s.id, null, 8_000, 100);
+    for (let i = 0; i < 4; i++) {
+      appendMessage(s.id, { parent_id: null, role: i % 2 ? "assistant" : "user", content: `y`.padEnd(400, "y"), tokens: 100 });
+    }
+    const total = sessionContextTokens(s.id);
+    // strictly greater than the report alone (the appended text is estimated on top)
+    expect(total).toBeGreaterThan(8_000);
   });
 });
