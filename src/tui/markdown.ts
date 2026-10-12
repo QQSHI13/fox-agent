@@ -379,5 +379,21 @@ export function codeContRow(segs: { t: string; fg?: string }[]): boolean {
   // checklist/bullet/ordered rows tint their marker with the code color — a
   // continuation of a wrapped code line never starts with one of these
   const t = segs[0]?.t ?? "";
-  return !/^\s*[✔✘•\-*]\s/.test(t) && !/^\s*\d+\.\s/.test(t);
+  return !/^\s*(\[[x.~]\]|[-*]|\d+[.)])\s/.test(t);
+}
+
+/**
+ * Wrap one rendered markdown row to `width`, re-applying the code-fence gutter
+ * on continuation rows. A fenced code line is a single logical row `[│ , ...]`;
+ * the plain wrap drops the `│ ` on every continuation (the oversized-word
+ * branch), so a long code line renders with a gutter on only its first row and
+ * bare text on the rest. This wraps then re-stamps `│ ` (minus a column, so the
+ * code still aligns under the first row's content) on each continuation. Non-code
+ * rows pass through unchanged.
+ */
+export function wrapCodeAware(row: Seg[], width: number): Seg[][] {
+  const wrapped = wrapSegs(row, width);
+  if (!codeGutterRow(row) || wrapped.length <= 1) return wrapped;
+  const contGutter: Seg = { t: "│ ", fg: MD.CODE_FG };
+  return wrapped.map((r, i) => (i === 0 ? r : [contGutter, ...r]));
 }

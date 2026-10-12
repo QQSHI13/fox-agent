@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { renderMarkdown, type MdState } from "../src/tui/markdown.ts";
+import { renderMarkdown, wrapCodeAware, codeGutterRow, type MdState } from "../src/tui/markdown.ts";
 
 /** Parse text as the TUI's incremental stream cache does: settled prefix once, tail with carried state. */
 function splitParse(text: string, cutAt: number) {
@@ -186,5 +186,29 @@ describe("inline formatting", () => {
     // definition line renders as a receded dim entry
     const defRow = rows.find((r) => r.some((s) => s.t.includes("the note body")));
     expect(defRow?.some((s) => s.t === "  [1] ")).toBe(true);
+  });
+});
+
+describe("code fence wrapping", () => {
+  test("a long code line keeps its gutter on every wrapped row", () => {
+    // a code line far wider than the wrap width, with no spaces so it hits the
+    // oversized-word continuation branch
+    const longCode = "x".repeat(60);
+    const rows = renderMarkdown("```\n" + longCode + "\n```");
+    const codeRow = rows.find((r) => codeGutterRow(r));
+    expect(codeRow).toBeDefined();
+    const wrapped = wrapCodeAware(codeRow!, 20);
+    expect(wrapped.length).toBeGreaterThan(1);
+    // every continuation row re-stamps the gutter, so no bare-text row
+    for (const r of wrapped) {
+      expect(r[0].t.startsWith("│")).toBe(true);
+    }
+  });
+
+  test("a non-code row passes through wrapCodeAware unchanged", () => {
+    const rows = renderMarkdown("just some prose text here");
+    const wrapped = wrapCodeAware(rows[0], 10);
+    expect(wrapped.length).toBeGreaterThan(1);
+    expect(wrapped[1][0].t.startsWith("│")).toBe(false);
   });
 });
