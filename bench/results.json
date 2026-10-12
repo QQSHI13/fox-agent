@@ -40,7 +40,7 @@
       "tui_first_byte_ms": 37.80065600000171,
       "tui_first_input_ms": null,
       "tui_input_latency_ms": null,
-      "idle_pss_mb": 49.0546875
+      "idle_pss_mb": 49.11328125
     },
     {
       "agent": "opencode v2",
