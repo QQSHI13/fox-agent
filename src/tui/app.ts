@@ -3775,18 +3775,22 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     let cmdRowsH = 0;
     if (cmdOut?.length) {
       const avail = Math.max(1, inputTop - queueRowsH - 1);
-      const shown = cmdOut.slice(0, avail);
-      cmdRowsH = shown.length + (cmdOut.length > avail ? 1 : 0);
+      // wrap each line to the panel width — a long notice (the session-in-use
+      // read-only line, a /reload confirmation) used to be clipped at the right
+      // margin, losing its tail. Greedy word-wrap, then cap the visible rows.
+      const wrapped = cmdOut.flatMap((l) => wrapText(l, W - 2));
+      const shown = wrapped.slice(0, avail);
+      cmdRowsH = shown.length + (wrapped.length > avail ? 1 : 0);
       const cTop = inputTop - queueRowsH - cmdRowsH;
       for (let i = 0; i < shown.length; i++) {
         // themed panel fill first: the box used to sit on the terminal's own
         // background (plain black), unrelated to the theme
         P.floats.fillRow(cTop + i, 0, W, S.panelBgRow);
-        P.floats.text(1, cTop + i, clipW(shown[i], W - 2), S.panelBgRow);
+        P.floats.text(1, cTop + i, shown[i], S.panelBgRow);
       }
-      if (cmdOut.length > avail) {
+      if (wrapped.length > avail) {
         P.floats.fillRow(cTop + shown.length, 0, W, S.panelBgRow);
-        P.floats.text(1, cTop + shown.length, clipW(`… ${cmdOut.length - avail} more lines`, W - 2), S.panelBgRow);
+        P.floats.text(1, cTop + shown.length, clipW(`… ${wrapped.length - avail} more lines`, W - 2), S.panelBgRow);
       }
     }
 
