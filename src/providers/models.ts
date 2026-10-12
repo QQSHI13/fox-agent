@@ -99,7 +99,20 @@ export function lookupModel(id: string): ModelInfo {
   return UNKNOWN;
 }
 
-/** chars/4 heuristic — swappable; real usage comes from API responses. */
+/**
+ * Token estimate — CJK-aware, matching kimi-code's heuristic: ASCII ≈ chars/4,
+ * every non-ASCII char (CJK, emoji) counts as 1 token. A flat chars/4 badly
+ * under-reads CJK-dense history (where most chars are 1 token each), so the
+ * max(report, estimate) guard would under-fire. Real usage still comes from
+ * API responses; this only covers what the report misses.
+ */
 export function estimateTokens(s: string): number {
-  return Math.ceil((s?.length ?? 0) / 4);
+  if (!s) return 0;
+  let ascii = 0;
+  let nonAscii = 0;
+  for (const ch of s) {
+    if (ch.codePointAt(0)! <= 127) ascii++;
+    else nonAscii++;
+  }
+  return Math.ceil(ascii / 4) + nonAscii;
 }
