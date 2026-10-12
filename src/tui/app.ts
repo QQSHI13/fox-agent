@@ -55,7 +55,7 @@ import { killTree } from "../tools/exec.ts";
 import { debugLog, debugLogPath } from "../core/debuglog.ts";
 import { droppedPath, expandMentions } from "../core/mentions.ts";
 import { liveTheme, setTheme, themeName, type Theme } from "./themes.ts";
-import { diffSegs, jsonSegs, statusSegs, pathSegs, wordDiff, ansiSegs } from "./highlight.ts";
+import { diffSegs, jsonSegs, statusSegs, pathSegs, wordDiff, ansiSegs, highlightVersion, setHighlightDone } from "./highlight.ts";
 
 type ItemKind = "user" | "toolhead" | "toolbody" | "info" | "error" | "md" | "think";
 interface Item {
@@ -580,6 +580,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     dirty = true;
     schedulePaint();
   };
+  // a Shiki block finished tokenizing off-thread: cached-flat rows must repaint
+  // in their grammar colors, so re-run the frame on the version bump
+  setHighlightDone(() => markDirty());
 
   // ---- mouse / selection state ----
   /**
@@ -2807,7 +2810,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   // (evicting W): 60ms+ of pure re-render per scroll tick on a long session.
   // Nested by width keeps both warm; the prune sweep walks the outer (item)
   // keys and stays correct, and the clear()s are whole-map as before.
-  const lineCache = new Map<number, Map<number, { rev: number; rows: Row[]; rich: number; span: [number, number] }>>();
+  const lineCache = new Map<number, Map<number, { rev: number; rows: Row[]; rich: number; hl: number; span: [number, number] }>>();
 
   function itemStyle(kind: ItemKind): Partial<Seg> {
     switch (kind) {
@@ -2882,7 +2885,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   function itemRows(it: Item, w: number): { rows: Row[]; span: [number, number] } {
     const perWidth = lineCache.get(it.k);
     const cached = perWidth?.get(w);
-    if (cached && cached.rev === revs.get(it.k) && cached.rich === richRev) {
+    if (cached && cached.rev === revs.get(it.k) && cached.rich === richRev && cached.hl === highlightVersion()) {
       // LRU touch: delete+set refreshes Map iteration order so the eviction
       // scan below (oldest-first) drops the width not used the longest
       perWidth!.delete(w);
@@ -3011,7 +3014,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       rows = wrapSegs([{ t: it.text, ...itemStyle(it.kind) }], cw).map((segs) => ({ segs }));
     }
     if (it.seq !== undefined) rows = withMarker(rows, it.seq, it.markerCont);
-    const entry = { rev: revs.get(it.k) ?? 0, rows, rich: richRev, span: itemEdgeSpan(rows) };
+    const entry = { rev: revs.get(it.k) ?? 0, rows, rich: richRev, hl: highlightVersion(), span: itemEdgeSpan(rows) };
     let pw = lineCache.get(it.k);
     if (!pw) {
       pw = new Map();
@@ -3680,7 +3683,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     // dock height, and paintDock stamped into the stale geometry.
     const layout = inputLayout();
     const caret = caretPos(layout);
-    return `${W}x${H}|${revSum}|${items.length}|${scrollTop}|${stick}|${streamText?.length ?? -1}|${streamText?.slice(-24) ?? ""}|${SCROLLBAR}|${hasSel() ? `${selA!.row},${selA!.col},${selB!.row},${selB!.col}` : "-"}|${themeName()}|${state.readOnly}|${pendingLines().length}|${inputRev}|${layout.rows.length}|${caret.visRow}`;
+    return `${W}x${H}|${revSum}|${items.length}|${scrollTop}|${stick}|${streamText?.length ?? -1}|${streamText?.slice(-24) ?? ""}|${SCROLLBAR}|${hasSel() ? `${selA!.row},${selA!.col},${selB!.row},${selB!.col}` : "-"}|${themeName()}|${state.readOnly}|${pendingLines().length}|${inputRev}|${layout.rows.length}|${caret.visRow}|${highlightVersion()}`;
   }
 
   function statusSig(): string {

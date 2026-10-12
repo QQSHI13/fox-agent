@@ -91,6 +91,23 @@ const pendingBlocks = new Set<string>();
 const BLOCK_CACHE_MAX = 256;
 let lastKick = 0;
 const KICK_MS = 60;
+// Bumped every time a block finishes tokenizing. Renderers cache their rows;
+// keying that cache on this version makes a settled item re-render once its
+// grammar lands, instead of staying flat forever (the "colors never appear"
+// bug — the first paint happens while Shiki is still async, and nothing
+// invalidated the cached flat rows when the block warmed).
+let version = 0;
+export function highlightVersion(): number {
+  return version;
+}
+// Set by the TUI: called (off the async tokenize) each time a block lands, so
+// the frame loop repaints cached-flat rows in their grammar colors. Without
+// this the first paint freezes the lines flat until some unrelated input
+// happens — the "code never highlights" bug.
+let onDone: (() => void) | null = null;
+export function setHighlightDone(fn: (() => void) | null): void {
+  onDone = fn;
+}
 
 async function tokenizeBlock(lang: string, text: string): Promise<void> {
   const key = lang + "\0" + text;
@@ -107,6 +124,8 @@ async function tokenizeBlock(lang: string, text: string): Promise<void> {
     });
     if (blockCache.size >= BLOCK_CACHE_MAX) blockCache.clear();
     blockCache.set(key, lines);
+    version++; // a block landed — cached flat rows must re-render
+    onDone?.();
   } catch {
     blockCache.set(key, null);
   } finally {
