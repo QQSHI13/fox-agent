@@ -647,7 +647,7 @@ def tui_first_input(path, label, probes=3, timeout=15):
                 os.waitpid(pid, 0)
             except (ProcessLookupError, ChildProcessError, OSError):
                 pass
-    return min(samples) if samples else None
+    return samples
 
 
 def tui_input_latency(path, label, settle_s=2.0, probes=3, timeout=15):
