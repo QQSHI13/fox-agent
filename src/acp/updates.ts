@@ -108,6 +108,7 @@ export function toSessionUpdate(ev: AgentEvent, opts: MapOptions): SessionUpdate
     case "step":
     case "retry":
     case "warn":
+    case "user": // the client sent the prompt; echoing its seq back adds nothing
     case "steered": // the client sent it; echoing it back would double-render
     case "done":
       return null;

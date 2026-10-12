@@ -62,6 +62,12 @@ export interface Theme {
    * had no fill (plain text), while showing only over toolBg/think rows.
    */
   sbTrack?: string;
+  /**
+   * Background of the leading [N] transcript marker (the clickable per-message
+   * gutter chip). Optional — falls back to `selBg`, which every theme sets, so
+   * a marker is always a distinct selectable-colored chip without edits.
+   */
+  markerBg?: string;
 }
 
 export const THEME_PRESETS: Record<string, Theme> = {

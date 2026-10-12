@@ -26,6 +26,10 @@ export type AgentEvent =
    *  the model still receives just the final tool result */
   | { type: "tool_output"; id: string; delta: string }
   | { type: "warn"; message: string }
+  /** the turn's user message was persisted with this seq — emitted once, right
+   *  after append, so a live UI can stamp the [N] marker on the in-flight user
+   *  line instead of waiting for the turn to settle and refresh from history */
+  | { type: "user"; seq: number; text: string }
   /** user text injected mid-turn (ctrl+s), delivered at a step boundary */
   | { type: "steered"; text: string }
   | { type: "done"; reason: string };
