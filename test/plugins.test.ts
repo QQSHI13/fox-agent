@@ -242,6 +242,7 @@ describe("plugin tools in the registry", () => {
       "bundled:todo",
       "bundled:fetch",
       "bundled:repl",
+      "bundled:task",
       "bundled:question",
       "bundled:lsp",
       "bundled:cost",
