@@ -3732,9 +3732,11 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         // highlight background cannot disturb wide chars or wrapping. The range
         // is relative to the CONTENT (row.segs), which starts at x0 — restyle at
         // x0 + offset, not 1 + offset, or the highlight lands a marker-width off.
+        // restyle() takes an EXCLUSIVE end but selRangeForRow returns an inclusive
+        // `to`, so +1 or the last selected cell (e.g. a trailing '.') stays unlit.
         if (hasSel()) {
           const range = selRangeForRow(absolute, selA!, selB!, rowCells(row.segs));
-          if (range) P.transcript.restyle(y, x0 + range.from, x0 + range.to, C.selBg);
+          if (range) P.transcript.restyle(y, x0 + range.from, x0 + range.to + 1, C.selBg);
         }
       }
 
