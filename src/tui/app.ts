@@ -556,6 +556,10 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     if (paintTimer) return;
     paintTimer = setTimeout(() => {
       paintTimer = null;
+      // a frame scheduled before exit must not paint after the alt screen is
+      // torn down — that write lands on the primary screen and leaves the
+      // status bar behind (the "quit but the bottom bar is still there" bug)
+      if (exiting) return;
       tickRef?.();
     }, ms);
     paintTimer.unref?.();
@@ -1749,6 +1753,15 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     try {
       // clear any OSC 9;4 progress the terminal still shows (quit mid-turn)
       term.progress(0);
+    } catch {}
+    try {
+      // cancel a frame scheduled before exit: the tick gate stops a fresh
+      // paint, but clearing here also releases the timer during the teardown
+      // window so nothing paints between term.end() and process exit
+      if (paintTimer) {
+        clearTimeout(paintTimer);
+        paintTimer = null;
+      }
     } catch {}
     try {
       term.end();
