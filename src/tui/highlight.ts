@@ -155,13 +155,21 @@ abstract final private protected public synchronized volatile transient implemen
 instanceof strictfp native transient volatile assert synchronized goto const`).split(/\s+/),
 );
 
+/**
+ * Languages the regex highlighter has a real keyword table / comment style
+ * for. Anything else (an unknown fence tag like `someunknownlang`, or an
+ * empty one) returns plain — the old cross-language union tinted `fn`, `in`,
+ * and bare numbers in code that was never that language.
+ */
+const REGEX_LANGS =
+  /^(js|jsx|ts|tsx|mts|cts|mjs|cjs|javascript|typescript|py|python|sh|bash|zsh|shell|ruby|rb|lua|sql|hs|haskell|elm|c|cc|cpp|h|hpp|cs|csharp|go|golang|rs|rust|swift|kt|kotlin|scala|java|php|css|html|xml|vue|svelte|yml|yaml|toml|ini|cfg|r|make|docker|dockerfile|ps1|vb|vbnet|fs|fsharp|ada|vhd)$/i;
+
 /** Comment introducer per language family. */
 function commentStyle(lang: string): { line?: RegExp; block?: boolean } {
   const l = lang.toLowerCase();
   if (/(js|jsx|ts|tsx|java|c|cc|cpp|h|hpp|cs|go|rs|rust|swift|kt|scala|php|css)/.test(l)) return { line: /\/\//, block: true };
   if (/(py|sh|bash|zsh|rb|pl|pm|yaml|yml|toml|ini|cfg|r|make|docker|ps1)/.test(l)) return { line: /#/, block: false };
   if (/(sql|lua|hs|elm|ada|vhd)/.test(l)) return { line: /--/, block: false };
-  if (/(lua)/.test(l)) return { line: /--/, block: false };
   if (/(html|xml|vue|svelte)/.test(l)) return { block: true }; // <!-- --> blocks only
   return { line: /\/\//, block: true }; // guess C-family
 }
@@ -175,6 +183,10 @@ const TOKEN =
  * better than a stateful parser in the frame loop.
  */
 export function highlightLine(line: string, lang: string): Seg[] {
+  // Unknown / empty fence language: no grammar, no keyword table — plain text.
+  // The old cross-language union tinted `fn`/`in`/bare numbers in code that was
+  // never that language.
+  if (!REGEX_LANGS.test(lang)) return [{ t: line }];
   const style = commentStyle(lang);
   const segs: Seg[] = [];
   let i = 0;

@@ -1,6 +1,9 @@
-// MCP client bridge: connects configured stdio servers, merges their tools
-// into the registry under mcp__<server>__<tool>. The SDK is a dynamic import
-// so fox-agent still runs (without MCP) if it isn't installed.
+// MCP client bridge: connects configured stdio servers behind ONE `mcp` tool.
+// Instead of flattening every server tool into the registry as
+// mcp__<server>__<tool> (dozens of entries that bloat the prompt and the tool
+// loop), the model calls `mcp { server, tool, arguments }` and this module
+// routes to the live client. The SDK is a dynamic import so fox-agent still
+// runs (without MCP) if it isn't installed.
 import type { McpServerConfig } from "../core/config.ts";
 import type { MediaPart, ToolDef } from "../providers/types.ts";
 import type { Tool, ToolResult } from "./types.ts";
@@ -10,13 +13,30 @@ import { VERSION } from "../core/version.ts";
 
 const OUT_CAP_MCP = 30_000;
 
-/** Live clients, so shutdownTools() can reap the stdio children. */
+/** Live clients + the per-server tool table, so the single `mcp` tool routes. */
 interface LiveClient {
   close: () => Promise<void>;
   /** the stdio child's pid — closeMcp SIGKILLs it when a polite close hangs */
   pid?: number;
 }
-let cache: { key: string; tools: Map<string, Tool>; warnings: string[]; clients: LiveClient[] } | null = null;
+interface ServerTool {
+  /** the tool name as the server reports it (no mcp__ prefix) */
+  name: string;
+  description: string;
+  schema: Record<string, unknown>;
+  call: (args: unknown) => Promise<ToolResult>;
+}
+interface McpPool {
+  key: string;
+  warnings: string[];
+  clients: LiveClient[];
+  /** server name -> its tools (for the `mcp` tool's enum + routing) */
+  servers: Map<string, ServerTool[]>;
+  /** the single built `mcp` tool, cached so a config-cache hit returns the
+   * identical Map (callers/tests rely on reference identity, not just equality) */
+  tools: Map<string, Tool>;
+}
+let cache: McpPool | null = null;
 
 /**
  * MCP content parts -> ToolResult. Text joins as output; image parts become
@@ -45,6 +65,12 @@ function toResult(content: unknown, isError: boolean): ToolResult {
   return media.length ? { ...base, media } : base;
 }
 
+/**
+ * Build (or return the cached) single `mcp` tool that fronts every configured
+ * server. The tool's description enumerates the reachable server/tool pairs so
+ * the model can pick among them; `run` routes { server, tool, arguments } to
+ * the live client. One registry entry no matter how many servers/tools exist.
+ */
 export async function mcpTools(
   servers: Record<string, McpServerConfig>,
 ): Promise<{ tools: Map<string, Tool>; warnings: string[] }> {
@@ -55,9 +81,9 @@ export async function mcpTools(
   // builds fresh; the old children's SIGKILL reap runs in the background)
   if (cache) closeMcp();
 
-  const tools = new Map<string, Tool>();
   const warnings: string[] = [];
   const clients: LiveClient[] = [];
+  const serversMap = new Map<string, ServerTool[]>();
 
   for (const [name, cfg] of Object.entries(servers)) {
     try {
@@ -77,17 +103,15 @@ export async function mcpTools(
       await client.connect(transport);
       clients.push({ close: () => client.close(), pid: transport.pid ?? undefined });
       const res = await client.listTools();
+      const serverTools: ServerTool[] = [];
       for (const t of res.tools) {
-        const def: ToolDef = {
-          name: `mcp__${name}__${t.name}`,
-          description: `[mcp:${name}] ${t.description ?? t.name}`,
-          parameters: (t.inputSchema as Record<string, unknown>) ?? { type: "object" },
-        };
-        tools.set(def.name, {
-          def,
-          run: async (args: any): Promise<ToolResult> => {
+        serverTools.push({
+          name: t.name,
+          description: t.description ?? t.name,
+          schema: (t.inputSchema as Record<string, unknown>) ?? { type: "object" },
+          call: async (args: unknown): Promise<ToolResult> => {
             try {
-              const r = await client.callTool({ name: t.name, arguments: args });
+              const r = await client.callTool({ name: t.name, arguments: args as Record<string, unknown> });
               return toResult(r.content, r.isError === true);
             } catch (e) {
               return fail(`error: mcp call failed: ${(e as Error).message}`);
@@ -95,6 +119,7 @@ export async function mcpTools(
           },
         });
       }
+      if (serverTools.length) serversMap.set(name, serverTools);
     } catch (e) {
       // every failing server is reported, not just the last one. console.error
       // would smear the parent TUI (same reason server stderr is "ignore"
@@ -103,8 +128,59 @@ export async function mcpTools(
     }
   }
 
-  cache = { key, tools, warnings, clients };
-  return { tools, warnings };
+  const pool: McpPool = { key, warnings, clients, servers: serversMap, tools: new Map() };
+  pool.tools = buildMcpToolMap(pool);
+  cache = pool;
+  return { tools: pool.tools, warnings };
+}
+
+/** The single registry entry: one `mcp` tool routing to every live server. */
+function buildMcpToolMap(pool: McpPool): Map<string, Tool> {
+  const tools = new Map<string, Tool>();
+  if (pool.servers.size === 0) return tools;
+
+  // enumerate reachable server/tool pairs in the description so the model can
+  // pick among them without guessing names; the `server`/`tool` params are
+  // also typed as enums for the same reason
+  const serverEnum = [...pool.servers.keys()];
+  const catalog: string[] = [];
+  for (const [srv, list] of pool.servers) {
+    catalog.push(`- ${srv}: ${list.map((t) => t.name).join(", ")}`);
+  }
+
+  const def: ToolDef = {
+    name: "mcp",
+    description:
+      `Call a tool on a connected MCP (Model Context Protocol) server. Use this for ` +
+      `any capability an MCP server provides (browser automation, fetching, external APIs). ` +
+      `Reachable servers and their tools:\n${catalog.join("\n")}`,
+    parameters: {
+      type: "object",
+      properties: {
+        server: { type: "string", enum: serverEnum, description: "which MCP server to call" },
+        tool: { type: "string", description: "the tool name on that server" },
+        arguments: { type: "object", description: "the tool's arguments (per its schema)", additionalProperties: true },
+      },
+      required: ["server", "tool"],
+    },
+  };
+
+  tools.set(def.name, {
+    def,
+    run: async (args: { server?: string; tool?: string; arguments?: unknown }): Promise<ToolResult> => {
+      const srv = args?.server;
+      const toolName = args?.tool;
+      if (typeof srv !== "string" || typeof toolName !== "string") {
+        return fail("error: mcp requires { server, tool, arguments? }");
+      }
+      const list = pool.servers.get(srv);
+      if (!list) return fail(`error: no MCP server '${srv}' (reachable: ${serverEnum.join(", ")})`);
+      const st = list.find((t) => t.name === toolName);
+      if (!st) return fail(`error: server '${srv}' has no tool '${toolName}' (${list.map((t) => t.name).join(", ")})`);
+      return st.call(args.arguments ?? {});
+    },
+  });
+  return tools;
 }
 
 /**
