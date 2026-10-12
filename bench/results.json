@@ -1,5 +1,5 @@
 {
-  "generated": "2026-10-12T08:02:54Z",
+  "generated": "2026-10-12T08:48:39Z",
   "machine": "Linux x86_64 (6.17.0-1022-azure)",
   "method": "best of 4 `--version` runs; best of 5 PTY launches (no args) to first output byte; best of 3 PTY launches measuring time-to-interactive since spawn (TUI alive+quiet, then probe typed \u2192 rendered on screen; log marker where a tool suppresses echo); best of 3 PTY launches measuring input latency after a 1s settle (echo round-trip, startup cost removed); PSS after 1.5s idle from /proc smaps_rollup; bundle = the binary itself, a launcher's exec target where a wrapper hands off, or the package dir for script CLIs (entry shims alone would pretend node_modules are free); fox TTFT = spawn to first text event of `fox -p \u2026 --json` vs the repo's scripted local provider (no key, no network); fox peak RSS of that turn via /usr/bin/time -v. Missing tools are n/a, never estimated.",
   "rows": [
@@ -8,13 +8,13 @@
       "installed": true,
       "bin": "/home/runner/work/fox-agent/fox-agent/bin/fox",
       "version": "0.5.0-beta.1",
-      "disk_mb": 120.350688,
+      "disk_mb": 120.354784,
       "disk_kind": "bin",
-      "startup_ms": 12.79362400001105,
-      "tui_first_byte_ms": 14.451148999995667,
+      "startup_ms": 17.579979000004187,
+      "tui_first_byte_ms": 17.93358600002648,
       "tui_first_input_ms": null,
       "tui_input_latency_ms": null,
-      "idle_pss_mb": 36.3662109375
+      "idle_pss_mb": 36.4990234375
     },
     {
       "agent": "claude code",
@@ -23,11 +23,11 @@
       "version": "2.1.296 (Claude Code)",
       "disk_mb": 257.068216,
       "disk_kind": "bin",
-      "startup_ms": 7.565348999946764,
-      "tui_first_byte_ms": 179.74736500002564,
+      "startup_ms": 9.324868999954106,
+      "tui_first_byte_ms": 223.0734490000259,
       "tui_first_input_ms": null,
       "tui_input_latency_ms": null,
-      "idle_pss_mb": 187.37109375
+      "idle_pss_mb": 187.0576171875
     },
     {
       "agent": "codex",
@@ -36,11 +36,11 @@
       "version": "codex-cli 0.162.1",
       "disk_mb": 139.954304,
       "disk_kind": "bin",
-      "startup_ms": 36.330590000034135,
-      "tui_first_byte_ms": 39.51917800003457,
+      "startup_ms": 46.29770399998279,
+      "tui_first_byte_ms": 45.14826100000846,
       "tui_first_input_ms": null,
       "tui_input_latency_ms": null,
-      "idle_pss_mb": 48.9990234375
+      "idle_pss_mb": 49.0703125
     },
     {
       "agent": "opencode v2",
@@ -49,11 +49,11 @@
       "version": "opencode2 v0.0.0-beta-19271",
       "disk_mb": 207.439328,
       "disk_kind": "bin",
-      "startup_ms": 69.95963800000027,
-      "tui_first_byte_ms": 117.52808500000356,
-      "tui_first_input_ms": 480.22200900004464,
-      "tui_input_latency_ms": 53.31386500006374,
-      "idle_pss_mb": 129.173828125
+      "startup_ms": 88.26276000013422,
+      "tui_first_byte_ms": 146.62653499999578,
+      "tui_first_input_ms": 511.07911799999783,
+      "tui_input_latency_ms": 63.31258699992759,
+      "idle_pss_mb": 130.939453125
     },
     {
       "agent": "jcode",
@@ -62,11 +62,11 @@
       "version": "jcode v0.95.0 (6487bbd7e)",
       "disk_mb": 138.161088,
       "disk_kind": "bin",
-      "startup_ms": 7.265679999989061,
-      "tui_first_byte_ms": 10.05634400002009,
+      "startup_ms": 9.953741999993326,
+      "tui_first_byte_ms": 13.177089999999225,
       "tui_first_input_ms": null,
       "tui_input_latency_ms": null,
-      "idle_pss_mb": 28.1474609375
+      "idle_pss_mb": 27.546875
     },
     {
       "agent": "pi",
@@ -75,11 +75,11 @@
       "version": "1.1.0",
       "disk_mb": 139.954304,
       "disk_kind": "bin",
-      "startup_ms": 195.5570869999974,
-      "tui_first_byte_ms": 274.70616800007974,
-      "tui_first_input_ms": 754.8794979999229,
-      "tui_input_latency_ms": 6.714421000083348,
-      "idle_pss_mb": 130.3037109375
+      "startup_ms": 241.08809999995628,
+      "tui_first_byte_ms": 322.7013349999197,
+      "tui_first_input_ms": 859.6903860000111,
+      "tui_input_latency_ms": 8.443256000077781,
+      "idle_pss_mb": 129.677734375
     },
     {
       "agent": "gemini cli",
@@ -88,11 +88,11 @@
       "version": "0.63.0",
       "disk_mb": 139.954304,
       "disk_kind": "bin",
-      "startup_ms": 1241.0489289999305,
-      "tui_first_byte_ms": 1316.4245430000392,
-      "tui_first_input_ms": 1367.1565290001126,
+      "startup_ms": 1596.7567750000171,
+      "tui_first_byte_ms": 1696.722388000012,
+      "tui_first_input_ms": 1661.3161280000668,
       "tui_input_latency_ms": null,
-      "idle_pss_mb": null
+      "idle_pss_mb": 146.0537109375
     },
     {
       "agent": "copilot cli",
@@ -101,11 +101,11 @@
       "version": "GitHub Copilot CLI 1.0.95.",
       "disk_mb": 139.954304,
       "disk_kind": "bin",
-      "startup_ms": 86.57173299991427,
-      "tui_first_byte_ms": 662.8705100000616,
+      "startup_ms": 106.00853899995855,
+      "tui_first_byte_ms": 815.3301090000014,
       "tui_first_input_ms": null,
       "tui_input_latency_ms": null,
-      "idle_pss_mb": 47.3310546875
+      "idle_pss_mb": 47.388671875
     },
     {
       "agent": "crush",
@@ -114,11 +114,11 @@
       "version": "crush version v0.98.1",
       "disk_mb": 139.954304,
       "disk_kind": "bin",
-      "startup_ms": 125.64228400003685,
-      "tui_first_byte_ms": 563.8186109999879,
+      "startup_ms": 142.853491999972,
+      "tui_first_byte_ms": 273.60318399996686,
       "tui_first_input_ms": null,
       "tui_input_latency_ms": null,
-      "idle_pss_mb": 68.4072265625
+      "idle_pss_mb": 68.845703125
     },
     {
       "agent": "goose",
@@ -127,10 +127,10 @@
       "version": "1.54.0",
       "disk_mb": 307.7568,
       "disk_kind": "bin",
-      "startup_ms": 5.6168810000372105,
-      "tui_first_byte_ms": 5.495105000022704,
-      "tui_first_input_ms": 156.03670100006184,
-      "tui_input_latency_ms": 0.09865900005934236,
+      "startup_ms": 7.68512499996632,
+      "tui_first_byte_ms": 7.8924990000359685,
+      "tui_first_input_ms": 218.4417390000135,
+      "tui_input_latency_ms": null,
       "idle_pss_mb": null
     },
     {
@@ -140,24 +140,24 @@
       "version": "aider 0.86.2",
       "disk_mb": 139.954304,
       "disk_kind": "bin",
-      "startup_ms": 623.5605749999422,
-      "tui_first_byte_ms": 568.0363210000223,
-      "tui_first_input_ms": 930.6677239999317,
-      "tui_input_latency_ms": 8.769143999984408,
-      "idle_pss_mb": 66.859375
+      "startup_ms": 925.723009999956,
+      "tui_first_byte_ms": 802.9491099999859,
+      "tui_first_input_ms": 1184.9427220000734,
+      "tui_input_latency_ms": 10.701662999963446,
+      "idle_pss_mb": 66.8623046875
     },
     {
       "agent": "amp",
       "installed": true,
       "bin": "/home/runner/.local/bin/amp",
-      "version": "0.0.1791778148-g902162 (released 2026-10-12T04:09:08.000Z, 3",
+      "version": "0.0.1791778148-g902162 (released 2026-10-12T04:09:08.000Z, 4",
       "disk_mb": 134.157792,
       "disk_kind": "bin",
-      "startup_ms": 210.22200499999144,
-      "tui_first_byte_ms": 226.50461700004598,
-      "tui_first_input_ms": 587.5643539999373,
-      "tui_input_latency_ms": 0.6928389999529827,
-      "idle_pss_mb": 160.59765625
+      "startup_ms": 272.60191899995334,
+      "tui_first_byte_ms": 272.2066009999935,
+      "tui_first_input_ms": 646.1257400000022,
+      "tui_input_latency_ms": 0.6358079999699839,
+      "idle_pss_mb": 162.716796875
     },
     {
       "agent": "cursor-agent",
@@ -166,11 +166,11 @@
       "version": "2026.10.01-e373342",
       "disk_mb": 139.954304,
       "disk_kind": "bin",
-      "startup_ms": 364.3345010000303,
-      "tui_first_byte_ms": 352.93722999995225,
+      "startup_ms": 471.73699799998303,
+      "tui_first_byte_ms": 456.5622050000684,
       "tui_first_input_ms": null,
       "tui_input_latency_ms": null,
-      "idle_pss_mb": 212.8720703125
+      "idle_pss_mb": 211.998046875
     },
     {
       "agent": "qwen code",
@@ -179,11 +179,11 @@
       "version": "0.25.1",
       "disk_mb": 139.954304,
       "disk_kind": "bin",
-      "startup_ms": 33.1704660000014,
-      "tui_first_byte_ms": 667.7518929999451,
+      "startup_ms": 39.23036399987723,
+      "tui_first_byte_ms": 854.7063099999832,
       "tui_first_input_ms": null,
       "tui_input_latency_ms": null,
-      "idle_pss_mb": 289.4306640625
+      "idle_pss_mb": 244.2197265625
     },
     {
       "agent": "codebuff",
@@ -192,11 +192,11 @@
       "version": "1.0.688",
       "disk_mb": 139.954304,
       "disk_kind": "bin",
-      "startup_ms": 805.5355009998948,
-      "tui_first_byte_ms": 831.1686540000665,
+      "startup_ms": 945.628053000064,
+      "tui_first_byte_ms": 917.1333490000961,
       "tui_first_input_ms": null,
       "tui_input_latency_ms": null,
-      "idle_pss_mb": 57.6337890625
+      "idle_pss_mb": 57.572265625
     },
     {
       "agent": "kilo code",
@@ -205,11 +205,11 @@
       "version": "7.8.8",
       "disk_mb": 139.954304,
       "disk_kind": "bin",
-      "startup_ms": 761.0147779998897,
-      "tui_first_byte_ms": 2270.09943500002,
+      "startup_ms": 853.359988999955,
+      "tui_first_byte_ms": 2603.0681070001265,
       "tui_first_input_ms": null,
       "tui_input_latency_ms": null,
-      "idle_pss_mb": 46.171875
+      "idle_pss_mb": 46.2255859375
     },
     {
       "agent": "droid",
@@ -218,11 +218,11 @@
       "version": "0.238.0",
       "disk_mb": 281.351648,
       "disk_kind": "bin",
-      "startup_ms": 80.94715399988672,
-      "tui_first_byte_ms": 97.85323699998116,
+      "startup_ms": 91.39448399992034,
+      "tui_first_byte_ms": 124.49834900007772,
       "tui_first_input_ms": null,
       "tui_input_latency_ms": null,
-      "idle_pss_mb": 232.8203125
+      "idle_pss_mb": 233.4873046875
     },
     {
       "agent": "kimi code",
@@ -231,11 +231,11 @@
       "version": "2.1.1",
       "disk_mb": 190.77856,
       "disk_kind": "bin",
-      "startup_ms": 469.32513100000506,
-      "tui_first_byte_ms": 599.0075019999495,
+      "startup_ms": 604.0687240001716,
+      "tui_first_byte_ms": 753.667281999924,
       "tui_first_input_ms": null,
       "tui_input_latency_ms": null,
-      "idle_pss_mb": 326.9775390625
+      "idle_pss_mb": 328.8466796875
     },
     {
       "agent": "devin",
@@ -244,11 +244,11 @@
       "version": "devin 3000.11.3 (9c803229faa4)",
       "disk_mb": 194.950824,
       "disk_kind": "bin",
-      "startup_ms": 2.280490999964968,
-      "tui_first_byte_ms": 33.651984000016455,
+      "startup_ms": 4.1287639999154635,
+      "tui_first_byte_ms": 48.47502400002668,
       "tui_first_input_ms": null,
       "tui_input_latency_ms": null,
-      "idle_pss_mb": 48.640625
+      "idle_pss_mb": 48.34765625
     },
     {
       "agent": "cline",
@@ -257,11 +257,11 @@
       "version": "3.0.70",
       "disk_mb": 139.954304,
       "disk_kind": "bin",
-      "startup_ms": 931.2920649999796,
-      "tui_first_byte_ms": 1130.1543199999742,
+      "startup_ms": 871.7524630001208,
+      "tui_first_byte_ms": 1153.0303089998597,
       "tui_first_input_ms": null,
       "tui_input_latency_ms": null,
-      "idle_pss_mb": 54.939453125
+      "idle_pss_mb": 54.974609375
     },
     {
       "agent": "continue",
@@ -270,11 +270,11 @@
       "version": "1.5.47",
       "disk_mb": 139.954304,
       "disk_kind": "bin",
-      "startup_ms": 929.5106039999155,
+      "startup_ms": 1150.378425000099,
       "tui_first_byte_ms": null,
       "tui_first_input_ms": null,
       "tui_input_latency_ms": null,
-      "idle_pss_mb": 318.1650390625
+      "idle_pss_mb": 317.0849609375
     },
     {
       "agent": "iflow cli",
@@ -283,16 +283,16 @@
       "version": "0.5.19",
       "disk_mb": 139.954304,
       "disk_kind": "bin",
-      "startup_ms": 999.8043719999714,
-      "tui_first_byte_ms": 1070.3495370000837,
-      "tui_first_input_ms": 1885.4618160000882,
-      "tui_input_latency_ms": 46.4498230001027,
-      "idle_pss_mb": 57.9609375
+      "startup_ms": 1241.7539409998426,
+      "tui_first_byte_ms": 1332.0520830000078,
+      "tui_first_input_ms": 2539.9668330001077,
+      "tui_input_latency_ms": 46.47327099996801,
+      "idle_pss_mb": 55.6015625
     }
   ],
   "fox": {
-    "ttft_ms": 56.9,
-    "headless_peak_rss_mb": 60.6,
+    "ttft_ms": 63.7,
+    "headless_peak_rss_mb": 60.9,
     "method": "headless `fox -p \u2026 --json` vs scripted local provider; RSS via /usr/bin/time -v; TUI bytes via PTY; TUI input = spawn\u2192quiet\u2192typed\u2192echo on screen (log marker where echo is suppressed); input latency = echo after a 1s settle"
   }
 }
