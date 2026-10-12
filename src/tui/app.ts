@@ -556,6 +556,10 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     if (paintTimer) return;
     paintTimer = setTimeout(() => {
       paintTimer = null;
+      // a frame scheduled before exit must not paint after the alt screen is
+      // torn down — that write lands on the primary screen and leaves the
+      // status bar behind (the "quit but the bottom bar is still there" bug)
+      if (exiting) return;
       tickRef?.();
     }, ms);
     paintTimer.unref?.();
@@ -809,7 +813,10 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       // editing a plugin file takes effect without restarting fox-agent
       void import("../plugins/load.ts").then((m) => m.reloadPlugins()).catch(() => {});
       applyRuntimeConfig();
-      push("info", `reloaded config + plugins — model ${state.provider.model} · theme ${themeName()}`);
+      // the "reloaded" state is transient and self-describing — float it in the
+      // command-output plane like /todo so it dies on the next keypress and
+      // never enters the transcript
+      setCmdOut(`reloaded config + plugins — model ${state.provider.model} · theme ${themeName()}`);
     };
     // a result carrying both runs the work first and reloads after: /plugins
     // on/off writes the config file in its task, and reloading before that
@@ -1280,14 +1287,10 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     state.readOnly = !!holder;
     if (holder) {
       statsRev++;
-      // ephemeral: the state it describes is transient (the other holder may
-      // close at any moment), and it paints as a boxed notice over the
-      // transcript — one keypress acknowledges it
-      push(
-        "info",
-        `session ${id} is open in ${holder.kind} (pid ${holder.pid}) — read-only view: drafting works, /todo /sessions /usage /help work, but nothing sends or writes`,
-        { ephemeral: true },
-      );
+      // the state it describes is transient (the other holder may close at any
+      // moment) — float it in the command-output plane like /todo so one
+      // keypress dismisses it and it never enters the transcript
+      setCmdOut(`session ${id} is open in ${holder.kind} (pid ${holder.pid}) — read-only view: drafting works, /todo /sessions /usage /help work, but nothing sends or writes`);
     }
   }
 
@@ -1749,6 +1752,15 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     try {
       // clear any OSC 9;4 progress the terminal still shows (quit mid-turn)
       term.progress(0);
+    } catch {}
+    try {
+      // cancel a frame scheduled before exit: the tick gate stops a fresh
+      // paint, but clearing here also releases the timer during the teardown
+      // window so nothing paints between term.end() and process exit
+      if (paintTimer) {
+        clearTimeout(paintTimer);
+        paintTimer = null;
+      }
     } catch {}
     try {
       term.end();
@@ -3763,18 +3775,22 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     let cmdRowsH = 0;
     if (cmdOut?.length) {
       const avail = Math.max(1, inputTop - queueRowsH - 1);
-      const shown = cmdOut.slice(0, avail);
-      cmdRowsH = shown.length + (cmdOut.length > avail ? 1 : 0);
+      // wrap each line to the panel width — a long notice (the session-in-use
+      // read-only line, a /reload confirmation) used to be clipped at the right
+      // margin, losing its tail. Greedy word-wrap, then cap the visible rows.
+      const wrapped = cmdOut.flatMap((l) => wrapText(l, W - 2));
+      const shown = wrapped.slice(0, avail);
+      cmdRowsH = shown.length + (wrapped.length > avail ? 1 : 0);
       const cTop = inputTop - queueRowsH - cmdRowsH;
       for (let i = 0; i < shown.length; i++) {
         // themed panel fill first: the box used to sit on the terminal's own
         // background (plain black), unrelated to the theme
         P.floats.fillRow(cTop + i, 0, W, S.panelBgRow);
-        P.floats.text(1, cTop + i, clipW(shown[i], W - 2), S.panelBgRow);
+        P.floats.text(1, cTop + i, shown[i], S.panelBgRow);
       }
-      if (cmdOut.length > avail) {
+      if (wrapped.length > avail) {
         P.floats.fillRow(cTop + shown.length, 0, W, S.panelBgRow);
-        P.floats.text(1, cTop + shown.length, clipW(`… ${cmdOut.length - avail} more lines`, W - 2), S.panelBgRow);
+        P.floats.text(1, cTop + shown.length, clipW(`… ${wrapped.length - avail} more lines`, W - 2), S.panelBgRow);
       }
     }
 
