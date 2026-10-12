@@ -160,7 +160,7 @@ describe("task lists", () => {
     const text = rows.map((r) => r.map((s) => s.t).join(""));
     // "[not a status]" is not a single-char task marker — stays literal text
     expect(text[0]).toContain("[not a status]");
-    expect(text[1]).toContain("· normal");
+    expect(text[1]).toContain("• normal");
   });
 });
 
