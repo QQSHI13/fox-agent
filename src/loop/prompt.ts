@@ -98,13 +98,18 @@ export function buildSystemPrompt(
   sections.push(
     [
       `## Self documentation`,
-      `fox-agent's own docs are materialized at ${agentDocsDir()}/ — read them with your read tool when the user asks about fox-agent itself (its config, plugins, tools, sessions, themes, protocols) or asks how to use or extend it. Do not read them otherwise.`,
-      `- config.md — config cascade, every field, env vars, editing the config yourself (/settings, /reload apply rules)`,
-      `- plugins.md — writing plugins (FoxPlugin: tools/hooks/providers/themes/commands/statusSegments), global-only loading rule`,
-      `- sessions-acp.md — session model, picker keys, forking, ACP server/client, A2A, headless modes`,
-      `- themes-tui.md — themes, TUI internals, keybindings`,
-      `- hacking.md — building/patching fox-agent's own source (build, test, conventions, layout, commit workflow)`,
+      `fox-agent's own docs are materialized at ${agentDocsDir()}/ — read them with your read tool when the user asks about fox-agent itself (its config, plugins, tools, sessions, themes, protocols) or asks how to use or extend it. Do not read them otherwise, and do not list the individual doc files unless asked.`,
       `Read a file completely before acting on it; follow cross-references between the files.`,
+    ].join("\n"),
+  );
+
+  // The runtime header rides as a trailing user message, not part of the system
+  // prompt — but the model still needs to know what it is and how to treat it.
+  sections.push(
+    [
+      `## Runtime header`,
+      `A trailing block rides on every user message, delimited by a runtime open-tag and close-tag. It is harness-injected state (working directory, host, model, operating system, date, context-window usage, your todo list) — it is NOT from the user.`,
+      `Never mention, quote, or restate the runtime header in your reply unless the user explicitly asks about it. When the user asks what time it is, what the working directory is, etc., answer from the header's values without referencing the header itself.`,
     ].join("\n"),
   );
 

@@ -61,6 +61,9 @@ describe("self docs", () => {
     const sys = buildSystemPrompt({ tools: [] });
     expect(sys).toContain("## Self documentation");
     expect(sys).toContain(agentDocsDir());
-    expect(sys).toContain("plugins.md");
+    // the prompt routes to the docs dir but does NOT enumerate individual doc
+    // files — that list is a per-token cost with no benefit (read on demand)
+    expect(sys).not.toContain("plugins.md");
+    expect(sys).not.toContain("config.md");
   });
 });

@@ -1,28 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { diffSegs, highlightLine, highlightBlockRich } from "../src/tui/highlight.ts";
+import { diffSegs, highlightBlockRich } from "../src/tui/highlight.ts";
 
-describe("highlightLine", () => {
-  test("keywords, strings, comments and numbers get their own segments", () => {
-    const segs = highlightLine('const x = "hi" + 42 // done', "ts");
-    const byText = Object.fromEntries(segs.filter((s) => s.fg).map((s) => [s.t, s.fg]));
-    expect(byText["const"]).toBeDefined();
-    expect(byText['"hi"']).toBeDefined();
-    expect(byText["42"]).toBeDefined();
-    expect(byText["// done"]).toBeDefined();
-  });
-
-  test("comment style follows the language family", () => {
-    expect(highlightLine("x = 1 # py comment", "py").some((s) => (s.fg ?? "") !== "" && s.t.includes("#"))).toBe(true);
-    // # is not a comment in js — it must stay plain
-    expect(highlightLine("# not a comment", "js").every((s) => !s.fg)).toBe(true);
-  });
-
-  test("an empty line comes back as one plain segment", () => {
-    expect(highlightLine("", "ts")).toEqual([{ t: "" }]);
-  });
-
-  // Regression: the regex fallback tinted ANY capitalized word as a type and
-  // matched a cross-language keyword union, so prose like "In a Self test By"
+// Regression: the old regex fallback tinted ANY capitalized word as a type and
+// matched a cross-language keyword union, so prose like "In a Self test By"
   // got keyword/tint highlighting. The grammar path must not.
   test("prose words are not keyword/type tinted by the grammar path", async () => {
     // grammar path is async (cached per block); poll briefly for the result
@@ -42,7 +22,6 @@ describe("highlightLine", () => {
       }
     }
   });
-});
 
 describe("diffSegs", () => {
   test("unified and git markers color, plain lines stay null", () => {
