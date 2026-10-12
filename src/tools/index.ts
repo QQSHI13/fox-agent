@@ -8,7 +8,6 @@ import { execDef, execRun } from "./exec.ts";
 import { cleanupPty, ptySessionName } from "./pty.ts";
 import { setOutputCap } from "./files.ts";
 import { ctxDef, ctxRun } from "./ctx.ts";
-import { taskDef, taskRun } from "./task.ts";
 import { mcpTools, closeMcp } from "./mcp.ts";
 import { loadPlugins, setActivePlugins } from "../plugins/load.ts";
 import { bundledPlugins, bundledDisabled } from "../plugins/bundled.ts";
@@ -22,8 +21,11 @@ export type { Tool, ToolContext, ToolResult } from "./types.ts";
 
 /**
  * The core tool set — the ones that are the harness itself (files, exec,
- * context editing, delegation). pty, todo, fetch and repl ship as bundled plugins
+ * context editing). pty, todo, fetch, repl and task ship as bundled plugins
  * instead (see src/plugins/bundled.ts), so they can be shadowed or disabled.
+ * task's ACP/A2A delegation lives behind that plugin: the clients stay in
+ * src/acp/client.ts + src/a2a/client.ts, but the tool that reaches them is a
+ * plugin like any other, and the ACP *server* (fox acp) stays in core.
  */
 export function baseRegistry(): Map<string, Tool> {
   const map = new Map<string, Tool>();
@@ -35,7 +37,6 @@ export function baseRegistry(): Map<string, Tool> {
   add(F.grepDef, F.grepRun);
   add(execDef, execRun);
   add(ctxDef, ctxRun);
-  add(taskDef, taskRun);
   return map;
 }
 
@@ -228,6 +229,9 @@ export async function shutdownTools(sessionId: string): Promise<void> {
   cleanupRepl(sessionId);
   const { killExecJobs } = await import("./exec.ts");
   killExecJobs(sessionId);
+  // detached background subagents (the bundled:task plugin) are reaped through
+  // its onSessionEnd hook; this belt-and-braces pass catches a session whose
+  // tasks outlived any registry build. Dynamic import: no-op when none ran.
   const { killTasks } = await import("./task.ts");
   killTasks(sessionId);
   closeMcp(); // detached: hands the terminal back while children reap in the background
