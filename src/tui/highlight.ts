@@ -81,50 +81,59 @@ function readableColor(hex: string): string {
   const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
   return lum < 90 ? "#c9d1d9" : hex;
 }
-const lineCache = new Map<string, Seg[] | null>();
-const pendingLines = new Set<string>();
-const LINE_CACHE_MAX = 4096;
+// Block cache: tokenizing one line at a time starves Shiki of context and the
+// whole line collapses to a single token (the `import ... from "..."` line
+// tinted ONE color). Tokenizing the WHOLE fence at once gives every token its
+// own color. So we cache per (lang, text) -> per-line Seg[][], tokenize once
+// when the block is first requested, and the renderer reads each line.
+const blockCache = new Map<string, (Seg[] | null)[] | null>();
+const pendingBlocks = new Set<string>();
+const BLOCK_CACHE_MAX = 256;
 let lastKick = 0;
-const KICK_MS = 100;
+const KICK_MS = 60;
 
-async function tokenizeLine(lang: string, line: string): Promise<void> {
-  const key = lang + "\0" + line;
+async function tokenizeBlock(lang: string, text: string): Promise<void> {
+  const key = lang + "\0" + text;
   try {
     const m = await shiki();
-    const { tokens } = await m.codeToTokens(line, { lang: shikiLang(lang) as any, theme: "github-dark" });
-    const segs: Seg[] = [];
-    for (const tok of tokens[0] ?? []) {
-      const fg = tok.color ? readableColor(tok.color) : undefined;
-      segs.push({ t: tok.content, ...(fg ? { fg } : {}) });
-    }
-    if (lineCache.size >= LINE_CACHE_MAX) lineCache.clear();
-    lineCache.set(key, segs.length ? segs : null);
+    const { tokens } = await m.codeToTokens(text, { lang: shikiLang(lang) as any, theme: "one-dark-pro" });
+    const lines: (Seg[] | null)[] = tokens.map((line) => {
+      const segs: Seg[] = [];
+      for (const tok of line) {
+        const fg = tok.color ? readableColor(tok.color) : undefined;
+        segs.push({ t: tok.content, ...(fg ? { fg } : {}) });
+      }
+      return segs.length ? segs : null;
+    });
+    if (blockCache.size >= BLOCK_CACHE_MAX) blockCache.clear();
+    blockCache.set(key, lines);
   } catch {
-    lineCache.set(key, null);
+    blockCache.set(key, null);
   } finally {
-    pendingLines.delete(key);
+    pendingBlocks.delete(key);
   }
 }
 
 /**
- * Grammar-highlight one fence line with Shiki. Returns the tinted segments, or
- * null when the language is unknown, tokenization is still running, or it
- * failed — the caller then falls back to the regex `highlightLine` for that
- * frame. Cached per (lang, line), so a steady frame costs a map lookup; a miss
- * kicks off async tokenization, throttled so a streaming block paces itself
- * over frames instead of re-grammaring every line at once.
+ * Grammar-highlight a whole fence block with Shiki, cached per (lang, text).
+ * Returns the per-line segments, or null while tokenization is still running
+ * or on failure — the caller then falls back to the regex `highlightLine` per
+ * line. Kicks off async tokenization once per block (throttled).
  */
-export function highlightLineRich(lang: string, line: string): Seg[] | null {
-  const key = lang + "\0" + line;
-  if (lineCache.has(key)) return lineCache.get(key) ?? null;
+export function highlightBlockRich(lang: string, text: string): (Seg[] | null)[] | null {
+  const key = lang + "\0" + text;
+  if (blockCache.has(key)) return blockCache.get(key) ?? null;
   if (!shikiLang(lang)) return null;
-  if (!pendingLines.has(key) && (pendingLines.size === 0 || Date.now() - lastKick >= KICK_MS)) {
+  if (!pendingBlocks.has(key) && (pendingBlocks.size === 0 || Date.now() - lastKick >= KICK_MS)) {
     lastKick = Date.now();
-    pendingLines.add(key);
-    tokenizeLine(lang, line).catch(() => {});
+    pendingBlocks.add(key);
+    tokenizeBlock(lang, text).catch(() => {});
   }
   return null;
 }
+
+// legacy line-level entry kept for callers that only have a single line
+const lineCache = new Map<string, Seg[] | null>();
 
 const KEYWORDS = new Set(
   (`const let var function return if else for while do switch case default break continue new class extends super this import export from

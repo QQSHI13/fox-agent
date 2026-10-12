@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { diffSegs, highlightLine, highlightLineRich } from "../src/tui/highlight.ts";
+import { diffSegs, highlightLine, highlightBlockRich } from "../src/tui/highlight.ts";
 
 describe("highlightLine", () => {
   test("keywords, strings, comments and numbers get their own segments", () => {
@@ -25,13 +25,14 @@ describe("highlightLine", () => {
   // matched a cross-language keyword union, so prose like "In a Self test By"
   // got keyword/tint highlighting. The grammar path must not.
   test("prose words are not keyword/type tinted by the grammar path", async () => {
-    // grammar path is async (cached); poll briefly for the result to land
+    // grammar path is async (cached per block); poll briefly for the result
     const line = "In a Self test By the quick Brown fox";
-    let segs: ReturnType<typeof highlightLineRich> = null;
-    for (let i = 0; i < 50 && segs === null; i++) {
-      segs = highlightLineRich("markdown", line);
-      if (segs === null) await new Promise((r) => setTimeout(r, 20));
+    let block: ReturnType<typeof highlightBlockRich> = null;
+    for (let i = 0; i < 50 && block === null; i++) {
+      block = highlightBlockRich("markdown", line);
+      if (block === null) await new Promise((r) => setTimeout(r, 20));
     }
+    const segs = block?.[0] ?? null;
     if (segs) {
       // none of the plain prose words may carry a keyword/type color
       for (const s of segs) {

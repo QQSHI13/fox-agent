@@ -3,7 +3,7 @@ import type { Seg } from "./wrap.ts";
 import { liveTheme } from "./themes.ts";
 import { charWidth } from "./screen.ts";
 import { wrapSegs } from "./wrap.ts";
-import { highlightLine, highlightLineRich, diffFenceLine, jsonSegs } from "./highlight.ts";
+import { highlightLine, highlightBlockRich, diffFenceLine, jsonSegs } from "./highlight.ts";
 
 // live theme lookups: a /theme switch recolors markdown on the next frame
 const MD = liveTheme<"ACCENT" | "CODE_FG" | "HEAD" | "DIM" | "LINK">({
@@ -45,6 +45,29 @@ export function renderMarkdown(src: string, state?: MdState, width?: number): Se
   let inFence = state?.inFence ?? false;
   let hadCode = state?.hadCode ?? false;
   let fenceLang = state?.lang ?? "";
+  // buffered body lines of the fence currently being parsed; flushed as one
+  // block (for grammar highlighting) when the closer is seen
+  let fenceBody: string[] = [];
+
+  // Render the buffered fence body. Grammar highlighting tokenizes the WHOLE
+  // block at once (per-line tokenizing starves Shiki of context and collapses
+  // each line to one color); while that async tokenization is still running we
+  // fall back per line to the fast diff/json paths or the regex highlighter,
+  // so a frame never blocks on grammar load. diff/json keep their dedicated
+  // paths even after the block cache warms.
+  const flushFence = (): void => {
+    const block = rich ? highlightBlockRich(fenceLang, fenceBody.join("\n")) : null;
+    for (let li = 0; li < fenceBody.length; li++) {
+      const body = fenceBody[li];
+      let lineSegs: Seg[] | null = block?.[li] ?? null;
+      if (rich && !lineSegs) {
+        if (/^(diff|patch)$/i.test(fenceLang)) lineSegs = diffFenceLine(body) ?? [{ t: body }];
+        else if (/^(json|jsonc)$/i.test(fenceLang)) lineSegs = jsonSegs(body);
+        else lineSegs = highlightLine(body, fenceLang);
+      }
+      out.push(lineSegs ? [{ t: "│ ", fg: MD.CODE_FG }, ...lineSegs.map((s) => ({ fg: MD.CODE_FG, ...s }))] : [{ t: "│ " + body, fg: MD.CODE_FG }]);
+    }
+  };
 
   // GFM footnotes: an inline `[^id]` becomes a small dim superscript-style
   // reference; a `[^id]: body` line at the start of a line becomes a dim
@@ -114,7 +137,10 @@ export function renderMarkdown(src: string, state?: MdState, width?: number): Se
   while (i < lines.length) {
     const line = lines[i];
 
-    // inside a fence every line is literal code; the opener itself emits nothing
+    // inside a fence every line is literal code; the opener itself emits nothing.
+    // Shiki tokenizes the WHOLE block at once (per-line tokenizing starves it of
+    // context and collapses each line to one color), so the body lines are
+    // buffered here and flushed as one block when the closer is seen.
     if (inFence) {
       if (/^```/.test(line)) {
         inFence = false;
@@ -123,25 +149,21 @@ export function renderMarkdown(src: string, state?: MdState, width?: number): Se
           state.hadCode = false;
           state.lang = "";
         }
-        if (!hadCode) out.push([{ t: "│", fg: MD.CODE_FG }]);
+        if (!hadCode) {
+          out.push([{ t: "│", fg: MD.CODE_FG }]);
+        } else if (fenceBody.length) {
+          flushFence();
+        }
+        fenceBody = [];
       } else {
         hadCode = true;
         if (state) state.hadCode = true;
-        // rich mode tints tokens; the gutter bar keeps the flat code color so
-        // the block still reads as one unit. A ```diff fence colors by marker
-        // (added/removed/hunk) instead of by syntax; non-marker lines fall
-        // back to the plain code tint.
-        // Grammar highlighting (Shiki) is preferred; while a line is still
-        // being tokenized asynchronously it returns null and we fall back to
-        // the regex highlighter for that frame only. diff/json keep their
-        // dedicated fast paths.
-        let lineSegs: Seg[] | null = null;
-        if (rich) {
-          if (/^(diff|patch)$/i.test(fenceLang)) lineSegs = diffFenceLine(line) ?? [{ t: line }];
-          else if (/^(json|jsonc)$/i.test(fenceLang)) lineSegs = jsonSegs(line);
-          else lineSegs = highlightLineRich(fenceLang, line) ?? highlightLine(line, fenceLang);
+        fenceBody.push(line);
+        // streaming tail: emit each line as it arrives using the fast paths,
+        // so a growing block renders without waiting for the closer
+        if (i === lines.length - 1 || /^```/.test(lines[i + 1] ?? "")) {
+          // last buffered line (closer next): nothing yet — flushFence runs at close
         }
-        out.push(lineSegs ? [{ t: "│ ", fg: MD.CODE_FG }, ...lineSegs.map((s) => ({ fg: MD.CODE_FG, ...s }))] : [{ t: "│ " + line, fg: MD.CODE_FG }]);
       }
       i++;
       continue;
@@ -357,6 +379,11 @@ export function renderMarkdown(src: string, state?: MdState, width?: number): Se
       para.push(lines[i++]);
     for (const pl of para) out.push(inline(pl));
   }
+  // an UNCLOSED fence (the block is still streaming in — no ``` yet): flush what
+  // has arrived so a growing code block renders instead of staying blank until
+  // the closer. The block cache is keyed on the partial text; once the real
+  // closer lands the full block re-tokenizes with full context.
+  if (inFence && fenceBody.length) flushFence();
   return out;
 }
 
