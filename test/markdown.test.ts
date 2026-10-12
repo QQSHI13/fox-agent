@@ -119,7 +119,7 @@ describe("task lists", () => {
   test("[x] renders a settled check with receded content", () => {
     const rows = renderMarkdown("- [x] fix the login bug");
     expect(rows.length).toBe(1);
-    expect(rows[0][0].t).toBe("✔ ");
+    expect(rows[0][0].t).toBe("[x] ");
     expect(rows[0][0].fg).toBeDefined();
     const body = rows[0].slice(1).map((s) => s.t).join("");
     expect(body).toBe("fix the login bug");
@@ -127,16 +127,16 @@ describe("task lists", () => {
     expect(rows[0].some((s) => s.fg !== undefined && s.t === "fix the login bug")).toBe(true);
   });
 
-  test("[~] renders an in-flight arrow with bold content", () => {
+  test("[~] renders an in-flight marker with bold content", () => {
     const rows = renderMarkdown("- [~] migrating the store");
-    expect(rows[0][0].t).toBe("▸ ");
+    expect(rows[0][0].t).toBe("[~] ");
     const body = rows[0].slice(1);
     expect(body.some((s) => s.bold && s.t.includes("migrating the store"))).toBe(true);
   });
 
   test("[ ] renders an open box with plain content", () => {
     const rows = renderMarkdown("- [ ] write tests first");
-    expect(rows[0][0].t).toBe("☐ ");
+    expect(rows[0][0].t).toBe("[.] ");
     expect(rows[0].slice(1).map((s) => s.t).join("")).toBe("write tests first");
     expect(rows[0].slice(1).some((s) => s.bold)).toBe(false);
   });
@@ -144,7 +144,7 @@ describe("task lists", () => {
   test("indentation is preserved and content keeps inline styling", () => {
     const rows = renderMarkdown("- [ ] plain\n  - [x] **bold nested** `code`");
     const text = rows.map((r) => r.map((s) => s.t).join(""));
-    expect(text[1]).toBe("  ✔ bold nested code");
+    expect(text[1]).toBe("  [x] bold nested code");
     const nested = rows[1];
     expect(nested.some((s) => s.bold)).toBe(true);
     expect(nested.some((s) => s.fg !== undefined && s.t === "code")).toBe(true);
@@ -152,7 +152,7 @@ describe("task lists", () => {
 
   test("uppercase [X] counts as done", () => {
     const rows = renderMarkdown("- [X] capitalized");
-    expect(rows[0][0].t).toBe("✔ ");
+    expect(rows[0][0].t).toBe("[x] ");
   });
 
   test("plain list items are unaffected", () => {
@@ -160,6 +160,31 @@ describe("task lists", () => {
     const text = rows.map((r) => r.map((s) => s.t).join(""));
     // "[not a status]" is not a single-char task marker — stays literal text
     expect(text[0]).toContain("[not a status]");
-    expect(text[1]).toContain("• normal");
+    expect(text[1]).toContain("- normal");
+  });
+});
+
+describe("inline formatting", () => {
+  test("***bold italic*** applies both bold and italic", () => {
+    const rows = renderMarkdown("this is ***bold italic*** text");
+    const target = rows[0].find((s) => s.t === "bold italic");
+    expect(target?.bold).toBe(true);
+    expect(target?.italic).toBe(true);
+  });
+
+  test("a link label keeps its inline formatting", () => {
+    const rows = renderMarkdown("a [link with **bold** inside](https://x.com) here");
+    const boldSeg = rows[0].find((s) => s.t === "bold");
+    expect(boldSeg?.bold).toBe(true);
+    expect(boldSeg?.href).toBe("https://x.com");
+  });
+
+  test("a footnote reference and definition render", () => {
+    const rows = renderMarkdown("text[^1] here\n\n[^1]: the note body");
+    const refRow = rows[0];
+    expect(refRow.some((s) => s.t === "[1]" && s.italic)).toBe(true);
+    // definition line renders as a receded dim entry
+    const defRow = rows.find((r) => r.some((s) => s.t.includes("the note body")));
+    expect(defRow?.some((s) => s.t === "  [1] ")).toBe(true);
   });
 });

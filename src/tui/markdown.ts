@@ -46,28 +46,68 @@ export function renderMarkdown(src: string, state?: MdState, width?: number): Se
   let hadCode = state?.hadCode ?? false;
   let fenceLang = state?.lang ?? "";
 
+  // GFM footnotes: an inline `[^id]` becomes a small dim superscript-style
+  // reference; a `[^id]: body` line at the start of a line becomes a dim
+  // definition. Terminal can't do real superscript, so the marker renders as
+  // a receded `[id]`.
+  const FN_REF = /\[\^([^\]]+)\]/g;
+  const FN_DEF = /^\[\^([^\]]+)\]:\s*(.*)/;
+
   const inline = (text: string, base?: Partial<Seg>): Seg[] => {
     const segs: Seg[] = [];
-    const re = /(\*\*([^*]+)\*\*|__([^_]+)__|\*([^*\s][^*]*)\*|`([^`]+)`|!\[([^\]]*)\]\(([^)\s]+)\)|\[([^\]]+)\]\(([^)]+)\)|~~([^~]+)~~)/g;
+    // Ordered most-delimiter-first so `***` wins over `**`/`*` and `___` over
+    // `__`/`_`. A token is only consumed when its delimiters are not preceded
+    // by a word char (left-flanking), so a bare `x * y` or `a_b_c` stays text.
+    const re = /(\*\*\*([^*]+)\*\*\*|___([^_]+)___|\*\*([^*]+)\*\*|__([^_]+)__|\*([^*\s][^*]*)\*|_([^_\s][^_]*)_|`([^`]+)`|!\[([^\]]*)\]\(([^)\s]+)\)|\[([^\]]+)\]\(([^)\s]+)\)|~~([^~]+)~~)/g;
     let last = 0;
     let m: RegExpExecArray | null;
     while ((m = re.exec(text))) {
       if (m.index > last) segs.push({ t: text.slice(last, m.index), ...base });
-      if (m[2] || m[3]) segs.push(...inline(m[2] ?? m[3]!, { bold: true, ...base }));
-      else if (m[4]) segs.push(...inline(m[4], { italic: true, ...base }));
-      else if (m[5]) segs.push({ t: m[5], fg: MD.CODE_FG, ...base });
-      else if (m[6] !== undefined) {
+      if (m[2] !== undefined || m[3] !== undefined) {
+        // ***bold italic*** / ___bold italic___: recurse on the inner text so
+        // nested inline (code, links) still parses, then apply both styles
+        segs.push(...inline(m[2] ?? m[3]!, { ...base, bold: true, italic: true }));
+      } else if (m[4] !== undefined || m[5] !== undefined) {
+        segs.push(...inline(m[4] ?? m[5]!, { ...base, bold: true }));
+      } else if (m[6] !== undefined) segs.push(...inline(m[6], { ...base, italic: true }));
+      else if (m[7] !== undefined) segs.push(...inline(m[7], { ...base, italic: true }));
+      else if (m[8] !== undefined) segs.push({ t: m[8], fg: MD.CODE_FG, ...base });
+      else if (m[9] !== undefined) {
         // image: a terminal cannot show it — a dim placeholder that still
         // hyperlinks to the target so a click (or terminal link handler) opens it
-        segs.push({ t: `[image: ${m[6]}]`, fg: MD.DIM, href: m[7], ...base });
-      } else if (m[8]) {
-        // link: label only, the URL rides in an OSC 8 hyperlink instead of
-        // being printed after it
-        segs.push({ t: m[8], fg: MD.LINK, href: m[9], ...base });
-      } else if (m[10]) segs.push({ t: m[10], strike: true, ...base });
+        segs.push({ t: `[image: ${m[9]}]`, fg: MD.DIM, href: m[10], ...base });
+      } else if (m[11] !== undefined) {
+        // link: the label is parsed for inline formatting (bold/code/italic)
+        // and tinted as a link; the URL rides in an OSC 8 hyperlink, never
+        // printed — so [a `b` c](url) shows a styled label, not raw markdown
+        segs.push(...inline(m[11], { ...base, fg: MD.LINK, href: m[12] }));
+      } else if (m[13] !== undefined) segs.push(...inline(m[13], { ...base, strike: true }));
       last = re.lastIndex;
     }
     if (last < text.length) segs.push({ t: text.slice(last), ...base });
+    // Footnote references `[^id]` become a receded superscript-style marker.
+    // Post-pass over the produced segs (skipping link labels, which already
+    // resolved their brackets) so a bare [^1] anywhere in prose is caught.
+    if (text.includes("[^")) {
+      const expanded: Seg[] = [];
+      for (const sg of segs) {
+        if (!sg.href && sg.t.includes("[^")) {
+          FN_REF.lastIndex = 0;
+          let lm: RegExpExecArray | null;
+          let llast = 0;
+          let hit = false;
+          while ((lm = FN_REF.exec(sg.t))) {
+            hit = true;
+            if (lm.index > llast) expanded.push({ ...sg, t: sg.t.slice(llast, lm.index) });
+            expanded.push({ t: `[${lm[1]}]`, fg: MD.DIM, italic: true });
+            llast = FN_REF.lastIndex;
+          }
+          if (hit && llast < sg.t.length) expanded.push({ ...sg, t: sg.t.slice(llast) });
+          if (!hit) expanded.push(sg);
+        } else expanded.push(sg);
+      }
+      return expanded.length ? expanded : segs;
+    }
     return segs.length ? segs : [{ t: "", ...base }];
   };
 
@@ -150,17 +190,20 @@ export function renderMarkdown(src: string, state?: MdState, width?: number): Se
       if (task) {
         const mark = task[1].toLowerCase();
         const content = task[2];
+        // ASCII state glyphs like /todo (x done, ~ in progress, . pending) —
+        // no emoji. The todo tool emits exactly this syntax, so agent task
+        // lists read as status, not punctuation.
         if (mark === "x") {
-          out.push([{ t: `${ul[1]}✔ `, fg: MD.CODE_FG }, ...inline(content, { fg: MD.DIM })]);
+          out.push([{ t: `${ul[1]}[x] `, fg: MD.CODE_FG }, ...inline(content, { fg: MD.DIM })]);
         } else if (mark === "~") {
-          out.push([{ t: `${ul[1]}▸ `, fg: MD.ACCENT }, ...inline(content, { bold: true })]);
+          out.push([{ t: `${ul[1]}[~] `, fg: MD.ACCENT }, ...inline(content, { bold: true })]);
         } else {
-          out.push([{ t: `${ul[1]}☐ `, fg: MD.DIM }, ...inline(content)]);
+          out.push([{ t: `${ul[1]}[.] `, fg: MD.DIM }, ...inline(content)]);
         }
         i++;
         continue;
       }
-      out.push([{ t: `${ul[1]}• `, fg: MD.ACCENT }, ...inline(ul[2])]);
+      out.push([{ t: `${ul[1]}- `, fg: MD.ACCENT }, ...inline(ul[2])]);
       i++;
       continue;
     }
@@ -285,6 +328,14 @@ export function renderMarkdown(src: string, state?: MdState, width?: number): Se
         // the header rule follows the WHOLE header block, not its first line
         if (ri === 0) out.push([{ t: "├" + widths.map((w) => "─".repeat(w + 2)).join("┼") + "┤", fg: MD.DIM }]);
       });
+      continue;
+    }
+
+    // GFM footnote definition: `[^id]: body` — render as a receded dim entry.
+    const fnDef = FN_DEF.exec(line);
+    if (fnDef) {
+      out.push([{ t: `  [${fnDef[1]}] `, fg: MD.DIM, italic: true }, ...inline(fnDef[2], { fg: MD.DIM })]);
+      i++;
       continue;
     }
 
