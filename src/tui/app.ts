@@ -2767,10 +2767,12 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       }
       return;
     }
-    // a click on the leading [N] marker column opens the per-message ops wizard
-    // (fork / copy / revert) instead of toggling the item — the marker is its
-    // own hit target, distinct from the row body
-    if (it.seq !== undefined && x < MARKER_W(it.seq)) {
+    // a click on the leading [N] marker chip opens the per-message ops wizard
+    // (fork / copy / revert). The chip renders on the item's FIRST row only, so
+    // the hit must be that row AND inside the exact `[N]` span — a click on any
+    // wrapped line's left columns, or past the label, must not open it.
+    const isFirstRowOfItem = winIdx === 0 || fr.owner[winIdx - 1] !== fr.owner[winIdx];
+    if (it.seq !== undefined && isFirstRowOfItem && x >= 0 && x < MARKER_W(it.seq)) {
       void markerOps(it.seq);
       return;
     }
@@ -3714,6 +3716,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           // bg spans EXACTLY `[N]` — the gap after it stays uncolored so no
           // stray background cell trails the marker
           P.transcript.text(0, y, mk.label, screen.sgr({ fg: mk.fg, bg: mk.bg, bold: true }));
+          // text() keeps a filled cell's bg when painting over it, so the gap
+          // column would inherit the row fill — stamp it default to be sure
+          P.transcript.text(chipW, y, " ", S.base);
         }
         // content sits one uncolored space past the chip on line 1, and at the
         // usual x=1 margin on every wrapped line — the marker only borrows line 1
