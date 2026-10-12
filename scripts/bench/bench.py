@@ -154,7 +154,7 @@ def best_startup(path, n, ver=None):
         dt, _ = run_quiet(argv, timeout=15)
         if dt is not None:
             ts.append(dt * 1000)
-    return min(ts) if ts else None
+    return ts
 
 
 def is_binary_file(path):
@@ -404,7 +404,7 @@ def tui_first_byte(path, probes=5):
                 pass
         if first is not None:
             samples.append(first * 1000)
-    return min(samples) if samples else None
+    return samples
 
 
 def idle_pss(path, settle=1.5):
@@ -703,7 +703,7 @@ def tui_input_latency(path, label, settle_s=2.0, probes=3, timeout=15):
                 os.waitpid(pid, 0)
             except (ProcessLookupError, ChildProcessError, OSError):
                 pass
-    return min(samples) if samples else None
+    return samples
 
 
 def start_fake_provider():
@@ -881,6 +881,32 @@ def fmt_ms(v):
     return f"{v:,.0f}" if v >= 100 else f"{v:.1f}"
 
 
+def percentile(sorted_samples, p):
+    """p-th percentile (0-100) of an ALREADY-SORTED list; None when empty.
+
+    Nearest-rank: the smallest value at or below the p fraction. p50 is the
+    median (typical experience), p95 the tail (the slow run a user notices).
+    """
+    if not sorted_samples:
+        return None
+    k = max(0, min(len(sorted_samples) - 1, int(round((p / 100) * (len(sorted_samples) - 1)))))
+    return sorted_samples[k]
+
+
+def stat_block(samples):
+    """Collapse a list of timings into {min, p50, p95} (best, typical, tail).
+
+    Reporting only best-of-N hid variance: two tools with the same best-of-3
+    can feel very different if one is consistent and the other occasionally
+    triples. min stays the floor; p50/p95 are what a user actually feels.
+    None only when there were no samples at all (probe never landed).
+    """
+    if not samples:
+        return None, None, None
+    s = sorted(samples)
+    return s[0], percentile(s, 50), percentile(s, 95)
+
+
 def measure(label, path, n_start, n_probes, n_input):
     step(label, "probing version")
     ver = version_of(path)
@@ -892,10 +918,14 @@ def measure(label, path, n_start, n_probes, n_input):
     ttfb = tui_first_byte(path, n_probes)
     step(label, f"timing time-to-interactive (best of {n_input} PTY launches)")
     tfin = tui_first_input(path, label, n_input)
-    step(label, f"timing input latency after 1s settle (best of {n_input})")
+    step(label, "timing input latency after 2s settle (best of {n_input})")
     latency = tui_input_latency(path, label, probes=n_input)
     step(label, "measuring idle memory (PSS)")
     pss = idle_pss(path)
+    su_min, su_p50, su_p95 = stat_block(startup)
+    fb_min, fb_p50, fb_p95 = stat_block(ttfb)
+    fi_min, fi_p50, fi_p95 = stat_block(tfin)
+    la_min, la_p50, la_p95 = stat_block(latency)
     row = {
         "agent": label,
         "installed": True,
@@ -904,13 +934,27 @@ def measure(label, path, n_start, n_probes, n_input):
         # full precision in the JSON; the md table and SVG round for display
         "disk_mb": disk,
         "disk_kind": kind,
-        "startup_ms": startup,
-        "tui_first_byte_ms": ttfb,
-        "tui_first_input_ms": tfin,
-        "tui_input_latency_ms": latency,
+        # legacy single-value fields stay the best (floor) so existing readers
+        # keep working; the _min/_p50/_p95 triples carry the full distribution
+        "startup_ms": su_min,
+        "tui_first_byte_ms": fb_min,
+        "tui_first_input_ms": fi_min,
+        "tui_input_latency_ms": la_min,
+        "startup": {"min": su_min, "p50": su_p50, "p95": su_p95, "n": len(startup)},
+        "tui_first_byte": {"min": fb_min, "p50": fb_p50, "p95": fb_p95, "n": len(ttfb)},
+        "tui_first_input": {"min": fi_min, "p50": fi_p50, "p95": fi_p95, "n": len(tfin)},
+        "tui_input_latency": {"min": la_min, "p50": la_p50, "p95": la_p95, "n": len(latency)},
         "idle_pss_mb": pss,
     }
-    print(f"{label}: {ver} disk={disk:.1f}MB({kind}) startup={startup:.1f}ms ttfb={ttfb:.1f}ms tfin={tfin:.1f}ms latency={latency:.1f}ms pss={pss:.1f}MB" if all(x is not None for x in (disk, startup, ttfb, tfin, latency, pss)) else f"{label}: {ver} disk={disk}({kind}) startup={startup} ttfb={ttfb} tfin={tfin} latency={latency} pss={pss}")
+    def _t(a, b, c):
+        return "-" if a is None else f"{a:.0f}/{b:.0f}/{c:.0f}"
+    print(
+        f"{label}: {ver} disk={disk:.1f}MB({kind}) "
+        f"startup[min/p50/p95]={_t(su_min, su_p50, su_p95)} "
+        f"ttfb={_t(fb_min, fb_p50, fb_p95)} "
+        f"tfin={_t(fi_min, fi_p50, fi_p95)} "
+        f"latency={_t(la_min, la_p50, la_p95)} pss={pss:.1f}MB"
+    )
     return row
 
 
