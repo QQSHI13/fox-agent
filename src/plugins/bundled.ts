@@ -17,6 +17,7 @@ import { fetchDef, fetchRun } from "../tools/fetch.ts";
 import { replDef, replRun, cleanupRepl } from "../tools/repl.ts";
 import { questionPlugin } from "../tools/question.ts";
 import { lspPlugin } from "../tools/lsp.ts";
+import { taskDef, taskRun, killTasks } from "../tools/task.ts";
 import costPlugin, { costSegment } from "./cost.ts";
 
 const ptyPlugin: FoxPlugin = {
@@ -41,9 +42,19 @@ const replPlugin: FoxPlugin = {
   },
 };
 
+const taskPlugin: FoxPlugin = {
+  name: "bundled:task",
+  tools: [{ def: taskDef, run: taskRun }],
+  hooks: {
+    // detached background subagents outlive the turn that started them; the
+    // hook ties their lifetime to the session's, on exit and on session switch
+    onSessionEnd: (c) => killTasks(c.sessionId),
+  },
+};
+
 /** All bundled plugins. Order matters only for shadowing: user plugins load after. */
 export function bundledPlugins(): FoxPlugin[] {
-  return [ptyPlugin, todoPlugin, fetchPlugin, replPlugin, questionPlugin, lspPlugin, costPlugin];
+  return [ptyPlugin, todoPlugin, fetchPlugin, replPlugin, taskPlugin, questionPlugin, lspPlugin, costPlugin];
 }
 
 /**
