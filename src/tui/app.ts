@@ -1029,18 +1029,26 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     const p = prompt!;
     const opts = promptOptions();
     if (!opts.length) return;
-    // same geometry the menu paints with (see dockFloats) — anything else
-    // resolves clicks against rows the menu never occupied
+    // same geometry the menu paints with (see paintFloats / dockFloats) —
+    // anything else resolves clicks against rows the menu never occupied.
+    // The header WRAPS (a long title/step/hint spans multiple rows), so its
+    // height must be computed exactly as paint computes it, not assumed 1.
     const menuTop = dockFloats().top;
-    const MAX = Math.max(1, Math.min(5, menuTop - 1));
+    const stForHeader = p.steps[p.idx];
+    const hintForHeader = resolveField(stForHeader.hint, p.answers);
+    const stepPosForHeader = p.steps.length > 1 ? ` ${p.idx + 1}/${p.steps.length}` : "";
+    const headerText = `${p.title}${stepPosForHeader} — ${stForHeader.label}${hintForHeader ? ` (${hintForHeader})` : ""} · esc cancels`;
+    const headerRows = wrapText(headerText, W - 2).length;
+    // same shrink as paint: the option window leaves room for the wrapped header
+    const MAX = Math.max(1, Math.min(5, menuTop - headerRows));
     const start = opts.length <= MAX ? 0 : Math.max(0, Math.min(p.sel - Math.floor(MAX / 2), opts.length - MAX));
     const end = Math.min(opts.length, start + MAX);
     const above = start > 0 ? 1 : 0;
     const below = end < opts.length ? 1 : 0;
-    const rows = 1 + above + (end - start) + below;
+    const rows = headerRows + above + (end - start) + below;
     const idx = y - (menuTop - rows);
     if (idx <= 0 || idx >= rows) return; // header, or outside the menu
-    const optRow = idx - 1 - above;
+    const optRow = idx - headerRows - above;
     if (optRow < 0) {
       p.sel = Math.max(0, p.sel - MAX); // "… above": page the highlight up
       markDirty();
@@ -3703,16 +3711,22 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       const st = prompt.steps[prompt.idx];
       const hint = resolveField(st.hint, prompt.answers);
       const stepPos = prompt.steps.length > 1 ? ` ${prompt.idx + 1}/${prompt.steps.length}` : "";
-      const rows: { text: string; sel: boolean }[] = [
-        { text: `${prompt.title}${stepPos} — ${st.label}${hint ? ` (${hint})` : ""} · esc cancels`, sel: false },
-      ];
+      const header = `${prompt.title}${stepPos} — ${st.label}${hint ? ` (${hint})` : ""} · esc cancels`;
+      // wrap the header instead of truncating it: a long title/step/hint used
+      // to be cut at the right margin, hiding the cancel hint and any longer
+      // explanation. Each wrapped line is its own row, and the click geometry
+      // (which counts rows) grows with it, so hit-tests stay in sync.
+      const rows: { text: string; sel: boolean }[] = wrapText(header, W - 2).map((t) => ({ text: t, sel: false }));
       const menuTop = dockFloats().top;
       if (st.kind === "select") {
         const opts = promptOptions();
         if (!opts.length) {
           rows.push({ text: "  no matches — backspace to widen", sel: false });
         } else {
-          const MAX = Math.max(1, Math.min(5, menuTop - 1));
+          // the option window shrinks to leave room for the WRAPPED header — a
+          // long title/step/hint spans multiple rows, and the box must not
+          // paint above row 0. Same formula the click hit-test uses.
+          const MAX = Math.max(1, Math.min(5, menuTop - rows.length));
           const start = opts.length <= MAX ? 0 : Math.max(0, Math.min(prompt.sel - Math.floor(MAX / 2), opts.length - MAX));
           const end = Math.min(opts.length, start + MAX);
           if (start > 0) rows.push({ text: `  … ${start} more above`, sel: false });
@@ -3862,6 +3876,33 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   }
 
   /** Truncate to `cols` display columns (wide chars count as two). */
+  /** Greedy word-wrap of a plain string to `cols` display columns. */
+  function wrapText(s: string, cols: number): string[] {
+    const words = s.split(/\s+/).filter(Boolean);
+    const lines: string[] = [];
+    let cur = "";
+    for (const w of words) {
+      const next = cur ? cur + " " + w : w;
+      if (Bun.stringWidth(next) <= cols) cur = next;
+      else {
+        if (cur) lines.push(cur);
+        // a single word longer than the column: hard-split it so nothing is lost
+        if (Bun.stringWidth(w) > cols) {
+          let chunk = "";
+          for (const ch of w) {
+            if (Bun.stringWidth(chunk + ch) > cols) {
+              lines.push(chunk);
+              chunk = ch;
+            } else chunk += ch;
+          }
+          cur = chunk;
+        } else cur = w;
+      }
+    }
+    if (cur) lines.push(cur);
+    return lines.length ? lines : [""];
+  }
+
   function clipW(s: string, cols: number): string {
     if (Bun.stringWidth(s) <= cols) return s;
     let out = "";
