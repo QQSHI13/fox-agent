@@ -1,7 +1,6 @@
 import { dirname, isAbsolute, join } from "node:path";
 import { homedir } from "node:os";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { parse as parseTomlLib, stringify as stringifyToml } from "smol-toml";
 import { ConfigError } from "./errors.ts";
 import { setConfiguredModels } from "../providers/models.ts";
 import { presetById } from "../providers/modelsdev.ts";
@@ -642,13 +641,13 @@ function editConfigFile(path: string, edit: (doc: Record<string, unknown>) => vo
       writeFileSync(`${path}.bak`, text);
     } catch {}
   }
-  writeFileSync(path, stringifyToml(doc));
+  writeFileSync(path, Bun.TOML.stringify(doc) ?? "");
 }
 
 /** Parse TOML text, throwing ConfigError naming the file. */
 function parseTomlDocument(text: string, path: string): Record<string, unknown> {
   try {
-    return parseTomlLib(text) as unknown as Record<string, unknown>;
+    return Bun.TOML.parse(text) as unknown as Record<string, unknown>;
   } catch (e) {
     // the library's message carries a multi-line source excerpt; the one-liner
     // contract (see the cli test) keeps the first line, which names the fault

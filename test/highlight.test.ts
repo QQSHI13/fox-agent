@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { diffSegs, highlightLine } from "../src/tui/highlight.ts";
+import { diffSegs, highlightLine, highlightLineRich } from "../src/tui/highlight.ts";
 
 describe("highlightLine", () => {
   test("keywords, strings, comments and numbers get their own segments", () => {
@@ -19,6 +19,27 @@ describe("highlightLine", () => {
 
   test("an empty line comes back as one plain segment", () => {
     expect(highlightLine("", "ts")).toEqual([{ t: "" }]);
+  });
+
+  // Regression: the regex fallback tinted ANY capitalized word as a type and
+  // matched a cross-language keyword union, so prose like "In a Self test By"
+  // got keyword/tint highlighting. The grammar path must not.
+  test("prose words are not keyword/type tinted by the grammar path", async () => {
+    // grammar path is async (cached); poll briefly for the result to land
+    const line = "In a Self test By the quick Brown fox";
+    let segs: ReturnType<typeof highlightLineRich> = null;
+    for (let i = 0; i < 50 && segs === null; i++) {
+      segs = highlightLineRich("markdown", line);
+      if (segs === null) await new Promise((r) => setTimeout(r, 20));
+    }
+    if (segs) {
+      // none of the plain prose words may carry a keyword/type color
+      for (const s of segs) {
+        if (s.t.trim() && s.fg) {
+          expect(["In", "a", "Self", "test", "By", "the", "quick", "Brown", "fox"]).not.toContain(s.t.trim());
+        }
+      }
+    }
   });
 });
 

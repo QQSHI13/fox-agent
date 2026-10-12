@@ -3,7 +3,7 @@ import type { Seg } from "./wrap.ts";
 import { liveTheme } from "./themes.ts";
 import { charWidth } from "./screen.ts";
 import { wrapSegs } from "./wrap.ts";
-import { highlightLine, diffFenceLine, jsonSegs } from "./highlight.ts";
+import { highlightLine, highlightLineRich, diffFenceLine, jsonSegs } from "./highlight.ts";
 
 // live theme lookups: a /theme switch recolors markdown on the next frame
 const MD = liveTheme<"ACCENT" | "CODE_FG" | "HEAD" | "DIM" | "LINK">({
@@ -91,11 +91,15 @@ export function renderMarkdown(src: string, state?: MdState, width?: number): Se
         // the block still reads as one unit. A ```diff fence colors by marker
         // (added/removed/hunk) instead of by syntax; non-marker lines fall
         // back to the plain code tint.
+        // Grammar highlighting (Shiki) is preferred; while a line is still
+        // being tokenized asynchronously it returns null and we fall back to
+        // the regex highlighter for that frame only. diff/json keep their
+        // dedicated fast paths.
         let lineSegs: Seg[] | null = null;
         if (rich) {
           if (/^(diff|patch)$/i.test(fenceLang)) lineSegs = diffFenceLine(line) ?? [{ t: line }];
           else if (/^(json|jsonc)$/i.test(fenceLang)) lineSegs = jsonSegs(line);
-          else lineSegs = highlightLine(line, fenceLang);
+          else lineSegs = highlightLineRich(fenceLang, line) ?? highlightLine(line, fenceLang);
         }
         out.push(lineSegs ? [{ t: "│ ", fg: MD.CODE_FG }, ...lineSegs.map((s) => ({ fg: MD.CODE_FG, ...s }))] : [{ t: "│ " + line, fg: MD.CODE_FG }]);
       }

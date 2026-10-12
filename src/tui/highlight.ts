@@ -20,6 +20,129 @@ export function richColors() {
   return { kw: R.KW, str: R.STR, com: R.COM, num: R.NUM, add: R.DADD, del: R.DDEL, hunk: R.DHUNK };
 }
 
+// ---- real grammar highlighting via Shiki (line-local, cached) ----
+//
+// Shiki builds a real TextMate syntax tree, so it knows `In` at a sentence
+// start is not the JS `in` operator — the regex fallback below tinted any
+// capitalized word as a "type" and matched a cross-language keyword union
+// against prose. The tradeoff is weight: grammars are WASM and the first call
+// costs a few hundred ms. So each fence line is tokenized at most once, the
+// Seg[] result is cached per (lang, line), and the per-frame render loop reads
+// the cache — steady-state frame cost is a map lookup per line, not a grammar
+// run. A miss kicks off async tokenization (throttled) and the caller shows
+// the regex tint for that frame, so rendering never blocks on grammar load.
+//
+// Line-local tokenizing is a deliberate fit for the renderer: it is stateless
+// across frames (the TUI re-parses the buffer every frame and streams tails),
+// so keeping no cross-line parser state means any frame can render any prefix
+// correctly. Multi-line strings/comments degrade to per-line coloring — no
+// worse than the regex fallback they replace.
+
+type ShikiModule = typeof import("shiki");
+let shikiPromise: Promise<ShikiModule> | null = null;
+function shiki(): Promise<ShikiModule> {
+  // lazy: keep shiki (and its grammars) off the TUI startup path entirely
+  shikiPromise ??= import("shiki");
+  return shikiPromise;
+}
+
+// normalize a fence language id to a bundled Shiki grammar; returns null when
+// shiki has no grammar for it (caller falls back to the regex highlighter)
+function shikiLang(lang: string): string | null {
+  const l = lang.toLowerCase().replace(/^language-/, "");
+  const ALIAS: Record<string, string> = {
+    ts: "typescript", tsx: "tsx", mts: "typescript", cts: "typescript",
+    js: "javascript", jsx: "jsx", mjs: "javascript", cjs: "javascript",
+    py: "python", sh: "shellscript", bash: "shellscript", zsh: "shellscript", shell: "shellscript",
+    yml: "yaml", md: "markdown", "c++": "cpp", objc: "objective-c",
+    vb: "vbnet", fs: "fsharp", docker: "dockerfile",
+  };
+  const g = ALIAS[l] ?? l;
+  return g && g.length ? g : null;
+}
+
+// Shiki's codeToTokens resolves each token to a theme hex color but does not
+// expose the TextMate scope stack, so we cannot map scopes to slots directly.
+// Instead, bucket each token's hex color to the nearest of the four code slots
+// (KW/STR/COM/NUM) by hue/saturation, so the result follows the live theme
+// rather than a hardcoded palette. Near-gray / near-white / near-black text
+// stays plain — that is punctuation and identifiers in the source theme.
+function slotForColor(hex: string): string | undefined {
+  const m = /^#([0-9a-f]{6})$/i.exec(hex);
+  if (!m) return undefined;
+  const n = parseInt(m[1], 16);
+  const r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
+  const max = Math.max(r, g, b), min = Math.min(r, g, b);
+  const sat = max === 0 ? 0 : (max - min) / max;
+  const light = max / 255;
+  if (sat < 0.18 || light > 0.92 || light < 0.08) return undefined;
+  const d = max - min;
+  let h: number;
+  if (d === 0) h = 0;
+  else if (max === r) h = ((g - b) / d) % 6;
+  else if (max === g) h = (b - r) / d + 2;
+  else h = (r - g) / d + 4;
+  h *= 60; if (h < 0) h += 360;
+  // green/yellow → strings; red/magenta → keywords; blue/cyan → numbers/types
+  if (h >= 60 && h < 170) return R.STR;
+  if (h < 60 || h >= 300) return R.KW;
+  return R.NUM;
+}
+
+// null is a cached result too: "this line tints plain" (or tokenization
+// failed) must not be retried every frame
+const lineCache = new Map<string, Seg[] | null>();
+const pendingLines = new Set<string>();
+const LINE_CACHE_MAX = 4096;
+let lastKick = 0;
+const KICK_MS = 100;
+
+async function tokenizeLine(lang: string, line: string): Promise<void> {
+  const key = lang + "\0" + line;
+  try {
+    const m = await shiki();
+    const { tokens } = await m.codeToTokens(line, { lang: shikiLang(lang) as any, theme: "github-dark" });
+    const segs: Seg[] = [];
+    let plain = "";
+    for (const tok of tokens[0] ?? []) {
+      const fg = tok.color ? slotForColor(tok.color) : undefined;
+      if (fg) {
+        if (plain) { segs.push({ t: plain }); plain = ""; }
+        segs.push({ t: tok.content, fg });
+      } else {
+        plain += tok.content;
+      }
+    }
+    if (plain) segs.push({ t: plain });
+    if (lineCache.size >= LINE_CACHE_MAX) lineCache.clear();
+    lineCache.set(key, segs.length ? segs : null);
+  } catch {
+    lineCache.set(key, null);
+  } finally {
+    pendingLines.delete(key);
+  }
+}
+
+/**
+ * Grammar-highlight one fence line with Shiki. Returns the tinted segments, or
+ * null when the language is unknown, tokenization is still running, or it
+ * failed — the caller then falls back to the regex `highlightLine` for that
+ * frame. Cached per (lang, line), so a steady frame costs a map lookup; a miss
+ * kicks off async tokenization, throttled so a streaming block paces itself
+ * over frames instead of re-grammaring every line at once.
+ */
+export function highlightLineRich(lang: string, line: string): Seg[] | null {
+  const key = lang + "\0" + line;
+  if (lineCache.has(key)) return lineCache.get(key) ?? null;
+  if (!shikiLang(lang)) return null;
+  if (!pendingLines.has(key) && (pendingLines.size === 0 || Date.now() - lastKick >= KICK_MS)) {
+    lastKick = Date.now();
+    pendingLines.add(key);
+    tokenizeLine(lang, line).catch(() => {});
+  }
+  return null;
+}
+
 const KEYWORDS = new Set(
   (`const let var function return if else for while do switch case default break continue new class extends super this import export from
 async await try catch finally throw typeof instanceof of in delete void yield static get set null undefined true false
