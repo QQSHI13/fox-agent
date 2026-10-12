@@ -3049,23 +3049,68 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     maxCols: number;
   }
 
+  // Word-aware wrap, matching the transcript's wrapSegs: break at spaces so a
+  // word never splits mid-glyph; a single oversized word still fills then
+  // continues (hard char-split). The old version cut at exactly maxCols, which
+  // broke words in the middle — this breaks at the space before maxCols.
   function wrapByWidth(s: string, maxCols: number): string[] {
     if (s.length === 0) return [""];
     const out: string[] = [];
-    let chunk = "";
-    let w = 0;
-    for (const ch of s) {
-      const cw = charWidth(ch.codePointAt(0)!);
-      if (w + cw > maxCols && chunk) {
-        out.push(chunk);
-        chunk = "";
-        w = 0;
+    let line = "";
+    for (const word of s.split(/( +)/)) {
+      if (!word) continue;
+      if (/^ +$/.test(word)) {
+        const room = maxCols - currentWidth();
+        const sp = Math.min(word.length, Math.max(0, room));
+        if (sp > 0 && (out.length > 0 || line.length > 0)) add(" ".repeat(sp));
+        continue;
       }
-      chunk += ch;
-      w += cw;
+      let w = word;
+      for (;;) {
+        if (currentWidth() + widthOf(w) <= maxCols) {
+          add(w);
+          break;
+        }
+        if (line.length === 0) {
+          // lone oversized word: fill the line, hard-split the rest
+          let take = "";
+          let tw = 0;
+          for (const ch of w) {
+            const cw = charWidth(ch.codePointAt(0)!);
+            if (tw + cw > maxCols) break;
+            take += ch;
+            tw += cw;
+          }
+          if (!take) break;
+          add(take);
+          flush();
+          w = w.slice(take.length);
+          if (!w) break;
+          continue;
+        }
+        flush();
+      }
     }
-    out.push(chunk);
-    return out;
+    flush();
+    return out.length ? out : [""];
+    // -- tiny helpers over the in-progress line --
+    function currentWidth(): number {
+      let n = 0;
+      for (const ch of line) n += charWidth(ch.codePointAt(0)!);
+      return n;
+    }
+    function widthOf(t: string): number {
+      let n = 0;
+      for (const ch of t) n += charWidth(ch.codePointAt(0)!);
+      return n;
+    }
+    function add(t: string): void {
+      line += t;
+    }
+    function flush(): void {
+      out.push(line);
+      line = "";
+    }
   }
 
   let inputRev = 0; // bumped on every buffer mutation
