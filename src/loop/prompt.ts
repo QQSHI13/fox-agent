@@ -197,7 +197,6 @@ export function buildRuntimeHeader(opts: {
   const clock = localClock();
 
   const lines = [
-    `[harness metadata — refreshed every step, not something the person typed]`,
     `<runtime>`,
     `cwd: ${opts.cwd}`,
     `host: ${machine.host}`,
@@ -207,7 +206,7 @@ export function buildRuntimeHeader(opts: {
     `runtime: ${machine.runtime}`,
     `tz: ${clock.tz}`,
     `date: ${clock.date}`,
-    `fox-agent: v${VERSION}`,
+    `ver: v${VERSION}`,
     ...(todos ? [`todos:\n${todos}`] : []),
     `</runtime>`,
   ];
@@ -215,10 +214,7 @@ export function buildRuntimeHeader(opts: {
   // gated on ctx exactly like the doctrine above: a figure the agent has no
   // tool to act on is noise, and this one costs real tokens every step
   if (have.has("ctx") && opts.budget && opts.budget.reported > 0) {
-    const pct = Math.round(opts.budget.ratio * 100);
-    lines.push(
-      `Context used at your last step: ${opts.budget.reported}/${opts.budget.limit} tokens (${pct}%), provider-reported. This figure updates every step — check it before starting another large read.`,
-    );
+    lines.splice(lines.indexOf(`</runtime>`), 0, `ctx: ${opts.budget.reported}`);
     if (opts.budget.over) {
       lines.push(
         `You are over the compaction threshold. Before doing anything else, use ctx to hide or rewrite the stale nodes you no longer need — that is cheaper and lossless compared to the automatic compaction that otherwise fires.`,
