@@ -32,7 +32,7 @@ import { lookupModel } from "../providers/models.ts";
 import { bundledDisabled } from "../plugins/bundled.ts";
 import { costSegment } from "../plugins/cost.ts";
 import { listSessions } from "../store/db.ts";
-import { allMessages, allMessagesLite, createSession, getSession, kvGet, kvSet, pinSession, unpinSession } from "../store/db.ts";
+import { allMessages, allMessagesLite, appendOps, createSession, forkSession, getMessage, getSession, kvGet, kvSet, pinSession, unpinSession } from "../store/db.ts";
 import { acquireLock, releaseLock } from "../store/lock.ts";
 import {
   runSlashCommand,
@@ -84,6 +84,11 @@ interface Item {
    *  render/expand — pretty-printing every call in history at load was 416ms
    *  on a 4k-message session for data only an expanded head ever shows */
   argsRaw?: string;
+  /** storage seq rendered as the leading [N] gutter marker. Settled items get
+   *  it from loadItems; a live item gets it as soon as the turn assigns one
+   *  (the user message's seq, a tool_end's seq) so the marker appears in-flight
+   *  instead of only after refresh() rebuilds from history. */
+  seq?: number;
 }
 
 /**
@@ -717,7 +722,10 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       }
     }
     for (const m of msgs) {
-      if (m.role === "user") out.push({ k: seqKey(m.seq, 0), kind: "user", text: `[${m.seq}] ❯ ${m.content}` });
+      // the [N] marker is no longer baked into the text — it rides `it.seq` and
+      // renders as a leading gutter chip (see itemRows/withMarker), so it can be
+      // colored, aligned, and clicked. Text here is the bare content.
+      if (m.role === "user") out.push({ k: seqKey(m.seq, 0), kind: "user", seq: m.seq, text: `❯ ${m.content}` });
       else if (m.role === "tool") {
         // todo bodies are markdown task lists — rendered as md, always
         // visible (a task list hidden behind a click is useless). ctx bodies
@@ -729,11 +737,12 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         const isTodo = name === "todo";
         const isCtx = name === "ctx";
         const pinned = isTodo || isCtx;
-        out.push({ k: seqKey(m.seq, 1), kind: "toolhead", text: `[${m.seq}] » ${callLabel.get(m.tool_call_id ?? "") ?? "tool"}`, argsRaw: callRaw.get(m.tool_call_id ?? "") });
+        out.push({ k: seqKey(m.seq, 1), kind: "toolhead", seq: m.seq, text: `» ${callLabel.get(m.tool_call_id ?? "") ?? "tool"}`, argsRaw: callRaw.get(m.tool_call_id ?? "") });
         // raw text — collapsed/expanded rendering lives in itemRows
         out.push({
           k: seqKey(m.seq, 2),
           kind: "toolbody",
+          seq: m.seq,
           text: m.content.slice(0, KEPT_TOOL_CHARS * 4),
           ref: m.seq,
           toolResult: true,
@@ -742,8 +751,8 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           expanded: pinned || expandedRefs.has(m.seq),
         });
       } else if (m.role === "think")
-        out.push({ k: seqKey(m.seq, 0), kind: "think", text: m.content, ref: m.seq, expanded: expandedRefs.has(m.seq) });
-      else out.push({ k: seqKey(m.seq, 0), kind: "md", text: m.content || "" });
+        out.push({ k: seqKey(m.seq, 0), kind: "think", seq: m.seq, text: m.content, ref: m.seq, expanded: expandedRefs.has(m.seq) });
+      else out.push({ k: seqKey(m.seq, 0), kind: "md", seq: m.seq, text: m.content || "" });
     }
     return out;
   }
@@ -1468,7 +1477,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       push("toolbody", `session ${s.id} · ${state.cwd}`);
     }
     setBusy(true);
-    push("user", `❯ ${raw}`);
+    const userItem = push("user", `❯ ${raw}`);
     ac = new AbortController();
     let md = "";
     const liveTools = new Map<string, { head: Item; body: Item; text: string }>();
@@ -1485,7 +1494,13 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     const childItems = new Map<string, { item: Item; count: number; last: string }>();
     try {
       for await (const ev of runTurn(state.sessionId, state.provider, raw, ac.signal, state.config, uiBridge)) {
-        if (ev.type === "reasoning") {
+        if (ev.type === "user") {
+          // the turn persisted the user message — stamp its seq on the in-flight
+          // line so the [N] marker appears now, not after the turn settles
+          userItem.seq = ev.seq;
+          touch(userItem.k);
+          markDirty();
+        } else if (ev.type === "reasoning") {
           appendToLastThink(ev.delta);
           publishLive(); // think deltas markDirty anyway; piggyback the status
         } else if (ev.type === "text") {
@@ -2488,6 +2503,60 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     flash(okd ? `copied ${text.length} chars${lines > 1 ? ` (${lines} lines)` : ""}` : "copy failed — no clipboard tool");
   }
 
+  /**
+   * The per-message ops wizard, opened by clicking a transcript [N] marker.
+   * fork cuts the session at this marker (reuses /fork), copy puts the message
+   * body on the clipboard, revert hides this message and everything after it
+   * from the context window via a ctx delete op — reversible with /undo, seqs
+   * preserved (the user's choice over a destructive truncate).
+   */
+  async function markerOps(seq: number) {
+    if (!state.sessionId) return;
+    const msg = getMessage(state.sessionId, seq);
+    if (!msg) {
+      flash(`no message [${seq}]`);
+      return;
+    }
+    const body = (msg.content ?? "").replace(/\s+/g, " ").slice(0, 60);
+    const answer = await askPrompt(`[${seq}] ${msg.role} — ${body || "(no text)"}`, [
+      {
+        key: "op",
+        label: "operation",
+        kind: "select",
+        options: [
+          { value: "fork", label: "fork — cut the session here (new session from [N])" },
+          { value: "copy", label: "copy — message body to clipboard" },
+          { value: "revert", label: "revert — hide [N] and everything after from context" },
+        ],
+      },
+    ]);
+    const op = answer?.op;
+    if (!op) return;
+    if (op === "fork") {
+      // /fork N keeps messages through [N] (forkSession deletes seq > cap), so
+      // cutting "from [N]" passes the marker's own seq — the fork opens at [N]
+      const fork = forkSession(state.sessionId, seq);
+      flash(fork ? `forked -> ${fork.id}` : "fork failed");
+    } else if (op === "copy") {
+      await copyText(msg.content ?? "");
+    } else if (op === "revert") {
+      // hide this message + all later ones: a single delete op over the seq
+      // range. The view projection (not the transcript) drops them, so the
+      // model stops seeing them; /undo restores. Storage stays append-only.
+      const msgs = allMessagesLite(state.sessionId);
+      const ids = msgs.filter((m) => m.seq >= seq).map((m) => m.seq);
+      if (!ids.length) {
+        flash("nothing to revert");
+        return;
+      }
+      appendOps(state.sessionId, [{ kind: "delete", ids }]);
+      // the projection cache must not survive the surgery
+      void import("../context/view.ts").then((m) => m.dropViewCache(state.sessionId!)).catch(() => {});
+      flash(`reverted — hid [${seq}]..[${ids[ids.length - 1]}] from context (/undo restores)`);
+    }
+  }
+
+
   /** Everything waiting to send, oldest first, as dock rows.
    *
    * Queued next-turn messages, then steers parked for the running turn's next
@@ -2653,6 +2722,13 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     if (winIdx < 0 || winIdx >= fr.owner.length) return;
     const it = items.find((i) => i.k === fr.owner[winIdx]);
     if (!it) return;
+    // a click on the leading [N] marker column opens the per-message ops wizard
+    // (fork / copy / revert) instead of toggling the item — the marker is its
+    // own hit target, distinct from the row body
+    if (it.seq !== undefined && x < MARKER_W(it.seq)) {
+      void markerOps(it.seq);
+      return;
+    }
     // single click on a code-fence row copies the whole block — the gesture
     // users reach for on a command they want to run. Double/triple clicks
     // took the word/line gestures earlier; clicks on non-code rows still
@@ -2735,6 +2811,24 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     return /^[{\[}"]/.test(t) || /^"[^"]*"\s*:/.test(t) || /^\d+[},{]/.test(t);
   }
 
+  /**
+   * Prepend the leading [N] gutter marker to an item's rows. The marker is a
+   * fixed-width chip `[N] ` with the theme's markerBg, present on the FIRST row
+   * only; continuation rows are indented by the same width so wrapped text stays
+   * aligned under the content, not under the marker.
+   *
+   * Callers shrink the wrap width by MARKER_W before building rows, so the rows
+   * handed here already fit in (w - MARKER_W) columns and prepending never
+   * overflows the full width w.
+   */
+  const MARKER_W = (seq: number) => `[${seq}] `.length;
+  function withMarker(rows: Row[], seq: number): Row[] {
+    const label = `[${seq}] `;
+    const chip: Seg = { t: label, bg: C.markerBg ?? C.selBg, fg: C.fg };
+    const indent: Seg = { t: " ".repeat(label.length) };
+    return rows.map((r, i) => ({ ...r, segs: [i === 0 ? chip : indent, ...r.segs] }));
+  }
+
   function itemRows(it: Item, w: number): { rows: Row[]; span: [number, number] } {
     const perWidth = lineCache.get(it.k);
     const cached = perWidth?.get(w);
@@ -2745,11 +2839,13 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       perWidth!.set(w, cached);
       return cached;
     }
+    // the marker rides a fixed left gutter; content wraps inside the remainder
+    const cw = it.seq !== undefined ? Math.max(8, w - MARKER_W(it.seq)) : w;
     let rows: Row[];
     if (it.kind === "md") {
       // no trailing blank: spacing between items is buildRows' job
       rows = [];
-      for (const mline of renderMarkdown(it.text, undefined, w)) rows.push(...wrapCodeAware(mline, w).map((segs) => ({ segs })));
+      for (const mline of renderMarkdown(it.text, undefined, cw)) rows.push(...wrapCodeAware(mline, cw).map((segs) => ({ segs })));
     } else if (it.ephemeral) {
       // Ephemeral notice: a boxed, uniformly-colored block that dies on the
       // next keypress/click. The box keeps it physically separate from the
@@ -2771,7 +2867,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       rows.push(boxFill([{ t: `╰${"─".repeat(inner)}╯`, fg: C.info, bg: C.barBg }]));
     } else if (it.kind === "think") {
       if (it.expanded) {
-        const body = thinkRows(it, w);
+        const body = thinkRows(it, cw);
         rows = [{ segs: [{ t: "▾ thinking", fg: C.think }] }, ...body];
         if (!rows[rows.length - 1].segs.length) rows.pop(); // empty body: wrap emits one [[]] caret row
       } else {
@@ -2789,8 +2885,8 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       // stopping at 60 chars
       if (it.expanded) {
         fillDetail(it);
-        rows = wrapSegs([{ t: `▾ ${it.text}`, fg: C.tool }], w).map((segs) => ({ segs }));
-        rows.push(...wrapSegs([{ t: `  ${it.detail ?? ""}`, fg: C.chrome }], w).map((segs) => ({ segs })));
+        rows = wrapSegs([{ t: `▾ ${it.text}`, fg: C.tool }], cw).map((segs) => ({ segs }));
+        rows.push(...wrapSegs([{ t: `  ${it.detail ?? ""}`, fg: C.chrome }], cw).map((segs) => ({ segs })));
       } else {
         rows = [
           {
@@ -2807,7 +2903,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     } else if (it.kind === "toolbody") {
       if (!it.toolResult) {
         // info lines that borrow the muted style (welcome, hints) — no arrow, no ↳
-        rows = wrapSegs([{ t: it.text, ...itemStyle(it.kind) }], w).map((segs) => ({ segs }));
+        rows = wrapSegs([{ t: it.text, ...itemStyle(it.kind) }], cw).map((segs) => ({ segs }));
       } else if (it.expanded) {
         // full output: real lines, no ⏎ one-lining, no ↳ prefix. Rich mode
         // paints unified-diff/git markers in their own colors.
@@ -2815,7 +2911,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         if (it.mdBody) {
           // markdown body (todo task lists): through the md parser so
           // task-list syntax renders as status marks, not punctuation
-          for (const mline of renderMarkdown(it.text, undefined, w)) rows.push(...wrapCodeAware(mline, w).map((segs) => ({ segs })));
+          for (const mline of renderMarkdown(it.text, undefined, cw)) rows.push(...wrapCodeAware(mline, cw).map((segs) => ({ segs })));
         } else {
           const lines = it.text.split("\n");
           // Pair each -/+ run so rich mode can word-diff INSIDE changed lines:
@@ -2862,8 +2958,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         ];
       }
     } else {
-      rows = wrapSegs([{ t: it.text, ...itemStyle(it.kind) }], w).map((segs) => ({ segs }));
+      rows = wrapSegs([{ t: it.text, ...itemStyle(it.kind) }], cw).map((segs) => ({ segs }));
     }
+    if (it.seq !== undefined) rows = withMarker(rows, it.seq);
     const entry = { rev: revs.get(it.k) ?? 0, rows, rich: richRev, span: itemEdgeSpan(rows) };
     let pw = lineCache.get(it.k);
     if (!pw) {

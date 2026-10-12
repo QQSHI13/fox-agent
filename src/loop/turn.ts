@@ -369,6 +369,9 @@ export async function* runTurnCore(
 
   // surface MCP, plugin and config warnings once, at the top of the turn
   if (!quiet) for (const w of setupWarnings) yield { type: "warn", message: w };
+  // the user message now has a seq — emit it so a live UI stamps the [N] marker
+  // on the in-flight user line instead of waiting for the turn to settle
+  if (!quiet) yield { type: "user", seq: userNode.seq, text: userText };
 
   /** Fire onTurnEnd everywhere the loop ends; the done event goes out after. */
   const endTurn = async (reason: string, steps: number) => {
