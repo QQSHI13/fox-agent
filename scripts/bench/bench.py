@@ -523,13 +523,26 @@ def _await_quiet(fd, budget_s):
 
 
 def _await_echo(fd, t0, deadline, logf, cfg):
-    """Type PROBE_TEXT and wait for it to render. Returns ms from t0, or None.
+    """Type PROBE_TEXT and wait for the render it causes. Returns ms from t0, or
+    None.
+
+    Two completion signals, in priority order:
+
+    - log marker (cfg): a tool that swallows keystrokes (a sign-in screen) logs
+      its own input-ready ack; matching that internal ack is the only honest
+      signal. Unchanged from before.
+
+    - first output after a QUIET baseline (no cfg): the terminal was drained to
+      quiet before typing, so the first data after the keystroke IS the app's
+      response — for a cooked-mode tool that is the line-discipline echo (the
+      char on screen, ~instant, which is what the user sees), for a full-screen
+      noecho TUI it is the redraw of its input box. Matching the LITERAL probe
+      text instead returned None for every noecho TUI (they disable echo), which
+      is why 16 of 22 tools reported n/a for the two interactive metrics.
 
     Up to two typing rounds against one deadline: a tool still starting up may
-    swallow early keystrokes, and the honest number is "how long until MY input
-    appears", not n/a — but a tool that never echoes still times out honestly.
-    The echo is matched over the accumulated ANSI-stripped stream, not one
-    chunk, because tools echo keystroke-by-keystroke.
+    swallow early keystrokes, and the honest number is "how long until my input
+    renders", not n/a — but a tool that never responds still times out honestly.
     """
     for attempt in (1, 2):
         if attempt == 2:
@@ -547,7 +560,6 @@ def _await_echo(fd, t0, deadline, logf, cfg):
             os.write(fd, PROBE_TEXT.encode())
         except OSError:
             return None if attempt == 2 else None
-        seen = b""
         while time.perf_counter() < deadline:
             if logf is not None:
                 try:
@@ -555,8 +567,7 @@ def _await_echo(fd, t0, deadline, logf, cfg):
                 except OSError:
                     break
                 if chunk:
-                    seen += chunk
-                    if re.search(cfg["marker"], seen.decode("utf-8", "replace")):
+                    if re.search(cfg["marker"], chunk.decode("utf-8", "replace")):
                         return time.perf_counter() - t0
                 time.sleep(0.2)
                 continue
@@ -574,9 +585,13 @@ def _await_echo(fd, t0, deadline, logf, cfg):
                 # timeout — this is what devin/cline/continue hit every probe.
                 dbg("echo: child closed PTY (exited) — abandoning probe early")
                 return None
-            seen += data
-            if PROBE_TEXT.encode() in ANSI_RE.sub(b"", seen):
-                return time.perf_counter() - t0
+            # first output after a quiet baseline = the render caused by the
+            # keystroke (echo for cooked tools, input-box redraw for noecho
+            # TUIs). from t0: for first_input that is process spawn (the full
+            # time-to-interactive), for latency the caller passes t0 = the
+            # keystroke moment (keystroke→render only), so this one expression
+            # is correct for both.
+            return time.perf_counter() - t0
     return None
 
 
@@ -635,7 +650,7 @@ def tui_first_input(path, label, probes=3, timeout=15):
     return min(samples) if samples else None
 
 
-def tui_input_latency(path, label, settle_s=1.0, probes=3, timeout=15):
+def tui_input_latency(path, label, settle_s=2.0, probes=3, timeout=15):
     """Input latency after a fixed settle: launch, wait `settle_s`, then measure
     how fast a typed probe renders. Isolates input-handling latency from startup
     cost — how responsive the TUI is once it is already up. Best of N.
