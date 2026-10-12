@@ -221,7 +221,7 @@ export function renderMarkdown(src: string, state?: MdState, width?: number): Se
         i++;
         continue;
       }
-      out.push([{ t: `${ul[1]}- `, fg: MD.ACCENT }, ...inline(ul[2])]);
+      out.push([{ t: `${ul[1]}· `, fg: MD.ACCENT }, ...inline(ul[2])]);
       i++;
       continue;
     }
