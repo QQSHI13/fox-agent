@@ -813,10 +813,10 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       // editing a plugin file takes effect without restarting fox-agent
       void import("../plugins/load.ts").then((m) => m.reloadPlugins()).catch(() => {});
       applyRuntimeConfig();
-      // ephemeral: the "reloaded" state is transient and self-describing — a
-      // one-line confirmation, not transcript content, so it dies on the next
-      // keypress like /todo and the session-in-use notice
-      push("info", `reloaded config + plugins — model ${state.provider.model} · theme ${themeName()}`, { ephemeral: true });
+      // the "reloaded" state is transient and self-describing — float it in the
+      // command-output plane like /todo so it dies on the next keypress and
+      // never enters the transcript
+      setCmdOut(`reloaded config + plugins — model ${state.provider.model} · theme ${themeName()}`);
     };
     // a result carrying both runs the work first and reloads after: /plugins
     // on/off writes the config file in its task, and reloading before that
@@ -1287,14 +1287,10 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     state.readOnly = !!holder;
     if (holder) {
       statsRev++;
-      // ephemeral: the state it describes is transient (the other holder may
-      // close at any moment), and it paints as a boxed notice over the
-      // transcript — one keypress acknowledges it
-      push(
-        "info",
-        `session ${id} is open in ${holder.kind} (pid ${holder.pid}) — read-only view: drafting works, /todo /sessions /usage /help work, but nothing sends or writes`,
-        { ephemeral: true },
-      );
+      // the state it describes is transient (the other holder may close at any
+      // moment) — float it in the command-output plane like /todo so one
+      // keypress dismisses it and it never enters the transcript
+      setCmdOut(`session ${id} is open in ${holder.kind} (pid ${holder.pid}) — read-only view: drafting works, /todo /sessions /usage /help work, but nothing sends or writes`);
     }
   }
 
