@@ -18,6 +18,16 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
+describe("estimateTokens: CJK-aware", () => {
+  test("ASCII ≈ chars/4, each non-ASCII char is one token", async () => {
+    const { estimateTokens } = await import("../src/providers/models.ts");
+    expect(estimateTokens("abcd")).toBe(1); // 4 ascii -> 1
+    expect(estimateTokens("日本語")).toBe(3); // 3 non-ascii -> 3 (a flat chars/4 would say 1)
+    expect(estimateTokens("ab日本")).toBe(3); // 2 ascii -> 1, + 2 non-ascii -> 2
+    expect(estimateTokens("")).toBe(0);
+  });
+});
+
 // The window is REGISTERED, not looked up: deepseek-chat's 65_536 used to come
 // from a hardcoded table that no longer exists (cost/catalog rework), and the
 // test must not depend on the models.dev cache. setConfiguredModels is the
