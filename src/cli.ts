@@ -3,6 +3,7 @@ import { createSession, getSession, latestSessionFor, setSessionModel } from "./
 import { loadConfig, resolveProfile, type Config } from "./core/config.ts";
 import type { ProviderConfig } from "./providers/types.ts";
 import { ConfigError, errMsg } from "./core/errors.ts";
+
 import { runTurnCore } from "./loop/turn.ts";
 import { resolveChat } from "./providers/index.ts";
 import { setActiveEndpoint } from "./providers/models.ts";
@@ -21,7 +22,7 @@ import {
   type HarnessState,
 } from "./commands.ts";
 import { shutdownTools } from "./tools/index.ts";
-import { VERSION } from "./loop/prompt.ts";
+import { VERSION } from "./core/version.ts";
 import { expandMentions } from "./core/mentions.ts";
 
 function usage(color?: boolean): string {
