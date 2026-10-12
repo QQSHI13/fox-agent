@@ -3040,6 +3040,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     text: string;
     logical: number; // logical line index
     startCol: number; // display column where this visual row begins
+    rowW: number; // this row's own display width (≤ maxCols; word-wrap leaves it short)
     index: number;
   }
   interface InputLayout {
@@ -3137,8 +3138,19 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     for (let li = 0; li < logical.length; li++) {
       lineStarts.push(idx);
       idx += logical[li].length + 1;
+      // Word-aware wrap breaks at spaces, so a visual row is NOT maxCols wide.
+      // startCol is the display column where the row begins (cumulative width of
+      // prior parts + skipped break spaces); rowW is this row's own width, so the
+      // caret/selection math no longer assumes every row spans the full maxCols.
       const parts = wrapByWidth(logical[li], maxCols);
-      for (let pi = 0; pi < parts.length; pi++) rows.push({ text: parts[pi], logical: li, startCol: pi * maxCols, index: rows.length });
+      let colAt = 0;
+      for (let pi = 0; pi < parts.length; pi++) {
+        const partW = parts[pi].length ? [...parts[pi]].reduce((a, ch) => a + charWidth(ch.codePointAt(0)!), 0) : 0;
+        rows.push({ text: parts[pi], logical: li, startCol: colAt, rowW: partW, index: rows.length });
+        colAt += partW;
+        // the break space between wrapped parts is consumed, not painted
+        if (pi + 1 < parts.length && logical[li].length > colAt && logical[li][colAt] === " ") colAt += 1;
+      }
     }
     const layout = { rows, logical, lineStarts, maxCols };
     layoutCache = { rev: inputRev, layout };
@@ -3158,7 +3170,11 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         colW = 0;
       } else colW += charWidth(chars[i].codePointAt(0)!);
     }
-    let visRow = layout.rows.findIndex((r) => r.logical === li && colW >= r.startCol && colW < r.startCol + layout.maxCols);
+    // A row spans [startCol, startCol + rowW) — word-wrap leaves rowW < maxCols,
+    // so matching against maxCols would let a short row swallow the next row's
+    // columns. Rows are contiguous (next.startCol = this.startCol + rowW + 1 for
+    // the consumed break space), so the last row on the line absorbs the EOL.
+    let visRow = layout.rows.findIndex((r) => r.logical === li && colW >= r.startCol && colW < r.startCol + Math.max(r.rowW, 1));
     if (visRow < 0) visRow = layout.rows.length - 1; // past EOL lands on last row
     return { visRow, colW: colW - layout.rows[Math.max(0, visRow)].startCol };
   }
@@ -3193,8 +3209,10 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       i++;
     }
     const start = i;
+    // the row spans its own width (rowW), not maxCols — word-wrap leaves it
+    // short, and walking maxCols would run into the next row's text
     let w2 = 0;
-    while (i < chars.length && chars[i] !== "\n" && w2 < layout.maxCols) {
+    while (i < chars.length && chars[i] !== "\n" && w2 < row.rowW) {
       w2 += charWidth(chars[i].codePointAt(0)!);
       i++;
     }
