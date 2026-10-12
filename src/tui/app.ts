@@ -813,7 +813,10 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       // editing a plugin file takes effect without restarting fox-agent
       void import("../plugins/load.ts").then((m) => m.reloadPlugins()).catch(() => {});
       applyRuntimeConfig();
-      push("info", `reloaded config + plugins — model ${state.provider.model} · theme ${themeName()}`);
+      // ephemeral: the "reloaded" state is transient and self-describing — a
+      // one-line confirmation, not transcript content, so it dies on the next
+      // keypress like /todo and the session-in-use notice
+      push("info", `reloaded config + plugins — model ${state.provider.model} · theme ${themeName()}`, { ephemeral: true });
     };
     // a result carrying both runs the work first and reloads after: /plugins
     // on/off writes the config file in its task, and reloading before that
