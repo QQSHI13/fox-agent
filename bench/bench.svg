@@ -299,7 +299,7 @@
 <rect x="556" y="920" width="19" height="14" rx="3" fill="#5b7fa6"/>
 <text x="700" y="931" fill="#8a8578" font-size="11">48 MB</text>
 <text x="408" y="962" fill="#8a8578" font-size="12">codex</text>
-<rect x="556" y="950" width="19" height="14" rx="3" fill="#5b7fa6"/>
+<rect x="556" y="950" width="20" height="14" rx="3" fill="#5b7fa6"/>
 <text x="700" y="961" fill="#8a8578" font-size="11">49 MB</text>
 <text x="408" y="992" fill="#8a8578" font-size="12">cline</text>
 <rect x="556" y="980" width="22" height="14" rx="3" fill="#5b7fa6"/>
@@ -311,7 +311,7 @@
 <rect x="556" y="1040" width="23" height="14" rx="3" fill="#5b7fa6"/>
 <text x="700" y="1051" fill="#8a8578" font-size="11">58 MB</text>
 <text x="408" y="1082" fill="#8a8578" font-size="12">aider</text>
-<rect x="556" y="1070" width="26" height="14" rx="3" fill="#5b7fa6"/>
+<rect x="556" y="1070" width="27" height="14" rx="3" fill="#5b7fa6"/>
 <text x="700" y="1081" fill="#8a8578" font-size="11">67 MB</text>
 <text x="408" y="1112" fill="#8a8578" font-size="12">crush</text>
 <rect x="556" y="1100" width="27" height="14" rx="3" fill="#5b7fa6"/>
