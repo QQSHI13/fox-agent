@@ -15,6 +15,13 @@ export interface Row {
   /** background fill style for the whole row (0 = default) — tool rows use
    *  the theme's toolBg so calls read as one block in the transcript */
   bg?: number;
+  /**
+   * Leading `[N]` transcript marker for this row: `{ label, bg }` on the FIRST
+   * row of a marked item, `true` (indent only) on its continuation rows. The
+   * paint loop stamps the chip in column 0 — outside the content margin — so
+   * the marker hugs the very-left edge while content keeps its gutter.
+   */
+  marker?: { label: string; bg: string; fg: string; w: number } | { indent: number };
 }
 
 /** Everything computeFrame needs to lay out one frame. Rendering callbacks are

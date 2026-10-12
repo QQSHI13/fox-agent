@@ -89,6 +89,10 @@ interface Item {
    *  (the user message's seq, a tool_end's seq) so the marker appears in-flight
    *  instead of only after refresh() rebuilds from history. */
   seq?: number;
+  /** the second row of a multi-row logical unit (a tool's body behind its head):
+   *  indents under the unit's marker instead of repeating the chip, so a tool
+   *  pair shows ONE [N], not two. */
+  markerCont?: boolean;
 }
 
 /**
@@ -472,6 +476,13 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   // ---- state ----
   let items: Item[] = [];
   let streamText: string | null = null;
+  /**
+   * The seq the in-flight streaming tail WILL get once its assistant node is
+   * appended — predicted as last-persisted-seq + 1 (appendMessage assigns
+   * MAX(seq)+1). Lets the streaming tail show its [N] marker live, matching the
+   * settled item it becomes. -1 = not streaming / no prediction.
+   */
+  let streamSeq = -1;
   let buf: Ch[] = []; // input buffer; lit chars are literal newlines
   let cur = 0; // cursor index into buf
   let busy = false;
@@ -639,6 +650,13 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
      * step re-resolves it against the answers so far.
      */
     snap: { idx: number; opts: { value: string; label: string }[] } | null;
+    /**
+     * The main input box's draft, saved when the wizard opens and restored when
+     * it closes. The wizard reuses `buf`/`cur` for its filter/custom answer box,
+     * which used to WIPE a half-typed command the moment a wizard popped over it.
+     */
+    savedBuf: Ch[];
+    savedCur: number;
     done: (answers: Record<string, string> | null) => void;
   } | null = null;
   const hasSel = () => selA !== null && selB !== null && !(selA.row === selB.row && selA.col === selB.col);
@@ -651,8 +669,8 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   }
 
   // ---- item mutations ----
-  function push(kind: ItemKind, text: string, opts?: { ref?: number; expanded?: boolean; ephemeral?: boolean; toolResult?: boolean; detail?: string; welcome?: boolean; mdBody?: boolean }) {
-    const it: Item = { k: nk(), kind, text, ref: opts?.ref, expanded: opts?.expanded, ephemeral: opts?.ephemeral, toolResult: opts?.toolResult, detail: opts?.detail, welcome: opts?.welcome, mdBody: opts?.mdBody };
+  function push(kind: ItemKind, text: string, opts?: { ref?: number; seq?: number; expanded?: boolean; ephemeral?: boolean; toolResult?: boolean; detail?: string; welcome?: boolean; mdBody?: boolean }) {
+    const it: Item = { k: nk(), kind, text, ref: opts?.ref, seq: opts?.seq, expanded: opts?.expanded, ephemeral: opts?.ephemeral, toolResult: opts?.toolResult, detail: opts?.detail, welcome: opts?.welcome, mdBody: opts?.mdBody };
     items.push(it);
     touch(it.k);
     markDirty();
@@ -668,6 +686,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       touch(liveThink.k);
     } else {
       liveThink = push("think", delta, { expanded: expandMode ?? false });
+      // a new think block will persist BEFORE the streaming text (turn.ts appends
+      // reasoning first), so the reply's seq is one higher than predicted — bump it
+      if (streamSeq > 0) streamSeq++;
     }
     markDirty();
   }
@@ -743,6 +764,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           k: seqKey(m.seq, 2),
           kind: "toolbody",
           seq: m.seq,
+          markerCont: true, // indents under the head's [N]; a tool pair shows ONE chip
           text: m.content.slice(0, KEPT_TOOL_CHARS * 4),
           ref: m.seq,
           toolResult: true,
@@ -867,6 +889,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
 
   // ---- prompt wizard hosting (slash commands + plugin UiBridge) ----
   function startPrompt(req: PromptRequest) {
+    // save the half-typed command so the wizard's reuse of `buf` doesn't eat it
     prompt = {
       title: req.title,
       steps: req.steps,
@@ -876,6 +899,8 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       filter: "",
       entering: false,
       snap: null,
+      savedBuf: buf,
+      savedCur: cur,
       done: (answers) => {
         if (answers === null) return flash("cancelled");
         try {
@@ -928,6 +953,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   function pumpAskQueue() {
     if (prompt || !askQueue.length) return;
     const { title, steps, resolve } = askQueue.shift()!;
+    // save the half-typed command so the wizard's reuse of `buf` doesn't eat it
     prompt = {
       title,
       steps,
@@ -937,6 +963,8 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       filter: "",
       entering: false,
       snap: null,
+      savedBuf: buf,
+      savedCur: cur,
       done: (answers) => {
         resolve(answers ?? undefined);
         pumpAskQueue();
@@ -985,8 +1013,10 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   function finishPrompt(answers: Record<string, string> | null) {
     const p = prompt!;
     prompt = null;
-    buf = [];
-    cur = 0;
+    // restore the half-typed command the wizard's answer box borrowed `buf` for
+    // — never a plain clear, which used to eat the user's draft on every wizard
+    buf = p.savedBuf;
+    cur = Math.min(p.savedCur, buf.length);
     inputRev++;
     markDirty();
     p.done(answers);
@@ -1498,6 +1528,10 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           // the turn persisted the user message — stamp its seq on the in-flight
           // line so the [N] marker appears now, not after the turn settles
           userItem.seq = ev.seq;
+          // the reply streaming in now will be the NEXT persisted seq — predict it
+          // so the streaming tail shows its marker live too (refined when the
+          // assistant node actually lands, in case thinking took a slot first)
+          streamSeq = ev.seq + 1;
           touch(userItem.k);
           markDirty();
         } else if (ev.type === "reasoning") {
@@ -1570,9 +1604,11 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
             streamText = null;
           }
           // raw text, newlines intact: collapsed rendering shows an arrow line,
-          // the expanded view gets the real lines (see itemRows)
+          // the expanded view gets the real lines (see itemRows). The [N] marker
+          // rides `seq` (rendered as the column-0 gutter chip), NOT baked into
+          // text like the old prefix.
           const detail = argsJson(ev.args);
-          push("toolhead", `[${ev.seq}] » ${callLabels.get(ev.id) ?? `${ev.name}${argsSummary(ev.args)}`}${ev.ok ? "" : " — failed"}`, { detail, expanded: headOpen || expandMode === true || undefined });
+          push("toolhead", `» ${callLabels.get(ev.id) ?? `${ev.name}${argsSummary(ev.args)}`}${ev.ok ? "" : " — failed"}`, { seq: ev.seq, detail, expanded: headOpen || expandMode === true || undefined });
           const bodyOpenFinal = expandedRefs.has(ev.seq) || bodyOpen || expandMode === true;
           if (bodyOpenFinal) expandedRefs.add(ev.seq);
           // todo bodies are markdown task lists — always visible, rendered
@@ -1627,6 +1663,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     } finally {
       if (md) push("md", md);
       streamText = null;
+      streamSeq = -1; // the turn's stream is over; the settled item carries the real seq
       liveThink = null; // refresh() rebuilds items; no reference may survive it
       setBusy(false);
       ac = null;
@@ -2721,7 +2758,15 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     const winIdx = row - winBase;
     if (winIdx < 0 || winIdx >= fr.owner.length) return;
     const it = items.find((i) => i.k === fr.owner[winIdx]);
-    if (!it) return;
+    // a streaming tail row owns no item yet (owner -1) but carries a predicted
+    // streamSeq — its [N] marker is still clickable, opening the same ops wizard
+    // (the wizard's ops read the settled node once the turn lands it)
+    if (!it) {
+      if (fr.owner[winIdx] === -1 && streamSeq > 0 && x < MARKER_W(streamSeq)) {
+        void markerOps(streamSeq);
+      }
+      return;
+    }
     // a click on the leading [N] marker column opens the per-message ops wizard
     // (fork / copy / revert) instead of toggling the item — the marker is its
     // own hit target, distinct from the row body
@@ -2812,21 +2857,27 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   }
 
   /**
-   * Prepend the leading [N] gutter marker to an item's rows. The marker is a
-   * fixed-width chip `[N] ` with the theme's markerBg, present on the FIRST row
-   * only; continuation rows are indented by the same width so wrapped text stays
-   * aligned under the content, not under the marker.
+   * Tag an item's rows with the leading [N] gutter marker. The marker is a
+   * fixed-width chip `[N] ` stamped by the paint loop in COLUMN 0 — outside the
+   * content margin — so it hugs the very-left edge. The first row carries the
+   * chip; continuation rows carry `true` (same-width indent) so wrapped text
+   * stays aligned under the content, not under the marker.
    *
-   * Callers shrink the wrap width by MARKER_W before building rows, so the rows
-   * handed here already fit in (w - MARKER_W) columns and prepending never
-   * overflows the full width w.
+   * The chip's width is still reserved here: callers shrink the wrap width by
+   * MARKER_W so content never collides with the gutter column.
    */
-  const MARKER_W = (seq: number) => `[${seq}] `.length;
-  function withMarker(rows: Row[], seq: number): Row[] {
-    const label = `[${seq}] `;
-    const chip: Seg = { t: label, bg: C.markerBg ?? C.selBg, fg: C.fg };
-    const indent: Seg = { t: " ".repeat(label.length) };
-    return rows.map((r, i) => ({ ...r, segs: [i === 0 ? chip : indent, ...r.segs] }));
+  const MARKER_W = (seq: number) => `[${seq}]`.length;
+  function withMarker(rows: Row[], seq: number, continuation = false): Row[] {
+    // the chip label is EXACTLY `[N]` — the background spans the brackets and
+    // digits, never a trailing space. The gap after it is uncolored (added by
+    // the paint loop), so no stray bg cell follows the marker.
+    const label = `[${seq}]`;
+    const chip = { label, bg: C.markerBg ?? C.accent, fg: C.barBg, w: label.length };
+    const cont = { indent: label.length };
+    // a continuation (a tool's body behind its head) indents under the unit's
+    // single chip on EVERY row — it never repeats the marker
+    if (continuation) return rows.map((r) => ({ ...r, marker: cont }));
+    return rows.map((r, i) => ({ ...r, marker: i === 0 ? chip : cont }));
   }
 
   function itemRows(it: Item, w: number): { rows: Row[]; span: [number, number] } {
@@ -2960,7 +3011,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     } else {
       rows = wrapSegs([{ t: it.text, ...itemStyle(it.kind) }], cw).map((segs) => ({ segs }));
     }
-    if (it.seq !== undefined) rows = withMarker(rows, it.seq);
+    if (it.seq !== undefined) rows = withMarker(rows, it.seq, it.markerCont);
     const entry = { rev: revs.get(it.k) ?? 0, rows, rich: richRev, span: itemEdgeSpan(rows) };
     let pw = lineCache.get(it.k);
     if (!pw) {
@@ -3190,19 +3241,25 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   }
 
   function streamRows(text: string, w: number): Row[] {
-    let entry = streamKernels.get(w);
+    // when the tail carries a [N] marker it must wrap inside the gutter, so the
+    // chip can ride column 0 without the content overflowing the full width
+    const innerW = streamSeq > 0 ? Math.max(8, w - MARKER_W(streamSeq)) : w;
+    let entry = streamKernels.get(innerW);
     // a SHRINK or mid-prefix change means a rewind — the kernel's accumulated
     // state is invalid, start fresh
     if (!entry || entry.len > text.length || (entry.len > 0 && !text.startsWith(text.slice(0, entry.len)))) {
-      entry = { len: 0, k: createStreamRows(w) };
-      streamKernels.set(w, entry);
+      entry = { len: 0, k: createStreamRows(innerW) };
+      streamKernels.set(innerW, entry);
       if (streamKernels.size > 4) streamKernels.clear(); // widths are W and W-2; bound anyway
     }
     if (text.length > entry.len) {
       entry.k.feed(text.slice(entry.len));
       entry.len = text.length;
     }
-    return entry.k.rows as Row[];
+    const rows = entry.k.rows as Row[];
+    // the streaming tail predicts its eventual seq (see streamSeq) so its [N]
+    // marker renders live like every settled item, not just after the turn ends
+    return streamSeq > 0 ? withMarker(rows, streamSeq) : rows;
   }
 
   /** total transcript rows: the painted frame's count, or a one-off compute
@@ -3644,16 +3701,32 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         // belongs to the scrollbar strip (the strip's track/thumb must show
         // through even on tool rows)
         if (row.bg) P.transcript.fillRow(y, 0, SCROLLBAR ? W - 1 : W, row.bg);
-        let x = 1;
+        // the [N] marker chip hugs column 0 — OUTSIDE the content margin — so
+        // it sits at the very-left edge. A marked item's first row stamps the
+        // chip; its continuation rows carry the same-width indent so wrapped
+        // text stays aligned under the content, not the marker.
+        const mk = row.marker;
+        const chipW = mk ? ("w" in mk ? mk.w : mk.indent) : 0;
+        if (mk && "label" in mk) {
+          // bg spans EXACTLY `[N]` — the gap after it stays uncolored so no
+          // stray background cell trails the marker
+          P.transcript.text(0, y, mk.label, screen.sgr({ fg: mk.fg, bg: mk.bg, bold: true }));
+        }
+        // content sits one uncolored space past the chip (or at the usual x=1
+        // margin when unmarked) — never flush against the colored bracket
+        const x0 = mk ? chipW + 1 : 1;
+        let x = x0;
         for (const seg of row.segs) {
           x = P.transcript.text(x, y, seg.t, st(seg, S.base));
         }
         // Selection is a re-style over the cells already painted, not a second
         // text pass: one char per cell, so re-stamping the range with a
-        // highlight background cannot disturb wide chars or wrapping.
+        // highlight background cannot disturb wide chars or wrapping. The range
+        // is relative to the CONTENT (row.segs), which starts at x0 — restyle at
+        // x0 + offset, not 1 + offset, or the highlight lands a marker-width off.
         if (hasSel()) {
           const range = selRangeForRow(absolute, selA!, selB!, rowCells(row.segs));
-          if (range) P.transcript.restyle(y, 1 + range.from, 2 + range.to, C.selBg);
+          if (range) P.transcript.restyle(y, x0 + range.from, x0 + range.to, C.selBg);
         }
       }
 
