@@ -1,24 +1,24 @@
 | agent | version | bin | bundle (MB) | bundle kind | `--version` (ms) | TUI 1st byte (ms) | TUI 1st input (ms) | input latency 1s (ms) | idle PSS (MB) |
 |---|---|---|---|---|---|---|---|---|---|
-| **fox-agent** | 0.5.0-beta.1 | `/home/runner/work/fox-agent/fox-agent/bin/fox` | 98.9 | bin | 12.3 | 13.6 | — | — | 34.6 |
-| claude code | 2.1.296 (Claude Code) | `/home/runner/.npm-global/bin/claude` | 257.1 | bin | 8.3 | 179.8 | — | — | 187.0 |
-| codex | codex-cli 0.162.1 | `/home/runner/.npm-global/bin/codex` | 140.0 | bin | 37.1 | 37.8 | — | — | 49.1 |
-| opencode v2 | opencode2 v0.0.0-beta-19271 | `/home/runner/.npm-global/bin/opencode2` | 207.4 | bin | 64.8 | 104.9 | 467.2 | 43.3 | 124.6 |
-| jcode | jcode v0.95.0 (6487bbd7e) | `/home/runner/.local/bin/jcode` | 138.2 | bin | 9.4 | 10.1 | — | — | 27.8 |
-| pi | 1.1.0 | `/home/runner/.npm-global/bin/pi` | 140.0 | bin | 177.7 | 232.6 | 718.0 | 6.2 | 131.9 |
-| gemini cli | 0.63.0 | `/home/runner/.npm-global/bin/gemini` | 140.0 | bin | 1133.3 | 1201.0 | 1224.4 | 0.1 | — |
-| copilot cli | GitHub Copilot CLI 1.0.95. | `/home/runner/.npm-global/bin/copilot` | 140.0 | bin | 82.2 | 602.3 | — | — | 47.3 |
-| crush | crush version v0.98.1 | `/home/runner/.npm-global/bin/crush` | 140.0 | bin | 114.8 | 544.0 | — | — | 68.9 |
-| goose | 1.54.0 | `/home/runner/.local/bin/goose` | 307.8 | bin | 6.1 | 5.7 | 182.2 | — | — |
-| aider | aider 0.86.2 | `/home/runner/work/fox-agent/fox-agent/.venv-bench/bin/aider` | 140.0 | bin | 606.1 | 551.4 | 925.9 | 7.8 | 66.8 |
-| amp | 0.0.1791763306-ged595a (released 2026-10-12T00:01:46.000Z, 3 | `/home/runner/.local/bin/amp` | 134.2 | bin | 190.5 | 197.9 | 558.2 | 0.5 | 161.7 |
-| cursor-agent | 2026.10.01-e373342 | `/home/runner/.local/bin/cursor-agent` | 140.0 | bin | 349.9 | 329.1 | — | — | 217.8 |
-| qwen code | 0.25.1 | `/home/runner/.npm-global/bin/qwen` | 140.0 | bin | 29.9 | 623.1 | — | — | 290.7 |
-| codebuff | 1.0.688 | `/home/runner/.npm-global/bin/codebuff` | 140.0 | bin | 715.5 | 697.8 | — | — | 57.7 |
-| kilo code | 7.8.8 | `/home/runner/.npm-global/bin/kilocode` | 140.0 | bin | 681.8 | 2002.7 | — | — | 46.1 |
-| droid | 0.238.0 | `/home/runner/.local/bin/droid` | 281.4 | bin | 74.7 | 77.5 | — | — | 237.6 |
-| kimi code | 2.1.1 | `/home/runner/.kimi-code/bin/kimi` | 190.8 | bin | 451.6 | 565.2 | — | — | 350.6 |
-| devin | devin 3000.11.3 (9c803229faa4) | `/home/runner/.local/bin/devin` | 195.0 | bin | 3.0 | 38.7 | — | — | 48.8 |
-| cline | 3.0.70 | `/home/runner/.npm-global/bin/cline` | 140.0 | bin | 897.6 | 947.0 | — | — | 55.0 |
-| continue | 1.5.47 | `/home/runner/.npm-global/bin/cn` | 140.0 | bin | 886.3 | — | — | — | 316.7 |
-| iflow cli | 0.5.19 | `/home/runner/.npm-global/bin/iflow` | 140.0 | bin | 939.9 | 1011.2 | 1828.6 | 45.3 | 57.9 |
+| **fox-agent** | 0.5.0-beta.1 | `/home/runner/work/fox-agent/fox-agent/bin/fox` | 120.3 | bin | 15.3 | 17.0 | — | — | 36.7 |
+| claude code | 2.1.296 (Claude Code) | `/home/runner/.npm-global/bin/claude` | 257.1 | bin | 9.1 | 221.5 | — | — | 187.5 |
+| codex | codex-cli 0.162.1 | `/home/runner/.npm-global/bin/codex` | 140.0 | bin | 42.9 | 43.7 | — | — | 49.1 |
+| opencode v2 | opencode2 v0.0.0-beta-19271 | `/home/runner/.npm-global/bin/opencode2` | 207.4 | bin | 83.0 | 134.5 | 495.5 | 56.5 | 130.7 |
+| jcode | jcode v0.95.0 (6487bbd7e) | `/home/runner/.local/bin/jcode` | 138.2 | bin | 9.5 | 12.5 | — | — | 27.1 |
+| pi | 1.1.0 | `/home/runner/.npm-global/bin/pi` | 140.0 | bin | 241.9 | 327.0 | 852.9 | 8.3 | 130.7 |
+| gemini cli | 0.63.0 | `/home/runner/.npm-global/bin/gemini` | 140.0 | bin | 1561.4 | 1649.4 | 1661.0 | 0.1 | 146.1 |
+| copilot cli | GitHub Copilot CLI 1.0.95. | `/home/runner/.npm-global/bin/copilot` | 140.0 | bin | 104.5 | 784.5 | — | — | 47.3 |
+| crush | crush version v0.98.1 | `/home/runner/.npm-global/bin/crush` | 140.0 | bin | 138.8 | 628.4 | — | — | 68.8 |
+| goose | 1.54.0 | `/home/runner/.local/bin/goose` | 307.8 | bin | 7.8 | 7.8 | 206.9 | 0.1 | — |
+| aider | aider 0.86.2 | `/home/runner/work/fox-agent/fox-agent/.venv-bench/bin/aider` | 140.0 | bin | 838.0 | 759.1 | 1146.4 | 10.3 | 66.9 |
+| amp | 0.0.1791778148-g902162 (released 2026-10-12T04:09:08.000Z, 1 | `/home/runner/.local/bin/amp` | 134.2 | bin | 250.8 | 264.6 | 627.5 | 0.6 | 157.4 |
+| cursor-agent | 2026.10.01-e373342 | `/home/runner/.local/bin/cursor-agent` | 140.0 | bin | 464.9 | 435.8 | — | — | 213.8 |
+| qwen code | 0.25.1 | `/home/runner/.npm-global/bin/qwen` | 140.0 | bin | 36.7 | 829.3 | — | — | 240.7 |
+| codebuff | 1.0.688 | `/home/runner/.npm-global/bin/codebuff` | 140.0 | bin | 969.5 | 948.0 | — | — | 57.6 |
+| kilo code | 7.8.8 | `/home/runner/.npm-global/bin/kilocode` | 140.0 | bin | 850.7 | 2579.8 | — | — | 46.2 |
+| droid | 0.238.0 | `/home/runner/.local/bin/droid` | 281.4 | bin | 101.6 | 108.7 | — | — | 227.6 |
+| kimi code | 2.1.1 | `/home/runner/.kimi-code/bin/kimi` | 190.8 | bin | 569.5 | 718.1 | — | — | 348.4 |
+| devin | devin 3000.11.3 (9c803229faa4) | `/home/runner/.local/bin/devin` | 195.0 | bin | 4.2 | 50.2 | — | — | 48.4 |
+| cline | 3.0.70 | `/home/runner/.npm-global/bin/cline` | 140.0 | bin | 870.3 | 1066.5 | — | — | 55.0 |
+| continue | 1.5.47 | `/home/runner/.npm-global/bin/cn` | 140.0 | bin | 1121.4 | — | — | — | 317.2 |
+| iflow cli | 0.5.19 | `/home/runner/.npm-global/bin/iflow` | 140.0 | bin | 1225.4 | 1299.7 | 2473.8 | 47.2 | 55.7 |
