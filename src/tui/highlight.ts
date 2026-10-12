@@ -62,35 +62,25 @@ function shikiLang(lang: string): string | null {
 }
 
 // Shiki's codeToTokens resolves each token to a theme hex color but does not
-// expose the TextMate scope stack, so we cannot map scopes to slots directly.
-// Instead, bucket each token's hex color to the nearest of the four code slots
-// (KW/STR/COM/NUM) by hue/saturation, so the result follows the live theme
-// rather than a hardcoded palette. Near-gray / near-white / near-black text
-// stays plain — that is punctuation and identifiers in the source theme.
-function slotForColor(hex: string): string | undefined {
+// expose the TextMate scope stack. We used to bucket each hex into one of four
+// theme slots by hue/sat — but that threw away most tokens: anything near-gray
+// or near-white (github-dark's default text, punctuation, most identifiers)
+// fell through to plain, so fences barely tinted next to the real Shiki demo.
+// The screen layer already renders a Seg's `fg` hex as truecolor SGR, so we
+// emit the token's own color instead. Only near-black tokens are lifted to the
+// theme's code-foreground — on a dark terminal raw #000/#111 would vanish.
+
+// a token whose theme color is too dark to read on a dark terminal (raw
+// punctuation is often #000/#111) is lifted to a readable light gray; every
+// other token keeps its own hex so the fence matches the real Shiki palette
+function readableColor(hex: string): string {
   const m = /^#([0-9a-f]{6})$/i.exec(hex);
-  if (!m) return undefined;
+  if (!m) return hex;
   const n = parseInt(m[1], 16);
   const r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
-  const max = Math.max(r, g, b), min = Math.min(r, g, b);
-  const sat = max === 0 ? 0 : (max - min) / max;
-  const light = max / 255;
-  if (sat < 0.18 || light > 0.92 || light < 0.08) return undefined;
-  const d = max - min;
-  let h: number;
-  if (d === 0) h = 0;
-  else if (max === r) h = ((g - b) / d) % 6;
-  else if (max === g) h = (b - r) / d + 2;
-  else h = (r - g) / d + 4;
-  h *= 60; if (h < 0) h += 360;
-  // green/yellow → strings; red/magenta → keywords; blue/cyan → numbers/types
-  if (h >= 60 && h < 170) return R.STR;
-  if (h < 60 || h >= 300) return R.KW;
-  return R.NUM;
+  const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  return lum < 90 ? "#c9d1d9" : hex;
 }
-
-// null is a cached result too: "this line tints plain" (or tokenization
-// failed) must not be retried every frame
 const lineCache = new Map<string, Seg[] | null>();
 const pendingLines = new Set<string>();
 const LINE_CACHE_MAX = 4096;
@@ -103,17 +93,10 @@ async function tokenizeLine(lang: string, line: string): Promise<void> {
     const m = await shiki();
     const { tokens } = await m.codeToTokens(line, { lang: shikiLang(lang) as any, theme: "github-dark" });
     const segs: Seg[] = [];
-    let plain = "";
     for (const tok of tokens[0] ?? []) {
-      const fg = tok.color ? slotForColor(tok.color) : undefined;
-      if (fg) {
-        if (plain) { segs.push({ t: plain }); plain = ""; }
-        segs.push({ t: tok.content, fg });
-      } else {
-        plain += tok.content;
-      }
+      const fg = tok.color ? readableColor(tok.color) : undefined;
+      segs.push({ t: tok.content, ...(fg ? { fg } : {}) });
     }
-    if (plain) segs.push({ t: plain });
     if (lineCache.size >= LINE_CACHE_MAX) lineCache.clear();
     lineCache.set(key, segs.length ? segs : null);
   } catch {

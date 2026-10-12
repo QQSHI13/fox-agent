@@ -2873,9 +2873,10 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     // the paint loop), so no stray bg cell follows the marker.
     const label = `[${seq}]`;
     const chip = { label, bg: C.markerBg ?? C.accent, fg: C.barBg, w: label.length };
-    const cont = { indent: label.length };
-    // a continuation (a tool's body behind its head) indents under the unit's
-    // single chip on EVERY row — it never repeats the marker
+    // continuation rows align to the usual left margin — the marker only occupies
+    // a small part of line 1, wrapped lines do NOT indent under it
+    const cont = { indent: 0 };
+    // a continuation (a tool's body behind its head) never repeats the marker
     if (continuation) return rows.map((r) => ({ ...r, marker: cont }));
     return rows.map((r, i) => ({ ...r, marker: i === 0 ? chip : cont }));
   }
@@ -3706,15 +3707,17 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         // chip; its continuation rows carry the same-width indent so wrapped
         // text stays aligned under the content, not the marker.
         const mk = row.marker;
-        const chipW = mk ? ("w" in mk ? mk.w : mk.indent) : 0;
+        // a chip row reserves its `[N]` width + one gap; a continuation row
+        // (indent 0) has no marker, so its content starts at the usual margin
+        const chipW = mk && "w" in mk ? mk.w : 0;
         if (mk && "label" in mk) {
           // bg spans EXACTLY `[N]` — the gap after it stays uncolored so no
           // stray background cell trails the marker
           P.transcript.text(0, y, mk.label, screen.sgr({ fg: mk.fg, bg: mk.bg, bold: true }));
         }
-        // content sits one uncolored space past the chip (or at the usual x=1
-        // margin when unmarked) — never flush against the colored bracket
-        const x0 = mk ? chipW + 1 : 1;
+        // content sits one uncolored space past the chip on line 1, and at the
+        // usual x=1 margin on every wrapped line — the marker only borrows line 1
+        const x0 = chipW ? chipW + 1 : 1;
         let x = x0;
         for (const seg of row.segs) {
           x = P.transcript.text(x, y, seg.t, st(seg, S.base));
