@@ -78,6 +78,10 @@ let jobSeq = 0;
 // Disk/RAM safety, not a capability cut: the agent keeps full shell access,
 // but one session cannot fill $FOX_AGENT_HOME or OOM the harness.
 const MAX_BG_JOBS_PER_SESSION = 16;
+// how long an exited-but-never-polled job keeps its log before a deferred reap
+// unlinks it (the model can still read the final output if it polls inside the
+// window; a forgotten job must not leak the fd + map entry for the session)
+const JOB_REAP_MS = 10 * 60_000;
 const MAX_FG_BYTES = 5_000_000;
 const MAX_POLL_BYTES = 1_000_000;
 
@@ -131,6 +135,20 @@ function startJob(args: { cmd: string; workdir?: string }, ctx: ToolContext): To
   void pump(proc.stderr as ReadableStream);
   void proc.exited.then((code) => {
     job.exitCode = code;
+    // exited-but-never-polled jobs used to pile up for the whole session (each
+    // with an open log under $FOX_AGENT_HOME/jobs/<session>/). reap after a
+    // grace window so the model can still read the final output if it polls
+    // promptly, but a forgotten job does not leak the log fd + map entry.
+    const grace = setTimeout(() => {
+      if (!job.reaped && job.exitCode !== null) {
+        job.reaped = true;
+        sessionJobs(ctx.sessionId).delete(id);
+        try {
+          rmSync(logPath, { force: true });
+        } catch {}
+      }
+    }, JOB_REAP_MS);
+    (grace as { unref?: () => void }).unref?.();
   });
 
   return ok(`job ${id} started (pid ${proc.pid}, cwd ${cwd}) — poll with exec({job:"${id}"}), stop with exec({job:"${id}", signal:"kill"})`);
