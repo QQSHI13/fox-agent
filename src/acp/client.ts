@@ -175,7 +175,18 @@ export async function runAcpAgent(opts: RunAcpAgentOptions): Promise<AcpAgentRes
             // swallowing it here only prevents an unhandled rejection.
           });
           for (;;) {
-            const msg = await session.nextUpdate();
+            // Race the next protocol message against the abort signal: a child
+            // that ignores session/cancel would otherwise leave nextUpdate()
+            // pending forever, the loop never reaches the finally, and the
+            // process is never killed. On abort, break out so the outer finally
+            // runs kill().
+            const msg = await Promise.race([
+              session.nextUpdate(),
+              new Promise<never>((_, rej) => {
+                if (opts.signal?.aborted) return rej(new Error("aborted"));
+                opts.signal?.addEventListener("abort", () => rej(new Error("aborted")), { once: true });
+              }),
+            ]);
             if (msg.kind === "stop") return { text: text.trim(), stopReason: msg.stopReason, sessionId: session.sessionId };
             opts.onUpdate?.(msg.update);
             if (msg.update.sessionUpdate === "agent_message_chunk" && msg.update.content.type === "text") {
