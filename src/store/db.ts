@@ -201,6 +201,35 @@ let _legacyChecked = false;
 /** FOX_AGENT_HOME the open handles belong to; if it moves, they are the wrong files. */
 let _home: string | null = null;
 
+/**
+ * Prepared-statement cache. Every store call used to do `d.prepare(sql).run(...)`
+ * inline, which on a long-lived handle (the index db is opened once per process)
+ * leaks a Statement per call — bun:sqlite does not finalize a prepared statement
+ * until the handle closes. Keyed by `${dbIdentity}:${sql}` so the same SQL on the
+ * same handle reuses one statement. Identity is the session id (or "__index__")
+ * rather than the Database object, so a handle that is closed and reopened still
+ * finds its cached statements valid; entries for evicted sessions are dropped in
+ * `closeAll`/evict to bound memory.
+ */
+const _stmtCache = new Map<string, { d: Database; stmt: ReturnType<Database["prepare"]> }>();
+const INDEX_KEY = "__index__";
+
+function dbKey(d: Database): string {
+  if (d === _index) return INDEX_KEY;
+  for (const [id, handle] of _sessions) if (handle === d) return id;
+  return "__anon__";
+}
+
+/** Cached prepare: reuse one Statement per (db, sql) instead of leaking one per call. */
+function prep(d: Database, sql: string): ReturnType<Database["prepare"]> {
+  const key = dbKey(d) + "\0" + sql;
+  const hit = _stmtCache.get(key);
+  if (hit && hit.d === d) return hit.stmt;
+  const stmt = d.prepare(sql);
+  _stmtCache.set(key, { d, stmt });
+  return stmt;
+}
+
 function open(path: string, schema: string): Database {
   const d = new Database(path);
   d.exec("PRAGMA journal_mode = WAL;");
@@ -289,7 +318,7 @@ export function sessionDb(sessionId: string): Database {
  * upgrade would otherwise throw `no such column` on the first media insert.
  */
 function ensureColumn(d: Database, table: string, column: string, ddl: string): void {
-  const cols = d.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+  const cols = prep(d, `PRAGMA table_info(${table})`).all() as { name: string }[];
   if (!cols.some((c) => c.name === column)) d.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
 }
 
@@ -314,6 +343,7 @@ function evict(keep?: string): void {
     if (id === keep || _pinned.has(id)) continue;
     _sessions.get(id)?.close();
     _sessions.delete(id);
+    dropStmts(id);
   }
 }
 
@@ -339,6 +369,7 @@ export function unpinSession(sessionId: string): void {
 export function closeSessionHandle(sessionId: string): void {
   _sessions.get(sessionId)?.close();
   _sessions.delete(sessionId);
+  dropStmts(sessionId);
 }
 
 export function closeAll(): void {
@@ -349,6 +380,13 @@ export function closeAll(): void {
   _index = null;
   _legacyChecked = false;
   _home = null;
+  _stmtCache.clear();
+}
+
+/** Drop every cached statement belonging to one handle (by db identity). */
+function dropStmts(idOrIndex: string): void {
+  const prefix = idOrIndex + "\0";
+  for (const k of [..._stmtCache.keys()]) if (k.startsWith(prefix)) _stmtCache.delete(k);
 }
 
 
@@ -396,18 +434,17 @@ export function createSession(cwd: string, model: string): SessionRow {
     cached_tokens: 0,
     preview: null,
   };
-  indexDb()
+  prep(indexDb(), "INSERT INTO sessions (id, cwd, model, title, created_at, updated_at, prompt_tokens, completion_tokens, cached_tokens) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
     // explicit columns: a migrated index has `preview` as its LAST column, so a
     // positional VALUES would write completion_tokens into it
-    .prepare("INSERT INTO sessions (id, cwd, model, title, created_at, updated_at, prompt_tokens, completion_tokens, cached_tokens) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
     .run(s.id, s.cwd, s.model, s.title, s.created_at, s.updated_at, 0, 0, 0);
-  sessionDb(s.id).prepare("INSERT OR IGNORE INTO refs VALUES (?, 'main', NULL, ?)").run(s.id, Date.now());
+  prep(sessionDb(s.id), "INSERT OR IGNORE INTO refs VALUES (?, 'main', NULL, ?)").run(s.id, Date.now());
   return s;
 }
 
 export function getSession(id: string): SessionRow | null {
-  return indexDb()
-    .prepare(`SELECT ${SESSION_COLS} FROM sessions WHERE id = ?`)
+  return prep(indexDb(), 
+    `SELECT ${SESSION_COLS} FROM sessions WHERE id = ?`)
     .get(id) as SessionRow | null;
 }
 
@@ -434,7 +471,7 @@ export function deleteSession(id: string): boolean {
   _pinned.delete(id);
   const path = sessionDbPath(id);
   for (const p of [path, `${path}-wal`, `${path}-shm`]) rmSync(p, { force: true });
-  indexDb().prepare("DELETE FROM sessions WHERE id = ?").run(id);
+  prep(indexDb(), "DELETE FROM sessions WHERE id = ?").run(id);
   return existed;
 }
 
@@ -447,7 +484,7 @@ export function deleteSession(id: string): boolean {
 function reapMissing(rows: SessionRow[]): SessionRow[] {
   const gone = rows.filter((r) => !existsSync(sessionDbPath(r.id)));
   if (!gone.length) return rows;
-  const del = indexDb().prepare("DELETE FROM sessions WHERE id = ?");
+  const del = prep(indexDb(), "DELETE FROM sessions WHERE id = ?");
   for (const r of gone) del.run(r.id);
   return rows.filter((r) => !gone.includes(r));
 }
@@ -460,8 +497,8 @@ function reapMissing(rows: SessionRow[]): SessionRow[] {
  */
 export function latestSessionFor(cwd: string): SessionRow | null {
   for (let i = 0; i < 2; i++) {
-    const row = indexDb()
-      .prepare(`SELECT ${SESSION_COLS} FROM sessions WHERE cwd = ? ORDER BY updated_at DESC, id DESC LIMIT 1`)
+    const row = prep(indexDb(), 
+      `SELECT ${SESSION_COLS} FROM sessions WHERE cwd = ? ORDER BY updated_at DESC, id DESC LIMIT 1`)
       .get(cwd) as SessionRow | null;
     if (!row || reapMissing([row]).length) return row; // live row, or nothing left
   }
@@ -476,8 +513,8 @@ export function latestSessionFor(cwd: string): SessionRow | null {
 export function listSessions(limit = 20, cwd?: string): SessionRow[] {
   // over-fetch past the ghosts so reaping can't shrink a full page to nothing
   for (let fetch = limit; ; fetch *= 2) {
-    const rows = indexDb()
-      .prepare(
+    const rows = prep(indexDb(), 
+      
         cwd
           ? `SELECT ${SESSION_COLS} FROM sessions WHERE cwd = ? ORDER BY updated_at DESC, id DESC LIMIT ?`
           : `SELECT ${SESSION_COLS} FROM sessions ORDER BY updated_at DESC, id DESC LIMIT ?`,
@@ -489,7 +526,7 @@ export function listSessions(limit = 20, cwd?: string): SessionRow[] {
 }
 
 export function setRefTitle(sessionId: string, title: string) {
-  indexDb().prepare("UPDATE sessions SET title = ?, updated_at = ? WHERE id = ?").run(title.slice(0, 80), touch(), sessionId);
+  prep(indexDb(), "UPDATE sessions SET title = ?, updated_at = ? WHERE id = ?").run(title.slice(0, 80), touch(), sessionId);
 }
 
 /**
@@ -525,29 +562,29 @@ export function forkSession(sourceId: string, uptoSeq?: number): SessionRow | nu
   // in this process's WAL would otherwise be missing from the snapshot
   const srcDb = sessionDb(sourceId);
   srcDb.exec("PRAGMA wal_checkpoint(FULL);");
-  srcDb.prepare("VACUUM INTO ?").run(target);
+  prep(srcDb, "VACUUM INTO ?").run(target);
 
   const cap = uptoSeq ?? Number.MAX_SAFE_INTEGER;
   const d = sessionDb(fork.id);
   d.transaction(() => {
-    d.prepare("DELETE FROM messages WHERE seq > ?").run(cap);
+    prep(d, "DELETE FROM messages WHERE seq > ?").run(cap);
     // a parent cut off by the truncation is dropped rather than left dangling
     d.exec("UPDATE messages SET parent_id = NULL WHERE parent_id IS NOT NULL AND parent_id NOT IN (SELECT id FROM messages)");
     // re-mint ids: parent_id is remapped through the *old* ids, so it has to be
     // rewritten before the ids it points at change
-    d.prepare("UPDATE messages SET parent_id = (SELECT ? || ':' || p.seq FROM messages p WHERE p.id = messages.parent_id) WHERE parent_id IS NOT NULL").run(fork.id);
-    d.prepare("UPDATE messages SET id = ? || ':' || seq, session_id = ?").run(fork.id, fork.id);
-    d.prepare("UPDATE ops SET session_id = ?").run(fork.id);
-    d.prepare("UPDATE kv SET session_id = ?").run(fork.id);
+    prep(d, "UPDATE messages SET parent_id = (SELECT ? || ':' || p.seq FROM messages p WHERE p.id = messages.parent_id) WHERE parent_id IS NOT NULL").run(fork.id);
+    prep(d, "UPDATE messages SET id = ? || ':' || seq, session_id = ?").run(fork.id, fork.id);
+    prep(d, "UPDATE ops SET session_id = ?").run(fork.id);
+    prep(d, "UPDATE kv SET session_id = ?").run(fork.id);
     // usage is billing history for the source's calls, not the fork's
     d.exec("DELETE FROM usage");
-    d.prepare("DELETE FROM refs").run();
+    prep(d, "DELETE FROM refs").run();
     const tip = d.query("SELECT id FROM messages ORDER BY seq DESC LIMIT 1").get() as { id: string } | undefined;
-    d.prepare("INSERT INTO refs VALUES (?, 'main', ?, ?)").run(fork.id, tip?.id ?? null, Date.now());
+    prep(d, "INSERT INTO refs VALUES (?, 'main', ?, ?)").run(fork.id, tip?.id ?? null, Date.now());
   })();
 
-  indexDb()
-    .prepare("INSERT INTO sessions (id, cwd, model, title, created_at, updated_at, prompt_tokens, completion_tokens, cached_tokens) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+  prep(indexDb(), 
+    "INSERT INTO sessions (id, cwd, model, title, created_at, updated_at, prompt_tokens, completion_tokens, cached_tokens) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
     .run(fork.id, fork.cwd, fork.model, null, fork.created_at, fork.updated_at, 0, 0, 0);
   setRefTitle(fork.id, `fork of ${src.title ?? src.id}`);
   return { ...fork, title: `fork of ${src.title ?? src.id}`.slice(0, 80) };
@@ -587,7 +624,7 @@ export function appendMessage(
       error: msg.error ?? null,
       created_at: Date.now(),
     };
-    d.prepare(
+    prep(d, 
       // explicit column list: a db migrated by ALTER has `media` as its LAST
       // column, so positional VALUES would write media into tokens
       "INSERT INTO messages (id, seq, session_id, parent_id, role, content, tool_calls, tool_call_id, media, tokens, error, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -616,11 +653,11 @@ export function appendMessage(
 }
 
 export function getMessage(sessionId: string, seq: number): MessageRow | null {
-  return sessionDb(sessionId).prepare("SELECT * FROM messages WHERE session_id = ? AND seq = ?").get(sessionId, seq) as MessageRow | null;
+  return prep(sessionDb(sessionId), "SELECT * FROM messages WHERE session_id = ? AND seq = ?").get(sessionId, seq) as MessageRow | null;
 }
 
 export function allMessages(sessionId: string): MessageRow[] {
-  return sessionDb(sessionId).prepare("SELECT * FROM messages WHERE session_id = ? ORDER BY seq").all(sessionId) as MessageRow[];
+  return prep(sessionDb(sessionId), "SELECT * FROM messages WHERE session_id = ? ORDER BY seq").all(sessionId) as MessageRow[];
 }
 
 /**
@@ -631,33 +668,33 @@ export function allMessages(sessionId: string): MessageRow[] {
  * The turn loop keeps allMessages; only the transcript projection is lite.
  */
 export function allMessagesLite(sessionId: string): MessageRow[] {
-  return sessionDb(sessionId)
-    .prepare("SELECT seq, role, content, tool_calls, tool_call_id FROM messages WHERE session_id = ? ORDER BY seq")
+  return prep(sessionDb(sessionId), 
+    "SELECT seq, role, content, tool_calls, tool_call_id FROM messages WHERE session_id = ? ORDER BY seq")
     .all(sessionId) as MessageRow[];
 }
 
 /** Messages with seq > afterSeq — the incremental feed for the view cache. */
 export function messagesAfter(sessionId: string, afterSeq: number): MessageRow[] {
-  return sessionDb(sessionId)
-    .prepare("SELECT * FROM messages WHERE session_id = ? AND seq > ? ORDER BY seq")
+  return prep(sessionDb(sessionId), 
+    "SELECT * FROM messages WHERE session_id = ? AND seq > ? ORDER BY seq")
     .all(sessionId, afterSeq) as MessageRow[];
 }
 
 /** Ops with seq > afterSeq — same, for the op log. */
 export function opsAfter(sessionId: string, afterSeq: number): OpRow[] {
-  return sessionDb(sessionId)
-    .prepare("SELECT * FROM ops WHERE session_id = ? AND seq > ? ORDER BY seq")
+  return prep(sessionDb(sessionId), 
+    "SELECT * FROM ops WHERE session_id = ? AND seq > ? ORDER BY seq")
     .all(sessionId, afterSeq) as OpRow[];
 }
 
 function advanceMain(sessionId: string, messageId: string) {
-  sessionDb(sessionId)
-    .prepare("UPDATE refs SET message_id = ?, updated_at = ? WHERE session_id = ? AND name = 'main'")
+  prep(sessionDb(sessionId), 
+    "UPDATE refs SET message_id = ?, updated_at = ? WHERE session_id = ? AND name = 'main'")
     .run(messageId, Date.now(), sessionId);
 }
 
 export function getRef(sessionId: string, name = "main"): string | null {
-  const r = sessionDb(sessionId).prepare("SELECT message_id FROM refs WHERE session_id = ? AND name = ?").get(sessionId, name) as { message_id: string } | undefined;
+  const r = prep(sessionDb(sessionId), "SELECT message_id FROM refs WHERE session_id = ? AND name = ?").get(sessionId, name) as { message_id: string } | undefined;
   return r?.message_id ?? null;
 }
 
@@ -668,7 +705,7 @@ export function appendOps(sessionId: string, ops: ViewOp[]): void {
   try {
     const row = d.query("SELECT COALESCE(MAX(seq),0)+1 AS n FROM ops WHERE session_id = ?").get(sessionId) as { n: number };
     let seq = row.n;
-    const ins = d.prepare("INSERT INTO ops (seq, session_id, kind, payload, created_at) VALUES (?, ?, ?, ?, ?)");
+    const ins = prep(d, "INSERT INTO ops (seq, session_id, kind, payload, created_at) VALUES (?, ?, ?, ?, ?)");
     for (const op of ops) ins.run(seq++, sessionId, op.kind, JSON.stringify(op), Date.now());
     d.exec("COMMIT");
   } catch (e) {
@@ -680,7 +717,7 @@ export function appendOps(sessionId: string, ops: ViewOp[]): void {
 }
 
 export function allOps(sessionId: string): OpRow[] {
-  return sessionDb(sessionId).prepare("SELECT * FROM ops WHERE session_id = ? ORDER BY seq").all(sessionId) as OpRow[];
+  return prep(sessionDb(sessionId), "SELECT * FROM ops WHERE session_id = ? ORDER BY seq").all(sessionId) as OpRow[];
 }
 
 /**
@@ -722,13 +759,13 @@ export function undoLastOp(sessionId: string): string | null {
 // ---- session-scoped key/value (todos, task lineage, ...) ----
 
 export function kvSet(sessionId: string, key: string, value: unknown): void {
-  sessionDb(sessionId)
-    .prepare("INSERT INTO kv VALUES (?, ?, ?, ?) ON CONFLICT(session_id, key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at")
+  prep(sessionDb(sessionId), 
+    "INSERT INTO kv VALUES (?, ?, ?, ?) ON CONFLICT(session_id, key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at")
     .run(sessionId, key, JSON.stringify(value), Date.now());
 }
 
 export function kvGet<T>(sessionId: string, key: string): T | null {
-  const r = sessionDb(sessionId).prepare("SELECT value FROM kv WHERE session_id = ? AND key = ?").get(sessionId, key) as { value: string } | undefined;
+  const r = prep(sessionDb(sessionId), "SELECT value FROM kv WHERE session_id = ? AND key = ?").get(sessionId, key) as { value: string } | undefined;
   if (!r) return null;
   try {
     return JSON.parse(r.value) as T;
@@ -757,14 +794,14 @@ export function recordUsage(
 ) {
   // explicit columns: a migrated session has `cached_tokens` appended AFTER
   // `created_at`, so a positional VALUES would put the timestamp in it
-  sessionDb(sessionId)
-    .prepare("INSERT INTO usage (session_id, message_id, prompt_tokens, completion_tokens, cached_tokens, created_at) VALUES (?, ?, ?, ?, ?, ?)")
+  prep(sessionDb(sessionId), 
+    "INSERT INTO usage (session_id, message_id, prompt_tokens, completion_tokens, cached_tokens, created_at) VALUES (?, ?, ?, ?, ?, ?)")
     .run(sessionId, messageId, promptTokens, completionTokens, cachedTokens, Date.now());
   // running totals on the index row too, so a session listing never has to open
   // the file to answer "how much has this session burned" — NULL means a legacy
   // row awaiting backfill, which COALESCE treats as zero going forward
-  indexDb()
-    .prepare(
+  prep(indexDb(), 
+    
       "UPDATE sessions SET prompt_tokens = COALESCE(prompt_tokens, 0) + ?, completion_tokens = COALESCE(completion_tokens, 0) + ?, cached_tokens = COALESCE(cached_tokens, 0) + ? WHERE id = ?",
     )
     .run(promptTokens, completionTokens, cachedTokens, sessionId);
@@ -773,8 +810,8 @@ export function recordUsage(
 /** Backfill the index's token totals from the session file (legacy rows). */
 export function backfillUsage(sessionId: string): { prompt: number; completion: number; cached: number } {
   const u = sessionUsage(sessionId);
-  indexDb()
-    .prepare("UPDATE sessions SET prompt_tokens = ?, completion_tokens = ?, cached_tokens = ? WHERE id = ?")
+  prep(indexDb(), 
+    "UPDATE sessions SET prompt_tokens = ?, completion_tokens = ?, cached_tokens = ? WHERE id = ?")
     .run(u.prompt, u.completion, u.cached, sessionId);
   return u;
 }
@@ -785,11 +822,11 @@ export function backfillUsage(sessionId: string): { prompt: number; completion: 
  * result is cached as "" so the listing doesn't reopen the file forever.
  */
 export function backfillPreview(sessionId: string): string {
-  const m = sessionDb(sessionId)
-    .prepare("SELECT content FROM messages WHERE session_id = ? AND role IN ('user', 'assistant') AND content != '' ORDER BY seq DESC LIMIT 1")
+  const m = prep(sessionDb(sessionId), 
+    "SELECT content FROM messages WHERE session_id = ? AND role IN ('user', 'assistant') AND content != '' ORDER BY seq DESC LIMIT 1")
     .get(sessionId) as { content: string } | null;
   const preview = m ? m.content.replace(/\s+/g, " ").trim().slice(0, 120) : "";
-  indexDb().prepare("UPDATE sessions SET preview = ? WHERE id = ?").run(preview, sessionId);
+  prep(indexDb(), "UPDATE sessions SET preview = ? WHERE id = ?").run(preview, sessionId);
   return preview;
 }
 
