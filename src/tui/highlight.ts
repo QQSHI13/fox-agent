@@ -116,20 +116,22 @@ const GRAMMARS: Record<string, LangData> = {
  * background of the fence, and tinting them is what made a fence noisy.
  */
 const CODE_PALETTE: Record<string, string> = {
-  kwd: "#C678DD", // keywords, control flow
-  str: "#98C379", // strings, char literals
-  cmnt: "#7F848E", // comments
-  num: "#D19A66", // numbers, constants
-  type: "#E5C07B", // type annotations, primitives
-  class: "#E5C07B", // class/type names
-  func: "#61AFEF", // function and method names
-  bool: "#56B6C2", // true/false/null — reads distinctly from a number
-  oper: "#56B6C2", // operators, punctuation that binds
-  section: "#C678DD", // headings, exports, import paths
-  esc: "#D19A66", // escape sequences inside strings
-  err: "#E06C75", // error markers in diagnostics-ish output
-  insert: "#98C379", // diff: a "+" line
-  deleted: "#E06C75", // diff: a "-" line
+  kwd: "#C678DD", // keywords, control flow — purple
+  section: "#B48EAD", // imports/exports/headings — a muted mauve, reads beside kwd without merging
+  str: "#98C379", // strings, char literals — green
+  esc: "#B5CEA8", // escape sequences inside a string — a lighter green, so \n inside "…" reads
+  cmnt: "#7F848E", // comments — gray, deliberately quiet
+  num: "#D19A66", // numbers, constants — orange
+  type: "#E5C07B", // type annotations, primitives — yellow
+  class: "#F0C674", // class/struct/enum names — a lighter yellow than a type annotation
+  func: "#61AFEF", // function and method names — blue
+  bool: "#56B6C2", // true/false/null — cyan
+  oper: "#7EA6C4", // operators and binding punctuation — a muted blue, distinct from a call
+  err: "#E06C75", // error markers — red
+  insert: "#98C379", // diff: a "+" line — green (semantic, shares with strings)
+  deleted: "#E06C75", // diff: a "-" line — red (semantic, shares with errors)
+  // "var" (identifiers) has no palette entry: it falls back to the theme's own
+  // foreground, so identifiers are defined but never a hue of their own.
 };
 
 /** Theme slot per token kind, so a theme can retune one without the rest. */
@@ -137,16 +139,19 @@ const CODE_SLOT: Record<string, string | undefined> = {
   kwd: "hlKeyword", str: "hlString", cmnt: "hlComment", num: "hlNumber",
   type: "hlType", class: "hlClass", func: "hlFunc", bool: "hlBool",
   oper: "hlOper", section: "hlSection", esc: "hlEscape", err: "hlError",
-  insert: "hlInsert", deleted: "hlDeleted",
+  insert: "hlInsert", deleted: "hlDeleted", var: "hlVar",
 };
 
 function tokenColor(type: string | undefined): string | undefined {
   if (!type) return undefined;
   const pal = CODE_PALETTE[type];
-  if (!pal) return undefined; // "var" and unknown: plain
   const t = theme() as unknown as Record<string, string | undefined>;
   const slot = CODE_SLOT[type];
-  return (slot ? t[slot] : undefined) ?? pal;
+  if (pal) return (slot ? t[slot] : undefined) ?? pal;
+  // an identifier: the theme's own foreground, so it is defined and themeable
+  // rather than "no color at all"
+  if (type === "var") return t.hlVar ?? t.fg;
+  return undefined;
 }
 
 /** normalize a fence language id; null when the library has no grammar for it. */
