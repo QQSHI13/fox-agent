@@ -1579,20 +1579,6 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           liveThink = null; // a tool boundary seals the thinking block before it
           // running header (suggested: `▶ fox — <session> — <tool>`)
           busyMsg = ev.name;
-          // a tool head appears the MOMENT the tool starts (not on first output),
-          // so a long-running tool with no streamed output still reads as alive.
-          // The label carries a live spinner frame, re-stamped on each spinner
-          // tick (publishLive) — the user can see the tool is running, not hung.
-          if (!liveTools.has(ev.id)) {
-            liveTools.set(ev.id, {
-              head: push("toolhead", `» ${callLabels.get(ev.id)} — running`, {
-                detail: argsJson(callArgs.get(ev.id) ?? ""),
-                expanded: expandMode === true || undefined,
-              }),
-              body: push("toolbody", "", { toolResult: true, expanded: expandMode !== false }),
-              text: "",
-            });
-          }
           publishLive(true); // tool flips are sparse enough to write unthrottled
           term.setTitle(`▶ fox — ${state.sessionId || "new"} — ${ev.name}`);
         } else if (ev.type === "tool_output") {
@@ -1609,12 +1595,19 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           }
           let live = liveTools.get(ev.id);
           if (!live) {
+            // the in-flight head looks like a SETTLED tool head — same `» name`
+            // label, no "running" suffix. Progress reads from the status bar's
+            // spinner, so the transcript stays uniform instead of growing a
+            // second, differently-shaped row per in-flight call.
             live = {
-              head: push("toolhead", `» ${callLabels.get(ev.id) ?? "exec"} — running`, {
+              head: push("toolhead", `» ${callLabels.get(ev.id) ?? "exec"}`, {
                 detail: argsJson(callArgs.get(ev.id) ?? ""),
                 expanded: expandMode === true || undefined,
               }),
-              body: push("toolbody", "", { toolResult: true, expanded: expandMode !== false }), // live output streams in full unless the user folded all
+              // folded by default while in flight: a running tool's output is
+              // noise until it settles, and the expanded tail would otherwise
+              // shove the rest of the transcript off-screen every frame
+              body: push("toolbody", "", { toolResult: true, expanded: false }),
               text: "",
             };
             liveTools.set(ev.id, live);
@@ -4280,22 +4273,12 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     const now = Date.now();
     if (now - lastSpinAt < 140) return;
     lastSpinAt = now;
-    const frames = spinFrames();
     frameIdx = (frameIdx + 1) % frames.length;
-    const frame = frames[frameIdx];
-    // re-stamp each running tool head with the current spinner frame so the
-    // transcript shows the tool is alive, not just the status bar. Touching the
-    // head re-derives its row on the next paint (the row carries the frame).
-    for (const live of liveTools.values()) {
-      const base = live.head.text.replace(/^» /, "").replace(/ [^ ]+ running$/, "");
-      live.head.text = `» ${base} ${frame} running`;
-      touch(live.head.k);
-    }
     // spinner-only update: the status region re-derives on the next paint()
     // (its signature includes frameIdx) and nothing else does — one row
     // re-stamped, the row-hash diff turns it into ~20 bytes of output.
     // NO global dirty: a mid-reasoning turn now costs nothing per tick.
-    statusOnly = liveTools.size === 0;
+    statusOnly = true;
   }
 
   async function run() {

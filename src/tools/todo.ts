@@ -61,7 +61,10 @@ export async function todoRun(args: { todos?: TodoItem[] }, ctx: ToolContext): P
     if (!["pending", "in_progress", "done"].includes(t.status)) return fail(`error: bad status ${t.status}`);
   }
   kvSet(ctx.sessionId, "todos", todos);
-  return ok(`todo list updated (${todos.filter((t) => t.status === "done").length}/${todos.length} done):\n${renderTodosMd(todos)}`);
+  // Just the acknowledgement: the list is already in this tool CALL's args, and
+  // it is echoed back in the runtime header every step. Re-printing it here
+  // spent a turn's worth of context restating what the agent just wrote.
+  return ok("updated");
 }
 
 export function getTodos(sessionId: string): TodoItem[] | null {

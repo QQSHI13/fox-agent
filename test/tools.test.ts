@@ -402,12 +402,9 @@ describe("todo", () => {
       ctx,
     );
     expect(r.ok).toBe(true);
-    // GFM task-list syntax, not ballot-box glyphs
-    expect(r.output).toContain("- [x] done thing");
-    expect(r.output).toContain("- [~] active thing");
-    expect(r.output).toContain("- [ ] later thing");
-    expect(r.output).not.toContain("☑");
-    expect(r.output).not.toContain("☐");
+    // the list is already in the tool CALL's args and in the runtime header, so
+    // the result is only an acknowledgement — restating it burned context
+    expect(r.output).toBe("updated");
     // the plain (model-facing) renderer is ASCII too
     expect(renderTodos([{ content: "x", status: "done" }])).toBe("[x] x");
     expect(renderTodos([{ content: "x", status: "in_progress" }])).toBe("[~] x");
