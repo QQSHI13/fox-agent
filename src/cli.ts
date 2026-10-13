@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 import { createSession, getSession, latestSessionFor, setSessionModel } from "./store/db.ts";
+import { join } from "node:path";
 import { loadConfig, resolveProfile, type Config } from "./core/config.ts";
 import type { ProviderConfig } from "./providers/types.ts";
 import { ConfigError, errMsg } from "./core/errors.ts";
@@ -68,6 +69,7 @@ ${st.dim("subcommands")}
 ${cmd("ls", "list sessions")}
 ${cmd("export <id> [file]", "pack a session into a .zip to move to another device")}
 ${cmd("import <file>", "install a session .zip from another device")}
+${cmd("share [file]", "render this session as one offline HTML file")}
 ${cmd("plugin [on|off|add|rm|info <name>]", "manage plugins without the TUI")}
 ${cmd("json", "headless NDJSON event stream (use with -p \"prompt\" or piped stdin)")}
 ${cmd("mini", "plain streaming REPL, no TUI")}
@@ -83,7 +85,7 @@ interface Parsed {
   rest: string[];
 }
 /** First-position subcommands: flags after one belong to it, not to fox. */
-const SUBCOMMANDS = new Set(["ls", "plugin", "plugins", "upgrade", "json", "mini", "acp", "help"]);
+const SUBCOMMANDS = new Set(["ls", "plugin", "plugins", "upgrade", "json", "mini", "acp", "help", "share"]);
 /** Subcommand-specific flags (beyond --help/-h, which every subcommand takes). */
 const SUBCOMMAND_FLAGS: Record<string, Set<string>> = {
   upgrade: new Set(["--beta"]),
@@ -227,6 +229,21 @@ async function main() {
     // here looks stale there too — this used to be its own loop over
     // `created_at` and disagreed with every other listing about ordering
     console.log(formatSessionList(sessionList({ limit: loadConfig({ cwd: process.cwd() }).sessionListLimit }), { color: cliColor() }));
+    return;
+  }
+  if (parsed.rest[0] === "share") {
+    if (parsed.rest[1] === "--help" || parsed.rest[1] === "-h") return console.log(commandHelp("share"));
+    try {
+      const { shareSession } = await import("./store/share.ts");
+      const target = parsed.rest[1] === "current" || !parsed.rest[1] ? (await import("./store/db.ts")).latestSessionFor(process.cwd())?.id : parsed.rest[1];
+      if (!target) return console.log(`no session found for ${process.cwd()}`);
+      const out = parsed.rest[2] || join(process.cwd(), `fox-session-${target}.html`);
+      const r = shareSession(target, out);
+      console.log(`shared ${target} -> ${r.path} (${(r.bytes / 1024).toFixed(0)} KB${r.truncated ? ", capped" : ""})`);
+    } catch (e) {
+      console.error(`fox-agent error: ${errMsg(e)}`);
+      process.exitCode = 1;
+    }
     return;
   }
   if (parsed.rest[0] === "export" || parsed.rest[0] === "import") {

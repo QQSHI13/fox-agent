@@ -16,6 +16,7 @@ import { debugLogPath } from "./core/debuglog.ts";
 import { projectView } from "./context/view.ts";
 import { formatPruneReport, pruneSession } from "./store/prune.ts";
 import { exportSession, importSession } from "./store/transfer.ts";
+import { shareSession } from "./store/share.ts";
 import { VERSION } from "./core/version.ts";
 import { viewTokenEstimate } from "./context/render.ts";
 import { checkBudget, triggerTokens } from "./context/budget.ts";
@@ -32,7 +33,7 @@ import { activePlugins, isPluginPathDisabled, loadPlugins } from "./plugins/load
 import { bundledDisabled, bundledPlugins } from "./plugins/bundled.ts";
 import { BUNDLED_PROVIDER_PLUGIN_NAMES, bundledProviderPlugins } from "./providers/bundled.ts";
 import { addPluginPath, effectiveConfigPath, globalConfigPath, removePluginPath, setPluginDisabled, SETTINGS, settingValue, type SettingSpec } from "./core/config.ts";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 
 /**
  * Apply a just-changed setting to the live process — the same hooks /reload
@@ -265,6 +266,7 @@ export const COMMANDS: CommandSpec[] = [
   { name: "/ops", desc: "show context surgery ops" },
   { name: "/export", desc: "pack this session into a .zip you can move to any device", usage: "[file]", arg: true, help: "bare: writes fox-session-<id>.zip into cwd; with a path, writes there. Pair with /import on the other machine." },
   { name: "/import", desc: "install a session .zip exported from another device", usage: "<file>", arg: true, help: "lands the session under its own id — it then appears in /sessions and fox -c like a local one; an existing session with the same id is replaced" },
+  { name: "/share", desc: "render this session as one self-contained HTML file", usage: "[file]", arg: true, help: "bare: writes fox-session-<id>.html into cwd; with a path, writes there. Fully offline (styles and images inline). Credential-shaped text is masked; very long content is capped." },
   { name: "/view", desc: "preview visible nodes ([N] role preview)" },
   { name: "/todo", aliases: ["/todos"], desc: "show agent todo list" },
   { name: "/usage", desc: "token totals + budget" },
@@ -1668,6 +1670,22 @@ Verify what you write: run the commands you document (at least the build/test en
         },
         storeChanged: true,
       };
+    }
+
+    case "/share": {
+      // synchronous like /view: rendering is CPU work we can do inline, and
+      // unlike /export it never touches the db file or a zip
+      try {
+        const out = arg?.trim() || join(process.cwd(), `fox-session-${state.sessionId}.html`);
+        const r = shareSession(state.sessionId, out);
+        const kb = (r.bytes / 1024).toFixed(0);
+        return {
+          handled: true,
+          output: `shared ${state.sessionId} -> ${r.path} (${kb} KB${r.truncated ? ", capped" : ""})\nopen it in any browser, offline — nothing is uploaded.`,
+        };
+      } catch (e) {
+        return { handled: true, output: `share failed: ${(e as Error).message}` };
+      }
     }
 
     case "/prune": {
