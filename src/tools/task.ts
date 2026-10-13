@@ -139,13 +139,14 @@ export async function taskRun(
     const ac = new AbortController();
     const job: TaskJob = { id, label: args.description.trim(), startedAt: Date.now(), done: false, ok: false, result: "", ac };
     sessionTasks(ctx.sessionId).set(id, job);
-    // an aborted-by-session-end run rejects or cancels; both land in result
-    const sub = ac.signal.aborted ? ac.signal : (() => {
-      // link the caller's abort to the job's own controller
-      ctx.signal?.addEventListener("abort", () => ac.abort(), { once: true });
-      return ac.signal;
-    })();
-    void executeTask(args, { ...ctx, signal: sub })
+    // The job's lifetime is the SESSION's, not the turn's. It used to link the
+    // caller's (the turn's) signal, so ESC/ctrl+c in the parent aborted every
+    // detached subagent — exactly backwards: a background task was started
+    // precisely to keep going while the agent moved on. It now ends only when
+    // the session does: killTasks, reached from onSessionEnd, a session switch,
+    // and shutdownTools on exit. An ACP child is spawned non-detached, so it
+    // shares our process group and cannot outlive a hard-killed parent either.
+    void executeTask(args, { ...ctx, signal: ac.signal })
       .then((r) => {
         job.done = true;
         job.ok = r.ok;
