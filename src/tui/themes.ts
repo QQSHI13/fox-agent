@@ -68,6 +68,21 @@ export interface Theme {
    * a marker is always a distinct selectable-colored chip without edits.
    */
   markerBg?: string;
+  /**
+   * Spinner frame set (braille dots by default). Optional — a theme can swap in
+   * ASCII (\`|/-\\`) or a custom glyph run; falls back to the built-in braille.
+   */
+  spinner?: string[];
+  /**
+   * Foreground for the busy spinner (status bar + running-tool head). Optional —
+   * falls back to `accent`, so existing themes keep their look without edits.
+   */
+  spinnerFg?: string;
+  /**
+   * Foreground for the "running" tool head label while a tool is in flight.
+   * Optional — falls back to `tool` (the settled head color).
+   */
+  runningFg?: string;
 }
 
 export const THEME_PRESETS: Record<string, Theme> = {

@@ -54,7 +54,7 @@ import { shellPath } from "../core/shell.ts";
 import { killTree } from "../tools/exec.ts";
 import { debugLog, debugLogPath } from "../core/debuglog.ts";
 import { droppedPath, expandMentions } from "../core/mentions.ts";
-import { liveTheme, setTheme, themeName, type Theme } from "./themes.ts";
+import { liveTheme, setTheme, theme, themeName, type Theme } from "./themes.ts";
 import { diffSegs, jsonSegs, statusSegs, pathSegs, wordDiff, ansiSegs, highlightVersion, setHighlightDone } from "./highlight.ts";
 
 type ItemKind = "user" | "toolhead" | "toolbody" | "info" | "error" | "md" | "think";
@@ -187,6 +187,17 @@ export function setTuiFrameMs(ms: number): void {
 // `/theme` switch repaints on the next frame without a restart.
 const C = liveTheme<keyof Theme>();
 const SPIN = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+/**
+ * Spinner frame set for the current theme. Braille dots by default; a theme's
+ * `spinner` slot swaps in a custom glyph run (ASCII `-\|/`, etc.). Resolved per
+ * access so a `/theme` switch takes effect on the next tick without a restart.
+ */
+function spinFrames(): string[] {
+  // read the array from the theme directly — the liveTheme proxy types every
+  // field as string, so C.spinner would come back string-typed
+  const t = theme();
+  return t.spinner && t.spinner.length ? t.spinner : SPIN;
+}
 /**
  * In-flight tool pairs (head + body) for the current turn, mutated by tool_start /
  * tool_output / tool_end and re-stamped by the spinner tick. Module-scoped (not
@@ -3566,6 +3577,8 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     prompt: 0,
     cmd: 0,
     shell: 0,
+    spin: 0,
+    running: 0,
   };
   function initStyles() {
     S.base = screen.sgr({ fg: C.fg });
@@ -3576,6 +3589,8 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     S.user = screen.sgr({ fg: C.user });
     S.tool = screen.sgr({ fg: C.tool });
     S.info = screen.sgr({ fg: C.info });
+    S.spin = screen.sgr({ fg: C.spinnerFg ?? C.accent });
+    S.running = screen.sgr({ fg: C.runningFg ?? C.tool });
     S.chromeOnBar = screen.sgr({ fg: C.chrome, bg: C.barBg });
     S.inputFg = screen.sgr({ fg: C.fg, bg: C.inputBg });
     S.hintDim = screen.sgr({ fg: C.hint, bg: C.barBg });
@@ -4075,7 +4090,8 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     if (Date.now() < flashUntil && flashMsg) {
       lx = P.status.text(lx, barY, `${flashMsg}`, displayBusy() ? S.accent : S.ok);
     } else if (displayBusy()) {
-      lx = P.status.text(lx, barY, clipW(`${SPIN[frameIdx]} ${streamText !== null ? "responding" : "thinking"}${busyMsg ? ` — ${busyMsg}` : ""} ${elapsed()}`, W - 2), S.accent);
+      const frames = spinFrames();
+      lx = P.status.text(lx, barY, clipW(`${frames[frameIdx % frames.length]} ${streamText !== null ? "responding" : "thinking"}${busyMsg ? ` — ${busyMsg}` : ""} ${elapsed()}`, W - 2), S.spin);
     } else {
       lx = P.status.text(lx, barY, `ready`, S.ok);
     }
@@ -4255,12 +4271,15 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     const now = Date.now();
     if (now - lastSpinAt < 140) return;
     lastSpinAt = now;
-    frameIdx = (frameIdx + 1) % SPIN.length;
+    const frames = spinFrames();
+    frameIdx = (frameIdx + 1) % frames.length;
+    const frame = frames[frameIdx];
     // re-stamp each running tool head with the current spinner frame so the
     // transcript shows the tool is alive, not just the status bar. Touching the
     // head re-derives its row on the next paint (the row carries the frame).
     for (const live of liveTools.values()) {
-      live.head.text = `» ${live.head.text.replace(/^» /, "").replace(/ [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] running$/, "")} ${SPIN[frameIdx]} running`;
+      const base = live.head.text.replace(/^» /, "").replace(/ [^ ]+ running$/, "");
+      live.head.text = `» ${base} ${frame} running`;
       touch(live.head.k);
     }
     // spinner-only update: the status region re-derives on the next paint()
