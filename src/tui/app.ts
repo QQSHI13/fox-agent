@@ -1612,16 +1612,16 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           // would otherwise show nothing at all and the agent looked hung. The
           // head is a NORMAL one — same `» name` label as a settled tool, no
           // "running" suffix and no re-stamping: the status bar's spinner is
-          // where progress is shown. The body is folded, since a running
-          // tool's output is noise until it settles and an expanded tail
-          // would shove the transcript off-screen every frame.
+          // where progress is shown. The body is OPEN, so the output streams in
+          // live as tool_output deltas land — a tool that is clearly working,
+          // not a head that appears and then sits silent until it finishes.
           if (!liveTools.has(ev.id)) {
             liveTools.set(ev.id, {
               head: push("toolhead", `» ${callLabels.get(ev.id) ?? ev.name}`, {
                 detail: argsJson(callArgs.get(ev.id) ?? ""),
                 expanded: expandMode === true || undefined,
               }),
-              body: push("toolbody", "", { toolResult: true, expanded: false }),
+              body: push("toolbody", "", { toolResult: true, expanded: expandMode !== false }),
               text: "",
             });
           }
