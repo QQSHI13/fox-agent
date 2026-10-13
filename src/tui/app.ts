@@ -1117,45 +1117,107 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
    * mirrors paint()'s wizard block exactly (header, "… above", windowed
    * options, "… below") — any drift and clicks land on the wrong options.
    */
+  /** One painted wizard row. `opt` is the option it belongs to, or a sentinel:
+   *  -1 header/placeholder, -2 "… N more above", -3 "… N more below". */
+  interface PromptRow {
+    text: string;
+    opt: number;
+    sel: boolean;
+  }
+
+  /**
+   * The wizard's rows, derived ONCE and read by BOTH the painter and the click
+   * hit-test.
+   *
+   * Long option labels WRAP. They used to be truncated at the right margin by
+   * `clipW`, so a long model name, path or plugin description was cut off and
+   * the part that distinguishes two choices was the part you could not read.
+   * A wrapped continuation is indented under the label so it reads as one entry.
+   *
+   * This MUST be one function. paint and the hit-test used to count one row per
+   * option independently; wrap either one alone and clicks resolve against rows
+   * the menu never occupied — the same "count and paint agree" contract
+   * `countItem`/`renderItem` keeps in layout.ts.
+   */
+  function promptRows(): { rows: PromptRow[]; menuTop: number; start: number; end: number } {
+    const p = prompt!;
+    const st = p.steps[p.idx];
+    const hint = resolveField(st.hint, p.answers);
+    const stepPos = p.steps.length > 1 ? ` ${p.idx + 1}/${p.steps.length}` : "";
+    const header = `${p.title}${stepPos} — ${st.label}${hint ? ` (${hint})` : ""} · esc cancels`;
+    const rows: PromptRow[] = wrapText(header, W - 2).map((t) => ({ text: t, opt: -1, sel: false }));
+    const menuTop = dockFloats().top;
+    let start = 0;
+    let end = 0;
+    if (st.kind !== "select") return { rows, menuTop, start, end };
+    const opts = promptOptions();
+    if (p.entering) {
+      // the custom answer box is open: the dock is a TEXT field now, so a
+      // rendered option list contradicts the placeholder and hides what is
+      // being typed. The list comes back on escape.
+      rows.push({ text: "  (option list hidden — esc to go back)", opt: -1, sel: false });
+      return { rows, menuTop, start, end };
+    }
+    if (!opts.length) {
+      rows.push({ text: "  no matches — backspace to widen", opt: -1, sel: false });
+      return { rows, menuTop, start, end };
+    }
+    // the window shrinks to leave room for the WRAPPED header
+    const MAX = Math.max(1, Math.min(5, menuTop - rows.length));
+    start = opts.length <= MAX ? 0 : Math.max(0, Math.min(p.sel - Math.floor(MAX / 2), opts.length - MAX));
+    end = Math.min(opts.length, start + MAX);
+    if (start > 0) rows.push({ text: `  … ${start} more above`, opt: -2, sel: false });
+    for (let i = start; i < end; i++) {
+      const mark = i === p.sel ? "›" : " ";
+      const lead = ` ${mark} `;
+      const parts = wrapText(opts[i].label, Math.max(8, W - 2 - lead.length));
+      for (let k = 0; k < parts.length; k++) {
+        rows.push({
+          text: k === 0 ? lead + parts[k] : " ".repeat(lead.length) + parts[k],
+          opt: i,
+          sel: i === p.sel,
+        });
+      }
+    }
+    if (end < opts.length) rows.push({ text: `  … ${opts.length - end} more below`, opt: -3, sel: false });
+    // A wrapped label can take several rows, so a nominal 5-option window can
+    // still overflow the dock and paint above row 0. Drop trailing options
+    // until the whole menu fits — bounded by start + 1 so one option always
+    // remains, however long it is.
+    while (rows.length > menuTop && end > start + 1) {
+      rows.pop();
+      end--;
+    }
+    return { rows, menuTop, start, end };
+  }
+
   function promptClick(x: number, y: number) {
     void x;
     const p = prompt!;
     const opts = promptOptions();
     if (!opts.length) return;
-    // same geometry the menu paints with (see paintFloats / dockFloats) —
-    // anything else resolves clicks against rows the menu never occupied.
-    // The header WRAPS (a long title/step/hint spans multiple rows), so its
-    // height must be computed exactly as paint computes it, not assumed 1.
-    const menuTop = dockFloats().top;
-    const stForHeader = p.steps[p.idx];
-    const hintForHeader = resolveField(stForHeader.hint, p.answers);
-    const stepPosForHeader = p.steps.length > 1 ? ` ${p.idx + 1}/${p.steps.length}` : "";
-    const headerText = `${p.title}${stepPosForHeader} — ${stForHeader.label}${hintForHeader ? ` (${hintForHeader})` : ""} · esc cancels`;
-    const headerRows = wrapText(headerText, W - 2).length;
-    // same shrink as paint: the option window leaves room for the wrapped header
-    const MAX = Math.max(1, Math.min(5, menuTop - headerRows));
-    const start = opts.length <= MAX ? 0 : Math.max(0, Math.min(p.sel - Math.floor(MAX / 2), opts.length - MAX));
-    const end = Math.min(opts.length, start + MAX);
-    const above = start > 0 ? 1 : 0;
-    const below = end < opts.length ? 1 : 0;
-    const rows = headerRows + above + (end - start) + below;
-    const idx = y - (menuTop - rows);
-    if (idx <= 0 || idx >= rows) return; // header, or outside the menu
-    const optRow = idx - headerRows - above;
-    if (optRow < 0) {
+    const { rows, menuTop, start, end } = promptRows();
+    const MAX = Math.max(1, end - start);
+    const hTop = menuTop - rows.length;
+    const idx = y - hTop;
+    if (idx < 0 || idx >= rows.length) return; // outside the menu
+    const row = rows[idx];
+    if (row.opt === -2) {
       p.sel = Math.max(0, p.sel - MAX); // "… above": page the highlight up
       markDirty();
       return;
     }
-    if (optRow >= end - start) {
+    if (row.opt === -3) {
       p.sel = Math.min(opts.length - 1, p.sel + MAX); // "… below": page down
       markDirty();
       return;
     }
-    const i = start + optRow;
-    if (i === p.sel) promptSubmit(); // second click on the row confirms it
+    if (row.opt < 0) return; // header or placeholder row
+    // a wrapped CONTINUATION carries the same option index as its first line,
+    // so clicking either selects (or, on the selected one, confirms) the same
+    if (row.opt === p.sel) promptSubmit();
     else {
-      p.sel = i;
+      p.sel = row.opt;
       markDirty();
     }
   }
@@ -4114,40 +4176,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     // the question wizard floats where the command hints would (it supersedes
     // them — the dock is an answer field while a prompt is open)
     if (prompt) {
-      const st = prompt.steps[prompt.idx];
-      const hint = resolveField(st.hint, prompt.answers);
-      const stepPos = prompt.steps.length > 1 ? ` ${prompt.idx + 1}/${prompt.steps.length}` : "";
-      const header = `${prompt.title}${stepPos} — ${st.label}${hint ? ` (${hint})` : ""} · esc cancels`;
-      // wrap the header instead of truncating it: a long title/step/hint used
-      // to be cut at the right margin, hiding the cancel hint and any longer
-      // explanation. Each wrapped line is its own row, and the click geometry
-      // (which counts rows) grows with it, so hit-tests stay in sync.
-      const rows: { text: string; sel: boolean }[] = wrapText(header, W - 2).map((t) => ({ text: t, sel: false }));
-      const menuTop = dockFloats().top;
-      if (st.kind === "select") {
-        const opts = promptOptions();
-        if (prompt.entering) {
-          // the custom answer box is open: the dock is a TEXT field now, so a
-          // rendered option list contradicts the placeholder ("type an answer
-          // not in the list") and hides the thing being typed. The list comes
-          // back on escape (promptKey sets entering = false).
-          rows.push({ text: "  (option list hidden — esc to go back)", sel: false });
-        } else if (!opts.length) {
-          rows.push({ text: "  no matches — backspace to widen", sel: false });
-        } else {
-          // the option window shrinks to leave room for the WRAPPED header — a
-          // long title/step/hint spans multiple rows, and the box must not
-          // paint above row 0. Same formula the click hit-test uses.
-          const MAX = Math.max(1, Math.min(5, menuTop - rows.length));
-          const start = opts.length <= MAX ? 0 : Math.max(0, Math.min(prompt.sel - Math.floor(MAX / 2), opts.length - MAX));
-          const end = Math.min(opts.length, start + MAX);
-          if (start > 0) rows.push({ text: `  … ${start} more above`, sel: false });
-          for (let i = start; i < end; i++) {
-            rows.push({ text: `${i === prompt.sel ? "›" : " "} ${opts[i].label}`, sel: i === prompt.sel });
-          }
-          if (end < opts.length) rows.push({ text: `  … ${opts.length - end} more below`, sel: false });
-        }
-      }
+      // one geometry for paint and clicks (see promptRows) — long labels wrap
+      // rather than truncate, and a continuation line selects the same option
+      const { rows, menuTop } = promptRows();
       const hTop = menuTop - rows.length;
       for (let i = 0; i < rows.length; i++) {
         P.floats.fillRow(hTop + i, 0, W, S.barBgRow);
