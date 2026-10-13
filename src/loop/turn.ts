@@ -567,6 +567,7 @@ export async function* runTurnCore(
       tool_calls: prepared.length ? JSON.stringify(prepared.map((p) => p.call)) : null,
       tokens: estTok(outcome.text) + prepared.reduce((a, p) => a + estTok(p.call.arguments), 0),
     });
+    if (!quiet) yield { type: "assistant", seq: asstNode.seq };
     if (outcome.usage) recordUsage(sessionId, asstNode.id, outcome.usage.prompt_tokens, outcome.usage.completion_tokens, outcome.usage.cached_tokens);
     if (outcome.usage && !quiet) yield { type: "usage", ...outcome.usage };
 
