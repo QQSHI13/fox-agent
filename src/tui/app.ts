@@ -2385,10 +2385,39 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     return row >= 0 && row < fr.total ? row : null;
   }
 
-  /** the cell column a click at screen x lands on within a transcript row */
-  function transcriptCol(x: number): number {
-    // the painter starts transcript text at column 1 (see paint())
-    return Math.max(0, x - 1);
+  /**
+   * The cell column a click at screen x lands on WITHIN a transcript row's
+   * CONTENT.
+   *
+   * That is not always column 1: a row carrying a [N] marker chip starts its
+   * content at `MARKER_W(seq) + 1` (the chip PLUS its gap column). The old
+   * mapping subtracted a flat 1, so on a marked row every click resolved
+   * chipWidth columns too far right — the selection began mid-content and the
+   * copied text was displaced with it, getting worse the larger the seq got
+   * ([9] is 3 cells, [100] is 5). Reads the PAINTED frame for the row's owner,
+   * like every other hit-test, so it cannot disagree with the pixels.
+   */
+  function transcriptCol(x: number, row: number): number {
+    const fr = painted;
+    // The window slice is addressed the same way paint() and the click hit-test
+    // address it: rows[0] is ABSOLUTE row (scrollTop - winOffset), so the
+    // viewport index is `row - winBase`. Reading `row - scrollTop` (which is
+    // just y) skipped winOffset and looked up the WRONG row's owner — the
+    // chip width then came from a different item, or from none, and the whole
+    // selection shifted.
+    const winBase = fr ? fr.scrollTop - fr.winOffset : 0;
+    const winIdx = row - winBase;
+    let chipW = 0;
+    if (fr && winIdx >= 0 && winIdx < fr.owner.length) {
+      // only the item's FIRST row carries the chip; its continuation rows are
+      // plain and start at the usual margin (see paint's x0)
+      const isFirstRow = winIdx === 0 || fr.owner[winIdx - 1] !== fr.owner[winIdx];
+      if (isFirstRow) {
+        const it = items.find((i) => i.k === fr.owner[winIdx]);
+        if (it?.seq !== undefined) chipW = MARKER_W(it.seq);
+      }
+    }
+    return Math.max(0, x - (chipW ? chipW + 1 : 1));
   }
 
   /**
@@ -2463,7 +2492,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       clearSel();
       inSelAnchor = null;
       if (row !== null) {
-        selA = { row, col: transcriptCol(x) };
+        selA = { row, col: transcriptCol(x, row) };
         selB = selA;
       }
       return;
@@ -2508,7 +2537,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       }
       const row = transcriptRow(Math.max(0, Math.min(viewportH() - 1, y)));
       if (row === null) return;
-      selB = { row, col: transcriptCol(x) };
+      selB = { row, col: transcriptCol(x, row) };
         syncPaint();
       return;
     }
@@ -2558,7 +2587,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       if (winIdx < 0 || winIdx >= fr.rows.length) return;
       const cells = rowCells(fr.rows[winIdx].segs);
       if (phase === 0) {
-        const w = wordRangeAt(cells, transcriptCol(x));
+        const w = wordRangeAt(cells, transcriptCol(x, row));
         if (!w) return;
         selA = { row, col: w.from };
         selB = { row, col: w.to };
@@ -3867,14 +3896,15 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         // restyle() takes an EXCLUSIVE end but selRangeForRow returns an inclusive
         // `to`, so +1 or the last selected cell (e.g. a trailing '.') stays unlit.
         //
-        // The selection owns the chip and its gap column too: restyling only the
-        // content left a markerBg chip punched into a selBg row, and the S.base
-        // gap stamp composited onto the row fill instead of the selection — so a
-        // selected marked row showed three backgrounds in a 5-column span and
-        // read as displaced. Starting at 0 makes the whole row one block.
+        // The selection covers CONTENT ONLY, never the chip: the marker is not
+        // part of the message text (rowCells is built from row.segs, which
+        // excludes it) and it is not in the copied output either. Highlighting
+        // it would make the screen claim the selection covers a glyph the
+        // clipboard never got. The chip keeps markerBg and the gap column keeps
+        // its own cell, so a selected marked row reads as chip + gap + lit text.
         if (hasSel()) {
           const range = selRangeForRow(absolute, selA!, selB!, rowCells(row.segs));
-          if (range) P.transcript.restyle(y, chipW ? 0 : x0 + range.from, x0 + range.to + 1, C.selBg);
+          if (range) P.transcript.restyle(y, x0 + range.from, x0 + range.to + 1, C.selBg);
         }
       }
 

@@ -146,9 +146,13 @@ export function importSession(zipPath: string): ImportResult {
   const dest = join(sessionsDir(), `${mf.id}.db`);
   for (const p of [dest, `${dest}-wal`, `${dest}-shm`]) rmSync(p, { force: true });
   writeFileSync(dest, dbRaw);
-  // sqlite needs a writable file; archives may carry read-only bits
+  // 0600, NOT 0644. A session db holds the machine's file contents, tool output
+  // and command text from where the session ran — 0644 made every imported
+  // session world-readable to any local account. The archive may carry read-only
+  // bits (that is what this clears); it never needs a wider read mode than the
+  // user importing it, and sqlite opens the file as that user.
   try {
-    chmodSync(dest, 0o644);
+    chmodSync(dest, 0o600);
   } catch {}
 
   // index row: the cache that makes /sessions list it. INSERT OR REPLACE —
