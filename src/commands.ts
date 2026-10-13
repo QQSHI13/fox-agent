@@ -1640,25 +1640,34 @@ Verify what you write: run the commands you document (at least the build/test en
     }
 
     case "/export": {
-      const dest = exportSession(state.sessionId, arg?.trim() || undefined, VERSION);
+      // async: the zip is built by streaming the db through deflate, so a
+      // multi-GB session never lands in memory. `task` is the command layer's
+      // existing async seam — the command itself stays synchronous.
+      const dest = arg?.trim() || undefined;
       return {
         handled: true,
-        output: `exported ${state.sessionId} -> ${dest}\nmove it to the other device and run: fox import ${dest.split("/").pop()} (or /import <file> inside fox)`,
+        task: async () => {
+          const out = await exportSession(state.sessionId, dest, VERSION);
+          return `exported ${state.sessionId} -> ${out}\nmove it to the other device and run: fox import ${out.split("/").pop()} (or /import <file> inside fox)`;
+        },
       };
     }
 
     case "/import": {
       const file = arg?.trim();
       if (!file) return { handled: true, output: "usage: /import <file.zip>" };
-      try {
-        const r = importSession(file);
-        return {
-          handled: true,
-          output: `${r.replaced ? "replaced" : "imported"} session ${r.id} (${r.messages} messages) — /sessions to switch to it${r.replaced ? " (a local session with this id was overwritten)" : ""}`,
-        };
-      } catch (e) {
-        return { handled: true, output: `import failed: ${(e as Error).message}` };
-      }
+      return {
+        handled: true,
+        task: async () => {
+          try {
+            const r = await importSession(file);
+            return `${r.replaced ? "replaced" : "imported"} session ${r.id} (${r.messages} messages) — /sessions to switch to it${r.replaced ? " (a local session with this id was overwritten)" : ""}`;
+          } catch (e) {
+            return `import failed: ${(e as Error).message}`;
+          }
+        },
+        storeChanged: true,
+      };
     }
 
     case "/prune": {

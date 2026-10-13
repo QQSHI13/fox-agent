@@ -238,10 +238,10 @@ async function main() {
         // "current" = this directory's latest session (the one `fox -c` resumes)
         const target = parsed.rest[1] === "current" ? (await import("./store/db.ts")).latestSessionFor(process.cwd())?.id : parsed.rest[1];
         if (!target) return console.log(`no session found for ${process.cwd()}`);
-        const dest = exportSession(target, parsed.rest[2] || undefined, VERSION);
+        const dest = await exportSession(target, parsed.rest[2] || undefined, VERSION);
         console.log(`exported ${target} -> ${dest}`);
       } else {
-        const r = importSession(parsed.rest[1]);
+        const r = await importSession(parsed.rest[1]);
         console.log(`${r.replaced ? "replaced" : "imported"} session ${r.id} (${r.messages} messages) — resume with: fox -c ${r.id}`);
       }
     } catch (e) {

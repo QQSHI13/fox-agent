@@ -22,14 +22,14 @@ afterAll(() => {
 });
 
 describe("session export/import", () => {
-  test("export then import restores a working session", () => {
+  test("export then import restores a working session", async () => {
     const s = createSession("/tmp/proj-a", "test-model");
     appendMessage(s.id, { role: "user", content: "hello from device A", tokens: 4 });
     appendMessage(s.id, { role: "assistant", content: "hi back", tokens: 3 });
     setRefTitle(s.id, "transfer title");
 
     const dest = join(carry, "out.zip");
-    const written = exportSession(s.id, dest, "test");
+    const written = await exportSession(s.id, dest, "test");
     expect(written).toBe(dest);
     expect(existsSync(dest)).toBe(true);
 
@@ -38,7 +38,7 @@ describe("session export/import", () => {
     rmSync(home, { recursive: true, force: true });
     ensureLayout();
 
-    const r = importSession(dest);
+    const r = await importSession(dest);
     expect(r.id).toBe(s.id);
     expect(r.replaced).toBe(false);
     expect(r.messages).toBe(2);
@@ -52,12 +52,12 @@ describe("session export/import", () => {
     expect(msgs[0].content).toBe("hello from device A");
   });
 
-  test("re-import replaces rather than duplicates", () => {
+  test("re-import replaces rather than duplicates", async () => {
     const s = createSession("/tmp/proj-b", "m");
     appendMessage(s.id, { role: "user", content: "one", tokens: 1 });
     const dest = join(carry, "again.zip");
-    exportSession(s.id, dest, "test");
-    const r = importSession(dest);
+    await exportSession(s.id, dest, "test");
+    const r = await importSession(dest);
     expect(r.replaced).toBe(true);
     expect(allMessages(s.id).length).toBe(1);
   });
