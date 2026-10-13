@@ -187,6 +187,12 @@ export function setTuiFrameMs(ms: number): void {
 // `/theme` switch repaints on the next frame without a restart.
 const C = liveTheme<keyof Theme>();
 const SPIN = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+/**
+ * In-flight tool pairs (head + body) for the current turn, mutated by tool_start /
+ * tool_output / tool_end and re-stamped by the spinner tick. Module-scoped (not
+ * turn-scoped) so the frame loop's tickSpinner can animate the running heads.
+ */
+const liveTools = new Map<string, { head: Item; body: Item; text: string }>();
 /** Startup taglines; one is picked at random per launch. */
 const BANNERS = [
   "agent-controlled context",
@@ -1509,7 +1515,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     const userItem = push("user", `❯ ${raw}`);
     ac = new AbortController();
     let md = "";
-    const liveTools = new Map<string, { head: Item; body: Item; text: string }>();
+    liveTools.clear();
     // id → one-line label ("exec echo hi"), so in-flight and settled heads both
     // say what actually ran, not just the tool's name
     const callLabels = new Map<string, string>();
@@ -1553,6 +1559,20 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           liveThink = null; // a tool boundary seals the thinking block before it
           // running header (suggested: `▶ fox — <session> — <tool>`)
           busyMsg = ev.name;
+          // a tool head appears the MOMENT the tool starts (not on first output),
+          // so a long-running tool with no streamed output still reads as alive.
+          // The label carries a live spinner frame, re-stamped on each spinner
+          // tick (publishLive) — the user can see the tool is running, not hung.
+          if (!liveTools.has(ev.id)) {
+            liveTools.set(ev.id, {
+              head: push("toolhead", `» ${callLabels.get(ev.id)} — running`, {
+                detail: argsJson(callArgs.get(ev.id) ?? ""),
+                expanded: expandMode === true || undefined,
+              }),
+              body: push("toolbody", "", { toolResult: true, expanded: expandMode !== false }),
+              text: "",
+            });
+          }
           publishLive(true); // tool flips are sparse enough to write unthrottled
           term.setTitle(`▶ fox — ${state.sessionId || "new"} — ${ev.name}`);
         } else if (ev.type === "tool_output") {
@@ -4236,11 +4256,18 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     if (now - lastSpinAt < 140) return;
     lastSpinAt = now;
     frameIdx = (frameIdx + 1) % SPIN.length;
+    // re-stamp each running tool head with the current spinner frame so the
+    // transcript shows the tool is alive, not just the status bar. Touching the
+    // head re-derives its row on the next paint (the row carries the frame).
+    for (const live of liveTools.values()) {
+      live.head.text = `» ${live.head.text.replace(/^» /, "").replace(/ [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] running$/, "")} ${SPIN[frameIdx]} running`;
+      touch(live.head.k);
+    }
     // spinner-only update: the status region re-derives on the next paint()
     // (its signature includes frameIdx) and nothing else does — one row
     // re-stamped, the row-hash diff turns it into ~20 bytes of output.
     // NO global dirty: a mid-reasoning turn now costs nothing per tick.
-    statusOnly = true;
+    statusOnly = liveTools.size === 0;
   }
 
   async function run() {
