@@ -6,7 +6,7 @@ import { createAnthropic } from "@ai-sdk/anthropic";
 import type { ChatMessage, ProviderConfig, StreamEvent, ToolDef } from "./types.ts";
 import { classifyProviderError } from "../core/errors.ts";
 import { startWatchdog } from "./watchdog.ts";
-import { reasoningProviderOptions, samplingOptions } from "./index.ts";
+import { reasoningProviderOptions, samplingOptions, outputTokenOptions } from "./index.ts";
 import { toModelMessages } from "./convert.ts";
 
 const CACHE_OFF = process.env.FOX_AGENT_ANTHROPIC_CACHE === "0";
@@ -56,6 +56,10 @@ export async function* streamChat(
       ...(sysText ? { system: sysText } : {}),
       messages: rest,
       ...(tools.length ? { tools: toolSet } : {}),
+      // the SDK clamps a model it does not recognize to 4096 output tokens and
+      // logs a warning; we know the real ceiling, so pass it (an explicit
+      // sampling override still wins, being spread after)
+      ...outputTokenOptions(cfg),
       ...samplingOptions(cfg.sampling),
       ...reasoningProviderOptions(cfg),
       abortSignal: wd.signal,

@@ -7,7 +7,7 @@ import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import type { ChatMessage, ProviderConfig, StreamEvent, ToolDef } from "./types.ts";
 import { classifyProviderError } from "../core/errors.ts";
 import { startWatchdog } from "./watchdog.ts";
-import { reasoningProviderOptions, samplingOptions } from "./index.ts";
+import { reasoningProviderOptions, samplingOptions, outputTokenOptions } from "./index.ts";
 import { toModelMessages } from "./convert.ts";
 
 export * from "./types.ts";
@@ -49,6 +49,9 @@ export async function* streamChat(
       ...(sys ? { system: sys } : {}),
       messages: rest,
       ...(tools.length ? { tools: toolSet } : {}),
+      // the SDK clamps a model it does not recognize to a small output ceiling
+      // and logs a warning; we know the real one (config, /models, models.dev)
+      ...outputTokenOptions(cfg),
       ...samplingOptions(cfg.sampling),
       ...reasoningProviderOptions(cfg),
       abortSignal: wd.signal,

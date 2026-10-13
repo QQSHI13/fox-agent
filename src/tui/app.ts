@@ -4328,7 +4328,11 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     const now = Date.now();
     if (now - lastSpinAt < 140) return;
     lastSpinAt = now;
-    frameIdx = (frameIdx + 1) % frames.length;
+    // Resolve the frame set here too: it is theme-driven (spinFrames), so the
+    // tick must ask the theme for the count, not reuse a paint-scope local.
+    // Reading a name only paintStatus() declared threw ReferenceError the first
+    // time a turn went busy — the crash that emptied the screen.
+    frameIdx = (frameIdx + 1) % spinFrames().length;
     // spinner-only update: the status region re-derives on the next paint()
     // (its signature includes frameIdx) and nothing else does — one row
     // re-stamped, the row-hash diff turns it into ~20 bytes of output.

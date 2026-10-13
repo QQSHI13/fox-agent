@@ -63,14 +63,33 @@ const STATIC_PRESETS: CatalogProvider[] = [
   { id: "moonshotai", name: "Kimi (Moonshot AI)", api: "https://api.moonshot.ai/v1", env: ["MOONSHOT_API_KEY"], format: "openai-compatible", models: [] },
 ];
 
-/** Which fox-agent provider format a models.dev provider id speaks. */
+/**
+ * Which fox-agent provider format a models.dev provider id speaks.
+ *
+ * The id alone is not enough: several providers expose an ANTHROPIC-shaped
+ * endpoint under their own name — minimax, minimax-cn, minimax-cn-coding-plan,
+ * minimax-coding-plan and thinkingmachines all serve
+ * `https://api.<host>/anthropic/v1`. `formatFor` used to take the endpoint and
+ * throw it away (`void api`), so every one of them was written to config as
+ * "openai-compatible" — the chat-completions shape, which their endpoint does
+ * not speak. That produced the runtime warning
+ * `anthropic.messages / <model>: the model is unknown … limited to 4096` on
+ * every call, and (before the maxOutputTokens fix) a silently clamped output
+ * budget.
+ *
+ * So: the endpoint is the evidence. An `/anthropic` path segment means the
+ * Messages API, whatever the provider is called. models.dev is the source of
+ * the endpoint, and the user can still override per profile in config.
+ */
 function formatFor(id: string, api: string | undefined): CatalogProvider["format"] {
   if (id === "anthropic") return "anthropic";
   if (id === "google" || id === "google-vertex") return "google";
+  // a `/anthropic` path segment on a THIRD-PARTY endpoint speaks the Messages
+  // API (minimax, thinkingmachines, …) even though the id is not "anthropic"
+  if (api && /\/anthropic(?:\/|$)/i.test(api)) return "anthropic";
   // models.dev's openai entry serves both chat completions and responses on
   // /v1; chat is the safer default for a generic harness, responses is its
   // own preset so the choice is explicit.
-  void api;
   return "openai-compatible";
 }
 
