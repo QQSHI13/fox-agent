@@ -342,6 +342,11 @@ async function clipRead(term: Term): Promise<string> {
     ["powershell.exe", "-NoProfile", "-Command", "[Console]::OutputEncoding=[Text.Encoding]::UTF8; Get-Clipboard -Raw"],
     ["wl-paste", "--no-newline"],
     ["xclip", "-selection", "clipboard", "-o"],
+    // macOS read side. The WRITE list had pbcopy but the READ list did not, so
+    // ctrl+V was a silent no-op on a Mac: Terminal.app does not answer an OSC 52
+    // read, iTerm2 gates them behind an explicit permission, and with no pbpaste
+    // in the list every fallback failed and clipRead returned "".
+    ["pbpaste"],
   ];
   for (const argv of cmds) {
     try {
@@ -362,27 +367,18 @@ async function clipRead(term: Term): Promise<string> {
 /**
  * Copy to the system clipboard, reporting whether anything actually took it.
  *
- * OSC 52 goes FIRST: a supporting terminal (kitty, WezTerm, recent Windows
- * Terminal, tmux with set-clipboard) applies it in-band with no helper process
- * and it works over SSH. Terminals that ignore the sequence also ignore it
- * silently, so an OSC 52 write cannot fail loudly — that is exactly why it
- * used to be last. The ordering trade: on a terminal without OSC 52 support
- * the helpers still run (one wasted probe order swap, not a lost copy), while
- * on a supporting terminal we skip spawning powershell/xclip entirely.
+ * The helper runs FIRST and OSC 52 second, and the order matters for
+ * correctness, not speed. A terminal that supports OSC 52 (kitty, WezTerm,
+ * tmux with set-clipboard) applies it in-band with no helper process and over
+ * SSH — but a terminal that IGNORES it also ignores it silently, with no error
+ * and no way to tell. The old order tried OSC 52 first and returned true
+ * unconditionally, so on macOS Terminal.app the `pbcopy` entry below was
+ * unreachable: the TUI flashed "copied 1234 chars" while the system clipboard
+ * was unchanged. A copy that reports success and copied nothing is worse than
+ * one that fails, so we spend the helper first and keep OSC 52 as the fallback
+ * for a headless/SSH session with no clipboard tool.
  */
 async function clipWrite(text: string, term: Term): Promise<boolean> {
-  // OSC 52: hand the bytes to the terminal itself. Capped because the sequence
-  // travels in-band and a multi-megabyte selection would stall the render loop
-  // mid-frame; a truncated copy beats a frozen UI. The cut is on code points —
-  // slicing a UTF-16 string at 100k can split a surrogate pair, and the lone
-  // half encodes as U+FFFD, corrupting the last character of the copy.
-  try {
-    const b64 = Buffer.from([...text].slice(0, 100_000).join(""), "utf8").toString("base64");
-    term.write(`\x1b]52;c;${b64}\x07`);
-    term.flush();
-    return true;
-  } catch {}
-
   // clip.exe is deliberately absent: it decodes stdin in the console OEM
   // codepage (GBK on a zh-CN machine), so UTF-8 bytes arrived as mojibake —
   // "•" became "鈥?" (measured). The Windows path goes through powershell with
@@ -417,6 +413,17 @@ async function clipWrite(text: string, term: Term): Promise<boolean> {
       if (code === 0) return true;
     } catch {}
   }
+
+  // No helper took it (a bare SSH session, a container with no clipboard tool):
+  // fall back to OSC 52, which is the only option left and works in-band. We
+  // still cannot know whether the terminal honoured it, so this is last and
+  // best-effort by construction.
+  try {
+    const b64 = Buffer.from([...text].slice(0, 100_000).join(""), "utf8").toString("base64");
+    term.write(`\x1b]52;c;${b64}\x07`);
+    term.flush();
+    return true;
+  } catch {}
   return false;
 }
 
