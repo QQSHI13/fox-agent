@@ -55,9 +55,23 @@ export async function* streamChat(
     });
 
     let finish = "";
-    for await (const part of result.fullStream) {
-      wd.progress(); // any part counts as progress: rearm the idle clock
-      switch (part.type) {
+    // Race the stream against the abort signal: a bare `for await (fullStream)`
+    // only notices an abort when the NEXT chunk arrives, so an ESC during an
+    // idle think (no bytes in flight) sat until the socket moved or timed out.
+    // Pulling the iterator by hand and racing each next() against the signal
+    // returns the moment the caller aborts, not the moment the provider sends.
+    const iter = result.fullStream[Symbol.asyncIterator]();
+    let aborted = false;
+    const abortPromise = new Promise<never>((_, rej) => {
+      if (wd.signal?.aborted) return rej(new Error("aborted"));
+      wd.signal?.addEventListener("abort", () => rej(new Error("aborted")), { once: true });
+    });
+    try {
+      for (;;) {
+        const { done, value: part } = await Promise.race([iter.next(), abortPromise]);
+        if (done) break;
+        wd.progress(); // any part counts as progress: rearm the idle clock
+        switch (part.type) {
         case "text-delta":
           if (part.text) yield { type: "text", delta: part.text };
           break;
@@ -88,7 +102,13 @@ export async function* streamChat(
               cached_tokens: part.totalUsage.inputTokenDetails?.cacheReadTokens ?? 0,
             };
           break;
+        }
       }
+    } finally {
+      // release the stream so an aborted connection is closed, not leaked
+      try {
+        await iter.return?.();
+      } catch {}
     }
     // An aborted stream does NOT throw — `fullStream` simply ends. Without
     // these checks a timeout would look like a clean "stop" and the turn would
