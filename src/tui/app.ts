@@ -496,6 +496,17 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
    * settled item it becomes. -1 = not streaming / no prediction.
    */
   let streamSeq = -1;
+  /**
+   * Whether the current step's assistant marker has been spent.
+   *
+   * A reply is flushed into a SEPARATE md item at every tool boundary, so one
+   * step can produce several fragments. The store holds ONE assistant node per
+   * step, so the live view must too: the first fragment wears the chip, later
+   * fragments of the same step are continuations (no chip). Without this every
+   * fragment wore the same [N] — the 'repeated marker' report — and the chips
+   * collapsed to one only when refresh() rebuilt from the store at end of turn.
+   */
+  let stepMarkerUsed = false;
   let buf: Ch[] = []; // input buffer; lit chars are literal newlines
   let cur = 0; // cursor index into buf
   let busy = false;
@@ -685,12 +696,25 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   }
 
   // ---- item mutations ----
-  function push(kind: ItemKind, text: string, opts?: { ref?: number; seq?: number; expanded?: boolean; ephemeral?: boolean; toolResult?: boolean; detail?: string; welcome?: boolean; mdBody?: boolean }) {
-    const it: Item = { k: nk(), kind, text, ref: opts?.ref, seq: opts?.seq, expanded: opts?.expanded, ephemeral: opts?.ephemeral, toolResult: opts?.toolResult, detail: opts?.detail, welcome: opts?.welcome, mdBody: opts?.mdBody };
+  function push(kind: ItemKind, text: string, opts?: { ref?: number; seq?: number; expanded?: boolean; ephemeral?: boolean; toolResult?: boolean; detail?: string; welcome?: boolean; mdBody?: boolean; markerCont?: boolean }) {
+    const it: Item = { k: nk(), kind, text, ref: opts?.ref, seq: opts?.seq, expanded: opts?.expanded, ephemeral: opts?.ephemeral, toolResult: opts?.toolResult, detail: opts?.detail, welcome: opts?.welcome, mdBody: opts?.mdBody, markerCont: opts?.markerCont };
     items.push(it);
     touch(it.k);
     markDirty();
     return it;
+  }
+  /**
+   * The current step's assistant marker, spent on its first fragment.
+   *
+   * A step's reply is flushed into a SEPARATE md item at every tool boundary,
+   * but the store holds ONE assistant node per step — so only the first
+   * fragment wears the [N] chip and the rest are continuations (no chip).
+   * Reset per step by the user/assistant events (see stepMarkerUsed).
+   */
+  function flushStepMarker(): { seq?: number; markerCont?: boolean } {
+    if (stepMarkerUsed) return { markerCont: true };
+    stepMarkerUsed = true;
+    return streamSeq > 0 ? { seq: streamSeq } : {};
   }
   function appendToLastThink(delta: string) {
     // Sealed by tool boundaries: thinking belongs to the step that produced
@@ -1548,6 +1572,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           // so the streaming tail shows its marker live too (refined when the
           // assistant node actually lands, in case thinking took a slot first)
           streamSeq = ev.seq + 1;
+          stepMarkerUsed = false; // a new turn's first assistant fragment wears the chip
           touch(userItem.k);
           markDirty();
         } else if (ev.type === "assistant") {
@@ -1555,10 +1580,13 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           // tail's prediction (which guessed ev.seq+1 and drifted when a think
           // block or an earlier step took a slot). From here the marker and its
           // click width are exact, not estimated.
+          // It also opens the NEXT step: the reply after a tool call is a new
+          // assistant node, so the marker budget resets here.
           if (streamSeq !== ev.seq) {
             streamSeq = ev.seq;
             markDirty();
           }
+          stepMarkerUsed = false;
         } else if (ev.type === "reasoning") {
           appendToLastThink(ev.delta);
           publishLive(); // think deltas markDirty anyway; piggyback the status
@@ -1589,7 +1617,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           // settled show the same content.
           liveThink = null;
           if (md) {
-            push("md", md, { seq: streamSeq > 0 ? streamSeq : undefined });
+            push("md", md, flushStepMarker());
             md = "";
             streamText = null;
           }
@@ -1631,7 +1659,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
             liveTools.delete(ev.id);
           }
           if (md) {
-            push("md", md, { seq: streamSeq > 0 ? streamSeq : undefined });
+            push("md", md, flushStepMarker());
             md = "";
             streamText = null;
           }
@@ -1660,7 +1688,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           // A tool boundary like any other: it seals the thinking block.
           liveThink = null;
           if (md) {
-            push("md", md, { seq: streamSeq > 0 ? streamSeq : undefined });
+            push("md", md, flushStepMarker());
             md = "";
             streamText = null;
           }
@@ -1678,7 +1706,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         } else if (ev.type === "steered") {
           liveThink = null;
           if (md) {
-            push("md", md, { seq: streamSeq > 0 ? streamSeq : undefined });
+            push("md", md, flushStepMarker());
             md = "";
             streamText = null;
           }
@@ -1693,7 +1721,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       if (ac?.signal.aborted) push("error", "[interrupted]");
       else reportError(`fox-agent error: ${(e as Error).message ?? e}`, e);
     } finally {
-      if (md) push("md", md, { seq: streamSeq > 0 ? streamSeq : undefined });
+      if (md) push("md", md, flushStepMarker());
       streamText = null;
       streamSeq = -1; // the turn's stream is over; the settled item carries the real seq
       liveThink = null; // refresh() rebuilds items; no reference may survive it
@@ -2925,8 +2953,12 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       perWidth!.set(w, cached);
       return cached;
     }
-    // the marker rides a fixed left gutter; content wraps inside the remainder
-    const cw = it.seq !== undefined ? Math.max(8, w - MARKER_W(it.seq)) : w;
+    // The marker rides a fixed left gutter; content wraps inside the remainder.
+    // The painter puts content at `chipW + 1` (the chip PLUS one uncolored gap
+    // column), so the wrap must reserve both — reserving only MARKER_W let the
+    // last column run one past the usable width, which wrapped the row's tail
+    // onto the next visual line and made a selected row look displaced.
+    const cw = it.seq !== undefined ? Math.max(8, w - MARKER_W(it.seq) - 1) : w;
     let rows: Row[];
     if (it.kind === "md") {
       // no trailing blank: spacing between items is buildRows' job
@@ -3340,8 +3372,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
 
   function streamRows(text: string, w: number): Row[] {
     // when the tail carries a [N] marker it must wrap inside the gutter, so the
-    // chip can ride column 0 without the content overflowing the full width
-    const innerW = streamSeq > 0 ? Math.max(8, w - MARKER_W(streamSeq)) : w;
+    // chip can ride column 0 without the content overflowing the full width.
+    // Same reservation as itemRows: the chip PLUS its one gap column.
+    const innerW = streamSeq > 0 ? Math.max(8, w - MARKER_W(streamSeq) - 1) : w;
     let entry = streamKernels.get(innerW);
     // a SHRINK or mid-prefix change means a rewind — the kernel's accumulated
     // state is invalid, start fresh
@@ -3833,9 +3866,15 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         // x0 + offset, not 1 + offset, or the highlight lands a marker-width off.
         // restyle() takes an EXCLUSIVE end but selRangeForRow returns an inclusive
         // `to`, so +1 or the last selected cell (e.g. a trailing '.') stays unlit.
+        //
+        // The selection owns the chip and its gap column too: restyling only the
+        // content left a markerBg chip punched into a selBg row, and the S.base
+        // gap stamp composited onto the row fill instead of the selection — so a
+        // selected marked row showed three backgrounds in a 5-column span and
+        // read as displaced. Starting at 0 makes the whole row one block.
         if (hasSel()) {
           const range = selRangeForRow(absolute, selA!, selB!, rowCells(row.segs));
-          if (range) P.transcript.restyle(y, x0 + range.from, x0 + range.to + 1, C.selBg);
+          if (range) P.transcript.restyle(y, chipW ? 0 : x0 + range.from, x0 + range.to + 1, C.selBg);
         }
       }
 
