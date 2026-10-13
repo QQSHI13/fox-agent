@@ -84,17 +84,27 @@ export interface Theme {
    */
   runningFg?: string;
   /**
-   * Shiki theme used to color fenced code. Optional — falls back to
-   * "one-dark-pro". Set it to keep code blocks in the TUI's own palette
-   * (a light theme wants a light Shiki theme; the default reads badly on one).
+   * Syntax-highlight colors, per token kind. All optional: each falls back to
+   * an established slot (keyword→accent, string→ok, comment→hint, number→tool,
+   * type/class/func→accent/ok), so a theme that sets none of them still gets a
+   * fully colored fence. Set them individually to retune a fence to a palette
+   * the TUI's prose colors cannot express.
    */
-  shikiTheme?: string;
-  /**
-   * Foreground substituted for a code token too dark to read against the
-   * transcript background. Optional — falls back to `fg`, so the substitute is
-   * the theme's own foreground rather than a fixed light gray.
-   */
-  codeDim?: string;
+  hlKeyword?: string;
+  hlString?: string;
+  hlComment?: string;
+  hlNumber?: string;
+  hlType?: string;
+  hlClass?: string;
+  hlFunc?: string;
+  hlBool?: string;
+  hlOper?: string;
+  hlSection?: string;
+  hlEscape?: string;
+  hlError?: string;
+  /** diff/patch: a "+" line and a "-" line */
+  hlInsert?: string;
+  hlDeleted?: string;
 }
 
 export const THEME_PRESETS: Record<string, Theme> = {
