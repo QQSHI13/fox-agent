@@ -47,6 +47,24 @@ describe("marker gutter: one geometry, three consumers", () => {
     expect(contentWidth(4, 1000)).toBeGreaterThanOrEqual(8);
     expect(contentWidth(0, 1)).toBeGreaterThanOrEqual(8);
   });
+
+  // A tool BODY carries its head's seq (they are one message) but paints no
+  // chip, so it must reserve no gutter. The app decides this with a rowSeq()
+  // predicate rather than reading seq directly — these tests pin the geometry
+  // the predicate implies, so 'the line after the marker is also clickable' and
+  // 'selection on the second line of a tool call is displaced' cannot return.
+  test("a marker continuation reserves NO gutter (a tool body paints no chip)", () => {
+    const W = 80;
+    const HEAD_SEQ = 12;
+    // the head: chip, so gutter applies
+    expect(contentWidth(W, HEAD_SEQ)).toBe(W - chipGutter(HEAD_SEQ));
+    // the body: same message, no chip — identical to an unmarked row
+    expect(contentWidth(W, undefined)).toBe(W);
+    expect(contentOrigin(undefined)).toBe(1);
+    // and therefore the body's selection starts at the plain margin, not
+    // chipWidth columns in — the displacement this fixes
+    expect(contentOrigin(undefined)).toBeLessThan(contentOrigin(HEAD_SEQ));
+  });
 });
 import { computeFrame, itemEdgeSpan, scrollbarGeom, scrollbarScrollTop, viewportHeight, type FrameInput, type Row } from "../src/tui/layout.ts";
 import { renderMarkdown } from "../src/tui/markdown.ts";

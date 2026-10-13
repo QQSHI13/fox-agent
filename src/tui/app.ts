@@ -2432,12 +2432,15 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     // selection shifted.
     const winBase = fr ? fr.scrollTop - fr.winOffset : 0;
     const winIdx = row - winBase;
-    // the seq whose chip this row carries, if any. Only the item's FIRST row has
-    // one; its continuation rows start at the plain margin.
+    // The seq whose chip this ROW carries, or undefined. Only the item's first
+    // row has one, and a markerCont item (a tool body) has none at all — a tool
+    // pair shows ONE chip on its head. Deciding per ITEM made the body's
+    // selection subtract a gutter it never painted.
     let seq: number | undefined;
     if (fr && winIdx >= 0 && winIdx < fr.owner.length) {
+      const it = items.find((i) => i.k === fr.owner[winIdx]);
       const isFirstRow = winIdx === 0 || fr.owner[winIdx - 1] !== fr.owner[winIdx];
-      if (isFirstRow) seq = items.find((i) => i.k === fr.owner[winIdx])?.seq;
+      if (it && isFirstRow) seq = rowSeq(it);
     }
     return Math.max(0, x - contentOrigin(seq));
   }
@@ -2879,11 +2882,12 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       return;
     }
     // a click on the leading [N] marker chip opens the per-message ops wizard
-    // (fork / copy / revert). The chip renders on the item's FIRST row only, so
-    // the hit must be that row AND inside the exact `[N]` span — a click on any
-    // wrapped line's left columns, or past the label, must not open it.
+    // (fork / copy / revert). The hit must be the item's FIRST row AND inside
+    // the exact `[N]` span. A tool body (markerCont) paints no chip, so it has
+    // no hit region at all — that is the 'the line after the marker is also
+    // clickable' report: the body was tested against its shared seq.
     const isFirstRowOfItem = winIdx === 0 || fr.owner[winIdx - 1] !== fr.owner[winIdx];
-    if (it.seq !== undefined && isFirstRowOfItem && x >= 0 && x < MARKER_W(it.seq)) {
+    if (isFirstRowOfItem && it.seq !== undefined && !it.markerCont && x >= 0 && x < MARKER_W(it.seq)) {
       void markerOps(it.seq);
       return;
     }
@@ -2980,6 +2984,16 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
    * MARKER_W so content never collides with the gutter column.
    */
   const MARKER_W = (seq: number) => `[${seq}]`.length;
+  /**
+   * The seq whose CHIP this item paints, or undefined if it paints none.
+   *
+   * A tool body carries the head's seq (they are one message) but sets
+   * `markerCont`, so it never draws a chip and must reserve NO gutter. Keying
+   * geometry off `it.seq` treated the body as marked: its wrap reserved a
+   * gutter it does not have and its selection landed a chip-width right of the
+   * text. One predicate, so paint, wrap and hit-test agree.
+   */
+  const rowSeq = (it: Item): number | undefined => (it.seq !== undefined && !it.markerCont ? it.seq : undefined);
   function withMarker(rows: Row[], seq: number, continuation = false): Row[] {
     // the chip label is EXACTLY `[N]` — the background spans the brackets and
     // digits, never a trailing space. The gap after it is uncolored (added by
@@ -3007,8 +3021,13 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     // The marker rides a fixed left gutter; content wraps inside the remainder.
     // wrap width and paint offset must reserve the SAME gutter — both read
     // contentWidth/contentOrigin from layout.ts, so they cannot disagree (this
-    // is the off-by-one that made a selected marked row look displaced)
-    const cw = contentWidth(w, it.seq);
+    // is the off-by-one that made a selected marked row look displaced).
+    //
+    // A tool BODY is markerCont: it shares the head's seq but never paints a
+    // chip, so it must reserve NO gutter. Keying the geometry off `it.seq` gave
+    // the body a gutter it does not have, and its selection landed a chip-width
+    // right of the text.
+    const cw = contentWidth(w, rowSeq(it));
     let rows: Row[];
     if (it.kind === "md") {
       // no trailing blank: spacing between items is buildRows' job
@@ -3128,7 +3147,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     } else {
       rows = wrapSegs([{ t: it.text, ...itemStyle(it.kind) }], cw).map((segs) => ({ segs }));
     }
-    if (it.seq !== undefined) rows = withMarker(rows, it.seq, it.markerCont);
+    if (rowSeq(it) !== undefined) rows = withMarker(rows, rowSeq(it)!, it.markerCont);
     const entry = { rev: revs.get(it.k) ?? 0, rows, rich: richRev, hl: highlightVersion(), span: itemEdgeSpan(rows) };
     let pw = lineCache.get(it.k);
     if (!pw) {
