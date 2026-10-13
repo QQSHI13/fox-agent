@@ -29,6 +29,7 @@
     "@ai-sdk/openai": "^4.0.82",
     "@ai-sdk/openai-compatible": "^3.0.60",
     "@modelcontextprotocol/sdk": "^1.31.0",
+    "@npmcli/arborist": "^10.0.3",
     "@speed-highlight/core": "^2.1.0",
     "ai": "^7.0.123"
   },
