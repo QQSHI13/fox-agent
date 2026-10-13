@@ -381,7 +381,24 @@ if [[ -z "$EXPECTED" ]]; then
   exit 1
 fi
 
-ACTUAL="$(sha256sum "${TMP_DIR}/${ASSET}" 2>/dev/null | awk '{print $1}')"
+# sha256sum is coreutils and does NOT exist on a stock macOS — it ships `shasum
+# -a 256`. Calling sha256sum alone made ACTUAL empty on every Mac, and because
+# stderr was discarded the next line blamed a "checksum mismatch" on a download
+# that was perfectly fine, so `curl | bash` could never complete on a Mac.
+# Prefer whichever is present; the same BSD/GNU fallback idiom the size checks
+# above already use.
+if command -v sha256sum >/dev/null 2>&1; then
+  ACTUAL="$(sha256sum "${TMP_DIR}/${ASSET}" 2>/dev/null | awk '{print $1}')"
+elif command -v shasum >/dev/null 2>&1; then
+  ACTUAL="$(shasum -a 256 "${TMP_DIR}/${ASSET}" 2>/dev/null | awk '{print $1}')"
+else
+  ACTUAL=""
+fi
+if [[ -z "$ACTUAL" ]]; then
+  printf "\r\033[2K  ${CROSS} cannot verify the download — no sha256 tool found\n"
+  echo "    install coreutils (brew install coreutils) or shasum, then retry" >&2
+  exit 1
+fi
 if [[ "$EXPECTED" != "$ACTUAL" ]]; then
   printf "\r\033[2K  ${CROSS} checksum mismatch — refusing to install\n"
   echo "    expected: ${EXPECTED}" >&2

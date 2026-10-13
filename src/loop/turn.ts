@@ -581,6 +581,12 @@ export async function* runTurnCore(
       const steeredWaiting = peekSteer(sessionId).length > 0;
       const capOk = maxSteps <= 0 || step + 1 <= maxSteps;
       if (steeredWaiting && capOk) continue;
+      // The steer check above and this endTurn are NOT atomic: the model was
+      // about to finish, the user hit ctrl+s in that window, and the text was
+      // dropped on the floor (nothing consumed it — the loop is over). Drain
+      // HERE and persist it as a real user node, the same path an abort takes,
+      // so the message survives into the next turn instead of vanishing.
+      if (!steeredWaiting) persistParkedSteers(asstNode.id);
       yield await endTurn(outcome.finish.startsWith("error") ? outcome.finish : outcome.finish || "stop", step);
       return;
     }

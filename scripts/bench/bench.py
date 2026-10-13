@@ -948,12 +948,15 @@ def measure(label, path, n_start, n_probes, n_input):
     }
     def _t(a, b, c):
         return "-" if a is None else f"{a:.0f}/{b:.0f}/{c:.0f}"
+    # pss is None when the tool never reported one (no /proc/smaps_rollup, or
+    # the process died before the read) — format it like the others, not with a
+    # bare :.1f that raised TypeError on the first n/a tool
     print(
         f"{label}: {ver} disk={disk:.1f}MB({kind}) "
         f"startup[min/p50/p95]={_t(su_min, su_p50, su_p95)} "
         f"ttfb={_t(fb_min, fb_p50, fb_p95)} "
         f"tfin={_t(fi_min, fi_p50, fi_p95)} "
-        f"latency={_t(la_min, la_p50, la_p95)} pss={pss:.1f}MB"
+        f"latency={_t(la_min, la_p50, la_p95)} pss={'-' if pss is None else f'{pss:.1f}MB'}"
     )
     return row
 

@@ -239,7 +239,7 @@ async function main() {
       if (!target) return console.log(`no session found for ${process.cwd()}`);
       const out = parsed.rest[2] || join(process.cwd(), `fox-session-${target}.html`);
       const r = shareSession(target, out);
-      console.log(`shared ${target} -> ${r.path} (${(r.bytes / 1024).toFixed(0)} KB${r.truncated ? ", capped" : ""})`);
+      console.log(`shared ${target} -> ${r.path} (${(r.bytes / 1024).toFixed(0)} KB, ${r.messages} messages)`);
     } catch (e) {
       console.error(`fox-agent error: ${errMsg(e)}`);
       process.exitCode = 1;
