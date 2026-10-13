@@ -24,6 +24,47 @@ export interface Row {
   marker?: { label: string; bg: string; fg: string; w: number } | { indent: number };
 }
 
+/**
+ * The gutter a `[N]` chip claims: the chip's own width PLUS one uncolored gap
+ * column. This ONE function is the geometry every consumer must agree with.
+ *
+ * It used to be re-derived in five places — the wrap width in `itemRows`, the
+ * wrap width in `streamRows`, the paint loop's content offset, the selection
+ * restyle, and the click-to-column mapping. Each computed it independently, so
+ * fixing one drifted the others: reserving only the chip width (not the gap)
+ * overflowed the row by a column and made a selected marked row look displaced;
+ * mapping clicks by a flat `x - 1` put the selection `chipWidth` columns off.
+ * Anything that needs "where does the text start" or "how wide may it be" now
+ * calls `contentOrigin` / `contentWidth`, and `test/layout.test.ts` asserts the
+ * three agree.
+ */
+export function chipGutter(seq: number | undefined): number {
+  return seq === undefined ? 0 : `[${seq}]`.length + 1;
+}
+
+/** Screen column where a marked row's content begins; 1 for an unmarked row. */
+export function contentOrigin(seq: number | undefined): number {
+  return seq === undefined ? 1 : chipGutter(seq);
+}
+
+/**
+ * The same origin, from a chip WIDTH rather than a seq. The paint loop holds the
+ * marker (and its width), not the item, so it must not re-derive a seq to ask.
+ * One function so the two spellings cannot drift.
+ */
+export function contentOriginForChip(chipW: number): number {
+  return chipW ? chipW + 1 : 1;
+}
+
+/**
+ * Width available to a marked row's content: the full width minus the gutter.
+ * The 8 is a floor so a very narrow terminal still leaves a usable wrap column
+ * instead of a negative one.
+ */
+export function contentWidth(total: number, seq: number | undefined): number {
+  return seq === undefined ? total : Math.max(8, total - chipGutter(seq));
+}
+
 /** Everything computeFrame needs to lay out one frame. Rendering callbacks are
  *  injected so this module stays free of theme/markdown/highlight deps. */
 export interface FrameInput {
