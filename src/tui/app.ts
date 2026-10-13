@@ -4093,22 +4093,38 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     let cmdRowsH = 0;
     if (cmdOut?.length) {
       const avail = Math.max(1, inputTop - queueRowsH - 1);
-      // wrap each line to the panel width — a long notice (the session-in-use
-      // read-only line, a /reload confirmation) used to be clipped at the right
-      // margin, losing its tail. Greedy word-wrap, then cap the visible rows.
-      const wrapped = cmdOut.flatMap((l) => wrapText(l, W - 2));
-      const shown = wrapped.slice(0, avail);
-      cmdRowsH = shown.length + (wrapped.length > avail ? 1 : 0);
+      // Rendered through the SAME markdown path the transcript uses (renderMarkdown
+      // → wrapCodeAware, copied from itemRows' md branch) so a command that PRINTS
+      // a list looks like one: /todo emits `- [x] …` and gets the same task-list
+      // glyphs and dimmed-done styling as a list in the transcript. Markdown is
+      // NOT made global — a plain notice (/usage, /reload) has no markdown syntax,
+      // so it round-trips to the same single plain segment as before.
+      const panelBg = C.panelBg ?? C.inputBg;
+      const mdRows = renderMarkdown(cmdOut.join("\n")).flatMap((r) => wrapCodeAware(r, W - 2));
+      const shown = mdRows.slice(0, avail);
+      cmdRowsH = shown.length + (mdRows.length > avail ? 1 : 0);
       const cTop = inputTop - queueRowsH - cmdRowsH;
       for (let i = 0; i < shown.length; i++) {
         // themed panel fill first: the box used to sit on the terminal's own
         // background (plain black), unrelated to the theme
         P.floats.fillRow(cTop + i, 0, W, S.panelBgRow);
-        P.floats.text(1, cTop + i, shown[i], S.panelBgRow);
+        // one style per segment, so task-list glyphs and dimmed done items keep
+        // their colors against the panel background instead of flattening to it
+        let x = 1;
+        for (const seg of shown[i]) {
+          const st = screen.sgr({
+            fg: seg.fg ?? C.fg,
+            bg: panelBg,
+            ...(seg.bold ? { bold: true } : {}),
+            ...(seg.italic ? { italic: true } : {}),
+            ...(seg.strike ? { strike: true } : {}),
+          });
+          x = P.floats.text(x, cTop + i, seg.t, st);
+        }
       }
-      if (wrapped.length > avail) {
+      if (mdRows.length > avail) {
         P.floats.fillRow(cTop + shown.length, 0, W, S.panelBgRow);
-        P.floats.text(1, cTop + shown.length, clipW(`… ${wrapped.length - avail} more lines`, W - 2), S.panelBgRow);
+        P.floats.text(1, cTop + shown.length, clipW(`… ${mdRows.length - avail} more lines`, W - 2), S.panelBgRow);
       }
     }
 

@@ -20,7 +20,7 @@ import { VERSION } from "./core/version.ts";
 import { viewTokenEstimate } from "./context/render.ts";
 import { checkBudget, triggerTokens } from "./context/budget.ts";
 import type { ProviderConfig } from "./providers/types.ts";
-import { renderTodos, getTodos } from "./tools/todo.ts";
+import { getTodos, renderTodosMd } from "./tools/todo.ts";
 import { resolveProfile, resolveValue, saveGlobalConfig, saveProviderProfile, type Config } from "./core/config.ts";
 import { setTheme, themeName, themeNames } from "./tui/themes.ts";
 import { availableProviders } from "./providers/index.ts";
@@ -1735,7 +1735,10 @@ Verify what you write: run the commands you document (at least the build/test en
 
     case "/todo": {
       const todos = getTodos(state.sessionId);
-      return { handled: true, output: todos?.length ? renderTodos(todos) : "(no todos)" };
+      // the markdown LIST form (`- [x] …`), not the bare `[x] …` lines: the
+      // output panel renders through the same markdown path as the transcript,
+      // and a task list only gets its status glyphs when it is actually a list
+      return { handled: true, output: todos?.length ? renderTodosMd(todos) : "(no todos)" };
     }
 
     case "/usage": {
