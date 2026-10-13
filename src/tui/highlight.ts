@@ -2,7 +2,7 @@
 // diff coloring for tool output. Deliberately dependency-free and line-local
 // (no cross-line state): good enough to read, cheap enough to run per frame.
 import type { Seg } from "./wrap.ts";
-import { liveTheme } from "./themes.ts";
+import { liveTheme, theme } from "./themes.ts";
 
 // the rich colors are optional theme fields — presets that predate them and
 // plugin themes fall back to the nearest established color
@@ -79,7 +79,11 @@ function readableColor(hex: string): string {
   const n = parseInt(m[1], 16);
   const r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
   const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-  return lum < 90 ? "#c9d1d9" : hex;
+  // the substitute is the THEME's own foreground (codeDim → fg), not a fixed
+  // light gray: a light theme would otherwise get dark-on-dark tokens
+  if (lum >= 90) return hex;
+  const t = theme();
+  return t.codeDim ?? t.fg;
 }
 // Block cache: tokenizing one line at a time starves Shiki of context and the
 // whole line collapses to a single token (the `import ... from "..."` line
@@ -113,7 +117,7 @@ async function tokenizeBlock(lang: string, text: string): Promise<void> {
   const key = lang + "\0" + text;
   try {
     const m = await shiki();
-    const { tokens } = await m.codeToTokens(text, { lang: shikiLang(lang) as any, theme: "one-dark-pro" });
+    const { tokens } = await m.codeToTokens(text, { lang: shikiLang(lang) as any, theme: theme().shikiTheme ?? "one-dark-pro" });
     const lines: (Seg[] | null)[] = tokens.map((line) => {
       const segs: Seg[] = [];
       for (const tok of line) {
