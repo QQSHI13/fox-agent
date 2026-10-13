@@ -2385,10 +2385,32 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     return row >= 0 && row < fr.total ? row : null;
   }
 
-  /** the cell column a click at screen x lands on within a transcript row */
-  function transcriptCol(x: number): number {
-    // the painter starts transcript text at column 1 (see paint())
-    return Math.max(0, x - 1);
+  /**
+   * The cell column a click at screen x lands on WITHIN a transcript row's
+   * CONTENT.
+   *
+   * That is not always column 1: a row carrying a [N] marker chip starts its
+   * content at `MARKER_W(seq) + 1` (the chip PLUS its gap column). The old
+   * mapping subtracted a flat 1, so on a marked row every click resolved
+   * chipWidth columns too far right — the selection began mid-content and the
+   * copied text was displaced with it, getting worse the larger the seq got
+   * ([9] is 3 cells, [100] is 5). Reads the PAINTED frame for the row's owner,
+   * like every other hit-test, so it cannot disagree with the pixels.
+   */
+  function transcriptCol(x: number, row: number): number {
+    const fr = painted;
+    const winIdx = row - (fr?.scrollTop ?? 0);
+    let chipW = 0;
+    if (fr && winIdx >= 0 && winIdx < fr.owner.length) {
+      // only the item's FIRST row carries the chip; its continuation rows are
+      // plain and start at the usual margin (see paint's x0)
+      const isFirstRow = winIdx === 0 || fr.owner[winIdx - 1] !== fr.owner[winIdx];
+      if (isFirstRow) {
+        const it = items.find((i) => i.k === fr.owner[winIdx]);
+        if (it?.seq !== undefined) chipW = MARKER_W(it.seq);
+      }
+    }
+    return Math.max(0, x - (chipW ? chipW + 1 : 1));
   }
 
   /**
@@ -2463,7 +2485,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       clearSel();
       inSelAnchor = null;
       if (row !== null) {
-        selA = { row, col: transcriptCol(x) };
+        selA = { row, col: transcriptCol(x, row) };
         selB = selA;
       }
       return;
@@ -2508,7 +2530,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       }
       const row = transcriptRow(Math.max(0, Math.min(viewportH() - 1, y)));
       if (row === null) return;
-      selB = { row, col: transcriptCol(x) };
+      selB = { row, col: transcriptCol(x, row) };
         syncPaint();
       return;
     }
@@ -2558,7 +2580,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       if (winIdx < 0 || winIdx >= fr.rows.length) return;
       const cells = rowCells(fr.rows[winIdx].segs);
       if (phase === 0) {
-        const w = wordRangeAt(cells, transcriptCol(x));
+        const w = wordRangeAt(cells, transcriptCol(x, row));
         if (!w) return;
         selA = { row, col: w.from };
         selB = { row, col: w.to };
