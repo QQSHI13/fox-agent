@@ -80,8 +80,8 @@
 <rect x="556" y="104" width="8" height="14" rx="3" fill="#5b7fa6"/>
 <text x="700" y="115" fill="#8a8578" font-size="11">🥇367 ms</text>
 <text x="408" y="146" fill="#e0803c" font-size="12">fox-agent</text>
-<rect x="556" y="134" width="8" height="14" rx="3" fill="#e0803c"/>
-<text x="700" y="145" fill="#e6e1d8" font-size="11">🥈378 ms</text>
+<rect x="556" y="134" width="11" height="14" rx="3" fill="#e0803c"/>
+<text x="700" y="145" fill="#e6e1d8" font-size="11">🥈372 ms</text>
 <text x="408" y="176" fill="#e6e1d8" font-size="12">opencode v2</text>
 <rect x="556" y="164" width="11" height="14" rx="3" fill="#5b7fa6"/>
 <text x="700" y="175" fill="#8a8578" font-size="11">🥉497 ms</text>
