@@ -467,10 +467,12 @@ export interface Sty {
   yellow: (s: string) => string;
   cyan: (s: string) => string;
   dim: (s: string) => string;
+  magenta: (s: string) => string;
+  gray: (s: string) => string;
 }
 export function sty(color?: boolean): Sty {
   const p = (code: string) => (s: string) => (color ? `\x1b[${code}m${s}\x1b[0m` : s);
-  return { b: p("1"), green: p("32"), red: p("31"), yellow: p("33"), cyan: p("36"), dim: p("2") };
+  return { b: p("1"), green: p("32"), red: p("31"), yellow: p("33"), cyan: p("36"), dim: p("2"), magenta: p("35"), gray: p("90") };
 }
 
 /** The printed list, for `/sessions` outside the TUI and for `fox ls`. */

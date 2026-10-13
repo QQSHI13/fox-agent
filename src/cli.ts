@@ -620,6 +620,10 @@ async function plainLoop(state: HarnessState) {
 
   let busy = false;
   const queued: string[] = [];
+  // the in-flight turn's AbortController, so a SIGINT (ctrl+c) aborts the
+  // provider call instead of killing the whole process — non-null only while
+  // a turn runs
+  let currentAbort: AbortController | null = null;
   // true when the line asked to leave (only /exit /quit)
   const dispatchMini = async (line: string): Promise<boolean> => {
     const prompt = line.trim();
@@ -665,12 +669,25 @@ async function plainLoop(state: HarnessState) {
       return false;
     }
     busy = true;
+    // a live spinner so a thinking turn reads as alive, and an AbortController
+    // so ctrl+c during a turn aborts the provider call instead of killing the
+    // whole process (the TUI's esc already does this; mini was missing it)
+    const ac = new AbortController();
+    currentAbort = ac;
+    const spinChars = color ? ["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"] : ["-","\\","|","/"];
+    let spinIdx = 0;
+    let gotOutput = false;
+    const spinTimer = setInterval(() => {
+      if (!color || gotOutput) return; // stop once real output starts streaming
+      process.stderr.write(`\r${st.cyan(spinChars[spinIdx++ % spinChars.length])} thinking…   `);
+    }, 80);
+    (spinTimer as { unref?: () => void }).unref?.();
     try {
       // state.provider is read live — /model and /login REPLACE it, and a
       // captured copy would keep calling the old model/endpoint/key forever.
       // @path mentions inline file text, as in the TUI.
       const text = expandMentions(prompt, state.cwd).text;
-      for await (const ev of runTurnCore(state.sessionId, state.provider, text, undefined, {
+      for await (const ev of runTurnCore(state.sessionId, state.provider, text, ac.signal, {
         maxSteps: config?.maxSteps,
         retryLimit: config?.retryLimit,
         compactAt: config?.compactAt,
@@ -678,12 +695,20 @@ async function plainLoop(state: HarnessState) {
         config,
         chat: resolveChat,
       })) {
+        if (ev.type === "text" && !gotOutput) {
+          gotOutput = true;
+          clearInterval(spinTimer);
+          if (color) process.stderr.write("\r\x1b[K"); // clear the spinner before the text
+        }
         emitHuman(ev, color);
       }
     } catch (e) {
       console.error(`\nfox-agent error: ${errMsg(e)}`);
     } finally {
+      clearInterval(spinTimer);
+      if (color) process.stderr.write("\r\x1b[K"); // clear the spinner line
       busy = false;
+      currentAbort = null;
     }
     console.log();
     const next = queued.shift();
@@ -701,6 +726,18 @@ async function plainLoop(state: HarnessState) {
       completer: (line: string): [string[], string] => [completeSlashCommand(line), line],
     });
     rl.prompt();
+    // ctrl+c during a turn: abort the in-flight provider call (the spinner
+    // stops, the turn reports aborted) instead of tearing the REPL down; the
+    // readline 'close' on ctrl+d is the only exit. A second ctrl+c with no
+    // turn running exits, matching the TUI's esc-then-esc-again.
+    process.on("SIGINT", () => {
+      if (currentAbort) {
+        currentAbort.abort();
+      } else {
+        console.log();
+        rl.close();
+      }
+    });
     rl.on("line", (line: string) => {
       void dispatchMini(line)
         .catch((e) => console.error(`fox-agent error: ${errMsg(e)}`))
