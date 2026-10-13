@@ -2399,7 +2399,14 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
    */
   function transcriptCol(x: number, row: number): number {
     const fr = painted;
-    const winIdx = row - (fr?.scrollTop ?? 0);
+    // The window slice is addressed the same way paint() and the click hit-test
+    // address it: rows[0] is ABSOLUTE row (scrollTop - winOffset), so the
+    // viewport index is `row - winBase`. Reading `row - scrollTop` (which is
+    // just y) skipped winOffset and looked up the WRONG row's owner — the
+    // chip width then came from a different item, or from none, and the whole
+    // selection shifted.
+    const winBase = fr ? fr.scrollTop - fr.winOffset : 0;
+    const winIdx = row - winBase;
     let chipW = 0;
     if (fr && winIdx >= 0 && winIdx < fr.owner.length) {
       // only the item's FIRST row carries the chip; its continuation rows are
@@ -3889,14 +3896,15 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         // restyle() takes an EXCLUSIVE end but selRangeForRow returns an inclusive
         // `to`, so +1 or the last selected cell (e.g. a trailing '.') stays unlit.
         //
-        // The selection owns the chip and its gap column too: restyling only the
-        // content left a markerBg chip punched into a selBg row, and the S.base
-        // gap stamp composited onto the row fill instead of the selection — so a
-        // selected marked row showed three backgrounds in a 5-column span and
-        // read as displaced. Starting at 0 makes the whole row one block.
+        // The selection covers CONTENT ONLY, never the chip: the marker is not
+        // part of the message text (rowCells is built from row.segs, which
+        // excludes it) and it is not in the copied output either. Highlighting
+        // it would make the screen claim the selection covers a glyph the
+        // clipboard never got. The chip keeps markerBg and the gap column keeps
+        // its own cell, so a selected marked row reads as chip + gap + lit text.
         if (hasSel()) {
           const range = selRangeForRow(absolute, selA!, selB!, rowCells(row.segs));
-          if (range) P.transcript.restyle(y, chipW ? 0 : x0 + range.from, x0 + range.to + 1, C.selBg);
+          if (range) P.transcript.restyle(y, x0 + range.from, x0 + range.to + 1, C.selBg);
         }
       }
 
