@@ -3971,9 +3971,15 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     if (selectFilter) {
       // a select step's keystrokes go to the filter — show them in the dock,
       // not just in the floating header, or typing feels dead
-      P.dock.text(1, inputTop, selectFilter, S.inputFg);
-      pendingCaret = { x: 3 + [...selectFilter].reduce((w, ch) => w + charWidth(ch.codePointAt(0)!), 0), y: inputTop };
+      // The prefix owns columns 1-2 (see drawPrefix), so the text starts at
+      // column 3 like every other dock branch. It used to paint at column 1
+      // and THEN draw the prefix over it, so the first characters sat under
+      // the arrow and the caret (already computed at 3) was two columns right
+      // of the visible text — 'the cursor is in the wrong place and I cannot
+      // see what I typed'.
       drawPrefix(inputTop);
+      P.dock.text(3, inputTop, selectFilter, S.inputFg);
+      pendingCaret = { x: 3 + [...selectFilter].reduce((w, ch) => w + charWidth(ch.codePointAt(0)!), 0), y: inputTop };
     } else if (empty) {
       const placeholder = prompt
         ? prompt.entering
@@ -4050,7 +4056,13 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       const menuTop = dockFloats().top;
       if (st.kind === "select") {
         const opts = promptOptions();
-        if (!opts.length) {
+        if (prompt.entering) {
+          // the custom answer box is open: the dock is a TEXT field now, so a
+          // rendered option list contradicts the placeholder ("type an answer
+          // not in the list") and hides the thing being typed. The list comes
+          // back on escape (promptKey sets entering = false).
+          rows.push({ text: "  (option list hidden — esc to go back)", sel: false });
+        } else if (!opts.length) {
           rows.push({ text: "  no matches — backspace to widen", sel: false });
         } else {
           // the option window shrinks to leave room for the WRAPPED header — a
