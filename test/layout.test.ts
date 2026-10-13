@@ -1,4 +1,71 @@
 import { describe, expect, test } from "bun:test";
+import { chipGutter, contentOrigin, contentOriginForChip, contentWidth } from "../src/tui/layout.ts";
+
+// The [N] marker's gutter used to be re-derived in five places (the wrap width
+// in itemRows, the wrap width in streamRows, the paint loop's content offset,
+// the selection restyle, and the click-to-column mapping). Each drifted from the
+// others, which is how reserving the chip but not its gap column overflowed a
+// row by one and made a selected marked row look displaced, and how a flat
+// `x - 1` click mapping put the selection chipWidth columns off. These tests
+// pin the three views to ONE definition, so a future edit cannot move one
+// without the others.
+describe("marker gutter: one geometry, three consumers", () => {
+  test("content width and content origin account for the chip AND its gap column", () => {
+    const W = 80;
+    for (const seq of [1, 9, 10, 100, 1000]) {
+      const gutter = chipGutter(seq);
+      // the gutter is the chip plus one uncolored column
+      expect(gutter).toBe(`[${seq}]`.length + 1);
+      // content starts after the gutter, and the width is what remains
+      expect(contentOrigin(seq)).toBe(gutter);
+      expect(contentWidth(W, seq)).toBe(W - gutter);
+      // the invariant that was violated: origin + width must never exceed the row
+      expect(contentOrigin(seq) + contentWidth(W, seq)).toBeLessThanOrEqual(W);
+    }
+  });
+
+  test("an unmarked row is untouched — no gutter, full width", () => {
+    expect(chipGutter(undefined)).toBe(0);
+    expect(contentOrigin(undefined)).toBe(1);
+    expect(contentWidth(80, undefined)).toBe(80);
+    expect(contentOrigin(undefined) + contentWidth(80, undefined)).toBe(81);
+  });
+
+  test("the two contentOrigin spellings agree (seq-based and chip-width-based)", () => {
+    // paint() holds the marker's chip WIDTH, hit-tests hold the seq. They must
+    // resolve to the same column, or clicking and painting disagree.
+    for (const seq of [1, 9, 10, 100, 1000]) {
+      const chipW = `[${seq}]`.length;
+      expect(contentOriginForChip(chipW)).toBe(contentOrigin(seq));
+    }
+    // an unmarked row has no chip and starts at the margin
+    expect(contentOriginForChip(0)).toBe(contentOrigin(undefined));
+  });
+
+  test("a very narrow terminal still leaves a usable wrap column", () => {
+    // the floor: no negative or zero width, however big the chip
+    expect(contentWidth(4, 1000)).toBeGreaterThanOrEqual(8);
+    expect(contentWidth(0, 1)).toBeGreaterThanOrEqual(8);
+  });
+
+  // A tool BODY carries its head's seq (they are one message) but paints no
+  // chip, so it must reserve no gutter. The app decides this with a rowSeq()
+  // predicate rather than reading seq directly — these tests pin the geometry
+  // the predicate implies, so 'the line after the marker is also clickable' and
+  // 'selection on the second line of a tool call is displaced' cannot return.
+  test("a marker continuation reserves NO gutter (a tool body paints no chip)", () => {
+    const W = 80;
+    const HEAD_SEQ = 12;
+    // the head: chip, so gutter applies
+    expect(contentWidth(W, HEAD_SEQ)).toBe(W - chipGutter(HEAD_SEQ));
+    // the body: same message, no chip — identical to an unmarked row
+    expect(contentWidth(W, undefined)).toBe(W);
+    expect(contentOrigin(undefined)).toBe(1);
+    // and therefore the body's selection starts at the plain margin, not
+    // chipWidth columns in — the displacement this fixes
+    expect(contentOrigin(undefined)).toBeLessThan(contentOrigin(HEAD_SEQ));
+  });
+});
 import { computeFrame, itemEdgeSpan, scrollbarGeom, scrollbarScrollTop, viewportHeight, type FrameInput, type Row } from "../src/tui/layout.ts";
 import { renderMarkdown } from "../src/tui/markdown.ts";
 import { wrapSegs } from "../src/tui/wrap.ts";
