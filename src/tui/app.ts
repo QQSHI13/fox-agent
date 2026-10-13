@@ -1589,7 +1589,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           // settled show the same content.
           liveThink = null;
           if (md) {
-            push("md", md);
+            push("md", md, { seq: streamSeq > 0 ? streamSeq : undefined });
             md = "";
             streamText = null;
           }
@@ -1631,7 +1631,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
             liveTools.delete(ev.id);
           }
           if (md) {
-            push("md", md);
+            push("md", md, { seq: streamSeq > 0 ? streamSeq : undefined });
             md = "";
             streamText = null;
           }
@@ -1660,7 +1660,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           // A tool boundary like any other: it seals the thinking block.
           liveThink = null;
           if (md) {
-            push("md", md);
+            push("md", md, { seq: streamSeq > 0 ? streamSeq : undefined });
             md = "";
             streamText = null;
           }
@@ -1678,7 +1678,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         } else if (ev.type === "steered") {
           liveThink = null;
           if (md) {
-            push("md", md);
+            push("md", md, { seq: streamSeq > 0 ? streamSeq : undefined });
             md = "";
             streamText = null;
           }
@@ -1693,7 +1693,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       if (ac?.signal.aborted) push("error", "[interrupted]");
       else reportError(`fox-agent error: ${(e as Error).message ?? e}`, e);
     } finally {
-      if (md) push("md", md);
+      if (md) push("md", md, { seq: streamSeq > 0 ? streamSeq : undefined });
       streamText = null;
       streamSeq = -1; // the turn's stream is over; the settled item carries the real seq
       liveThink = null; // refresh() rebuilds items; no reference may survive it
