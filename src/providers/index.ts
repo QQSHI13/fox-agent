@@ -3,6 +3,7 @@
 // anything that reaches it, like the turn loop) must not pull the AI SDK in
 // until a request is actually made. Tests inject their own ChatFn and pay nothing.
 import type { ChatFn, ProviderConfig } from "./types.ts";
+import { lookupModel } from "./models.ts";
 import { FoxError } from "../core/errors.ts";
 import { BUNDLED_PROVIDER_NAMES, bundledProviderFns, isAnthropic } from "./bundled.ts";
 
@@ -80,6 +81,31 @@ export function samplingOptions(s: Record<string, unknown> | undefined): Record<
     if (typeof v === "number" || typeof v === "string" || Array.isArray(v)) out[target] = v;
   }
   return out;
+}
+
+/**
+ * `maxOutputTokens` from the model registry, so the AI SDK stops guessing.
+ *
+ * The SDK does not know third-party models (anything not in its own table) and
+ * silently clamps them to a 4096 compatibility default, logging
+ * "the model X is unknown … limited to 4096". fox-agent already knows the real
+ * figure — `lookupModel` merges user config, the endpoint's own /models listing
+ * and models.dev — so the ceiling is passed explicitly and the model may use
+ * its whole output budget.
+ *
+ * An explicit `sampling.maxOutputTokens` still wins: spread this BEFORE
+ * `samplingOptions(...)` so a user override lands last.
+ */
+export function outputTokenOptions(cfg: ProviderConfig): { maxOutputTokens?: number } {
+  const explicit = samplingOptions(cfg.sampling).maxOutputTokens;
+  if (typeof explicit === "number" && Number.isFinite(explicit) && explicit > 0) {
+    return { maxOutputTokens: explicit };
+  }
+  const known = lookupModel(cfg.model).maxOutput;
+  if (typeof known === "number" && Number.isFinite(known) && known > 0) {
+    return { maxOutputTokens: known };
+  }
+  return {};
 }
 
 /** Thinking budgets for providers that take a token budget rather than a name. */
