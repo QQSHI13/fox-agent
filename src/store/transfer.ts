@@ -10,10 +10,10 @@
  * itself is copied verbatim — sessions are self-contained SQLite files by
  * design (the index is a rebuildable cache), so that copy IS the session.
  */
-import { existsSync, readFileSync, writeFileSync, rmSync, chmodSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, rmSync, chmodSync, renameSync } from "node:fs";
 import { basename, join } from "node:path";
 import { Database } from "bun:sqlite";
-import { zipSync, unzipSync, type ZipEntry } from "./zip.ts";
+import { zipFilesTo, unzipEntry, unzipEntryToFile, zipHasEntry, isZip, assertPlausibleSize, type ZipEntry } from "./zip.ts";
 import { sessionDbPath, sessionsDir, assertSafeSessionId } from "../core/paths.ts";
 import { indexDb, getSession, closeSessionHandle, sessionDb } from "./db.ts";
 
@@ -41,7 +41,7 @@ interface Manifest {
  * WAL is checkpointed into the file first — an open session's newest messages
  * live in `-wal`, and copying only the main db would silently drop them.
  */
-export function exportSession(sessionId: string, outPath?: string, foxVersion = ""): string {
+export async function exportSession(sessionId: string, outPath?: string, foxVersion = ""): Promise<string> {
   assertSafeSessionId(sessionId);
   const s = getSession(sessionId);
   if (!s) throw new Error(`no session ${sessionId}`);
@@ -50,6 +50,11 @@ export function exportSession(sessionId: string, outPath?: string, foxVersion = 
   checkpointWal(sessionId);
 
   const db = new Database(path, { readonly: true });
+  const dest = outPath ?? join(process.cwd(), `fox-session-${sessionId}.zip`);
+  // the manifest is tiny, so it goes to a temp file and the zip is then built
+  // from FILE paths: the db is deflated in 64KB steps and never enters memory,
+  // so a multi-GB session exports on a machine with little to spare
+  const mfPath = join(sessionDbPath(sessionId) + ".manifest.tmp");
   try {
     const n = db.query("SELECT COUNT(*) AS n FROM messages WHERE session_id = ?").get(sessionId) as { n: number };
     // manifest fields come from the index row (the per-session db has no
@@ -66,15 +71,22 @@ export function exportSession(sessionId: string, outPath?: string, foxVersion = 
       exported_at: Date.now(),
       fox_version: foxVersion,
     };
-    const entries: ZipEntry[] = [
-      { name: MANIFEST, data: new TextEncoder().encode(JSON.stringify(manifest, null, 2)) },
-      { name: DB_ENTRY, data: new Uint8Array(readFileSync(path)) },
-    ];
-    const dest = outPath ?? join(process.cwd(), `fox-session-${sessionId}.zip`);
-    writeFileSync(dest, zipSync(entries, manifest.updated_at));
+    writeFileSync(mfPath, JSON.stringify(manifest, null, 2));
+    db.close();
+    await zipFilesTo(
+      [
+        { name: MANIFEST, path: mfPath },
+        { name: DB_ENTRY, path },
+      ],
+      dest,
+      manifest.updated_at,
+    );
     return dest;
   } finally {
-    db.close();
+    try {
+      db.close();
+    } catch {}
+    rmSync(mfPath, { force: true });
   }
 }
 
@@ -100,33 +112,41 @@ export interface ImportResult {
  * session with that id is replaced (export/import of the same session twice
  * must converge, not duplicate).
  */
-export function importSession(zipPath: string): ImportResult {
+export async function importSession(zipPath: string): Promise<ImportResult> {
+  // The archive itself is read whole (bun:sqlite takes a path, and the db
+  // entry is compressed inside it), but the db ENTRY is inflated straight to
+  // disk in 64KB steps instead of into a second and third in-memory copy — so
+  // importing a multi-GB session costs a compression ratio of RAM, not its
+  // file size.
   const raw = new Uint8Array(readFileSync(zipPath));
-  let entries: Map<string, Uint8Array>;
-  try {
-    entries = unzipSync(raw);
-  } catch (e) {
-    throw new Error(`${basename(zipPath)} is not a readable session archive: ${(e as Error).message}`);
+  // Two distinct refusals, because they mean different things to whoever is
+  // holding the file: "not a zip at all" (wrong file, or corrupt) vs "a valid
+  // zip that is not a session export" (someone else's archive). Reading only the
+  // manifest out of the map would have reported the second as the first.
+  if (!zipHasEntry(raw, MANIFEST)) {
+    if (!isZip(raw)) throw new Error(`${basename(zipPath)} is not a readable session archive: not a zip file`);
+    throw new Error(`${basename(zipPath)} is missing ${MANIFEST} or ${DB_ENTRY} — not a fox-agent session export`);
   }
-  const mfRaw = entries.get(MANIFEST);
-  const dbRaw = entries.get(DB_ENTRY);
-  if (!mfRaw || !dbRaw) throw new Error(`${basename(zipPath)} is missing ${MANIFEST} or ${DB_ENTRY} — not a fox-agent session export`);
   let mf: Manifest;
   try {
-    mf = JSON.parse(new TextDecoder().decode(mfRaw)) as Manifest;
-  } catch {
-    throw new Error(`${basename(zipPath)}: unreadable manifest`);
+    mf = JSON.parse(new TextDecoder().decode(unzipEntry(raw, MANIFEST))) as Manifest;
+  } catch (e) {
+    // an unreadable or absent manifest entry: same "not our archive" refusal
+    throw new Error(`${basename(zipPath)}: unreadable manifest (${(e as Error).message})`);
   }
   if (mf.format !== FORMAT) throw new Error(`${basename(zipPath)}: format ${mf.format} not understood (this fox reads ${FORMAT})`);
   assertSafeSessionId(mf.id);
 
-  // Sanity floor: a db claiming no messages is either brand new (fine) or
-  // wrong content — verify the archive actually holds a messages table.
-  // Probe through a temp file: Database's typed surface here takes a path,
-  // and the probe handle is closed (and the file dropped) before anything
-  // is installed.
+  // Stream the db entry out to a temp file, then probe THAT: the messages-table
+  // check and the manifest/row count cross-check both need a real file, and
+  // this is the only copy in memory the import never holds.
   const probePath = join(sessionsDir(), `.import-probe-${process.pid}-${Date.now()}.db`);
-  writeFileSync(probePath, dbRaw);
+  try {
+    await unzipEntryToFile(raw, DB_ENTRY, probePath);
+  } catch (e) {
+    rmSync(probePath, { force: true });
+    throw new Error(`${basename(zipPath)}: ${(e as Error).message}`);
+  }
   const probe = new Database(probePath, { readonly: true });
   try {
     const t = probe.query("SELECT name FROM sqlite_master WHERE type='table' AND name='messages'").get() as { name: string } | null;
@@ -136,19 +156,26 @@ export function importSession(zipPath: string): ImportResult {
       // manifest/rows disagree: the archive is mixed content — refuse
       throw new Error(`${basename(zipPath)}: manifest says ${mf.messages} messages, db holds ${n.n} — refusing a broken archive`);
     }
-  } finally {
+  } catch (e) {
     probe.close();
     rmSync(probePath, { force: true });
+    throw e;
   }
+  probe.close();
 
   const existed = !!getSession(mf.id);
   if (existed) closeSessionHandle(mf.id);
   const dest = join(sessionsDir(), `${mf.id}.db`);
   for (const p of [dest, `${dest}-wal`, `${dest}-shm`]) rmSync(p, { force: true });
-  writeFileSync(dest, dbRaw);
-  // sqlite needs a writable file; archives may carry read-only bits
+  // install by RENAME, not a copy: the probe file is already the right bytes
+  // on the same filesystem, so this is a metadata operation and never doubles
+  // the session's size on disk
+  renameSync(probePath, dest);
+  // 0600, NOT 0644. A session db holds the machine's file contents, tool output
+  // and command text from where the session ran — 0644 made every imported
+  // session world-readable to any local account.
   try {
-    chmodSync(dest, 0o644);
+    chmodSync(dest, 0o600);
   } catch {}
 
   // index row: the cache that makes /sessions list it. INSERT OR REPLACE —

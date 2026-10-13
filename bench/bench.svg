@@ -145,7 +145,7 @@
 <text x="408" y="774" fill="#8a8578" font-size="10">spawn → TUI quiet → probe typed → echo on screen · best of 3 · lower is better</text>
 <text x="792" y="96" fill="#e6e1d8" font-size="14">input latency after 1s settle</text>
 <rect x="792" y="100" width="364" height="1" fill="#2e2b25"/>
-<text x="792" y="116" fill="#e6e1d8" font-size="12">goose</text>
+<text x="792" y="116" fill="#e6e1d8" font-size="12">gemini cli</text>
 <rect x="940" y="104" width="4" height="14" rx="3" fill="#5b7fa6"/>
 <text x="1084" y="115" fill="#8a8578" font-size="11">🥇0.1 ms</text>
 <text x="792" y="146" fill="#e6e1d8" font-size="12">jcode</text>
@@ -160,7 +160,7 @@
 <text x="792" y="236" fill="#e0803c" font-size="12">fox-agent</text>
 <rect x="940" y="224" width="4" height="14" rx="3" fill="#e0803c"/>
 <text x="1084" y="235" fill="#e6e1d8" font-size="11">0.6 ms</text>
-<text x="792" y="266" fill="#8a8578" font-size="12">kimi code</text>
+<text x="792" y="266" fill="#8a8578" font-size="12">codex</text>
 <rect x="940" y="254" width="4" height="14" rx="3" fill="#5b7fa6"/>
 <text x="1084" y="265" fill="#8a8578" font-size="11">4.4 ms</text>
 <text x="792" y="296" fill="#8a8578" font-size="12">pi</text>
@@ -285,7 +285,7 @@
 <rect x="408" y="796" width="364" height="1" fill="#2e2b25"/>
 <text x="408" y="812" fill="#e6e1d8" font-size="12">jcode</text>
 <rect x="556" y="800" width="11" height="14" rx="3" fill="#5b7fa6"/>
-<text x="700" y="811" fill="#8a8578" font-size="11">🥇27 MB</text>
+<text x="700" y="811" fill="#8a8578" font-size="11">🥇28 MB</text>
 <text x="408" y="842" fill="#e0803c" font-size="12">fox-agent</text>
 <rect x="556" y="830" width="14" height="14" rx="3" fill="#e0803c"/>
 <text x="700" y="841" fill="#e6e1d8" font-size="11">🥈37 MB</text>
@@ -301,12 +301,12 @@
 <text x="408" y="962" fill="#8a8578" font-size="12">codex</text>
 <rect x="556" y="950" width="19" height="14" rx="3" fill="#5b7fa6"/>
 <text x="700" y="961" fill="#8a8578" font-size="11">49 MB</text>
-<text x="408" y="992" fill="#8a8578" font-size="12">cline</text>
-<rect x="556" y="980" width="22" height="14" rx="3" fill="#5b7fa6"/>
-<text x="700" y="991" fill="#8a8578" font-size="11">55 MB</text>
-<text x="408" y="1022" fill="#8a8578" font-size="12">iflow cli</text>
+<text x="408" y="992" fill="#8a8578" font-size="12">iflow cli</text>
+<rect x="556" y="980" width="21" height="14" rx="3" fill="#5b7fa6"/>
+<text x="700" y="991" fill="#8a8578" font-size="11">54 MB</text>
+<text x="408" y="1022" fill="#8a8578" font-size="12">cline</text>
 <rect x="556" y="1010" width="22" height="14" rx="3" fill="#5b7fa6"/>
-<text x="700" y="1021" fill="#8a8578" font-size="11">56 MB</text>
+<text x="700" y="1021" fill="#8a8578" font-size="11">55 MB</text>
 <text x="408" y="1052" fill="#8a8578" font-size="12">codebuff</text>
 <rect x="556" y="1040" width="23" height="14" rx="3" fill="#5b7fa6"/>
 <text x="700" y="1051" fill="#8a8578" font-size="11">58 MB</text>
@@ -326,7 +326,7 @@
 <rect x="556" y="1190" width="51" height="14" rx="3" fill="#5b7fa6"/>
 <text x="700" y="1201" fill="#8a8578" font-size="11">130 MB</text>
 <text x="408" y="1232" fill="#8a8578" font-size="12">gemini cli</text>
-<rect x="556" y="1220" width="57" height="14" rx="3" fill="#5b7fa6"/>
+<rect x="556" y="1220" width="58" height="14" rx="3" fill="#5b7fa6"/>
 <text x="700" y="1231" fill="#8a8578" font-size="11">146 MB</text>
 <text x="408" y="1262" fill="#8a8578" font-size="12">amp</text>
 <rect x="556" y="1250" width="64" height="14" rx="3" fill="#5b7fa6"/>
@@ -335,8 +335,8 @@
 <rect x="556" y="1280" width="74" height="14" rx="3" fill="#5b7fa6"/>
 <text x="700" y="1291" fill="#8a8578" font-size="11">187 MB</text>
 <text x="408" y="1322" fill="#8a8578" font-size="12">cursor-agent</text>
-<rect x="556" y="1310" width="86" height="14" rx="3" fill="#5b7fa6"/>
-<text x="700" y="1321" fill="#8a8578" font-size="11">218 MB</text>
+<rect x="556" y="1310" width="84" height="14" rx="3" fill="#5b7fa6"/>
+<text x="700" y="1321" fill="#8a8578" font-size="11">213 MB</text>
 <text x="408" y="1352" fill="#8a8578" font-size="12">droid</text>
 <rect x="556" y="1340" width="87" height="14" rx="3" fill="#5b7fa6"/>
 <text x="700" y="1351" fill="#8a8578" font-size="11">221 MB</text>
