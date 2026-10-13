@@ -2,7 +2,7 @@
 // diff coloring for tool output. Deliberately dependency-free and line-local
 // (no cross-line state): good enough to read, cheap enough to run per frame.
 import type { Seg } from "./wrap.ts";
-import { liveTheme, theme } from "./themes.ts";
+import { liveTheme, theme, type Theme } from "./themes.ts";
 
 // the rich colors are optional theme fields — presets that predate them and
 // plugin themes fall back to the nearest established color
@@ -102,28 +102,56 @@ const GRAMMARS: Record<string, LangData> = {
  * a fenced block matches the rest of the TUI without new config. `hl*` slots let
  * a theme retune any of them; everything falls back to the established color.
  */
+/**
+ * speed-highlight's token type -> a color for a code fence.
+ *
+ * The default is a REAL code palette (one-dark-pro's hexes), not the TUI's
+ * prose slots: mapping all 15 types onto accent/ok/hint/tool collapsed a fence
+ * to four colors, and a fenced block that reads as one paragraph instead of
+ * code. A theme can still override any of them via the hl* slots, and an
+ * override falls back to this palette rather than to the UI slots — so a theme
+ * that customises one token does not have to customise all fourteen.
+ *
+ * `var` and undefined stay uncolored: identifiers and punctuation are the
+ * background of the fence, and tinting them is what made a fence noisy.
+ */
+const CODE_PALETTE: Record<string, string> = {
+  kwd: "#C678DD", // keywords, control flow — purple
+  section: "#B48EAD", // imports/exports/headings — a muted mauve, reads beside kwd without merging
+  str: "#98C379", // strings, char literals — green
+  esc: "#B5CEA8", // escape sequences inside a string — a lighter green, so \n inside "…" reads
+  cmnt: "#7F848E", // comments — gray, deliberately quiet
+  num: "#D19A66", // numbers, constants — orange
+  type: "#E5C07B", // type annotations, primitives — yellow
+  class: "#F0C674", // class/struct/enum names — a lighter yellow than a type annotation
+  func: "#61AFEF", // function and method names — blue
+  bool: "#56B6C2", // true/false/null — cyan
+  oper: "#7EA6C4", // operators and binding punctuation — a muted blue, distinct from a call
+  err: "#E06C75", // error markers — red
+  insert: "#98C379", // diff: a "+" line — green (semantic, shares with strings)
+  deleted: "#E06C75", // diff: a "-" line — red (semantic, shares with errors)
+  // "var" (identifiers) has no palette entry: it falls back to the theme's own
+  // foreground, so identifiers are defined but never a hue of their own.
+};
+
+/** Theme slot per token kind, so a theme can retune one without the rest. */
+const CODE_SLOT: Record<string, string | undefined> = {
+  kwd: "hlKeyword", str: "hlString", cmnt: "hlComment", num: "hlNumber",
+  type: "hlType", class: "hlClass", func: "hlFunc", bool: "hlBool",
+  oper: "hlOper", section: "hlSection", esc: "hlEscape", err: "hlError",
+  insert: "hlInsert", deleted: "hlDeleted", var: "hlVar",
+};
+
 function tokenColor(type: string | undefined): string | undefined {
   if (!type) return undefined;
+  const pal = CODE_PALETTE[type];
   const t = theme() as unknown as Record<string, string | undefined>;
-  switch (type) {
-    case "kwd": return t.hlKeyword ?? R.KW;
-    case "str": return t.hlString ?? R.STR;
-    case "cmnt": return t.hlComment ?? R.COM;
-    case "num": return t.hlNumber ?? R.NUM;
-    case "type": return t.hlType ?? R.KW;
-    case "class": return t.hlClass ?? R.KW;
-    case "func": return t.hlFunc ?? R.STR;
-    case "bool": return t.hlBool ?? R.NUM;
-    case "oper": return t.hlOper ?? t.chrome;
-    case "section": return t.hlSection ?? R.STR;
-    case "esc": return t.hlEscape ?? t.chrome;
-    case "err": return t.hlError ?? t.error;
-    // diff/patch tokens: the `diff` grammar marks +/- lines as insert/deleted
-    case "insert": return t.hlInsert ?? R.DADD;
-    case "deleted": return t.hlDeleted ?? R.DDEL;
-    // "var" and undefined are plain text — no color, so prose stays prose
-    default: return undefined;
-  }
+  const slot = CODE_SLOT[type];
+  if (pal) return (slot ? t[slot] : undefined) ?? pal;
+  // an identifier: the theme's own foreground, so it is defined and themeable
+  // rather than "no color at all"
+  if (type === "var") return t.hlVar ?? t.fg;
+  return undefined;
 }
 
 /** normalize a fence language id; null when the library has no grammar for it. */

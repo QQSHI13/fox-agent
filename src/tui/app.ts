@@ -4,7 +4,7 @@
 import { openTerm, type Term } from "./term.ts";
 import { appendFileSync } from "node:fs";
 import { Screen } from "./screen.ts";
-import { computeFrame, dockRows, itemEdgeSpan, scrollbarScrollTop, viewportHeight, type Frame, type FrameInput, type Row } from "./layout.ts";
+import { computeFrame, dockRows, itemEdgeSpan, scrollbarScrollTop, viewportHeight, chipGutter, contentOrigin, contentOriginForChip, contentWidth, type Frame, type FrameInput, type Row } from "./layout.ts";
 import { activePlugins } from "../plugins/load.ts";
 import { createDecoder, type Key } from "./keys.ts";
 import { graphemeBack, graphemeForward, type Ch } from "./edit.ts";
@@ -2432,17 +2432,17 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     // selection shifted.
     const winBase = fr ? fr.scrollTop - fr.winOffset : 0;
     const winIdx = row - winBase;
-    let chipW = 0;
+    // The seq whose chip this ROW carries, or undefined. Only the item's first
+    // row has one, and a markerCont item (a tool body) has none at all — a tool
+    // pair shows ONE chip on its head. Deciding per ITEM made the body's
+    // selection subtract a gutter it never painted.
+    let seq: number | undefined;
     if (fr && winIdx >= 0 && winIdx < fr.owner.length) {
-      // only the item's FIRST row carries the chip; its continuation rows are
-      // plain and start at the usual margin (see paint's x0)
+      const it = items.find((i) => i.k === fr.owner[winIdx]);
       const isFirstRow = winIdx === 0 || fr.owner[winIdx - 1] !== fr.owner[winIdx];
-      if (isFirstRow) {
-        const it = items.find((i) => i.k === fr.owner[winIdx]);
-        if (it?.seq !== undefined) chipW = MARKER_W(it.seq);
-      }
+      if (it && isFirstRow) seq = rowSeq(it);
     }
-    return Math.max(0, x - (chipW ? chipW + 1 : 1));
+    return Math.max(0, x - contentOrigin(seq));
   }
 
   /**
@@ -2882,11 +2882,12 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       return;
     }
     // a click on the leading [N] marker chip opens the per-message ops wizard
-    // (fork / copy / revert). The chip renders on the item's FIRST row only, so
-    // the hit must be that row AND inside the exact `[N]` span — a click on any
-    // wrapped line's left columns, or past the label, must not open it.
+    // (fork / copy / revert). The hit must be the item's FIRST row AND inside
+    // the exact `[N]` span. A tool body (markerCont) paints no chip, so it has
+    // no hit region at all — that is the 'the line after the marker is also
+    // clickable' report: the body was tested against its shared seq.
     const isFirstRowOfItem = winIdx === 0 || fr.owner[winIdx - 1] !== fr.owner[winIdx];
-    if (it.seq !== undefined && isFirstRowOfItem && x >= 0 && x < MARKER_W(it.seq)) {
+    if (isFirstRowOfItem && it.seq !== undefined && !it.markerCont && x >= 0 && x < MARKER_W(it.seq)) {
       void markerOps(it.seq);
       return;
     }
@@ -2983,6 +2984,16 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
    * MARKER_W so content never collides with the gutter column.
    */
   const MARKER_W = (seq: number) => `[${seq}]`.length;
+  /**
+   * The seq whose CHIP this item paints, or undefined if it paints none.
+   *
+   * A tool body carries the head's seq (they are one message) but sets
+   * `markerCont`, so it never draws a chip and must reserve NO gutter. Keying
+   * geometry off `it.seq` treated the body as marked: its wrap reserved a
+   * gutter it does not have and its selection landed a chip-width right of the
+   * text. One predicate, so paint, wrap and hit-test agree.
+   */
+  const rowSeq = (it: Item): number | undefined => (it.seq !== undefined && !it.markerCont ? it.seq : undefined);
   function withMarker(rows: Row[], seq: number, continuation = false): Row[] {
     // the chip label is EXACTLY `[N]` — the background spans the brackets and
     // digits, never a trailing space. The gap after it is uncolored (added by
@@ -3008,11 +3019,15 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       return cached;
     }
     // The marker rides a fixed left gutter; content wraps inside the remainder.
-    // The painter puts content at `chipW + 1` (the chip PLUS one uncolored gap
-    // column), so the wrap must reserve both — reserving only MARKER_W let the
-    // last column run one past the usable width, which wrapped the row's tail
-    // onto the next visual line and made a selected row look displaced.
-    const cw = it.seq !== undefined ? Math.max(8, w - MARKER_W(it.seq) - 1) : w;
+    // wrap width and paint offset must reserve the SAME gutter — both read
+    // contentWidth/contentOrigin from layout.ts, so they cannot disagree (this
+    // is the off-by-one that made a selected marked row look displaced).
+    //
+    // A tool BODY is markerCont: it shares the head's seq but never paints a
+    // chip, so it must reserve NO gutter. Keying the geometry off `it.seq` gave
+    // the body a gutter it does not have, and its selection landed a chip-width
+    // right of the text.
+    const cw = contentWidth(w, rowSeq(it));
     let rows: Row[];
     if (it.kind === "md") {
       // no trailing blank: spacing between items is buildRows' job
@@ -3132,7 +3147,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     } else {
       rows = wrapSegs([{ t: it.text, ...itemStyle(it.kind) }], cw).map((segs) => ({ segs }));
     }
-    if (it.seq !== undefined) rows = withMarker(rows, it.seq, it.markerCont);
+    if (rowSeq(it) !== undefined) rows = withMarker(rows, rowSeq(it)!, it.markerCont);
     const entry = { rev: revs.get(it.k) ?? 0, rows, rich: richRev, hl: highlightVersion(), span: itemEdgeSpan(rows) };
     let pw = lineCache.get(it.k);
     if (!pw) {
@@ -3428,7 +3443,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     // when the tail carries a [N] marker it must wrap inside the gutter, so the
     // chip can ride column 0 without the content overflowing the full width.
     // Same reservation as itemRows: the chip PLUS its one gap column.
-    const innerW = streamSeq > 0 ? Math.max(8, w - MARKER_W(streamSeq) - 1) : w;
+    const innerW = contentWidth(w, streamSeq > 0 ? streamSeq : undefined);
     let entry = streamKernels.get(innerW);
     // a SHRINK or mid-prefix change means a rewind — the kernel's accumulated
     // state is invalid, start fresh
@@ -3908,7 +3923,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         }
         // content sits one uncolored space past the chip on line 1, and at the
         // usual x=1 margin on every wrapped line — the marker only borrows line 1
-        const x0 = chipW ? chipW + 1 : 1;
+        const x0 = contentOriginForChip(chipW);
         let x = x0;
         for (const seg of row.segs) {
           x = P.transcript.text(x, y, seg.t, st(seg, S.base));
