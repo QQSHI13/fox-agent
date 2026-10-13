@@ -29,19 +29,32 @@ function usage(color?: boolean): string {
   const st = {
     b: (s: string) => (color ? `\x1b[1m${s}\x1b[0m` : s),
     dim: (s: string) => (color ? `\x1b[2m${s}\x1b[0m` : s),
+    cyan: (s: string) => (color ? `\x1b[36m${s}\x1b[0m` : s),
+    yellow: (s: string) => (color ? `\x1b[33m${s}\x1b[0m` : s),
+    green: (s: string) => (color ? `\x1b[32m${s}\x1b[0m` : s),
   };
+  // subcommands read as actions (cyan), flags read as options (yellow value
+  // hints), so a long help page scans by shape before it scans by text
+  const cmd = (spec: string, desc: string, extra = "") =>
+    `  ${st.cyan(spec.padEnd(24))} ${desc}${extra ? `\n${" ".repeat(28)}${st.dim(extra)}` : ""}`;
   const flag = (spec: string, desc: string, extra = "") =>
     `  ${st.b(spec.padEnd(24))} ${desc}${extra ? `\n${" ".repeat(28)}${st.dim(extra)}` : ""}`;
   return `${st.b(`fox-agent v${VERSION}`)} \u2014 light coding harness with agent-controlled context
 
-usage: fox [options] [-p "prompt"]
+${st.dim("usage:")} fox ${st.yellow("[options]")} ${st.yellow("[-p \"prompt\"]")}
 
+${st.dim("launch")}
 ${flag("(no args)", "open TUI in a new session bound to cwd")}
+${flag("-c, --continue [n|id]", "continue a session: latest, a 'fox ls' index, or an id", "(no argument + a real terminal opens the picker)")}
+${flag("--no-tui", "plain streaming mode (see: fox mini)")}
+${flag("--trust", "mark this directory trusted and skip the TUI trust prompt", "(trust = project fox-agent.toml / AGENTS.md may run code as you)")}
+
+${st.dim("headless / scripted")}
 ${flag("-p, --print", "run one prompt headless, print the answer, exit", "(reads stdin when no prompt given or stdin is piped)")}
 ${flag("--json", "with -p: emit NDJSON agent events instead of text (see: fox json)")}
 ${flag("--acp", "serve the Agent Client Protocol on stdio (see: fox acp)")}
-${flag("-c, --continue [n|id]", "continue a session: latest, a 'fox ls' index, or an id", "(no argument + a real terminal opens the picker)")}
-${flag("--no-tui", "plain streaming mode (see: fox mini)")}
+
+${st.dim("overrides")}
 ${flag("--model <id>", "override model")}
 ${flag("--provider <p>", "openai-compatible | anthropic | google | plugin-registered")}
 ${flag("--base-url <u>", "override API base url")}
@@ -50,18 +63,19 @@ ${flag("--retry-limit <n>", "provider retry attempts (default 3)")}
 ${flag("--compact-at <f>", "auto-compact at this fraction of the context window (default 0.85)")}
 ${flag("--request-timeout-ms <n>", "abort a provider request silent this long (default 120000, 0 = never)")}
 ${flag("--config <path>", "config file override")}
-${flag("--trust", "mark this directory trusted and skip the TUI trust prompt", "(trust = project fox-agent.toml / AGENTS.md may run code as you)")}
-${flag("ls", "list sessions")}
-${flag("export <id> [file]", "pack a session into a .zip to move to another device")}
-${flag("import <file>", "install a session .zip from another device")}
-${flag("plugin [on|off|add|rm|info <name>]", "manage plugins without the TUI")}
-${flag("json", "headless NDJSON event stream (use with -p \"prompt\" or piped stdin)")}
-${flag("mini", "plain streaming REPL, no TUI")}
-${flag("acp", "serve the Agent Client Protocol on stdio (for Zed, acpx, ...)")}
-${flag("upgrade [--beta|<version>]", "self-update from GitHub releases")}
-${flag("help [command]", "show overview, or help for one command")}
 
-slash commands inside a session: /help`;
+${st.dim("subcommands")}
+${cmd("ls", "list sessions")}
+${cmd("export <id> [file]", "pack a session into a .zip to move to another device")}
+${cmd("import <file>", "install a session .zip from another device")}
+${cmd("plugin [on|off|add|rm|info <name>]", "manage plugins without the TUI")}
+${cmd("json", "headless NDJSON event stream (use with -p \"prompt\" or piped stdin)")}
+${cmd("mini", "plain streaming REPL, no TUI")}
+${cmd("acp", "serve the Agent Client Protocol on stdio (for Zed, acpx, ...)")}
+${cmd("upgrade [--beta|<version>]", "self-update from GitHub releases")}
+${cmd("help [command]", "show overview, or help for one command")}
+
+${st.dim("inside a session")}: ${st.green("/help")} lists slash commands`;
 }
 
 interface Parsed {
@@ -111,7 +125,14 @@ export function parseArgv(argv: string[]): Parsed {
       else flags.set("help", true);
     }
     else if (a === "--version" || a === "-v") flags.set("version", true);
-    else if (VALUED.has(a)) flags.set(a === "-p" ? "print" : a.slice(2), argv[++i] ?? "");
+    else if (VALUED.has(a)) {
+      const v = argv[++i];
+      // a valued flag with no value is a usage error, not an empty override —
+      // silently treating `--model` at end-of-argv as "" opened the TUI with a
+      // bogus empty model instead of telling the user what was wrong
+      if (v === undefined) throw new ConfigError(`flag ${a} needs a value (e.g. ${a} <value>)`);
+      flags.set(a === "-p" ? "print" : a.slice(2), v);
+    }
     else if (!a.startsWith("-")) {
       // subcommand spellings for the headless modes read better than flags
       // and compose the same way (`fox json -p "..."`); first position only,

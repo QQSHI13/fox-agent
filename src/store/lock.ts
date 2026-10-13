@@ -91,9 +91,28 @@ export function acquireLock(id: string, kind: string): SessionLock | null {
       return null;
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+      // Second EEXIST: someone else created the file in the gap between our
+      // lockHolder read and this create. Re-read the LIVE holder and report it —
+      // never return null ("we hold it") on faith. The old code returned null
+      // when retry.pid === process.pid or retry was null, which could claim a
+      // lock we do not actually hold (the create failed, so the file on disk is
+      // some other writer's, or a third process's fresh lock).
       const retry = lockHolder(id);
-      if (retry && retry.pid !== process.pid) return retry;
-      return null;
+      if (retry) return retry;
+      // lockHolder cleaned a now-stale file that appeared mid-race: one more
+      // honest create attempt, and if THAT hits EEXIST the live holder wins.
+      try {
+        const fd = openSync(lockPath(id), "wx", 0o600);
+        try {
+          writeFileSync(fd, data);
+        } finally {
+          closeSync(fd);
+        }
+        return null;
+      } catch (e2) {
+        if ((e2 as NodeJS.ErrnoException).code !== "EEXIST") throw e2;
+        return lockHolder(id);
+      }
     }
   }
   if (holder.pid === process.pid) return null;
