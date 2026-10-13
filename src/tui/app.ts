@@ -1550,6 +1550,15 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           streamSeq = ev.seq + 1;
           touch(userItem.k);
           markDirty();
+        } else if (ev.type === "assistant") {
+          // the assistant node landed with its REAL seq — correct the streaming
+          // tail's prediction (which guessed ev.seq+1 and drifted when a think
+          // block or an earlier step took a slot). From here the marker and its
+          // click width are exact, not estimated.
+          if (streamSeq !== ev.seq) {
+            streamSeq = ev.seq;
+            markDirty();
+          }
         } else if (ev.type === "reasoning") {
           appendToLastThink(ev.delta);
           publishLive(); // think deltas markDirty anyway; piggyback the status

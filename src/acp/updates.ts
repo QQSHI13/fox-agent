@@ -109,6 +109,7 @@ export function toSessionUpdate(ev: AgentEvent, opts: MapOptions): SessionUpdate
     case "retry":
     case "warn":
     case "user": // the client sent the prompt; echoing its seq back adds nothing
+    case "assistant": // UI-only marker correction; ACP clients render from their own session load
     case "steered": // the client sent it; echoing it back would double-render
     case "done":
       return null;

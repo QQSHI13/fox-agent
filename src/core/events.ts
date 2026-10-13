@@ -30,6 +30,10 @@ export type AgentEvent =
    *  after append, so a live UI can stamp the [N] marker on the in-flight user
    *  line instead of waiting for the turn to settle and refresh from history */
   | { type: "user"; seq: number; text: string }
+  /** the step's assistant node was persisted with this seq — emitted right after
+   *  append so a live UI can correct its predicted streaming marker (the reply's
+   *  seq was a guess until now; thinking blocks and tool calls shifted it) */
+  | { type: "assistant"; seq: number }
   /** user text injected mid-turn (ctrl+s), delivered at a step boundary */
   | { type: "steered"; text: string }
   | { type: "done"; reason: string };
