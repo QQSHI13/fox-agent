@@ -111,7 +111,14 @@ export function parseArgv(argv: string[]): Parsed {
       else flags.set("help", true);
     }
     else if (a === "--version" || a === "-v") flags.set("version", true);
-    else if (VALUED.has(a)) flags.set(a === "-p" ? "print" : a.slice(2), argv[++i] ?? "");
+    else if (VALUED.has(a)) {
+      const v = argv[++i];
+      // a valued flag with no value is a usage error, not an empty override —
+      // silently treating `--model` at end-of-argv as "" opened the TUI with a
+      // bogus empty model instead of telling the user what was wrong
+      if (v === undefined) throw new ConfigError(`flag ${a} needs a value (e.g. ${a} <value>)`);
+      flags.set(a === "-p" ? "print" : a.slice(2), v);
+    }
     else if (!a.startsWith("-")) {
       // subcommand spellings for the headless modes read better than flags
       // and compose the same way (`fox json -p "..."`); first position only,
