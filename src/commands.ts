@@ -1681,7 +1681,7 @@ Verify what you write: run the commands you document (at least the build/test en
         const kb = (r.bytes / 1024).toFixed(0);
         return {
           handled: true,
-          output: `shared ${state.sessionId} -> ${r.path} (${kb} KB${r.truncated ? ", capped" : ""})\nopen it in any browser, offline — nothing is uploaded.`,
+          output: `shared ${state.sessionId} -> ${r.path} (${kb} KB, ${r.messages} messages)\nopen it in any browser, offline — nothing is uploaded.`,
         };
       } catch (e) {
         return { handled: true, output: `share failed: ${(e as Error).message}` };
