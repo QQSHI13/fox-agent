@@ -83,6 +83,18 @@ export interface Theme {
    * Optional — falls back to `tool` (the settled head color).
    */
   runningFg?: string;
+  /**
+   * Shiki theme used to color fenced code. Optional — falls back to
+   * "one-dark-pro". Set it to keep code blocks in the TUI's own palette
+   * (a light theme wants a light Shiki theme; the default reads badly on one).
+   */
+  shikiTheme?: string;
+  /**
+   * Foreground substituted for a code token too dark to read against the
+   * transcript background. Optional — falls back to `fg`, so the substitute is
+   * the theme's own foreground rather than a fixed light gray.
+   */
+  codeDim?: string;
 }
 
 export const THEME_PRESETS: Record<string, Theme> = {
