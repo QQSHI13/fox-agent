@@ -23,6 +23,7 @@ import type { ToolDef } from "../providers/types.ts";
 import type { ExternalAgentConfig } from "../core/config.ts";
 import type { ToolContext, ToolResult } from "./types.ts";
 import { fail, ok } from "./types.ts";
+import { steer } from "../loop/steer.ts";
 
 /**
  * How deep delegation may nest.
@@ -92,10 +93,19 @@ interface TaskJob {
   ok: boolean;
   result: string;
   ac: AbortController;
+  /** set when the job is scheduled for removal (read + grace elapsed, or kill) */
+  reaped?: boolean;
+  /** a settled job stays readable for a grace window after the first read */
+  readAt?: number;
 }
 
 const taskJobs = new Map<string, Map<string, TaskJob>>(); // sessionId -> id -> job
 let taskSeq = 0;
+// A settled task used to be deleted on FIRST read, so a report the model never
+// polled was destroyed with no error and no warning — the t1 research job in
+// this project ran for over twenty hours and its report surfaced only because a
+// human pasted it. The report now survives a grace window, matching exec's jobs.
+const TASK_REAP_MS = 10 * 60_000;
 
 function sessionTasks(sessionId: string): Map<string, TaskJob> {
   let m = taskJobs.get(sessionId);
@@ -103,15 +113,35 @@ function sessionTasks(sessionId: string): Map<string, TaskJob> {
   return m;
 }
 
+/**
+ * A settled task's report, capped from the HEAD.
+ *
+ * The cap used to keep the TAIL (`slice(-MAX)`), which is backwards for a
+ * research report or a long analysis: the summary, findings and tables are at
+ * the top, so head-truncation silently dropped exactly the part worth reading.
+ */
+function reportBody(result: string): string {
+  if (result.length <= MAX_TASK_RESULT) return result;
+  return `${result.slice(0, MAX_TASK_RESULT)}\n… (${result.length - MAX_TASK_RESULT} more chars — full report: ask for it in pieces, or re-run with a tighter scope)`;
+}
+
 function pollTask(args: { job: string }, ctx: ToolContext): ToolResult {
   const job = sessionTasks(ctx.sessionId).get(args.job);
   if (!job) return fail(`error: no task ${args.job} in this session`);
   const secs = Math.floor((Date.now() - job.startedAt) / 1000);
   if (!job.done) return ok(`task ${job.id} (${job.label}) still running (${secs}s) — poll again with task({job:"${job.id}"})`);
-  sessionTasks(ctx.sessionId).delete(args.job); // a settled task reaps on first read
+  // keep it readable for a grace window rather than deleting on first read
+  if (job.readAt === undefined) {
+    job.readAt = Date.now();
+    const grace = setTimeout(() => {
+      if (job.reaped) return;
+      job.reaped = true;
+      sessionTasks(ctx.sessionId).delete(args.job);
+    }, TASK_REAP_MS);
+    (grace as { unref?: () => void }).unref?.();
+  }
   const head = `task ${job.id} (${job.label}) ${job.ok ? "finished" : "failed"} after ${secs}s`;
-  const body = job.result.length > MAX_TASK_RESULT ? `${job.result.slice(-MAX_TASK_RESULT)}\n… (head truncated)` : job.result;
-  return job.ok ? ok(`${head}\n${body}`) : fail(`${head}\n${body}`);
+  return job.ok ? ok(`${head}\n${reportBody(job.result)}`) : fail(`${head}\n${reportBody(job.result)}`);
 }
 
 /** Session end: abort every detached subagent it started. */
@@ -150,12 +180,28 @@ export async function taskRun(
       .then((r) => {
         job.done = true;
         job.ok = r.ok;
-        job.result = r.output.length > MAX_TASK_RESULT ? r.output.slice(-MAX_TASK_RESULT) : r.output;
+        job.result = r.output;
+        // Tell the agent it finished, wherever it is right now. A detached
+        // subagent that completed was previously invisible until the model
+        // happened to poll — and the report was DELETED on first read, so an
+        // unpolled one was destroyed with no error. steer's queue is the
+        // existing delivery path: next step boundary, as a real message, and
+        // peekSteer shows it in the TUI meanwhile.
+        steer(
+          ctx.sessionId,
+          `background task ${id} ${r.ok ? "finished" : "failed"} after ` +
+            `${Math.floor((Date.now() - job.startedAt) / 1000)}s: ${job.label}\n` +
+            `its report is ${job.result.length} chars — task({job:"${id}"}) to read it.`,
+        );
       })
       .catch((e) => {
         job.done = true;
         job.ok = false;
-        job.result = `error: ${(e as Error).message ?? e}`.slice(-MAX_TASK_RESULT);
+        job.result = `error: ${(e as Error).message ?? e}`;
+        steer(
+          ctx.sessionId,
+          `background task ${id} failed: ${job.label} — task({job:"${id}"}) for the error.`,
+        );
       });
     return ok(`task ${id} started in background (${job.label}) — poll with task({job:"${id}"})`);
   }

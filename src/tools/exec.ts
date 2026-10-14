@@ -3,6 +3,7 @@ import { appendFileSync, closeSync, mkdirSync, openSync, readSync, rmSync, statS
 import type { ToolDef } from "../providers/types.ts";
 import type { ToolContext, ToolResult } from "./types.ts";
 import { fail, ok } from "./types.ts";
+import { steer } from "../loop/steer.ts";
 import { childEnv } from "../core/childenv.ts";
 import { shellName, shellPath } from "../core/shell.ts";
 import { outCap } from "./files.ts";
@@ -135,6 +136,18 @@ function startJob(args: { cmd: string; workdir?: string }, ctx: ToolContext): To
   void pump(proc.stderr as ReadableStream);
   void proc.exited.then((code) => {
     job.exitCode = code;
+    // Tell the agent it finished, wherever it is right now. A background job that
+    // completed was previously invisible until the model happened to poll, and
+    // the log is reaped after JOB_REAP_MS — so an unpolled job's output was gone
+    // with no warning. steer's queue is the existing delivery path: it arrives at
+    // the next step boundary as a real message, and peekSteer shows it in the TUI
+    // meanwhile, so nothing here re-invents a queue.
+    steer(
+      ctx.sessionId,
+      `background command ${id} ${code === 0 ? "finished" : `FAILED (exit ${code})`} after ` +
+        `${Math.floor((Date.now() - job.startedAt) / 1000)}s: ${args.cmd}\n` +
+        `its output is at ${logPath} — read that, or exec({job:"${id}"}) to get the tail.`,
+    );
     // exited-but-never-polled jobs used to pile up for the whole session (each
     // with an open log under $FOX_AGENT_HOME/jobs/<session>/). reap after a
     // grace window so the model can still read the final output if it polls
