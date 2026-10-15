@@ -151,6 +151,19 @@ describe("glob", () => {
     const r = await F.globRun({ pattern: "*.nothing" }, ctx);
     expect(r.output).toMatch(/no (files|matches)/i);
   });
+
+  test("limit caps results and says so instead of truncating silently", async () => {
+    for (let i = 0; i < 12; i++) write(`many/f${i}.ts`, "");
+    const capped = await F.globRun({ pattern: "many/*.ts", limit: 5 }, ctx);
+    const lines = capped.output.split("\n").filter((l) => l.endsWith(".ts"));
+    expect(lines).toHaveLength(5);
+    // the cut is announced — an unannounced one reads as "that was all of them"
+    expect(capped.output).toContain("truncated at 5");
+
+    const whole = await F.globRun({ pattern: "many/*.ts", limit: 100 }, ctx);
+    expect(whole.output.split("\n")).toHaveLength(12);
+    expect(whole.output).not.toContain("truncated");
+  });
 });
 
 describe("grep", () => {
@@ -164,6 +177,16 @@ describe("grep", () => {
     write("g.ts", "nothing here\n");
     const r = await F.grepRun({ pattern: "zzzznomatch" }, ctx);
     expect(r.output).toMatch(/no match/i);
+  });
+
+  test("limit caps matches and reports how many were withheld", async () => {
+    write("many.txt", "needle\nneedle\nneedle\nneedle\n");
+    const capped = await F.grepRun({ pattern: "needle", limit: 2 }, ctx);
+    expect(capped.output.split("\n").filter((l) => l.includes("needle"))).toHaveLength(2);
+    expect(capped.output).toContain("truncated at 2");
+    const whole = await F.grepRun({ pattern: "needle", limit: 50 }, ctx);
+    expect(whole.output.split("\n").filter((l) => l.includes("needle"))).toHaveLength(4);
+    expect(whole.output).not.toContain("truncated");
   });
 });
 

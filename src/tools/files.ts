@@ -167,10 +167,13 @@ export async function readRun(args: { path: string; offset?: number; limit?: num
 
 export const writeDef: ToolDef = {
   name: "write",
-  description: "Write a file (creates parent dirs; overwrites in place). The result reports any type errors the new contents cause.",
+  description: "Write a file (creates parent dirs; overwrites in place).",
   parameters: {
     type: "object",
-    properties: { path: { type: "string" }, content: { type: "string" } },
+    properties: {
+      path: { type: "string", description: "File path (absolute or relative to cwd)" },
+      content: { type: "string", description: "Full new contents of the file" },
+    },
     required: ["path", "content"],
   },
 };
@@ -189,27 +192,27 @@ export async function writeRun(args: { path: string; content: string }, ctx: Too
 export const editDef: ToolDef = {
   name: "edit",
   description:
-    'Edit a file. Pass edits:[{oldString,newString,replaceAll?}] (multiple changes applied in order) or the legacy single oldString/newString. Exact-match first; falls back to whitespace-tolerant match preserving relative indentation. The result reports any type errors your change caused, so do not run a type-checker separately just to see them.',
+    "Edit a file. Pass edits:[{oldString,newString,replaceAll?}] (multiple changes applied in order) or the legacy single oldString/newString. Exact-match first; falls back to whitespace-tolerant match preserving relative indentation.",
   parameters: {
     type: "object",
     properties: {
-      path: { type: "string" },
+      path: { type: "string", description: "File path (absolute or relative to cwd)" },
       edits: {
         type: "array",
         items: {
           type: "object",
           properties: {
-            oldString: { type: "string" },
-            newString: { type: "string" },
-            replaceAll: { type: "boolean" },
+            oldString: { type: "string", description: "Exact text to find" },
+            newString: { type: "string", description: "Replacement text" },
+            replaceAll: { type: "boolean", description: "Replace every occurrence instead of the first" },
           },
           required: ["oldString", "newString"],
         },
         description: "Batch of replacements applied in order",
       },
-      oldString: { type: "string" },
-      newString: { type: "string" },
-      replaceAll: { type: "boolean" },
+      oldString: { type: "string", description: "Legacy single-edit form: text to find" },
+      newString: { type: "string", description: "Legacy single-edit form: replacement text" },
+      replaceAll: { type: "boolean", description: "Legacy single-edit form: replace every occurrence" },
     },
     required: ["path"],
   },
@@ -251,43 +254,65 @@ export async function editRun(
 
 export const globDef: ToolDef = {
   name: "glob",
-  description: "Find files by wildcard pattern (e.g. src/**/*.ts). Caps at 200 results.",
+  description: "Find files by wildcard pattern (e.g. src/**/*.ts). Pass limit to cap the number of results (default 500).",
   parameters: {
     type: "object",
-    properties: { pattern: { type: "string" }, path: { type: "string", description: "Base dir (default cwd)" } },
+    properties: {
+      pattern: { type: "string", description: "Wildcard pattern, e.g. src/**/*.ts" },
+      path: { type: "string", description: "Base dir (default cwd)" },
+      limit: { type: "number", description: "Max results to return, default 500" },
+    },
     required: ["pattern"],
   },
 };
 
-export async function globRun(args: { pattern: string; path?: string }, ctx: ToolContext): Promise<ToolResult> {
+/**
+ * Default result cap for glob/grep.
+ *
+ * These used to hard-cap at 200 matches and silently truncate the rest — a
+ * listing the model had no way to page through and no way to know was cut.
+ * A caller-chosen `limit` replaces that: the model decides how much it can
+ * afford, and when it does hit the cap the result SAYS so (truncated, more
+ * available) instead of reading as the complete set.
+ */
+const SEARCH_LIMIT_DEFAULT = 500;
+
+export async function globRun(args: { pattern: string; path?: string; limit?: number }, ctx: ToolContext): Promise<ToolResult> {
   const base = resolve(ctx.cwd, args.path ?? ".");
   const g = new Bun.Glob(args.pattern);
+  const limit = Math.max(1, Math.floor(args.limit ?? SEARCH_LIMIT_DEFAULT));
   const found: string[] = [];
+  let truncated = false;
   for await (const f of g.scan({ cwd: base, dot: false })) {
+    if (found.length >= limit) {
+      truncated = true;
+      break;
+    }
     found.push(f.split("\\").join("/"));
-    if (found.length >= 200) break;
   }
   found.sort();
-  return ok(found.length ? cap(found.join("\n")) : "(no matches)");
+  if (!found.length) return ok("(no matches)");
+  return ok(truncated ? `${found.join("\n")}\n… (truncated at ${limit} results — narrow the pattern or raise limit)` : found.join("\n"));
 }
 
 // ---------- grep ----------
 
 export const grepDef: ToolDef = {
   name: "grep",
-  description: "Search file contents with a regex. Output 'path:line: match'. Uses ripgrep when available. Caps output.",
+  description: "Search file contents with a regex. Output 'path:line: match'. Uses ripgrep when available. Pass limit to cap matches (default 500).",
   parameters: {
     type: "object",
     properties: {
-      pattern: { type: "string" },
+      pattern: { type: "string", description: "Regex to match" },
       path: { type: "string", description: "Dir or file (default cwd)" },
       include: { type: "string", description: "Glob filter e.g. '*.ts'" },
+      limit: { type: "number", description: "Max matches to return, default 500" },
     },
     required: ["pattern"],
   },
 };
 
-export async function grepRun(args: { pattern: string; path?: string; include?: string }, ctx: ToolContext): Promise<ToolResult> {
+export async function grepRun(args: { pattern: string; path?: string; include?: string; limit?: number }, ctx: ToolContext): Promise<ToolResult> {
   const p = resolve(ctx.cwd, args.path ?? ".");
   let re: RegExp;
   try {
@@ -295,6 +320,7 @@ export async function grepRun(args: { pattern: string; path?: string; include?: 
   } catch (e) {
     return fail(`error: bad pattern: ${(e as Error).message}`);
   }
+  const limit = Math.max(1, Math.floor(args.limit ?? SEARCH_LIMIT_DEFAULT));
 
   const rg = Bun.which("rg");
   if (rg) {
@@ -306,25 +332,32 @@ export async function grepRun(args: { pattern: string; path?: string; include?: 
     argv.push("-e", args.pattern, "--", p);
     try {
       const { stdout } = await execFileP(rg, argv, { maxBuffer: 64 * 1024 * 1024, timeout: 30_000 });
-      return ok(cap(stdout.trimEnd()) || "(no matches)");
+      // one pass, then slice: rg's own `--max-count` is PER FILE, so it cannot
+      // bound a whole-repo search. The listing is cut at the caller's limit and
+      // says so — an unannounced cut reads as "that is all of them", which is
+      // how a model concludes a symbol has no other callers.
+      const lines = stdout.split("\n").filter(Boolean);
+      if (!lines.length) return ok("(no matches)");
+      if (lines.length <= limit) return ok(lines.join("\n"));
+      return ok(`${lines.slice(0, limit).join("\n")}\n… (truncated at ${limit} of ${lines.length}+ matches — narrow the pattern, add include, or raise limit)`);
     } catch (e: any) {
       if (e.code === 1) return ok("(no matches)");
       // fall through to walker on other failures
     }
   }
-  return ok(walkGrep(re, p, args.include));
+  return ok(walkGrep(re, p, args.include, limit));
 }
 
 const SKIP_DIRS = new Set([".git", "node_modules", ".venv", "venv", "__pycache__", "dist", "build", ".next"]);
 
-function walkGrep(re: RegExp, root: string, include?: string): string {
+function walkGrep(re: RegExp, root: string, include: string | undefined, limit: number): string {
   const out: string[] = [];
   const includeRe = include ? new Bun.Glob(include) : null;
   const seen = new Set<string>();
   const MAX_DEPTH = 20;
 
   const walk = (dir: string, depth: number) => {
-    if (out.length >= 300 || depth > MAX_DEPTH) return;
+    if (out.length >= limit || depth > MAX_DEPTH) return;
     // resolve the real path so a symlink loop (ln -s . loop) terminates
     let real = dir;
     try {
@@ -372,7 +405,7 @@ function walkGrep(re: RegExp, root: string, include?: string): string {
         const buf = readFileSync(full);
         if (sniffBinary(buf.subarray(0, 4000))) continue;
         const lines = buf.toString("utf8").split("\n");
-        for (let i = 0; i < lines.length && out.length < 300; i++) {
+        for (let i = 0; i < lines.length && out.length < limit; i++) {
           if (re.test(lines[i])) out.push(`${full}:${i + 1}: ${lines[i].trim().slice(0, 300)}`);
         }
       } catch {}
@@ -387,7 +420,7 @@ function walkGrep(re: RegExp, root: string, include?: string): string {
           .toString("utf8")
           .split("\n")
           .forEach((l, i) => {
-            if (re.test(l) && out.length < 300) out.push(`${root}:${i + 1}: ${l.trim().slice(0, 300)}`);
+            if (re.test(l) && out.length < limit) out.push(`${root}:${i + 1}: ${l.trim().slice(0, 300)}`);
           });
       }
     } else walk(root, 0);
