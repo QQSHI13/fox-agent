@@ -12,7 +12,7 @@
 import type { Tool } from "./types.ts";
 import type { ToolDef } from "../providers/types.ts";
 import { ok, fail } from "./types.ts";
-import { relative } from "node:path";
+import { relative, resolve } from "node:path";
 import * as nav from "../lsp/client.ts";
 
 export const lspDef: ToolDef = {
@@ -48,8 +48,14 @@ function renderLocations(cwd: string, label: string, locs: nav.LspLocation[] | n
 
 export async function lspRun(args: any, ctx: import("./types.ts").ToolContext): Promise<import("./types.ts").ToolResult> {
   const q: string = args?.query;
-  const file: string = args?.file;
-  if (!q || !file) return fail("error: query and file are required");
+  if (!q || !args?.file) return fail("error: query and file are required");
+  // Resolve against ctx.cwd, like every other path-taking tool. This passed
+  // `file` through raw, so a relative path resolved against fox-agent's own
+  // process cwd instead of the session's — and projectRoot() then rooted the
+  // server at the wrong directory, which typescript-language-server answers by
+  // reporting ZERO diagnostics with no error at all (see servers.ts). Silent,
+  // and wrong in the direction that looks like success.
+  const file: string = resolve(ctx.cwd, args.file);
   const opts = { cwd: ctx.cwd };
   const at = { line: Number(args?.line ?? 1), character: Number(args?.character ?? 1) };
 
