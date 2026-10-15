@@ -437,6 +437,93 @@ describe("steering", () => {
     // the unconditional persist must be a no-op when the queue is empty
     expect(t.allMessages(s.id).map((m: any) => m.role)).toEqual(["user", "assistant"]);
   });
+
+  test("a steer parked in the LAST tool call is persisted when the step cap ends the turn", async () => {
+    const t = await setup();
+    const s = t.createSession("/w", "m1");
+    const { steer, peekSteer } = await import("../src/loop/steer.ts");
+    // The steering block drains only when there IS a next step. Here the tool in
+    // the only permitted step parks a steer and the cap then ends the turn, so
+    // the message used to be stranded in the queue forever — the TUI kept
+    // rendering "steering 1/1" under a finished turn and some later turn
+    // answered it, or nobody did. A sibling fix covers the provider-call path;
+    // this is the tool-call path.
+    const registry = new Map<string, any>([
+      [
+        "steerer",
+        {
+          def: { name: "steerer", description: "parks a steer mid-call", parameters: { type: "object", properties: {} } },
+          run: async () => {
+            steer(s.id, "IMPORTANT-STUFF");
+            return "ok";
+          },
+        },
+      ],
+    ]);
+    const mock = mockChat([
+      [{ type: "tool_call", call: { id: "c1", name: "steerer", arguments: "{}" } }, { type: "done", reason: "tool_calls" }],
+    ]);
+    const events = await collect(
+      t.runTurnCore(s.id, cfg(), "hi", undefined, { chat: mock.fn as any, registryOverride: registry, maxSteps: 1, quiet: true }),
+    );
+    expect((events.at(-1) as any).reason).toBe("max_steps");
+    expect(peekSteer(s.id)).toEqual([]); // drained, not stranded
+    const msgs = t.allMessages(s.id);
+    expect(msgs.some((m: any) => m.content === "IMPORTANT-STUFF")).toBe(true);
+    // the cap notice comes last, and the steer precedes it
+    expect(msgs[msgs.length - 1].content).toContain("step limit");
+  });
+});
+
+describe("interrupt", () => {
+  /** A tool that never checks ctx.signal — an LSP cold start, a wizard, a plugin. */
+  const stubborn = (ms = 3000): any => ({
+    def: { name: "stubborn", description: "ignores the abort signal", parameters: { type: "object", properties: {} } },
+    run: async () => {
+      await new Promise<void>((r) => setTimeout(r, ms));
+      return "stubborn done";
+    },
+  });
+
+  test("esc ends the turn even when a running tool ignores ctx.signal", async () => {
+    const t = await setup();
+    const s = t.createSession("/w", "m1");
+    const ac = new AbortController();
+    const registry = new Map<string, any>([["stubborn", stubborn()]]);
+    const mock = mockChat([
+      [{ type: "tool_call", call: { id: "c1", name: "stubborn", arguments: "{}" } }, { type: "done", reason: "tool_calls" }],
+    ]);
+    // The user hits esc ~150ms in, while the tool is mid-flight.
+    const timer = setTimeout(() => ac.abort(), 150);
+    const t0 = Date.now();
+    const events = await collect(
+      t.runTurnCore(s.id, cfg(), "hi", ac.signal, { chat: mock.fn as any, registryOverride: registry, quiet: true }),
+    );
+    clearTimeout(timer);
+    const elapsed = Date.now() - t0;
+    // The bug: the loop awaited the tool batch, so a 3s tool pinned the turn to
+    // its full runtime and ESC looked broken — the call stayed in flight and
+    // nothing was appended.
+    expect(elapsed).toBeLessThan(1000);
+    expect((events.at(-1) as any).reason).toBe("aborted");
+    // and nothing from the abandoned tool was written into the transcript
+    expect(t.allMessages(s.id).some((m: any) => m.role === "tool")).toBe(false);
+  }, 5000);
+
+  test("an already-aborted signal ends the turn without waiting for the batch", async () => {
+    const t = await setup();
+    const s = t.createSession("/w", "m1");
+    const ac = new AbortController();
+    ac.abort();
+    const registry = new Map<string, any>([["stubborn", stubborn(3000)]]);
+    const mock = mockChat([[{ type: "tool_call", call: { id: "c1", name: "stubborn", arguments: "{}" } }, { type: "done", reason: "tool_calls" }]]);
+    const t0 = Date.now();
+    const events = await collect(
+      t.runTurnCore(s.id, cfg(), "hi", ac.signal, { chat: mock.fn as any, registryOverride: registry, quiet: true }),
+    );
+    expect(Date.now() - t0).toBeLessThan(1000);
+    expect((events.at(-1) as any).reason).toBe("aborted");
+  }, 5000);
 });
 
 describe("request identity", () => {

@@ -275,6 +275,17 @@ async function runHook<T>(
   }
 }
 
+/**
+ * Resolve when `signal` aborts (immediately if it already has). Used to race a
+ * tool batch so an interrupt is not held hostage by a tool that never checks
+ * `ctx.signal`.
+ */
+function whenAborted(signal: AbortSignal | undefined): Promise<void> {
+  if (!signal) return new Promise<void>(() => {});
+  if (signal.aborted) return Promise.resolve();
+  return new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+}
+
 export async function* runTurnCore(
   sessionId: string,
   cfg: ProviderConfig,
@@ -426,6 +437,12 @@ export async function* runTurnCore(
     // the turn ends on the cap, and a compaction would spend a billable
     // summarization call on a turn that is about to stop anyway
     if (maxSteps > 0 && step > maxSteps) {
+      // A steer parked while the LAST permitted step's tool ran is still queued
+      // here: the drain above only runs when there IS a step to drain it into.
+      // Without this it was stranded forever — nobody drained it, the TUI kept
+      // rendering "steering 1/1" under a turn that had already ended, and some
+      // later turn answered it (or never did). Same persist an abort takes.
+      persistParkedSteers(stepParentId);
       appendMessage(sessionId, { parent_id: null, role: "system", content: `fox-agent: step limit (${maxSteps}) reached mid-turn`, tokens: 16 });
       yield { type: "warn", message: `step limit ${maxSteps} reached` };
       yield await endTurn("max_steps", step);
@@ -665,6 +682,31 @@ export async function* runTurnCore(
     // awaiting `settled` and flushing at the end — the latter would show a
     // delegated agent's whole run in one burst after it had finished.
     const finished = settled.finally(() => liveEvents.close());
+
+    // An interrupt must not wait on the tools. exec, fetch and task honor
+    // ctx.signal, but a tool that does not — an LSP server call with a cold
+    // start, a question wizard waiting on the user, any plugin code — leaves the
+    // turn pinned to its full runtime. ESC then looked broken: the tool kept
+    // running, nothing was appended, and the UI sat on an in-flight call the
+    // user had already told it to stop. So the abort is RACED here: it ends the
+    // turn, and the orphaned tool keeps running detached (its own cleanup still
+    // fires) but can no longer hold the loop.
+    if (signal) {
+      // raced by VALUE, not by mutating a flag: assigning inside a .then()
+      // defeats control-flow analysis, so a `winner` variable would be typed
+      // as the literal "tools" at the read and the comparison would not compile
+      const outcome = await Promise.race([
+        finished.then(() => "tools" as const),
+        whenAborted(signal).then(() => "abort" as const),
+      ]);
+      if (outcome === "abort") {
+        liveEvents.close();
+        persistParkedSteers(asstNode.id);
+        yield await endTurn("aborted", step);
+        return;
+      }
+    }
+
     while (!liveEvents.done) {
       await liveEvents.ready();
       for (const ev of liveEvents.drain()) yield ev;
