@@ -17,6 +17,8 @@ export interface ModelInfo {
   audio?: boolean;
   /** accepts video input (mp4/webm/...) */
   video?: boolean;
+  /** accepts document input (pdf) — a distinct modality from `image` */
+  pdf?: boolean;
   reasoning?: boolean;
 }
 
@@ -64,6 +66,7 @@ export function lookupModel(id: string): ModelInfo {
       vision: c.input?.includes("image"),
       audio: c.input?.includes("audio"),
       video: c.input?.includes("video"),
+      pdf: c.input?.includes("pdf"),
       reasoning: c.reasoning,
     };
   }
@@ -77,6 +80,7 @@ export function lookupModel(id: string): ModelInfo {
       vision: cat.inputs?.includes("image"),
       audio: cat.inputs?.includes("audio"),
       video: cat.inputs?.includes("video"),
+      pdf: cat.inputs?.includes("pdf"),
       reasoning: cat.reasoning,
     });
     const ep = endpointModels(activeEndpoint)?.find((m) => m.id === id);
@@ -92,6 +96,7 @@ export function lookupModel(id: string): ModelInfo {
       vision: cat.inputs?.includes("image"),
       audio: cat.inputs?.includes("audio"),
       video: cat.inputs?.includes("video"),
+      pdf: cat.inputs?.includes("pdf"),
       reasoning: cat.reasoning,
     };
   }

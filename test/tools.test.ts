@@ -73,6 +73,26 @@ describe("read", () => {
     const r = await F.readRun({ path: "sub" }, ctx);
     expect(r.ok).toBe(false);
   });
+
+  test("a pdf attaches as media only when the model accepts the pdf modality", async () => {
+    writeFileSync(join(dir, "doc.pdf"), Buffer.from("%PDF-1.4\n%fake\n"));
+    // `pdf` is its own catalog modality, not a flavour of vision — a model with
+    // vision but no pdf must refuse it rather than attach a file the endpoint
+    // then rejects with an opaque 400.
+    const { setConfiguredModels } = await import("../src/providers/models.ts");
+    setConfiguredModels([{ id: "with-pdf", input: ["pdf"] }, { id: "image-only", input: ["image"] }]);
+
+    const yes = await F.readRun({ path: "doc.pdf" }, { ...ctx, providerCfg: { model: "with-pdf" } as any });
+    expect(yes.ok).toBe(true);
+    expect(yes.media?.[0]?.mimeType).toBe("application/pdf");
+    expect(yes.output).toContain("attached as pdf");
+
+    const no = await F.readRun({ path: "doc.pdf" }, { ...ctx, providerCfg: { model: "image-only" } as any });
+    expect(no.ok).toBe(false);
+    expect(no.output).toContain("does not accept pdf");
+
+    setConfiguredModels([]);
+  });
 });
 
 describe("write", () => {

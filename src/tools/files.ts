@@ -56,7 +56,8 @@ function sniffBinary(buf: Buffer): boolean {
 }
 
 /** Media files `read` can attach for a capable model, by extension -> [kind, IANA type]. */
-const MEDIA_TYPES: Record<string, ["image" | "video" | "audio", string]> = {
+type MediaKind = "image" | "video" | "audio" | "pdf";
+const MEDIA_TYPES: Record<string, [MediaKind, string]> = {
   png: ["image", "image/png"],
   jpg: ["image", "image/jpeg"],
   jpeg: ["image", "image/jpeg"],
@@ -76,9 +77,14 @@ const MEDIA_TYPES: Record<string, ["image" | "video" | "audio", string]> = {
   flac: ["audio", "audio/flac"],
   m4a: ["audio", "audio/mp4"],
   aac: ["audio", "audio/aac"],
+  // documents: `pdf` is its own catalog modality (see models.ts ModelInfo.pdf),
+  // NOT a flavour of `vision` — plenty of vision models take an image and
+  // refuse a pdf, so gating this on vision would attach a file the endpoint
+  // then rejects with an opaque 400.
+  pdf: ["pdf", "application/pdf"],
 };
 
-function mediaTypeOf(p: string): ["image" | "video" | "audio", string] | null {
+function mediaTypeOf(p: string): [MediaKind, string] | null {
   const ext = p.split(".").pop()?.toLowerCase() ?? "";
   return MEDIA_TYPES[ext] ?? null;
 }
@@ -88,10 +94,10 @@ function mediaTypeOf(p: string): ["image" | "video" | "audio", string] | null {
  * with no provider config: an attachment a text-only model cannot parse would
  * be dropped silently or fail the whole request. Shared by `read` and `fetch`.
  */
-export function modelAcceptsMedia(kind: "image" | "video" | "audio", ctx: ToolContext): boolean {
+export function modelAcceptsMedia(kind: MediaKind, ctx: ToolContext): boolean {
   if (!ctx.providerCfg?.model) return false;
   const info = lookupModel(ctx.providerCfg.model);
-  return kind === "image" ? !!info.vision : kind === "video" ? !!info.video : !!info.audio;
+  return kind === "image" ? !!info.vision : kind === "video" ? !!info.video : kind === "audio" ? !!info.audio : !!info.pdf;
 }
 
 // ---------- read ----------
@@ -99,7 +105,7 @@ export function modelAcceptsMedia(kind: "image" | "video" | "audio", ctx: ToolCo
 export const readDef: ToolDef = {
   name: "read",
   description:
-    "Read a text file. Returns line-numbered content (n: line). Caps at 2000 lines / 50KB. Image/audio/video files are attached as media when the current model accepts that kind of input (otherwise an error says so). Refuses other binary files.",
+    "Read a text file. Returns line-numbered content (n: line). Caps at 2000 lines / 50KB. Image/audio/video/pdf files are attached as media when the current model accepts that kind of input (otherwise an error says so). Refuses other binary files.",
   parameters: {
     type: "object",
     properties: {
