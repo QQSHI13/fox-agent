@@ -70,16 +70,19 @@ export function buildSystemPrompt(
   if (have.has("repl")) roster.push(`- repl is an in-process JS scratchpad with persistent vars; reach tools from code as tools.call(name, args) — direct calls bypass beforeTool/afterTool hooks.`);
   sections.push(roster.join("\n"));
 
-  if (have.has("read") || have.has("write") || have.has("edit")) {
-    // Paths: the cwd is already in the runtime header, so an absolute path
-    // spends tokens restating it and makes every path tool call fail the moment
-    // the session moves. Inside the project, always relative — `src/tools/x.ts`,
-    // not `/home/me/proj/src/tools/x.ts`. Absolute only for a path genuinely
-    // OUTSIDE the project (~/.ssh/config, /etc/hosts).
+  if (["read", "write", "edit", "glob", "grep", "exec", "lsp"].some((n) => have.has(n))) {
+    // Verified, not assumed: every path-taking tool resolves against ctx.cwd
+    // (read/write/edit `path`, glob/grep `path`, exec `workdir`, lsp `file`),
+    // so a relative path works in all of them — and the absolute one costs
+    // tokens restating the cwd that the runtime header already carries.
+    // `lsp.file` did NOT do this until this branch: it passed the raw path to
+    // the language server, which resolved it against fox-agent's own process
+    // cwd instead of the session's, and then reported zero diagnostics with no
+    // error. It is listed here because that is what makes the rule true.
     sections.push(
       [
         `## Paths`,
-        `Your cwd is in the runtime header. Inside the project always pass RELATIVE paths (src/tools/x.ts, not /home/me/proj/src/tools/x.ts) — absolute paths waste tokens restating the cwd and break the moment the session moves. Use absolute only for paths genuinely outside the project (a dotfile in $HOME, /etc/hosts).`,
+        `Your cwd is in the runtime header. Every tool that takes a path accepts a RELATIVE one and resolves it against that cwd — read/write/edit \`path\`, glob/grep \`path\`, exec \`workdir\`, lsp \`file\` all behave the same way — so prefer relative (src/tools/x.ts, not /home/me/proj/src/tools/x.ts). Absolute paths only for paths genuinely outside the project (a dotfile in $HOME, /etc/hosts).`,
       ].join("\n"),
     );
   }
@@ -118,7 +121,11 @@ export function buildSystemPrompt(
     ...(have.has("exec") ? [`Verify code changes by running tests/builds via exec.`] : []),
     ...(have.has("task") ? [`Delegate self-contained subtasks to task to protect this context window.`] : []),
   ];
-  sections.push(style.join(" "));
+  // `\n`, not " ": the space-joined form rendered as one line, so the heading
+  // swallowed its own first sentence — `## Style Short, direct answers — ...` —
+  // and the model read a run-on heading instead of a heading plus a rule. Every
+  // other section here joins with newlines, so this was the odd one out.
+  sections.push(style.join("\n"));
 
   // pi's self-documentation mechanism: ship docs, route to them, and let the
   // ordinary read tool do the rest. Routing lives in the prompt; the content

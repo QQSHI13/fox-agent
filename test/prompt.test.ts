@@ -350,6 +350,33 @@ describe("path, type-check and junk-output doctrine", () => {
     expect(p).toMatch(/outside the project/i);
   });
 
+  test("the Paths section names every tool that accepts a relative path", async () => {
+    // the claim is "everywhere", so it has to survive a registry that has only
+    // some of them — and the named fields must match what the tools really take
+    const p = await build({ tools: [fileTool("read"), fileTool("glob"), fileTool("exec"), fileTool("lsp")] });
+    expect(p).toContain("read/write/edit `path`");
+    expect(p).toContain("glob/grep `path`");
+    expect(p).toContain("exec `workdir`");
+    expect(p).toContain("lsp `file`");
+  });
+
+  test("a registry with no path-taking tool gets no Paths section", async () => {
+    const p = await build({ tools: [fileTool("todo")] });
+    expect(p).not.toContain("## Paths");
+  });
+
+  test("every section heading stands alone on its line", async () => {
+    // `## Style` was joined with " ", so it shipped as one run-on line —
+    // "## Style Short, direct answers — markdown renders in the UI. Verify..."
+    // — reading as a heading with a sentence glued to it rather than a heading
+    // plus a rule.
+    const p = await build();
+    for (const heading of p.split("\n").filter((l) => l.startsWith("## "))) {
+      expect(heading).not.toMatch(/^## \S+ [A-Z]/);
+    }
+    expect(p).toMatch(/^## Style\nShort, direct answers/m);
+  });
+
   test("the type-check doctrine lives in the prompt, not in the write/edit descriptions", async () => {
     const p = await build({ tools: [fileTool("write"), fileTool("edit")] });
     expect(p).toContain("## Type checking after every write");
