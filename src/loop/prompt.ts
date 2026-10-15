@@ -70,6 +70,34 @@ export function buildSystemPrompt(
   if (have.has("repl")) roster.push(`- repl is an in-process JS scratchpad with persistent vars; reach tools from code as tools.call(name, args) — direct calls bypass beforeTool/afterTool hooks.`);
   sections.push(roster.join("\n"));
 
+  if (have.has("read") || have.has("write") || have.has("edit")) {
+    // Paths: the cwd is already in the runtime header, so an absolute path
+    // spends tokens restating it and makes every path tool call fail the moment
+    // the session moves. Inside the project, always relative — `src/tools/x.ts`,
+    // not `/home/me/proj/src/tools/x.ts`. Absolute only for a path genuinely
+    // OUTSIDE the project (~/.ssh/config, /etc/hosts).
+    sections.push(
+      [
+        `## Paths`,
+        `Your cwd is in the runtime header. Inside the project always pass RELATIVE paths (src/tools/x.ts, not /home/me/proj/src/tools/x.ts) — absolute paths waste tokens restating the cwd and break the moment the session moves. Use absolute only for paths genuinely outside the project (a dotfile in $HOME, /etc/hosts).`,
+      ].join("\n"),
+    );
+  }
+
+  if (have.has("write") || have.has("edit")) {
+    // Moved here from the two tool descriptions: it is the same doctrine
+    // either way, but it is context the model applies ONCE across every write,
+    // and in the prompt it can also say what to do with the result instead of
+    // repeating "the result reports..." in two schemas that both ship on every
+    // request.
+    sections.push(
+      [
+        `## Type checking after every write`,
+        `After you \`write\` or \`edit\` a source file, the result already reports any type errors your change caused — so do NOT run a type-checker separately just to see them; that is a second full-project pass for information you already have. Read the diagnostics in the tool result and fix them before your next step.`,
+      ].join("\n"),
+    );
+  }
+
   if (have.has("ctx")) {
     sections.push(
       [
@@ -78,7 +106,8 @@ export function buildSystemPrompt(
           `- find nodes first: {"op":"search","pattern":"error"} shows snippets, never bodies\n` +
           `- after using a big result, hide it: {"op":"delete","ids":[3,5],"summary":"ran build; fixed 2 errors"}\n` +
           `- rewrite stale/wrong nodes: {"op":"replace","id":7,"content":"…"}\n` +
-          `Batch multiple ops in one ctx call. Any node is editable, including ones from the current turn. Edits apply from your NEXT step; storage is permanent — nothing is ever lost, ops are revertible (/undo).`,
+          `Batch multiple ops in one ctx call. Any node is editable, including ones from the current turn. Edits apply from your NEXT step; storage is permanent — nothing is ever lost, ops are revertible (/undo).\n` +
+          `Delete junk the moment you see it: when a tool result is gibberish, a runaway stack trace, binary noise, a listing of 400 files, or something you know you will never need, hide it RIGHT AWAY with ctx rather than carrying it for the rest of the session. Every junk node you leave behind is re-read and re-billed on every later step.`,
       ].join("\n"),
     );
   }

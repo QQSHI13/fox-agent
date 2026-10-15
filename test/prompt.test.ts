@@ -334,3 +334,49 @@ describe("live context figure in the prompt", () => {
     expect(h).not.toContain("ctx:");
   });
 });
+
+describe("path, type-check and junk-output doctrine", () => {
+  const fileTool = (name: string): ToolDef => ({
+    name,
+    description: "d",
+    parameters: { type: "object", properties: {} },
+  });
+
+  test("relative paths inside the project are taught where the cwd is known", async () => {
+    const p = await build({ tools: [fileTool("read")] });
+    expect(p).toContain("## Paths");
+    expect(p).toContain("RELATIVE");
+    // and the escape hatch is explicit, not implied
+    expect(p).toMatch(/outside the project/i);
+  });
+
+  test("the type-check doctrine lives in the prompt, not in the write/edit descriptions", async () => {
+    const p = await build({ tools: [fileTool("write"), fileTool("edit")] });
+    expect(p).toContain("## Type checking after every write");
+    expect(p).toContain("do NOT run a type-checker");
+
+    // the schemas themselves no longer carry it — one statement, applied once,
+    // instead of shipped in two tool blocks on every single request
+    const { writeDef, editDef } = await import("../src/tools/files.ts");
+    expect(writeDef.description).not.toMatch(/type error/i);
+    expect(editDef.description).not.toMatch(/type error/i);
+    // but the behavior stays in the tool result
+    expect(writeDef.description.length).toBeLessThan(80);
+    expect(editDef.description.length).toBeLessThan(260);
+  });
+
+  test("the junk-output rule rides with the ctx doctrine", async () => {
+    const p = await build({ tools: [fileTool("ctx")] });
+    expect(p).toMatch(/Delete junk the moment you see it/);
+    expect(p).toContain("gibberish");
+    // ctx is what it tells the agent to reach for, so the two cannot separate
+    expect(p).toContain('"op":"delete"');
+  });
+
+  test("each doctrine is gated on the tool that makes it actionable", async () => {
+    // no write/edit -> no "run a type checker" advice; no ctx -> no junk rule
+    const bare = await build({ tools: [fileTool("read")] });
+    expect(bare).not.toContain("## Type checking after every write");
+    expect(bare).not.toMatch(/Delete junk/);
+  });
+});
