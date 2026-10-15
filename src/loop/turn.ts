@@ -581,12 +581,17 @@ export async function* runTurnCore(
       const steeredWaiting = peekSteer(sessionId).length > 0;
       const capOk = maxSteps <= 0 || step + 1 <= maxSteps;
       if (steeredWaiting && capOk) continue;
-      // The steer check above and this endTurn are NOT atomic: the model was
-      // about to finish, the user hit ctrl+s in that window, and the text was
-      // dropped on the floor (nothing consumed it — the loop is over). Drain
-      // HERE and persist it as a real user node, the same path an abort takes,
-      // so the message survives into the next turn instead of vanishing.
-      if (!steeredWaiting) persistParkedSteers(asstNode.id);
+      // Reaching here with a steer still parked means the cap refused the extra
+      // step. The persist MUST therefore be unconditional: it used to run only
+      // under `!steeredWaiting`, so a steer parked during the final provider
+      // call under a positive maxSteps was drained by nobody — it sat in the
+      // queue (the TUI kept rendering "steering 1/1" under a turn that had
+      // already ended) and was silently answered by some later turn, or never.
+      // `persistParkedSteers` drains, so calling it with nothing queued is a
+      // no-op; it also closes the non-atomic window between this peek and
+      // endTurn, where the model finishes and the user hits ctrl+s in between.
+      // Same path an abort takes: a real user node, so the text survives.
+      persistParkedSteers(asstNode.id);
       yield await endTurn(outcome.finish.startsWith("error") ? outcome.finish : outcome.finish || "stop", step);
       return;
     }

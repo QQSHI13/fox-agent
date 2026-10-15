@@ -408,6 +408,35 @@ describe("steering", () => {
     drainSteer(s.id);
     expect(withdrawSteer(s.id)).toBeUndefined();
   });
+
+  test("a steer parked in the final call under a step cap persists instead of stranding", async () => {
+    const t = await setup();
+    const s = t.createSession("/w", "m1");
+    const { steer, peekSteer } = await import("../src/loop/steer.ts");
+    // The steer lands while the only permitted step's provider call is in
+    // flight, so the top-of-loop drain cannot reach it and the cap refuses the
+    // extra step that would have. It used to be dropped on the floor entirely —
+    // left in the queue under a turn that had already ended.
+    const chat = async function* (): AsyncGenerator<any> {
+      steer(s.id, "also do this");
+      yield { type: "text", delta: "only" };
+      yield { type: "done", reason: "stop" };
+    };
+    await collect(t.runTurnCore(s.id, cfg(), "hi", undefined, { chat: chat as any, maxSteps: 1 }));
+    expect(peekSteer(s.id)).toEqual([]); // drained, not stranded
+    const msgs = t.allMessages(s.id);
+    expect(msgs.map((m: any) => m.role)).toEqual(["user", "assistant", "user"]);
+    expect(msgs[2].content).toBe("also do this"); // answered next turn
+  });
+
+  test("no parked steer leaves a spurious extra user node", async () => {
+    const t = await setup();
+    const s = t.createSession("/w", "m1");
+    const mock = mockChat([textDone("done")]);
+    await collect(t.runTurnCore(s.id, cfg(), "hi", undefined, { chat: mock.fn as any, quiet: true }));
+    // the unconditional persist must be a no-op when the queue is empty
+    expect(t.allMessages(s.id).map((m: any) => m.role)).toEqual(["user", "assistant"]);
+  });
 });
 
 describe("request identity", () => {
