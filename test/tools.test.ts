@@ -229,6 +229,19 @@ describe("task background mode", () => {
     expect(bad.ok).toBe(false);
     expect(bad.output).toContain("needs prompt");
   });
+
+  test("killing an unknown or already-settled task says so instead of pretending", async () => {
+    const { taskRun } = await import("../src/tools/task.ts");
+    // there was no per-job kill at all before — this field used to be accepted
+    // and dropped, so a caller got a normal "still running" line and retried
+    const nope = await taskRun({ job: "t99", signal: "kill" }, ctx);
+    expect(nope.ok).toBe(false);
+    expect(nope.output).toContain("no task t99");
+    const settled = await taskRun({ job: "t1", signal: "kill" }, ctx);
+    // same session id as the real task created below is not assumed; t1 may not
+    // exist here, so both outcomes must be honest rather than a silent success
+    expect(settled.output).toMatch(/no task|already/);
+  });
 });
 
 describe("ctx is the one context tool", () => {

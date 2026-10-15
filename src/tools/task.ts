@@ -55,6 +55,7 @@ export const taskDef: ToolDef = {
       },
       background: { type: "boolean", description: "Start detached; returns a job id immediately. Poll with task({job})." },
       job: { type: "string", description: "Poll a background task: status while running, final report when done" },
+      signal: { type: "string", enum: ["kill"], description: "With job: abort that one task (parity with exec)" },
     },
     required: [],
   },
@@ -95,6 +96,8 @@ interface TaskJob {
   ac: AbortController;
   /** set when the job is scheduled for removal (read + grace elapsed, or kill) */
   reaped?: boolean;
+  /** set when a deliberate kill asked for it — suppresses the "task failed" steer */
+  killed?: boolean;
   /** a settled job stays readable for a grace window after the first read */
   readAt?: number;
 }
@@ -125,6 +128,18 @@ function reportBody(result: string): string {
   return `${result.slice(0, MAX_TASK_RESULT)}\n… (${result.length - MAX_TASK_RESULT} more chars — full report: ask for it in pieces, or re-run with a tighter scope)`;
 }
 
+function killTask(args: { job: string }, ctx: ToolContext): ToolResult {
+  const job = sessionTasks(ctx.sessionId).get(args.job);
+  if (!job) return fail(`error: no task ${args.job} in this session`);
+  if (job.done) return ok(`task ${job.id} (${job.label}) already ${job.ok ? "finished" : "failed"} after ${Math.floor((Date.now() - job.startedAt) / 1000)}s — nothing to kill`);
+  // `killed` is read by the completion handler, which would otherwise steer
+  // "background task tN failed" at the agent for a job the caller asked to
+  // stop on purpose — noise about a decision already taken.
+  job.killed = true;
+  job.ac.abort();
+  return ok(`task ${job.id} (${job.label}) killed after ${Math.floor((Date.now() - job.startedAt) / 1000)}s — its ACP child is being torn down`);
+}
+
 function pollTask(args: { job: string }, ctx: ToolContext): ToolResult {
   const job = sessionTasks(ctx.sessionId).get(args.job);
   if (!job) return fail(`error: no task ${args.job} in this session`);
@@ -153,10 +168,13 @@ export function killTasks(sessionId: string): void {
 }
 
 export async function taskRun(
-  args: { description?: string; prompt?: string; agent?: string; background?: boolean; job?: string },
+  args: { description?: string; prompt?: string; agent?: string; background?: boolean; job?: string; signal?: string },
   ctx: ToolContext,
 ): Promise<ToolResult> {
-  if (args.job) return pollTask({ job: args.job }, ctx);
+  if (args.job) {
+    if (args.signal === "kill") return killTask({ job: args.job }, ctx);
+    return pollTask({ job: args.job }, ctx);
+  }
   if (!args.prompt?.trim()) return fail("error: task needs prompt");
   if (!args.description?.trim()) return fail("error: task needs description");
 
@@ -181,6 +199,11 @@ export async function taskRun(
         job.done = true;
         job.ok = r.ok;
         job.result = r.output;
+        // A deliberate kill (`task({job, signal:"kill"})`) aborts the same
+        // controller, so this handler still runs — but the job did not "fail",
+        // the caller asked for it to stop, and steering a failure notice about a
+        // decision already taken is pure noise.
+        if (job.killed) return;
         // Tell the agent it finished, wherever it is right now. A detached
         // subagent that completed was previously invisible until the model
         // happened to poll — and the report was DELETED on first read, so an
@@ -197,7 +220,8 @@ export async function taskRun(
       .catch((e) => {
         job.done = true;
         job.ok = false;
-        job.result = `error: ${(e as Error).message ?? e}`;
+        job.result = job.killed ? "killed by request" : `error: ${(e as Error).message ?? e}`;
+        if (job.killed) return;
         steer(
           ctx.sessionId,
           `background task ${id} failed: ${job.label} — task({job:"${id}"}) for the error.`,
