@@ -111,6 +111,22 @@ describe("repl tool bridge", () => {
     expect(r2.ok).toBe(false);
   });
 
+  test("an argument the tool does not declare is refused here too", async () => {
+    // the same refusal a step's call gets — this path skips the turn loop, so
+    // without it a typo'd field would silently do nothing from the scratchpad.
+    // `signal` is NOT the probe: exec really does declare it (and would kill a
+    // job), so a typo of `cmd` is what must be caught.
+    const r = await replRun({ code: 'await tools.call("exec", { cmo: "echo hi" })' }, ctx);
+    expect(r.ok).toBe(false);
+    expect(r.output).toContain('unknown argument "cmo"');
+  });
+
+  test("a declared argument still passes through the bridge", async () => {
+    const r = await replRun({ code: 'await tools.call("exec", { cmd: "echo declared-arg-ok" })' }, ctx);
+    expect(r.ok).toBe(true);
+    expect(r.output).toContain("declared-arg-ok");
+  });
+
   test("repl-in-repl nesting is capped", async () => {
     let code = "1";
     for (let i = 0; i < 5; i++) code = `await tools.call("repl", { code: ${JSON.stringify(code)} })`;

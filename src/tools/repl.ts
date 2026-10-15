@@ -14,7 +14,7 @@
 import vm from "node:vm";
 import type { ToolDef } from "../providers/types.ts";
 import type { ToolContext, ToolResult } from "./types.ts";
-import { fail, ok } from "./types.ts";
+import { fail, ok, validateArgs } from "./types.ts";
 import { outCap } from "./files.ts";
 
 export const replDef: ToolDef = {
@@ -99,13 +99,20 @@ export async function replRun(
       if (callArgs !== undefined && (typeof callArgs !== "object" || callArgs === null)) {
         throw new Error(`tool args must be a JSON object`);
       }
+      const args = (callArgs ?? {}) as Record<string, unknown>;
+      // Same unknown-argument refusal a step's call gets — this path skips the
+      // turn loop's execToolCall, so without it `tools.call("task", {job:"t3",
+      // signal:"kill"})` from the scratchpad is the silent no-op it now is
+      // nowhere else.
+      const schemaErr = validateArgs(tool.def.name, tool.def, args);
+      if (schemaErr) throw new Error(schemaErr);
       // nested repl calls count against the same depth budget
       const child = tool.def.name === "repl" ? { depth: (depths.get(sessionId) ?? 0) + 1 } : null;
       if (child) depths.set(sessionId, child.depth);
       try {
         // direct invocation: validated like a step's call, but outside the
         // turn loop, so no live streaming and no beforeTool/afterTool hooks
-        const r = await tool.run((callArgs ?? {}) as any, { ...ctx, emit: undefined, callId: undefined });
+        const r = await tool.run(args as any, { ...ctx, emit: undefined, callId: undefined });
         const result = typeof r === "string" ? { ok: true, output: r } : r;
         if (!result.ok) throw new Error(result.output.slice(0, 500));
         return result.output;

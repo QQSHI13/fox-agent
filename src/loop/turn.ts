@@ -4,6 +4,7 @@ import { resolveChat } from "../providers/index.ts";
 import { classifyProviderError, FoxError, isTimeout } from "../core/errors.ts";
 import type { AgentEvent } from "../core/events.ts";
 import type { Tool, ToolContext, ToolResult, PtyState } from "../tools/types.ts";
+import { validateArgs } from "../tools/types.ts";
 import { outCap } from "../tools/files.ts";
 import { buildRegistry } from "../tools/index.ts";
 import { drainSteer, peekSteer } from "./steer.ts";
@@ -192,11 +193,10 @@ function safeParseArgs(s: string): { args: any; error?: string } {
 }
 
 function missingRequired(def: ToolDef, args: any): string | null {
-  const required = (def.parameters?.required as string[] | undefined) ?? [];
-  if (!required.length) return null;
-  if (!args || typeof args !== "object") return `arguments must be a JSON object`;
-  for (const key of required) if (args[key] === undefined) return `missing required argument "${key}"`;
-  return null;
+  // `validateArgs` covers both halves now — unknown keys AND missing required
+  // ones — and prefixes the tool name itself, so the caller just wraps it in
+  // `error:`. Renaming it here would ripple through the call site for nothing.
+  return validateArgs(def.name, def, args);
 }
 
 /**
@@ -222,7 +222,7 @@ async function execToolCall(call: ToolCall, tools: Map<string, Tool>, tctx: Tool
   const { args, error: parseErr } = safeParseArgs(call.arguments);
   if (parseErr) return { ok: false, output: `error: ${parseErr} for ${call.name}; send valid JSON matching the schema` };
   const reqErr = missingRequired(tool.def, args);
-  if (reqErr) return { ok: false, output: `error: ${call.name}: ${reqErr}` };
+  if (reqErr) return { ok: false, output: `error: ${reqErr}` };
 
   try {
     const r = await tool.run(args, tctx);

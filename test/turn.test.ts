@@ -455,6 +455,85 @@ describe("request identity", () => {
   });
 });
 
+describe("tool argument validation", () => {
+  const unknownArgTool = (): any => ({
+    def: { name: "echo", description: "echo back", parameters: { type: "object", properties: { say: { type: "string" } }, required: ["say"] } },
+    run: async (args: any) => `echo: ${args.say}`,
+  });
+
+  /** Stored content of one tool result, keyed by call id — fails loudly if absent. */
+  function toolOut(t: any, s: any, callId: string): string {
+    const m = t.allMessages(s.id).find((x: any) => x.role === "tool" && x.tool_call_id === callId);
+    if (!m) throw new Error(`no tool result for ${callId}`);
+    return m.content;
+  }
+
+  test("an unknown argument is refused instead of silently dropped", async () => {
+    const t = await setup();
+    const s = t.createSession("/w", "m1");
+    const registry = new Map<string, any>([["echo", unknownArgTool()]]);
+    const mock = mockChat([
+      [{ type: "tool_call", call: { id: "c1", name: "echo", arguments: '{"say":"x","signal":"kill"}' } }, { type: "done", reason: "tool_calls" }],
+      textDone("ok"),
+    ]);
+    await collect(t.runTurnCore(s.id, cfg(), "hi", undefined, { chat: mock.fn as any, registryOverride: registry, quiet: true }));
+    const out = toolOut(t, s, "c1");
+    // the tell-tale typo: a field copied from `exec`, which does take `signal`
+    expect(out).toContain('unknown argument "signal"');
+    expect(out).toContain("say"); // and says what IS accepted
+  });
+
+  test("a missing required argument is still refused", async () => {
+    const t = await setup();
+    const s = t.createSession("/w", "m1");
+    const registry = new Map<string, any>([["echo", unknownArgTool()]]);
+    const mock = mockChat([
+      [{ type: "tool_call", call: { id: "c1", name: "echo", arguments: "{}" } }, { type: "done", reason: "tool_calls" }],
+      textDone("ok"),
+    ]);
+    await collect(t.runTurnCore(s.id, cfg(), "hi", undefined, { chat: mock.fn as any, registryOverride: registry, quiet: true }));
+    expect(toolOut(t, s, "c1")).toContain('missing required argument "say"');
+  });
+
+  test("declared arguments still run, and a no-arg tool takes none", async () => {
+    const t = await setup();
+    const s = t.createSession("/w", "m1");
+    const bare: any = { def: { name: "ping", description: "", parameters: { type: "object" } }, run: async () => "pong" };
+    const registry = new Map<string, any>([["echo", unknownArgTool()], ["ping", bare]]);
+    const mock = mockChat([
+      [
+        { type: "tool_call", call: { id: "c1", name: "echo", arguments: '{"say":"x"}' } },
+        { type: "tool_call", call: { id: "c2", name: "ping", arguments: "{}" } },
+        { type: "tool_call", call: { id: "c3", name: "ping", arguments: '{"loud":true}' } },
+        { type: "done", reason: "tool_calls" },
+      ],
+      textDone("ok"),
+    ]);
+    await collect(t.runTurnCore(s.id, cfg(), "hi", undefined, { chat: mock.fn as any, registryOverride: registry, quiet: true }));
+    // keyed by tool_call_id, not by order: the calls run in parallel, so a
+    // result is appended when its tool finishes, not when it was called
+    expect(toolOut(t, s, "c1")).toBe("echo: x");
+    expect(toolOut(t, s, "c2")).toBe("pong");
+    expect(toolOut(t, s, "c3")).toContain("takes no arguments");
+  });
+
+  test("a schema that opts into additionalProperties still accepts extras", async () => {
+    const t = await setup();
+    const s = t.createSession("/w", "m1");
+    const open: any = {
+      def: { name: "open", description: "", parameters: { type: "object", properties: { base: { type: "string" } }, additionalProperties: true } },
+      run: async (args: any) => `got ${JSON.stringify(args)}`,
+    };
+    const registry = new Map<string, any>([["open", open]]);
+    const mock = mockChat([
+      [{ type: "tool_call", call: { id: "c1", name: "open", arguments: '{"base":"b","whatever":1}' } }, { type: "done", reason: "tool_calls" }],
+      textDone("ok"),
+    ]);
+    await collect(t.runTurnCore(s.id, cfg(), "hi", undefined, { chat: mock.fn as any, registryOverride: registry, quiet: true }));
+    expect(toolOut(t, s, "c1")).toBe('got {"base":"b","whatever":1}');
+  });
+});
+
 describe("prompt cache prefix", () => {
   test("the system message does not move and the runtime tail rides last", async () => {
     const t = await setup();
