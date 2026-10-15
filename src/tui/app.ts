@@ -3253,6 +3253,15 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   // word never splits mid-glyph; a single oversized word still fills then
   // continues (hard char-split). The old version cut at exactly maxCols, which
   // broke words in the middle — this breaks at the space before maxCols.
+  //
+  // Leading spaces are KEPT, unconditionally. wrapSegs suppresses them (spaces
+  // at the very start of a transcript line are layout noise), and this used to
+  // copy that rule — which silently dropped the indentation a user had typed:
+  // "  hello" painted as "hello" while the caret, computed from the real buffer,
+  // sat 2 columns past the end of the text. With 4 spaces it was 4 off, and it
+  // hit every indented block — the exact input (pasted code, YAML, a markdown
+  // list) where leading whitespace is the content. An editor must round-trip
+  // what it is given; the suppression is for rendering, not for editing.
   function wrapByWidth(s: string, maxCols: number): string[] {
     if (s.length === 0) return [""];
     const out: string[] = [];
@@ -3262,7 +3271,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       if (/^ +$/.test(word)) {
         const room = maxCols - currentWidth();
         const sp = Math.min(word.length, Math.max(0, room));
-        if (sp > 0 && (out.length > 0 || line.length > 0)) add(" ".repeat(sp));
+        if (sp > 0) add(" ".repeat(sp));
         continue;
       }
       let w = word;
@@ -3374,6 +3383,22 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     // columns. Rows are contiguous (next.startCol = this.startCol + rowW + 1 for
     // the consumed break space), so the last row on the line absorbs the EOL.
     let visRow = layout.rows.findIndex((r) => r.logical === li && colW >= r.startCol && colW < r.startCol + Math.max(r.rowW, 1));
+    // No match means colW landed exactly on a row's end width — which is the
+    // NORMAL state for the caret at the end of a line (it sits just past the
+    // last char, before the newline), and equally the last row of a wrapped
+    // line. It must stay on THIS line's final row. The old fallback took
+    // `rows.length - 1`, the last row of the whole layout, so end-of-line put
+    // the caret on a different line entirely in any multi-line input ("first\n
+    // second" — end of "first" jumped down onto "second"). Comment claimed
+    // "the last row on the line"; the code never scoped it to the line.
+    if (visRow < 0) {
+      for (let i = layout.rows.length - 1; i >= 0; i--) {
+        if (layout.rows[i].logical === li) {
+          visRow = i;
+          break;
+        }
+      }
+    }
     if (visRow < 0) visRow = layout.rows.length - 1; // past EOL lands on last row
     return { visRow, colW: colW - layout.rows[Math.max(0, visRow)].startCol };
   }
