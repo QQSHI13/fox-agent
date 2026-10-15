@@ -2,7 +2,10 @@
 // row-diffed flushing, explicit frame scheduling: keystrokes, stream deltas
 // and the spinner tick all just mark dirty; the frame loop owns the tty.
 import { openTerm, type Term } from "./term.ts";
-import { appendFileSync } from "node:fs";
+import { appendFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { randomUUID } from "node:crypto";
 import { Screen } from "./screen.ts";
 import { computeFrame, dockRows, itemEdgeSpan, scrollbarScrollTop, viewportHeight, chipGutter, contentOrigin, contentOriginForChip, contentWidth, type Frame, type FrameInput, type Row } from "./layout.ts";
 import { activePlugins } from "../plugins/load.ts";
@@ -54,6 +57,7 @@ import { shellPath } from "../core/shell.ts";
 import { killTree } from "../tools/exec.ts";
 import { debugLog, debugLogPath } from "../core/debuglog.ts";
 import { droppedPath, expandMentions } from "../core/mentions.ts";
+import { isWindowsTerminal, isWSL } from "../core/wsl.ts";
 import { liveTheme, setTheme, theme, themeName, type Theme } from "./themes.ts";
 import { diffSegs, jsonSegs, statusSegs, pathSegs, wordDiff, ansiSegs, highlightVersion, setHighlightDone } from "./highlight.ts";
 
@@ -365,66 +369,184 @@ async function clipRead(term: Term): Promise<string> {
 }
 
 /**
- * Copy to the system clipboard, reporting whether anything actually took it.
- *
- * The helper runs FIRST and OSC 52 second, and the order matters for
- * correctness, not speed. A terminal that supports OSC 52 (kitty, WezTerm,
- * tmux with set-clipboard) applies it in-band with no helper process and over
- * SSH — but a terminal that IGNORES it also ignores it silently, with no error
- * and no way to tell. The old order tried OSC 52 first and returned true
- * unconditionally, so on macOS Terminal.app the `pbcopy` entry below was
- * unreachable: the TUI flashed "copied 1234 chars" while the system clipboard
- * was unchanged. A copy that reports success and copied nothing is worse than
- * one that fails, so we spend the helper first and keep OSC 52 as the fallback
- * for a headless/SSH session with no clipboard tool.
+ * Size ceiling for OSC 52, measured on the ENCODED payload — what actually
+ * travels the wire. 100k base64 chars is ~75KB of text, comfortably inside what
+ * Windows Terminal, kitty and WezTerm accept.
  */
-async function clipWrite(text: string, term: Term): Promise<boolean> {
-  // clip.exe is deliberately absent: it decodes stdin in the console OEM
-  // codepage (GBK on a zh-CN machine), so UTF-8 bytes arrived as mojibake —
-  // "•" became "鈥?" (measured). The Windows path goes through powershell with
-  // the text base64-encoded instead: pure ASCII on the wire, immune to
-  // codepages, decoded as UTF-8 on the Windows side.
-  const cmds: { argv: string[]; b64?: boolean }[] = [
-    {
-      argv: [
-        "powershell.exe",
-        "-NoProfile",
-        "-Command",
-        "Set-Clipboard -Value ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::In.ReadToEnd())))",
-      ],
-      b64: true,
-    },
-    { argv: ["wl-copy"] },
-    { argv: ["xclip", "-selection", "clipboard", "-i"] },
-    { argv: ["pbcopy"] },
-  ];
-  for (const { argv, b64 } of cmds) {
-    try {
-      const p = Bun.spawn(argv, { stdin: "pipe", stdout: "ignore", stderr: "ignore" });
-      const timer = setTimeout(() => {
-        try {
-          p.kill();
-        } catch {}
-      }, 1500);
-      p.stdin.write(b64 ? Buffer.from(text, "utf8").toString("base64") : text);
-      await p.stdin.end();
-      const code = await p.exited;
-      clearTimeout(timer);
-      if (code === 0) return true;
-    } catch {}
-  }
+const MAX_OSC52_LENGTH = 100_000;
 
-  // No helper took it (a bare SSH session, a container with no clipboard tool):
-  // fall back to OSC 52, which is the only option left and works in-band. We
-  // still cannot know whether the terminal honoured it, so this is last and
-  // best-effort by construction.
+/**
+ * OSC 52 base64 of `text`, or null when it exceeds the size terminals accept.
+ *
+ * Exported for the size-limit test: the guarantee that matters is that an
+ * oversized payload REFUSES rather than copies a prefix, and that lives here.
+ */
+export function osc52Encode(text: string): string | null {
+  // The limit is on the ENCODED length — that is what travels the wire and what
+  // a terminal's buffer is sized against. Silently slicing instead (the old
+  // behavior) copied a prefix and reported success, which is the one outcome
+  // worse than an outright failure: the user pastes a mangled file with no idea.
+  const b64 = Buffer.from(text, "utf8").toString("base64");
+  return b64.length > MAX_OSC52_LENGTH ? null : b64;
+}
+
+/** OSC 52 copy, in-band: no helper process, works over SSH. */
+function emitOsc52(text: string, term: Term): boolean {
+  const b64 = osc52Encode(text);
+  if (b64 === null) return false;
   try {
-    const b64 = Buffer.from([...text].slice(0, 100_000).join(""), "utf8").toString("base64");
     term.write(`\x1b]52;c;${b64}\x07`);
     term.flush();
     return true;
-  } catch {}
-  return false;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Run one clipboard helper, feeding `input` on stdin.
+ *
+ * `timeoutMs` is PER HELPER, not a shared budget. The old code armed one 1500ms
+ * timer and reached for PowerShell first; under WSL interop that round trip
+ * measured 2.3–3.8s, so the first helper was killed on every copy and the cost
+ * was paid again on each fallback. Interop gets its own, larger budget; the
+ * native X/Wayland writers start in milliseconds and do not.
+ *
+ * `write()` then `end()` is deliberate, not an oversight: Bun's FileSink `end()`
+ * takes no payload (unlike node's), so the bytes must go through `write()` and
+ * `end()` is what flushes and closes. Measured on WSL2 through the interop pipe
+ * at 1K–256K: byte-identical every time, so an un-awaited `write()` was never
+ * the truncation it looked like.
+ */
+async function runClipHelper(argv: string[], input: string, timeoutMs: number): Promise<boolean> {
+  try {
+    const p = Bun.spawn(argv, { stdin: "pipe", stdout: "ignore", stderr: "ignore" });
+    const timer = setTimeout(() => {
+      try {
+        p.kill();
+      } catch {}
+    }, timeoutMs);
+    try {
+      // Bun's FileSink.end() closes the stream and takes no data, so the
+      // payload goes through write() first and end() flushes it. Measured on
+      // this stack: identical bytes at every size from 1K to 256K, including
+      // across the interop pipe.
+      p.stdin.write(input);
+      await p.stdin.end();
+      const code = await p.exited;
+      return code === 0;
+    } finally {
+      clearTimeout(timer);
+    }
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Copy via the Windows clipboard under WSL.
+ *
+ * The text goes through a TEMP FILE, not stdin: both `clip.exe` and PowerShell
+ * decode piped bytes in the console code page (GBK on a zh-CN machine), which
+ * mangled every non-ASCII character — "•" arrived as mojibake (measured). A file
+ * read with an explicit `[System.Text.Encoding]::UTF8` has no codepage in the
+ * path at all, and costs one file write instead of streaming every byte across
+ * the interop boundary.
+ *
+ * `wslpath -w` translates the Linux path; PowerShell then reads it by Windows
+ * path, so neither side has to know the other's filesystem.
+ */
+async function copyViaWindowsInterop(text: string): Promise<boolean> {
+  const tmp = join(tmpdir(), `fox-clip-${randomUUID()}.txt`);
+  try {
+    writeFileSync(tmp, text, { encoding: "utf8", mode: 0o600 });
+    const conv = Bun.spawn(["wslpath", "-w", tmp], { stdout: "pipe", stderr: "ignore" });
+    const cTimer = setTimeout(() => {
+      try {
+        conv.kill();
+      } catch {}
+    }, 1000);
+    let winPath: string;
+    try {
+      winPath = (await new Response(conv.stdout).text()).trim();
+    } finally {
+      clearTimeout(cTimer);
+      await conv.exited;
+    }
+    if (!winPath) return false;
+    // single-quoted and escaped, so a tmpdir containing an apostrophe cannot
+    // break out of the PowerShell string literal
+    const script = `Set-Clipboard -Value ([System.IO.File]::ReadAllText('${winPath.replaceAll("'", "''")}', [System.Text.Encoding]::UTF8))`;
+    return await runClipHelper(["powershell.exe", "-NoProfile", "-Command", script], "", 5000);
+  } catch {
+    return false;
+  } finally {
+    try {
+      unlinkSync(tmp);
+    } catch {
+      /* never created */
+    }
+  }
+}
+
+/**
+ * Copy to the system clipboard, reporting whether anything actually took it.
+ *
+ * The route is platform-shaped rather than one list for every machine. The
+ * ordering below is not a preference — each rule exists because the wrong order
+ * measurably cost something on a real stack:
+ *
+ *  - WSL + Windows Terminal: OSC 52 FIRST. Windows Terminal answers it natively,
+ *    writing the Windows clipboard with no process and no interop round trip.
+ *    PowerShell is the fallback for when it does not (a terminal that ignores
+ *    OSC 52 does so silently, with no error and no way to tell). The old code
+ *    tried PowerShell first and it lost every time — measured 2.3–3.8s per copy
+ *    under interop, against a 1500ms kill.
+ *  - Everywhere else a helper is still tried before OSC 52, because on a
+ *    desktop session OSC 52 cannot be verified: a terminal that ignores it
+ *    reports success and copied nothing, which is worse than a visible failure.
+ *  - Headless (no DISPLAY, no WAYLAND_DISPLAY, no Termux) or a remote session:
+ *    the terminal is the ONLY route, so OSC 52 is attempted without a helper.
+ */
+async function clipWrite(text: string, term: Term): Promise<boolean> {
+  const env = process.env;
+
+
+  // Native writers, gated on their own env markers and NOT on WSL. This box has
+  // WSLg, so DISPLAY and WAYLAND_DISPLAY are both set and wl-copy/xclip work —
+  // and they are verifiable (exit 0 means it landed) where OSC 52 is not. An
+  // earlier version of this function gated the whole block on `!wsl` and so
+  // skipped them here, paying a 2.3–3.8s interop round trip while an instant
+  // writer sat unused; a direct write must precede the in-band escape precisely
+  // because a terminal can otherwise race it.
+  const helpers: { argv: string[] }[] = [];
+  if (env.TERMUX_VERSION) helpers.push({ argv: ["termux-clipboard-set"] });
+  if (env.WAYLAND_DISPLAY) helpers.push({ argv: ["wl-copy"] });
+  if (env.DISPLAY) {
+    helpers.push({ argv: ["xclip", "-selection", "clipboard", "-i"] }, { argv: ["xsel", "--clipboard", "--input"] });
+  }
+  if (process.platform === "darwin") helpers.push({ argv: ["pbcopy"] });
+  for (const h of helpers) {
+    if (await runClipHelper(h.argv, text, 1500)) return true;
+  }
+
+  // No native writer took it. On WSL the Windows clipboard is the real one, and
+  // there are two routes: Windows Terminal answers OSC 52 in-band with no
+  // interop at all, and PowerShell is the fallback for a terminal that declines
+  // OSC 52 — which it does silently, with no error and no way to tell.
+  let osc52Emitted = false;
+  if (isWSL(env)) {
+    if (isWindowsTerminal(env)) osc52Emitted = emitOsc52(text, term);
+    if (osc52Emitted) return true;
+    if (await copyViaWindowsInterop(text)) return true;
+  }
+
+  // Bare SSH, a container, or a machine with no display: the terminal is the
+  // only route left. On a remote session it is also the RIGHT one, since the
+  // clipboard that matters belongs to the client. (Over SSH with X forwarding
+  // DISPLAY is set, so the xclip probe above wins and correctly writes the
+  // forwarded — i.e. the client's — clipboard.)
+  return emitOsc52(text, term);
 }
 
 export async function startTui(state: HarnessState, applyConfig?: () => { warnings: string[] }) {
