@@ -607,15 +607,18 @@ export async function* runTurnCore(
       // steer that arrives after the final reply resolved. The cap still bounds
       // it: an over-cap turn ends without consuming the steer.
       if (peekSteer(sessionId).length > 0 && (maxSteps <= 0 || step + 1 <= maxSteps)) continue;
-      // No steer waiting at the peek (or the cap refused the extra step): drain
-      // whatever parked between the peek and now. A steer that arrived in this
-      // window used to be persisted as a user node and then LEFT THERE — answered
-      // by some later turn, or never, which read as "my steered message was
-      // ignored". It deserves an answer NOW: `continue` re-enters the loop so the
-      // next call answers it in this turn. Only when the drain is empty (or the
-      // cap is hit) does the turn actually end.
-      const drainedLate = persistParkedSteers(asstNode.id);
-      if (drainedLate && (maxSteps <= 0 || step + 1 <= maxSteps)) continue;
+      // A steer can arrive in the window between the peek above and the turn's
+      // return. Re-peek rather than persist-and-continue: `persistParkedSteers`
+      // DRAINS the queue, so a `continue` after it finds nothing at the top of
+      // the loop — the steer was persisted as an orphan user node and answered
+      // only by a later turn (the "my steer was ignored" bug). Re-peeking lets
+      // `continue` reach the top-of-loop drain, which injects it as a real
+      // step-boundary user message AND emits `steered`, so the next call
+      // answers it in this turn.
+      if (peekSteer(sessionId).length > 0 && (maxSteps <= 0 || step + 1 <= maxSteps)) continue;
+      // Actually ending (no steer, or the cap refuses the extra step): persist
+      // whatever is parked so it survives to be answered next turn.
+      persistParkedSteers(asstNode.id);
       yield await endTurn(outcome.finish.startsWith("error") ? outcome.finish : outcome.finish || "stop", step);
       return;
     }
