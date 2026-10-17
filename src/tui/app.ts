@@ -116,9 +116,9 @@ export function setTuiCaps(collapsed: number, kept: number): void {
  * output is what the model needs, so for an over-long result we keep the end
  * and note the dropped head — same direction the live streaming body already
  * keeps (`slice(-KEPT_TOOL_CHARS)`), so a body the user watched stream does not
- * snap to a disjoint prefix the moment it settles.
+ * snap to a disjoint prefix the moment it settles. Exported for testing.
  */
-function keepTail(text: string, cap: number): string {
+export function keepTail(text: string, cap: number): string {
   return text.length > cap ? `… (${text.length - cap} chars dropped)\n${text.slice(-cap)}` : text;
 }
 
@@ -240,6 +240,36 @@ const SEQ_KEY_SPACE = 0x40000000;
 let keySeq = SEQ_KEY_SPACE;
 const nk = () => ++keySeq;
 const seqKey = (seq: number, slot: number) => seq * 4 + slot;
+
+/**
+ * Diff-and-touch, as a pure helper so it is unit-testable without reaching into
+ * startTui's closure. Given the previous and current item list, return the keys
+ * whose render signature CHANGED (and so must be re-rendered). A prior node is
+ * append-only — its stored content never changes — so an unchanged node keeps
+ * its cached rows; only a node whose kind/text/expand/policy moved is touched.
+ * This replaces the old blanket "touch every item on refresh", which made each
+ * rebuild O(history) re-wrap instead of O(nodes that changed).
+ *
+ * `sig` maps an item to a render signature; `sigs` is the caller-held map of
+ * key -> signature, mutated in place so it stays in sync across rebuilds.
+ */
+export function diffTouchKeys<T>(prev: T[], curr: T[], key: (t: T) => number, sig: (t: T) => string, sigs: Map<number, string>): number[] {
+  const changed: number[] = [];
+  const prevKeys = new Set(prev.map(key));
+  const seen = new Set<number>();
+  for (const it of curr) {
+    const k = key(it);
+    seen.add(k);
+    if (sigs.get(k) !== sig(it)) {
+      changed.push(k);
+      sigs.set(k, sig(it));
+    }
+  }
+  // nodes that vanished (ctx hid them, session trimmed): drop their sigs so a
+  // later same-key node is not mistaken for the old one
+  for (const k of prevKeys) if (!seen.has(k)) sigs.delete(k);
+  return changed;
+}
 
 /**
  * One-line "what actually ran" for a tool head: the meaningful field when the
@@ -889,19 +919,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     // history. Prior nodes are append-only (stored content never changes), so
     // an unchanged node keeps its cached rows; the previous blanket
     // `for (it of items) touch(it.k)` invalidated everything and made refresh()
-    // O(history) re-wrap each time.
-    const prevByKey = new Map(prev.map((i) => [i.k, i]));
-    for (const it of items) {
-      const sig = itemSig(it);
-      if (itemSigs.get(it.k) !== sig) {
-        touch(it.k);
-        itemSigs.set(it.k, sig);
-      }
-      prevByKey.delete(it.k);
-    }
-    // nodes that vanished (ctx hid them, session trimmed): drop their sigs so a
-    // later same-key node is not mistaken for the old one
-    for (const k of prevByKey.keys()) itemSigs.delete(k);
+    // O(history) re-wrap each time. The pure helper is unit-testable (see
+    // test/difftouch.test.ts).
+    for (const k of diffTouchKeys(prev, items, (i) => i.k, itemSig, itemSigs)) touch(k);
     // the rebuild drops the startup block with everything else — its lifetime
     // ends here, so a later refreshWelcome() must not resurrect it
     welcomed = false;
