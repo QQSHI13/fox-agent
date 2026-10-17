@@ -5,6 +5,8 @@ export interface Style {
   fg?: string;
   bg?: string;
   bold?: boolean;
+  /** faint / dim intensity: SGR 2 on, 22 (or 0) off */
+  faint?: boolean;
   italic?: boolean;
   /** strikethrough: SGR 9 on, 29 off */
   strike?: boolean;
@@ -530,6 +532,7 @@ function sgrOf(s: Style): string {
     out += ansiColor(s.bg, true);
   }
   if (s.bold) out += "\x1b[1m";
+  if (s.faint) out += "\x1b[2m"; // faint/dim intensity
   if (s.italic) out += "\x1b[3m";
   if (s.strike) out += "\x1b[9m";
   return out;

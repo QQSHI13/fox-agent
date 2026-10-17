@@ -116,9 +116,9 @@ export function setTuiCaps(collapsed: number, kept: number): void {
  * output is what the model needs, so for an over-long result we keep the end
  * and note the dropped head — same direction the live streaming body already
  * keeps (`slice(-KEPT_TOOL_CHARS)`), so a body the user watched stream does not
- * snap to a disjoint prefix the moment it settles.
+ * snap to a disjoint prefix the moment it settles. Exported for testing.
  */
-function keepTail(text: string, cap: number): string {
+export function keepTail(text: string, cap: number): string {
   return text.length > cap ? `… (${text.length - cap} chars dropped)\n${text.slice(-cap)}` : text;
 }
 
