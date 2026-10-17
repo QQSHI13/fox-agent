@@ -663,7 +663,19 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
 
   function refresh() {
     const prev = items;
-    items = loadItems(); // loadItems already restores expandedRefs
+    // Preserve the items loadItems() cannot reproduce, in their positions: the
+    // welcome block (prepended) and the live tail (in-flight think block,
+    // running tool head+body pairs, subagent progress lines, ephemeral notices).
+    // A rebuild must NOT drop these — they are the overlay the user is watching
+    // (ESC mid-turn, a ctx op mid-turn). Only stored messages (which carry a
+    // storage `seq`) are rebuilt from the store; the rest keep their minted
+    // keys, cache entries, and slots.
+    // A settled tool BODY carries `ref` (its head's seq), not `seq` — so `ref`
+    // items are stored too, NOT live. Excluding them keeps each tool's head and
+    // body together (the toolbody-split fix).
+    const head = prev.filter((i) => i.welcome);
+    const liveTail = prev.filter((i) => i.seq === undefined && i.ref === undefined && !i.welcome);
+    items = [...head, ...loadItems(), ...liveTail]; // loadItems restores expandedRefs
     // log items keep stable seq-derived keys, so their cache entries stay
     // warm across rebuilds (the whole point); minted-key items (welcome,
     // ephemeral, streaming) die here — sweep their entries once per rebuild
