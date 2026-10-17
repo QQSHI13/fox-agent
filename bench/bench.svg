@@ -133,7 +133,7 @@
 <text x="408" y="656" fill="#8a8578" font-size="12">claude code</text>
 <rect x="556" y="644" width="138" height="14" rx="3" fill="#3a382f"/>
 <text x="564" y="655" fill="#8a8578" font-size="10">n/a</text>
-<text x="408" y="686" fill="#8a8578" font-size="12">copilot cli</text>
+<text x="408" y="686" fill="#8a8578" font-size="12">cursor-agent</text>
 <rect x="556" y="674" width="138" height="14" rx="3" fill="#3a382f"/>
 <text x="564" y="685" fill="#8a8578" font-size="10">n/a</text>
 <text x="408" y="716" fill="#8a8578" font-size="12">cline</text>
@@ -151,10 +151,10 @@
 <text x="792" y="146" fill="#e6e1d8" font-size="12">goose</text>
 <rect x="940" y="134" width="4" height="14" rx="3" fill="#5b7fa6"/>
 <text x="1084" y="145" fill="#8a8578" font-size="11">🥈0.2 ms</text>
-<text x="792" y="176" fill="#e6e1d8" font-size="12">jcode</text>
+<text x="792" y="176" fill="#e6e1d8" font-size="12">codex</text>
 <rect x="940" y="164" width="4" height="14" rx="3" fill="#5b7fa6"/>
 <text x="1084" y="175" fill="#8a8578" font-size="11">🥉0.4 ms</text>
-<text x="792" y="206" fill="#8a8578" font-size="12">amp</text>
+<text x="792" y="206" fill="#8a8578" font-size="12">jcode</text>
 <rect x="940" y="194" width="4" height="14" rx="3" fill="#5b7fa6"/>
 <text x="1084" y="205" fill="#8a8578" font-size="11">0.5 ms</text>
 <text x="792" y="236" fill="#e0803c" font-size="12">fox-agent</text>
@@ -180,7 +180,7 @@
 <text x="1084" y="415" fill="#8a8578" font-size="11">58.3 ms</text>
 <text x="792" y="446" fill="#8a8578" font-size="12">crush</text>
 <rect x="940" y="434" width="6" height="14" rx="3" fill="#5b7fa6"/>
-<text x="1084" y="445" fill="#8a8578" font-size="11">72.6 ms</text>
+<text x="1084" y="445" fill="#8a8578" font-size="11">73.0 ms</text>
 <text x="792" y="476" fill="#8a8578" font-size="12">codebuff</text>
 <rect x="940" y="464" width="9" height="14" rx="3" fill="#5b7fa6"/>
 <text x="1084" y="475" fill="#8a8578" font-size="11">111 ms</text>
@@ -389,8 +389,8 @@
 <rect x="940" y="1130" width="22" height="14" rx="3" fill="#5b7fa6"/>
 <text x="1084" y="1141" fill="#8a8578" font-size="11">245 ms</text>
 <text x="792" y="1172" fill="#8a8578" font-size="12">amp</text>
-<rect x="940" y="1160" width="24" height="14" rx="3" fill="#5b7fa6"/>
-<text x="1084" y="1171" fill="#8a8578" font-size="11">261 ms</text>
+<rect x="940" y="1160" width="23" height="14" rx="3" fill="#5b7fa6"/>
+<text x="1084" y="1171" fill="#8a8578" font-size="11">256 ms</text>
 <text x="792" y="1202" fill="#8a8578" font-size="12">cursor-agent</text>
 <rect x="940" y="1190" width="41" height="14" rx="3" fill="#5b7fa6"/>
 <text x="1084" y="1201" fill="#8a8578" font-size="11">453 ms</text>
