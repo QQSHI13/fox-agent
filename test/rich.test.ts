@@ -186,6 +186,20 @@ describe("Screen: strike and OSC 8 hrefs", () => {
     expect(buf).toContain("ab\x1b[0m"); // reset between the runs
   });
 
+  test("a faint style emits SGR 2 and does not leak into the next run", () => {
+    const scr = new Screen(new FakeTerm() as any);
+    scr.resize(20, 1);
+    // a DIFFERENT fg on the second run forces a style break, so the run boundary
+    // is real — faint on the first, plain on the second
+    scr.text(0, 0, "ab", scr.sgr({ fg: "#ffffff", faint: true }));
+    scr.text(2, 0, "cd", scr.sgr({ fg: "#ff0000" }));
+    scr.flush();
+    expect(scr.dumpGrid()).toBe("abcd" + "\x01".repeat(16));
+    const buf = (scr as any).term.buf as string;
+    expect(buf).toContain("\x1b[2m"); // faint on for the first run
+    expect(buf).toContain("ab\x1b[0m"); // reset before the second (non-faint) run
+  });
+
   test("an href seg emits an OSC 8 open before and close after the text", () => {
     const scr = new Screen(new FakeTerm() as any);
     scr.resize(24, 1);
