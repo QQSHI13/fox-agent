@@ -22,21 +22,26 @@ function hasEnvMarker(env: NodeJS.ProcessEnv): boolean {
 
 /**
  * `/proc/version` carries `microsoft` / `wsl` on every WSL1 and WSL2 kernel,
- * including when the env markers have been scrubbed.
+ * including when the env markers have been scrubbed. Overridable for tests so
+ * the suite is host-independent (a bare-Linux CI runner has no real marker).
  */
-function hasProcMarker(): boolean {
+function hasProcMarker(procVersion: string | null = readProcVersion()): boolean {
+  return !!procVersion && /microsoft|wsl/i.test(procVersion);
+}
+
+function readProcVersion(): string | null {
   try {
-    return /microsoft|wsl/i.test(readFileSync("/proc/version", "utf8"));
+    return readFileSync("/proc/version", "utf8");
   } catch {
-    return false;
+    return null;
   }
 }
 
 let cached: boolean | null = null;
 
 /** Cached: the kernel cannot change under a running process. */
-export function isWSL(env: NodeJS.ProcessEnv = process.env): boolean {
-  if (cached === null) cached = hasEnvMarker(env) || hasProcMarker();
+export function isWSL(env: NodeJS.ProcessEnv = process.env, procVersion?: string | null): boolean {
+  if (cached === null) cached = hasEnvMarker(env) || hasProcMarker(procVersion);
   return cached;
 }
 

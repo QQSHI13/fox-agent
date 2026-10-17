@@ -29,21 +29,29 @@ afterEach(() => {
 
 describe("WSL detection", () => {
   test("the env markers each identify WSL on their own", () => {
-    for (const key of ["WSL_DISTRO_NAME", "WSSLENV", "WSL_INTEROP"]) {
+    // Pass a non-WSL /proc/version so ONLY the env marker can fire — the test
+    // is host-independent (a bare-Linux CI runner has no real WSL kernel).
+    for (const key of ["WSL_DISTRO_NAME", "WSLENV", "WSL_INTEROP"]) {
       for (const k of Object.keys(REAL)) delete process.env[k];
       process.env[key] = "set";
       resetWslCache();
-      expect(isWSL()).toBe(true);
+      expect(isWSL(process.env, "Linux version 6.8.0-generic")).toBe(true);
     }
   });
 
-  test("/proc/version carries the kernel marker even with the env scrubbed", () => {
-    // WSL1 and WSL2 kernels both put microsoft/wsl in /proc/version, and this
-    // suite runs ON one — so the marker path is asserted against the real
-    // kernel rather than a fixture, which is the stronger claim.
+  test("no marker (bare env + generic kernel) is not WSL", () => {
     for (const k of Object.keys(REAL)) delete process.env[k];
     resetWslCache();
-    expect(isWSL()).toBe(true);
+    expect(isWSL(process.env, "Linux version 6.8.0-generic")).toBe(false);
+  });
+
+  test("the /proc/version kernel marker identifies WSL even with the env scrubbed", () => {
+    // The kernel-marker path, injected — the claim under test is that a WSL
+    // kernel string is detected, independent of the host the suite runs on.
+    for (const k of Object.keys(REAL)) delete process.env[k];
+    resetWslCache();
+    expect(isWSL(process.env, "Linux version 5.15.90.1-microsoft-standard-WSL2")).toBe(true);
+    expect(isWSL(process.env, "Linux version 4.4.0-19041-Microsoft")).toBe(true); // WSL1
   });
 });
 
