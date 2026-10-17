@@ -366,12 +366,14 @@ const SKIP_DIRS = new Set([".git", "node_modules", ".venv", "venv", "__pycache__
 
 function walkGrep(re: RegExp, root: string, include: string | undefined, limit: number): string {
   const out: string[] = [];
+  let truncated = false; // a further match existed past `limit` — say so, like the rg path
   const includeRe = include ? new Bun.Glob(include) : null;
   const seen = new Set<string>();
   const MAX_DEPTH = 20;
 
   const walk = (dir: string, depth: number) => {
-    if (out.length >= limit || depth > MAX_DEPTH) return;
+    if (out.length >= limit && truncated) return; // already full AND noted: stop
+    if (depth > MAX_DEPTH) return;
     // resolve the real path so a symlink loop (ln -s . loop) terminates
     let real = dir;
     try {
@@ -388,7 +390,7 @@ function walkGrep(re: RegExp, root: string, include: string | undefined, limit: 
       return;
     }
     for (const name of entries.sort()) {
-      if (out.length >= 300) return;
+      if (out.length >= limit && truncated) return;
       const full = join(dir, name);
       let st;
       try {
@@ -419,8 +421,10 @@ function walkGrep(re: RegExp, root: string, include: string | undefined, limit: 
         const buf = readFileSync(full);
         if (sniffBinary(buf.subarray(0, 4000))) continue;
         const lines = buf.toString("utf8").split("\n");
-        for (let i = 0; i < lines.length && out.length < limit; i++) {
-          if (re.test(lines[i])) out.push(`${full}:${i + 1}: ${lines[i].trim().slice(0, 300)}`);
+        for (let i = 0; i < lines.length; i++) {
+          if (!re.test(lines[i])) continue;
+          if (out.length < limit) out.push(`${full}:${i + 1}: ${lines[i].trim().slice(0, 300)}`);
+          else truncated = true; // a match existed past the cap: the result is incomplete
         }
       } catch {}
     }
@@ -434,11 +438,16 @@ function walkGrep(re: RegExp, root: string, include: string | undefined, limit: 
           .toString("utf8")
           .split("\n")
           .forEach((l, i) => {
-            if (re.test(l) && out.length < limit) out.push(`${root}:${i + 1}: ${l.trim().slice(0, 300)}`);
+            if (!re.test(l)) return;
+            if (out.length < limit) out.push(`${root}:${i + 1}: ${l.trim().slice(0, 300)}`);
+            else truncated = true; // a match existed past the cap: incomplete
           });
       }
     } else walk(root, 0);
   } catch {}
 
-  return out.length ? out.join("\n") : "(no matches)";
+  if (!out.length) return "(no matches)";
+  return truncated
+    ? `${out.slice(0, limit).join("\n")}\n… (truncated at ${limit} of ${out.length}+ matches — narrow the pattern, add include, or raise limit)`
+    : out.join("\n");
 }
