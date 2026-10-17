@@ -12,6 +12,11 @@ let ctx: ToolContext;
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "fox-repl-"));
   process.env.FOX_AGENT_HOME = join(dir, ".fox");
+  // BOTH: loadConfig reads the global config from FOX_AGENT_CONFIG when set,
+  // else ~/.config — setting only the home left this suite asserting against
+  // the developer's real config (a stray key there flips expect(warnings)).
+  // Point it inside the tmp home; never touch the real config (CLAUDE.md).
+  process.env.FOX_AGENT_CONFIG = join(join(dir, ".fox"), "config.toml");
   let pty: unknown;
   ctx = {
     sessionId: "repl-s1",
@@ -78,9 +83,24 @@ describe("repl scratchpad", () => {
     expect(Date.now() - t0).toBeLessThan(5000);
   }, 30_000);
 
-  test("no timers in the sandbox (documented constraint)", async () => {
-    const r = await replRun({ code: "setTimeout(() => {}, 1)" }, ctx);
-    expect(r.ok).toBe(false);
+  test("full environment: process, timers, fetch, and dynamic import all work", async () => {
+    // no sandbox anywhere else in fox-agent (exec runs anything), so the
+    // scratchpad is a full environment too — process, timers, fetch, and a
+    // working dynamic import() all resolve against the host
+    // a single expression (no declaration) so the expression-first path
+    // wraps it cleanly: `await import()` + array literal + join
+    const r = await replRun(
+      { code: '(await import("node:fs")).existsSync("/") ? [typeof process, typeof setTimeout, typeof fetch, "fs-ok"].join(",") : "fs-no"' },
+      ctx,
+    );
+    expect(r.ok).toBe(true);
+    expect(r.output).toContain("object,function,function,fs-ok");
+  });
+
+  test("timers actually fire (not just present)", async () => {
+    const r = await replRun({ code: 'await new Promise((res) => setTimeout(() => res("timer-fired"), 5))' }, ctx);
+    expect(r.ok).toBe(true);
+    expect(r.output).toContain("timer-fired");
   });
 
   test("needs code and a registry", async () => {

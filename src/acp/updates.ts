@@ -15,6 +15,7 @@
  */
 import type { SessionUpdate, StopReason, ToolKind } from "@agentclientprotocol/sdk";
 import type { AgentEvent } from "../core/events.ts";
+import { assertNever } from "../core/events.ts";
 
 /**
  * fox-agent tool -> ACP ToolKind. Clients pick icons and UI affordances from this, so
@@ -119,6 +120,8 @@ export function toSessionUpdate(ev: AgentEvent, opts: MapOptions): SessionUpdate
       // would mint tool_call ids in the parent session that never complete, and
       // attribute the child's work to the parent's transcript.
       return null;
+    default:
+      return assertNever(ev);
   }
 }
 

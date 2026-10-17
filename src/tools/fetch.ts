@@ -23,27 +23,96 @@ const MAX_TEXT_BUFFER = CAP * 4;
 const MAX_MEDIA_BUFFER = 15_000_000;
 const MAX_REDIRECTS = 5;
 
-function privateHostname(host: string): boolean {
-  const h = host.toLowerCase().replace(/\.$/, "");
-  if (h === "localhost" || h.endsWith(".localhost")) return true;
-  // Literal IPs: loopback, RFC1918, link-local/metadata, IPv6 loopback/link-local.
-  if (/^127\./.test(h)) return true;
-  if (h === "::1" || h === "::ffff:127.0.0.1") return true;
-  if (/^fe80:/i.test(h) || /^fec0:/i.test(h)) return true;
-  const m4 = /^(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(h);
-  if (m4) {
-    const [a, b] = [+m4[1], +m4[2]];
-    if (a === 10) return true;
-    if (a === 172 && b >= 16 && b <= 31) return true;
-    if (a === 192 && b === 168) return true;
-    if (a === 169 && b === 254) return true;
-    if (a === 0) return true;
-  }
+/** A dotted quad, as four numbers. */
+function parseIpv4(h: string): [number, number, number, number] | null {
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(h);
+  if (!m) return null;
+  const parts = m.slice(1, 5).map(Number);
+  return parts.every((n) => n <= 255) ? (parts as [number, number, number, number]) : null;
+}
+
+/** Loopback / RFC1918 / link-local-metadata / "this network". */
+function privateIpv4(a: number, b: number, _c: number, _d: number): boolean {
+  if (a === 127) return true;
+  if (a === 0) return true;
+  if (a === 10) return true;
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  if (a === 192 && b === 168) return true;
+  if (a === 169 && b === 254) return true;
   return false;
 }
 
-/** SSRF gate: only http(s), no loopback/private/metadata unless explicitly allowed. */
-function checkUrl(u: URL): string | null {
+/**
+ * An IPv6 literal (brackets already stripped) as its 8 groups of 16 bits.
+ *
+ * A trailing dotted quad is rewritten to the two hextets it encodes first, so
+ * `::ffff:127.0.0.1` parses on the same path as `::ffff:7f00:1`. Null for
+ * anything that is not a well-formed address — an IPv6 literal we cannot read
+ * is not one to connect to.
+ */
+function ipv6Groups(host: string): number[] | null {
+  let h = host;
+  const v4 = /(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(h);
+  if (v4) {
+    const p = v4.slice(1, 5).map(Number);
+    if (p.some((n) => n > 255)) return null;
+    h = h.slice(0, v4.index) + `${((p[0] << 8) | p[1]).toString(16)}:${((p[2] << 8) | p[3]).toString(16)}`;
+  }
+  const halves = h.split("::");
+  if (halves.length > 2) return null;
+  const head = halves[0] ? halves[0].split(":") : [];
+  const tail = halves.length === 2 && halves[1] ? halves[1].split(":") : [];
+  const fill = halves.length === 2 ? 8 - head.length - tail.length : 0;
+  if (fill < 0) return null;
+  const groups = [...head, ...new Array(fill).fill("0"), ...tail];
+  if (groups.length !== 8) return null;
+  const out = groups.map((g) => parseInt(g, 16));
+  return out.every((n) => Number.isInteger(n) && n >= 0 && n <= 0xffff) ? out : null;
+}
+
+/**
+ * The IPv6 ranges that reach back inside the machine or the private network.
+ *
+ * The whole point of expanding to 8 groups is that `fe80:`/`fec0:` prefix tests
+ * written against the *text* miss most spellings (`fe80::1`, `fe80:0:0:0:0:0:0:1`,
+ * the bracketed form WHATWG URL hands us), and that `::ffff:a00:1` — how the URL
+ * parser rewrites `::ffff:10.0.0.1` — carries an RFC1918 address in hex where the
+ * IPv4 rules only ever read dotted quads.
+ */
+function privateIpv6(h: string): boolean {
+  const g = ipv6Groups(h);
+  if (!g) return true;
+  const [g0, g1, _g2, _g3, _g4, g5, g6, g7] = g;
+  // `::` (unspecified) and `::1` (loopback)
+  if (g.slice(0, 7).every((x) => x === 0) && (g7 === 0 || g7 === 1)) return true;
+  // IPv4-mapped ::ffff:0:0/96 and the NAT64 well-known prefix 64:ff9b::/96 both
+  // carry a real IPv4 address in their last 32 bits — judge it by the IPv4 rules
+  if ((g.slice(0, 5).every((x) => x === 0) && g5 === 0xffff) || (g0 === 0x64 && g1 === 0xff9b && g.slice(2, 6).every((x) => x === 0))) {
+    return privateIpv4(g6 >> 8, g6 & 0xff, g7 >> 8, g7 & 0xff);
+  }
+  if ((g0 & 0xffc0) === 0xfe80) return true; // link-local /10
+  if ((g0 & 0xffc0) === 0xfec0) return true; // site-local /10 (deprecated)
+  if ((g0 & 0xfe00) === 0xfc00) return true; // unique-local /7
+  return false;
+}
+
+function privateHostname(host: string): boolean {
+  let h = host.toLowerCase().replace(/\.$/, "");
+  if (h === "localhost" || h.endsWith(".localhost")) return true;
+  // `URL.hostname` keeps IPv6 literals BRACKETED ("[::1]"), so every prefix test
+  // below would miss them — strip the brackets before reading the address.
+  if (h.startsWith("[") && h.endsWith("]")) h = h.slice(1, -1);
+  if (h.includes(":")) return privateIpv6(h);
+  const v4 = parseIpv4(h);
+  if (v4) return privateIpv4(v4[0], v4[1], v4[2], v4[3]);
+  // NOTE: the URL parser canonicalizes the decimal/octal/short IPv4 spellings
+  // (`http://2130706433`, `http://127.1`) into dotted quads for us, so a host
+  // that reaches this point as text is genuinely not an IP literal.
+  return false;
+}
+
+/** SSRF gate: only http(s), no loopback/private/metadata unless explicitly allowed. Exported for the offline gate tests in test/security.test.ts. */
+export function checkUrl(u: URL): string | null {
   if (!/^https?:$/.test(u.protocol)) return "error: only http(s) URLs are supported";
   if (privateHostname(u.hostname) && process.env.FOX_AGENT_ALLOW_PRIVATE_FETCH !== "1") {
     return `error: refusing private/local URL ${u.hostname} (set FOX_AGENT_ALLOW_PRIVATE_FETCH=1 to allow)`;

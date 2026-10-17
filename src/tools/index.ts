@@ -6,7 +6,7 @@ import { COMMANDS } from "../commands.ts";
 import * as F from "./files.ts";
 import { execDef, execRun } from "./exec.ts";
 import { cleanupPty, ptySessionName } from "./pty.ts";
-import { setOutputCap } from "./files.ts";
+import { setOutputCap, setReadCap } from "./files.ts";
 import { ctxDef, ctxRun } from "./ctx.ts";
 import { mcpTools, closeMcp } from "./mcp.ts";
 import { loadPlugins, setActivePlugins } from "../plugins/load.ts";
@@ -52,6 +52,23 @@ export function defaultRegistry(): Map<string, Tool> {
 }
 
 /**
+ * Collect the custom (plugin-registered) providers from a set of plugins and
+ * register them. One copy of the rule — `buildRegistry` and the turn loop's
+ * registry-override path both used to hand-roll this loop, able to drift.
+ * `setCustomProviders` already refuses the reserved bundled names, so the
+ * only filter here is "is it actually a function".
+ */
+export function registerPluginProviders(plugins: FoxPlugin[]): void {
+  const custom = new Map<string, ChatFn>();
+  for (const p of plugins) {
+    for (const [name, fn] of Object.entries(p.providers ?? {})) {
+      if (typeof fn === "function") custom.set(name, fn);
+    }
+  }
+  setCustomProviders(custom);
+}
+
+/**
  * Full registry: built-ins + MCP servers + plugin tools, all from config.
  * `exclude` names tools to drop; nothing in fox-agent uses it now that delegation is a
  * separate process with its own full registry (`src/tools/task.ts`), and it is
@@ -69,6 +86,7 @@ export async function buildRegistry(
 ): Promise<{ tools: Map<string, Tool>; warnings: string[]; plugins: FoxPlugin[]; agents: Record<string, ExternalAgentConfig> }> {
   const map = baseRegistry();
   setOutputCap(cfg.toolOutputCap ?? 30_000);
+  setReadCap(cfg.readCap ?? 50_000);
   // `?? []` on both: `Config` is public surface an embedder (or a test) may build
   // by hand, and a config written before these fields existed must degrade to
   // "no warnings, no plugins" rather than crash the registry build.
@@ -167,16 +185,7 @@ export async function buildRegistry(
   }
 
   // providers are registered even when a plugin contributes no tools
-  const customProviders = new Map<string, ChatFn>();
-  for (const p of plugins) {
-    // bundled formats seed the registry at import; re-registering their names
-    // here would only hit the reserved-name refusal, so they are skipped openly
-    if ((BUNDLED_PROVIDER_PLUGIN_NAMES as readonly string[]).includes(p.name)) continue;
-    for (const [name, fn] of Object.entries(p.providers ?? {})) {
-      if (typeof fn === "function") customProviders.set(name, fn);
-    }
-  }
-  setCustomProviders(customProviders);
+  registerPluginProviders(plugins);
   // a switched-off bundled format stops resolving — /plugins off anthropic
   // means provider=anthropic no longer exists, honestly listed as missing
   setDisabledBundledProviders(

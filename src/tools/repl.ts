@@ -1,10 +1,12 @@
 /**
- * In-process JavaScript scratchpad, as a bundled plugin.
+ * In-process JavaScript environment, as a bundled plugin.
  *
- * The whole point is what it is NOT: no shell, no subprocess, no `bun` CLI
- * on PATH (the compiled binary ships without one). It evaluates in a
- * persistent `node:vm` context per session, so variables, functions and
- * imports survive across calls — a scratchpad, not a one-shot `bun -e`.
+ * A persistent `node:vm` context per session, seeded with the real host
+ * environment — `process`, timers, `Buffer`, `fetch`, and working dynamic
+ * `import()`. The model already has full machine control through `exec`
+ * (which runs anything, including `node -e "process.exit()"`), so the
+ * scratchpad deliberately offers the same power: sandboxing one tool while
+ * every other tool runs unrestricted would be theater, not safety.
  *
  * From code the agent reaches its own tools directly (`tools.call`), shell
  * included, without shell-quoting hell: compute over data instead of pasting
@@ -20,7 +22,7 @@ import { outCap } from "./files.ts";
 export const replDef: ToolDef = {
   name: "repl",
   description:
-    "Fast in-process JavaScript scratchpad (no shell, no subprocess — works in the compiled binary with no bun on PATH). State persists across calls in this session: assign once (`rows = ...`), reuse for twenty turns. `return` (or a trailing expression) becomes the result; `console.log` lines are captured alongside it. Reach your tools from code as `await tools.call(name, args)` (shell included: `await tools.call(\"exec\", {cmd})`); `tools.list()` and `tools.search(\"...\")` discover them. Direct tool calls bypass the turn loop's beforeTool/afterTool hooks. Standard JS builtins only — no timers, fetch, process or require. A hanging eval is killed at timeout_ms.",
+    "In-process JavaScript environment (no shell, no subprocess — works in the compiled binary with no bun on PATH). Full environment: `process`, timers, `fetch`, and dynamic `import()` all work. State persists across calls in this session: assign once (`rows = ...`), reuse for twenty turns. `return` (or a trailing expression) becomes the result; `console.log` lines are captured alongside it. Reach your tools from code as `await tools.call(name, args)` (shell included: `await tools.call(\"exec\", {cmd})`); `tools.list()` and `tools.search(\"...\")` discover them. Direct tool calls bypass the turn loop's beforeTool/afterTool hooks. A hanging eval is killed at timeout_ms.",
   parameters: {
     type: "object",
     properties: {
@@ -43,10 +45,45 @@ interface ReplSession {
 
 const sessions = new Map<string, ReplSession>();
 
+/**
+ * The host globals a fresh scratchpad starts with.
+ *
+ * These are seeded once, at context creation — and they are the REAL host
+ * bindings, not stand-ins, because the whole point is a full environment:
+ * `exec` already runs anything, so a hobbled repl adds friction, not safety.
+ * A dynamic `import()` inside the eval resolves through
+ * `importModuleDynamically` (Bun's vm supports it; the probe confirmed it),
+ * so `await import("node:fs")` works exactly as it does in the harness itself.
+ */
+function seed(): Record<string, unknown> {
+  return {
+    process,
+    console,
+    Buffer,
+    setTimeout,
+    clearTimeout,
+    setInterval,
+    clearInterval,
+    setImmediate,
+    clearImmediate,
+    queueMicrotask,
+    fetch,
+    URL,
+    URLSearchParams,
+    TextEncoder,
+    TextDecoder,
+    AbortController,
+    AbortSignal,
+    atob,
+    btoa,
+    structuredClone,
+  };
+}
+
 function sessionState(sessionId: string): ReplSession {
   let s = sessions.get(sessionId);
   if (!s) {
-    s = { context: vm.createContext({}), log: [] };
+    s = { context: vm.createContext(seed()), log: [] };
     sessions.set(sessionId, s);
   }
   return s;
@@ -124,18 +161,38 @@ export async function replRun(
 
   const sandbox = state.context as Record<string, unknown>;
   sandbox.tools = bridge;
-  sandbox.console = { log: (...a: unknown[]) => void state.log.push(a.map((x) => fmt(x)).join(" ")) };
+  // Capture console output per call. The seeded `console` is replaced with a
+  // line-collecting one so `console.log` lands in the tool result; other
+  // methods (error/warn/info/debug) also capture, since a scratchpad's output
+  // is the point.
+  const capture = (level: string) => (...a: unknown[]) =>
+    void state.log.push(a.map((x) => (typeof x === "string" ? x : fmt(x))).join(" "));
+  sandbox.console = {
+    log: capture("log"),
+    info: capture("info"),
+    warn: capture("warn"),
+    error: capture("error"),
+    debug: capture("debug"),
+  };
+
+  // `importModuleDynamically` resolves a dynamic `import()` inside the eval
+  // against the host module registry, so `await import("node:fs")` works.
+  // Without it Bun's vm throws "A dynamic import callback was not specified."
+  // on any `import()`. Bun's vm types declare this field on neither
+  // ScriptOptions nor RunningScriptOptions, so the object is built untyped and
+  // passed through — both keys are honored at runtime (the probe confirmed
+  // timeout still bounds a sync loop and the import resolves).
+  const runOptions: Record<string, unknown> = {
+    timeout,
+    importModuleDynamically: async (specifier: string) => import(specifier),
+  };
+
   try {
     // expression-first: `40+2`, `x = 1`, `await foo()` complete to values,
     // which is what a scratchpad is for. Anything that is not one expression
     // (declarations, loops, multi-statement blocks — end those with an
     // explicit `return`) falls back to statement form. Only SyntaxError falls
     // through: runtime failures are the answer, not a retry signal.
-    // vm's `timeout` only bounds SYNCHRONOUS execution; these evals are async
-    // IIFEs, so a hung `await` would ignore it forever. Race the eval against
-    // a real timer — the loser's microtasks keep running but this tool call
-    // returns, freeing the tool slot (a still-referenced AbortSignal would be
-    // nicer; vm contexts expose no async interruption primitive).
     const expr = args.code.replace(/;+\s*$/, "");
     let value: unknown;
     // raceEval: eval vs a real timer, with the timer CLEARED when the eval
@@ -143,8 +200,7 @@ export async function replRun(
     // which surfaces as an unhandled rejection and fails the turn's teardown.
     // vm's `timeout` only bounds SYNCHRONOUS execution; these evals are async
     // IIFEs, so a hung `await` would otherwise ignore it forever. The loser's
-    // microtasks keep running, but this tool call returns and frees the slot
-    // (vm contexts expose no async interruption primitive).
+    // microtasks keep running, but this tool call returns and frees the slot.
     const raceEval = (body: string) => {
       let timer: ReturnType<typeof setTimeout> | undefined;
       const hang = new Promise<never>((_, rej) => {
@@ -155,7 +211,7 @@ export async function replRun(
         // a SYNCHRONOUS infinite loop throws straight out of runInContext —
         // clear the timer there too, or it fires later and rejects a promise
         // nobody is awaiting (unhandled rejection, blames the next tool call)
-        return Promise.race([vm.runInContext(`(async () => ${body})()`, state.context, { timeout }), hang]).finally(() => clearTimeout(timer));
+        return Promise.race([vm.runInContext(`(async () => ${body})()`, state.context, runOptions), hang]).finally(() => clearTimeout(timer));
       } catch (e) {
         clearTimeout(timer);
         throw e;

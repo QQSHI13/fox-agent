@@ -254,7 +254,7 @@ export function diffSegs(line: string): Seg[] | null {
   return null;
 }
 
-// ---- rich tool-output tinting (all gated behind `tuiRich`) ----
+// ---- rich tool-output tinting (always on; there is no toggle) ----
 
 /**
  * A ```diff fence in assistant markdown: per-line add/del/hunk colors, with

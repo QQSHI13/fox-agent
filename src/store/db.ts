@@ -390,10 +390,6 @@ function dropStmts(idOrIndex: string): void {
 }
 
 
-export function estTokens(s: string): number {
-  return estimateTokens(s);
-}
-
 export function rid(): string {
   // sortable id: timestamp + unbiased random suffix (randomUUID hex — a modulo
   // over raw bytes would bias the distribution, which code scanning flags).

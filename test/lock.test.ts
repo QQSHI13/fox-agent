@@ -8,10 +8,17 @@ let dir: string;
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "fox-lock-"));
   process.env.FOX_AGENT_HOME = dir;
+  // BOTH: loadConfig reads the global config from FOX_AGENT_CONFIG when set,
+  // else ~/.config — setting only the home left this suite asserting against
+  // the developer's real config (a stray key there flips expect(warnings)).
+  // Point it inside the tmp home; never touch the real config (CLAUDE.md).
+  process.env.FOX_AGENT_CONFIG = join(dir, "config.toml");
 });
 
 afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
+  delete process.env.FOX_AGENT_HOME;
+  delete process.env.FOX_AGENT_CONFIG;
 });
 
 describe("session lock", () => {

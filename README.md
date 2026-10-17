@@ -285,7 +285,7 @@ Cascade (later wins): defaults <- `~/.config/fox-agent/config.toml` <- project `
 
 TOML is the only config format -- a malformed file fails loudly, naming the file and the parser error, rather than being silently ignored. (Pre-1.0 `.fox.json` is rejected with a message telling you what to rename.)
 
-Don't want to edit TOML? `/settings` lists the scalar knobs with current values, `/settings key=value` changes one (validated, saved to the global config, applied live), `/settings key=` resets to the default. Covers `maxSteps`, `retryLimit`, `compactAt`, `compactAtTokens`, `requestTimeoutMs`, `toolOutputCap`, `sessionListLimit`, `tuiCollapsedChars`, `tuiKeptChars`, `tuiRich`, `diagnostics`, `contextMarkers` and `acpHistory`.
+Don't want to edit TOML? `/settings` lists the scalar knobs with current values, `/settings key=value` changes one (validated, saved to the global config, applied live), `/settings key=` resets to the default. Covers `maxSteps`, `retryLimit`, `compactAt`, `compactAtTokens`, `requestTimeoutMs`, `toolOutputCap`, `sessionListLimit`, `tuiCollapsedChars`, `tuiKeptChars`, `diagnostics`, `contextMarkers` and `acpHistory`.
 
 Project instructions are loaded from every `AGENTS.md` / `CLAUDE.md` on the path from the filesystem root down to cwd, each labeled with its own path so relative paths in it resolve against the right directory.
 
@@ -352,7 +352,6 @@ compactAtTokens = 131072  # absolute token ceiling on top of compactAt (0 = wind
 retryLimit = 3
 requestTimeoutMs = 120000
 diagnostics = true          # report type errors after each edit (default true)
-tuiRich = false             # rich rendering: syntax-tinted code fences + diff colors (default off)
 
 # Plugins are read from the GLOBAL config only -- a plugin runs in fox-agent's own
 # process with your credentials, so a project file cannot introduce one.

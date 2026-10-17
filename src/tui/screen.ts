@@ -515,30 +515,6 @@ export class Plane {
   }
 }
 
-/**
- * Scrollbar geometry for a transcript of `rows` lines in a viewport of `vh`.
- *
- * Single source of truth for paint() (where the thumb goes) and the mouse
- * scrub (which row maps to which scroll position) — the two used to compute
- * independently and could drift. Pure so it can be tested without a terminal.
- */
-export interface ScrollbarGeom {
-  showing: boolean;
-  /** thumb top row (0-based, within the viewport) */
-  ty: number;
-  /** thumb height in rows (>= 1) */
-  th: number;
-}
-export function scrollbarGeom(rows: number, vh: number, scrollTop: number): ScrollbarGeom {
-  if (rows <= vh || vh < 4) return { showing: false, ty: 0, th: vh };
-  const th = Math.max(1, Math.floor((vh * vh) / rows));
-  const maxScroll = rows - vh;
-  const ty = maxScroll > 0 ? Math.floor((Math.max(0, Math.min(scrollTop, maxScroll)) / maxScroll) * (vh - th)) : 0;
-  return { showing: true, ty, th };
-}
-
-
-
 function sgrOf(s: Style): string {
   let out = "";
   if (s.fg && s.fg.startsWith("#")) {

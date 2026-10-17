@@ -53,7 +53,7 @@ export async function compactIfNeeded(
   sessionId: string,
   cfg: Parameters<ChatFn>[0],
   chat: ChatFn,
-  opts: { compactAt?: number; compactAtTokens?: number; signal?: AbortSignal } = {},
+  opts: { compactAt?: number; compactAtTokens?: number; signal?: AbortSignal; reportedPrecomputed?: number } = {},
 ): Promise<AgentEvent | null> {
   /**
    * The trigger is the provider's own last-reported prompt size — the one
@@ -68,7 +68,10 @@ export async function compactIfNeeded(
    * evidence that the window is really that large.
    */
   const trigger = triggerTokens(cfg.model, opts.compactAt ?? 0.85, opts.compactAtTokens ?? DEFAULT_COMPACT_AT_TOKENS);
-  const reported = sessionContextTokens(sessionId);
+  // the turn loop measures context size once per step and hands it in, so
+  // compaction and the budget header read the SAME number (reportedPrecomputed);
+  // when absent (status bar, /usage) it is measured here.
+  const reported = opts.reportedPrecomputed ?? sessionContextTokens(sessionId);
   if (reported < trigger) return null;
   const before = reported;
   // half the trigger at most: a compaction that frees nothing is a billable

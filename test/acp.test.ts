@@ -25,12 +25,19 @@ beforeEach(async () => {
   home = mkdtempSync(join(tmpdir(), "fox-acp-"));
   work = mkdtempSync(join(tmpdir(), "fox-acp-cwd-"));
   process.env.FOX_AGENT_HOME = home;
+  // BOTH: loadConfig reads the global config from FOX_AGENT_CONFIG when set,
+  // else ~/.config — setting only the home left this suite asserting against
+  // the developer's real config (a stray key there flips expect(warnings)).
+  // Point it inside the tmp home; never touch the real config (CLAUDE.md).
+  process.env.FOX_AGENT_CONFIG = join(home, "config.toml");
   (await import("../src/store/db.ts")).closeAll();
 });
 
 afterEach(async () => {
   (await import("../src/store/db.ts")).closeAll();
   rmSync(home, { recursive: true, force: true });
+  delete process.env.FOX_AGENT_HOME;
+  delete process.env.FOX_AGENT_CONFIG;
   rmSync(work, { recursive: true, force: true });
 });
 
@@ -54,10 +61,10 @@ const cfg = (): Config => ({
   disabledPlugins: [],
   providers: {},
   toolOutputCap: 30_000,
+  readCap: 50_000,
   sessionListLimit: 50,
   tuiCollapsedChars: 240,
   tuiKeptChars: 4_000,
-  tuiRich: false,
   tuiScrollbar: true,
   tuiScrollStep: 2,
   statusBar: "cwd provider model ctx cost",

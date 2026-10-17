@@ -37,3 +37,15 @@ export type AgentEvent =
   /** user text injected mid-turn (ctrl+s), delivered at a step boundary */
   | { type: "steered"; text: string }
   | { type: "done"; reason: string };
+
+/**
+ * Exhaustiveness guard for the AgentEvent union. Drop a `default: return
+ * assertNever(ev)` at the end of a switch over `ev.type`: when every known
+ * event type has a case, the default's value is `never` and it compiles away.
+ * Add a new event type and the default receives a real value where `never` was
+ * expected — a compile error in exactly the consumer that forgot to handle it,
+ * turning "silently dropped event" into "won't build".
+ */
+export function assertNever(x: never): never {
+  throw new Error(`unhandled AgentEvent type: ${(x as { type?: string }).type ?? "unknown"}`);
+}

@@ -22,7 +22,7 @@ import { viewTokenEstimate } from "./context/render.ts";
 import { checkBudget, triggerTokens } from "./context/budget.ts";
 import type { ProviderConfig } from "./providers/types.ts";
 import { getTodos, renderTodosMd } from "./tools/todo.ts";
-import { resolveProfile, resolveValue, saveGlobalConfig, saveProviderProfile, type Config } from "./core/config.ts";
+import { resolveProfile, resolveValue, saveGlobalConfig, saveProviderProfile, type Config, type ModelConfig } from "./core/config.ts";
 import { setTheme, themeName, themeNames } from "./tui/themes.ts";
 import { availableProviders } from "./providers/index.ts";
 import { ensureFreshCatalog, presetById, providerPresets } from "./providers/modelsdev.ts";
@@ -32,7 +32,7 @@ import type { UiStep } from "./core/ui.ts";
 import { activePlugins, isPluginPathDisabled, loadPlugins } from "./plugins/load.ts";
 import { bundledDisabled, bundledPlugins } from "./plugins/bundled.ts";
 import { BUNDLED_PROVIDER_PLUGIN_NAMES, bundledProviderPlugins } from "./providers/bundled.ts";
-import { addPluginPath, effectiveConfigPath, globalConfigPath, removePluginPath, setPluginDisabled, SETTINGS, settingValue, type SettingSpec } from "./core/config.ts";
+import { addPluginPath, defaultConfig, effectiveConfigPath, globalConfigPath, removePluginPath, setPluginDisabled, SETTINGS, settingValue, type SettingSpec } from "./core/config.ts";
 import { dirname, join } from "node:path";
 
 /**
@@ -54,7 +54,7 @@ function applySetting(spec: SettingSpec, raw: string, state: HarnessState): Comm
     const value = trimmed ? spec.validate(trimmed) : (undefined as unknown as string);
     const saved = saveGlobalConfig({ extraSettings: { [spec.key]: value } }, state.configPath);
     if (state.config) (state.config as unknown as Record<string, unknown>)[spec.key] = value;
-    applyResultLive(state, spec.key);
+    applyResultLive(state, spec);
     return {
       handled: true,
       output: `${spec.key} = ${value === undefined ? `(default ${spec.def})` : String(value)} — saved to ${saved}, live now (/reload re-reads it)`,
@@ -78,21 +78,84 @@ function rawSettingValue(spec: SettingSpec | undefined, cfg?: Config): string {
   return typeof v === "string" ? v : "";
 }
 
-function applyResultLive(state: HarnessState, key: string): void {
+/**
+ * The live value one setting must apply RIGHT NOW, after a change.
+ *
+ * Returns null for a key with no live effect (its file+config write is the
+ * whole change, and the next registry build picks it up).
+ *
+ * The fallback for a cleared key comes from `defaultConfig()` rather than a
+ * literal: two of these used to disagree with DEFAULTS (frame 33 vs 16, wheel
+ * step 1 vs 2), so "reset to default" meant one period in the running process
+ * and another on the next load — with no way for a reader to see the drift.
+ * One source of truth makes that unrepresentable.
+ */
+export function liveSettingFor(spec: SettingSpec, state: HarnessState): number | boolean | null {
+  const d = defaultConfig();
+  const set = state.config as unknown as Record<string, unknown> | undefined;
+  const v = set?.[spec.key];
+  switch (spec.key) {
+    case "tuiCollapsedChars":
+      return (typeof v === "number" ? v : d.tuiCollapsedChars);
+    case "tuiKeptChars":
+      return (typeof v === "number" ? v : d.tuiKeptChars);
+    case "toolOutputCap":
+      // OUT_CAP is a module-level value every tool reads through outCap();
+      // buildRegistry is the only other writer
+      return typeof v === "number" ? v : d.toolOutputCap;
+    case "readCap":
+      // READ_CAP_VALUE is a module-level value `read` reads through readCap();
+      // buildRegistry is the only other writer
+      return typeof v === "number" ? v : d.readCap;
+    case "tuiScrollbar":
+      return typeof v === "boolean" ? v : d.tuiScrollbar;
+    case "tuiScrollStep":
+      return typeof v === "number" ? v : d.tuiScrollStep;
+    case "tuiFrameMs":
+      return typeof v === "number" ? v : d.tuiFrameMs;
+    case "debug":
+      return typeof v === "boolean" ? v : d.debug;
+    default:
+      return null;
+  }
+}
+
+function applyResultLive(state: HarnessState, spec: SettingSpec): void {
+  const value = liveSettingFor(spec, state);
+  if (value === null) return;
   void (async () => {
     try {
-      const app = await import("./tui/app.ts");
-      if (key === "tuiCollapsedChars" || key === "tuiKeptChars") {
-        app.setTuiCaps(state.config?.tuiCollapsedChars ?? 240, state.config?.tuiKeptChars ?? 4_000);
-      } else if (key === "tuiRich") {
-        app.setTuiRich(!!state.config?.tuiRich);
-      } else if (key === "tuiScrollbar") {
-        // wrap width changes with it, so the setter forces a full repaint
-        app.setTuiScrollbar(state.config?.tuiScrollbar ?? true);
-      } else if (key === "tuiScrollStep") {
-        app.setTuiScrollStep(state.config?.tuiScrollStep ?? 1);
-      } else if (key === "tuiFrameMs") {
-        app.setTuiFrameMs(state.config?.tuiFrameMs ?? 33);
+      switch (spec.key) {
+        case "tuiCollapsedChars":
+        case "tuiKeptChars": {
+          const app = await import("./tui/app.ts");
+          app.setTuiCaps(
+            liveSettingFor(SETTINGS.find((s) => s.key === "tuiCollapsedChars")!, state) as number,
+            liveSettingFor(SETTINGS.find((s) => s.key === "tuiKeptChars")!, state) as number,
+          );
+          break;
+        }
+        case "toolOutputCap": {
+          const { setOutputCap } = await import("./tools/files.ts");
+          setOutputCap(value as number);
+          break;
+        }
+        case "readCap": {
+          const { setReadCap } = await import("./tools/files.ts");
+          setReadCap(value as number);
+          break;
+        }
+        case "debug":
+        case "tuiScrollbar":
+        case "tuiScrollStep":
+        case "tuiFrameMs": {
+          const app = await import("./tui/app.ts");
+          if (spec.key === "debug") app.setDebug(value as boolean);
+          else if (spec.key === "tuiScrollbar") app.setTuiScrollbar(value as boolean);
+          else if (spec.key === "tuiScrollStep") app.setTuiScrollStep(value as number);
+          else app.setTuiFrameMs(value as number);
+          break;
+        }
       }
     } catch {}
   })();
@@ -725,6 +788,38 @@ function promptSelectionToTarget(a: Record<string, string>, state: HarnessState)
 }
 
 /**
+ * One shared "list the models for this provider" step, used by both `/model` and
+ * `/login`. Provider PICKING and answer DECODING stay separate — each command
+ * has its own provider list and its own way of turning an answer into a target.
+ * What was duplicated was only the model-list builder, so that is what lives here.
+ *
+ * Rows read `name (id) (NNk ctx)`; a bare id with no distinct name shows just the
+ * id. The previous `/model` form (`id — NNk`) and `/login` form (`id (NNk ctx)`)
+ * are unified to this one shape.
+ */
+const MODEL_STEP_KEY = "model";
+function modelStepFor(
+  state: HarnessState,
+  modelsFor: (a: Record<string, string>) => { id: string; name?: string; context?: number }[],
+  opts: { initial?: (a: Record<string, string>) => string | undefined; skipIf?: (a: Record<string, string>) => boolean } = {},
+): UiStep {
+  return {
+    key: MODEL_STEP_KEY,
+    label: "model — type to search",
+    kind: "select",
+    options: (a) =>
+      modelsFor(a).map((m) => {
+        const ctx = m.context ? ` (${Math.round(m.context / 1000)}k ctx)` : "";
+        const name = m.name && m.name !== m.id ? `${m.name} (${m.id})` : m.id;
+        return { value: m.id, label: `${name}${ctx}` };
+      }),
+    custom: true,
+    ...(opts.initial ? { initial: opts.initial } : {}),
+    ...(opts.skipIf ? { skipIf: opts.skipIf } : {}),
+  };
+}
+
+/**
  * The interactive `/model`: pick a provider, then a model. Providers without
  * credentials anywhere (profile key, matching env var, live state, or a
  * localhost endpoint) are hidden, not offered: picking one could only end in a
@@ -777,57 +872,38 @@ function modelPrompt(state: HarnessState): PromptRequest {
   // /login collects them; that flow owns ad-hoc endpoints. Adding a provider
   // = /login; switching between logged-in ones = /model.
 
-  // Step 2 choices, from the provider picked in step 1.
-  const modelOptions = (a: Record<string, string>) => {
+  // Step 2: the models each provider offers. Raw model list only — tagging the
+  // value with the provider and rendering the row is the shared modelStepFor's
+  // job, so this builder stays about WHICH models, not how they are labelled.
+  const modelsForProvider = (a: Record<string, string>): { id: string; name?: string; context?: number }[] => {
     const sel = a.provider ?? "m:";
-    const out: { value: string; label: string }[] = [];
     if (sel === "m:") {
       ensureEndpointModels(state.provider.baseUrl, state.provider.apiKey, state.provider.provider);
-      out.push({ value: `m:${cur}`, label: `${cur} (current)` });
-      for (const m of endpointModels(state.provider.baseUrl) ?? []) {
-        if (m.id === cur) continue;
-        const ctx = m.context ? ` — ${Math.round(m.context / 1000)}k` : "";
-        out.push({ value: `m:${m.id}`, label: `${m.id}${ctx}` });
-      }
-      return out;
+      return [{ id: cur }, ...(endpointModels(state.provider.baseUrl) ?? []).filter((m) => m.id !== cur)];
     }
     if (sel.startsWith("u:")) {
-      const format = sel.slice(2);
       const baseUrl = (a.baseUrl ?? "").trim();
       if (baseUrl) ensureEndpointModels(baseUrl, "");
-      out.push({ value: `u:${format}:${cur}`, label: `${cur} (current)` });
-      for (const m of endpointModels(baseUrl) ?? []) {
-        if (m.id === cur) continue;
-        const ctx = m.context ? ` — ${Math.round(m.context / 1000)}k` : "";
-        out.push({ value: `u:${format}:${m.id}`, label: `${m.id}${ctx}` });
-      }
-      return out;
+      return [{ id: cur }, ...(endpointModels(baseUrl) ?? []).filter((m) => m.id !== cur)];
     }
     if (sel.startsWith("p:")) {
       const name = sel.slice(2);
       const p = state.config?.providers[name];
-      if (!p) return out;
+      if (!p) return [];
       const baseUrl = p.baseUrl ?? state.provider.baseUrl;
       const key = creds(baseUrl, [p.apiKey]) ?? "";
       ensureEndpointModels(baseUrl, key, p.format);
-      const listed = endpointModels(baseUrl) ?? p.models.filter((m) => !m.disabled).map((m) => ({ id: m.id, name: m.name, context: m.contextWindow }));
-      for (const m of listed) {
-        const ctx = m.context ? ` — ${Math.round(m.context / 1000)}k` : "";
-        out.push({ value: `p:${name}:${m.id}`, label: `${m.name ?? m.id}${m.name && m.name !== m.id ? ` (${m.id})` : ""}${ctx}` });
-      }
-      return out;
+      return (
+        endpointModels(baseUrl) ??
+        p.models.filter((m) => !m.disabled).map((m: ModelConfig) => ({ id: m.id, name: m.name, context: m.contextWindow }))
+      );
     }
     const id = sel.slice(2);
     const preset = providerPresets().find((x) => x.id === id);
-    if (!preset) return out;
+    if (!preset) return [];
     const key = creds(preset.api, preset.env.map((e) => process.env[e])) ?? "";
     if (preset.api) ensureEndpointModels(preset.api, key, preset.format);
-    const listed = (preset.api ? endpointModels(preset.api) : null) ?? preset.models;
-    for (const m of listed) {
-      const ctx = m.context ? ` — ${Math.round(m.context / 1000)}k` : "";
-      out.push({ value: `x:${id}:${m.id}`, label: `${m.id}${ctx}` });
-    }
-    return out;
+    return (preset.api ? endpointModels(preset.api) : null) ?? preset.models;
   };
 
   return {
@@ -842,16 +918,7 @@ function modelPrompt(state: HarnessState): PromptRequest {
         hint: "https://… — the endpoint this provider serves",
         skipIf: (a) => !(a.provider ?? "").startsWith("u:"),
       },
-      {
-        key: "model",
-        label: "model — type to search",
-        kind: "select",
-        options: modelOptions,
-        // No separate "type a model id…" row any more: the list appends its own
-        // `other…`, and the answer is stored exactly as typed — the handler
-        // stitches on the provider marker a listed row would have carried.
-        custom: true,
-      },
+      modelStepFor(state, modelsForProvider),
       {
         key: "key",
         label: "api key",
@@ -1332,27 +1399,27 @@ function loginPrompt(state: HarnessState, pre: LoginFields = {}): PromptRequest 
    * the background endpoint refresh — options rendering passes true, skipIf
    * reads the cache only, so the predicate never doubles the fetch.
    */
-  const loginModelOptions = (a: Record<string, string>, ensureLive: boolean): { value: string; label: string }[] => {
+  // Models for the picked login target, as raw model records (the shared
+  // modelStepFor renders the rows). Profiles merge what the endpoint advertises
+  // with the profile's own configured models, deduped; presets list the catalog;
+  // a custom endpoint lists nothing, sending the flow to the text step.
+  // `ensureLive` fires the background endpoint refresh — the option renderer
+  // passes true, the skipIf reads the cache only, so the predicate never doubles
+  // the fetch.
+  const loginModelsFor = (a: Record<string, string>, ensureLive: boolean): { id: string; name?: string; context?: number }[] => {
     const prof = profileOf(a);
     if (prof) {
       const baseUrl = prof.baseUrl ?? p.baseUrl;
       const key = resolveValue(prof.apiKey) ?? (baseUrl === p.baseUrl ? p.apiKey : undefined) ?? "";
       if (ensureLive) ensureEndpointModels(baseUrl, key, prof.format);
-      const live = (endpointModels(baseUrl) ?? []).map((m) => ({
-        value: m.id,
-        label: m.context ? `${m.name ?? m.id} (${Math.round(m.context / 1000)}k ctx)` : (m.name ?? m.id),
-      }));
+      const live = (endpointModels(baseUrl) ?? []).map((m) => ({ id: m.id, name: m.name, context: m.context }));
       const configured = (prof.models ?? [])
         .filter((m) => !m.disabled)
-        .map((m) => ({ value: m.id, label: m.contextWindow ? `${m.name ?? m.id} (${Math.round(m.contextWindow / 1000)}k ctx)` : (m.name ?? m.id) }));
+        .map((m: ModelConfig) => ({ id: m.id, name: m.name, context: m.contextWindow }));
       const seen = new Set<string>();
-      return [...live, ...configured].filter((m) => (seen.has(m.value) ? false : (seen.add(m.value), true)));
+      return [...live, ...configured].filter((m) => (seen.has(m.id) ? false : (seen.add(m.id), true)));
     }
-    const models = presetOf(a)?.models ?? [];
-    return models.map((m) => ({
-      value: m.id,
-      label: m.context ? `${m.id} (${Math.round(m.context / 1000)}k ctx)` : m.id,
-    }));
+    return (presetOf(a)?.models ?? []).map((m) => ({ id: m.id, name: m.name, context: m.context }));
   };
   return {
     title: "login — leave a field empty to keep the current value",
@@ -1384,20 +1451,15 @@ function loginPrompt(state: HarnessState, pre: LoginFields = {}): PromptRequest 
         hint: "empty = keep current",
         skipIf: (a) => (a.provider ?? "").startsWith("profile:"),
       },
-      {
-        key: "model",
-        label: "model",
-        kind: "select",
-        options: (a) => loginModelOptions(a, true),
+      modelStepFor(state, (a) => loginModelsFor(a, true), {
         // the current model is the start: a listed id lands on its row, one
         // that is not listed opens the answer box already holding it — so
         // "keep what I am on" costs no typing either way
         initial: () => pre.model ?? p.model,
-        custom: true,
         // no catalog table for this provider (custom, or a preset that lists
         // nothing) — a menu of zero rows is not a menu, so go straight to text
-        skipIf: (a) => loginModelOptions(a, false).length === 0,
-      },
+        skipIf: (a) => loginModelsFor(a, false).length === 0,
+      }),
       {
         key: "modelCustom",
         label: "model id",
@@ -1407,7 +1469,7 @@ function loginPrompt(state: HarnessState, pre: LoginFields = {}): PromptRequest 
         hint: "type the id the endpoint accepts — empty keeps the current model",
         // asked only when there was no select to show; when there was, its own
         // box takes the typed answer and this would re-ask for an id it holds
-        skipIf: (a) => loginModelOptions(a, false).length > 0,
+        skipIf: (a) => loginModelsFor(a, false).length > 0,
       },
       {
         // a custom endpoint is a REAL provider: it always gets a name and
@@ -1780,7 +1842,7 @@ Verify what you write: run the commands you document (at least the build/test en
           : row
             ? backfillUsage(state.sessionId) // pre-index-totals session: fill once
             : { prompt: 0, completion: 0, cached: 0 };
-      const b = checkBudget(state.sessionId, state.provider.model, 0, state.config?.compactAt, state.config?.compactAtTokens);
+      const b = checkBudget(state.sessionId, state.provider.model, state.config?.compactAt, state.config?.compactAtTokens);
       const pct = Math.round(b.ratio * 100);
       // the percentage is of the window, which the registry may overstate — so
       // the number it is racing toward is shown too, not just the fraction

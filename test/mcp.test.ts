@@ -26,6 +26,11 @@ let home: string;
 beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), "fox-mcp-"));
   process.env.FOX_AGENT_HOME = home;
+  // BOTH: loadConfig reads the global config from FOX_AGENT_CONFIG when set and
+  // from ~/.config otherwise, so setting only the home left this suite asserting
+  // against the developer's real config — one stray key there turned
+  // `expect(warnings).toEqual([])` into a coin flip (see CLAUDE.md).
+  process.env.FOX_AGENT_CONFIG = join(home, "config.toml");
 });
 
 afterEach(async () => {

@@ -7,6 +7,11 @@ describe("trusted folders are saved", () => {  test("markTrusted persists to $FO
     const home = mkdtempSync(join(tmpdir(), "fox-trust-"));
     const prev = process.env.FOX_AGENT_HOME;
     process.env.FOX_AGENT_HOME = home;
+  // BOTH: loadConfig reads the global config from FOX_AGENT_CONFIG when set,
+  // else ~/.config — setting only the home left this suite asserting against
+  // the developer's real config (a stray key there flips expect(warnings)).
+  // Point it inside the tmp home; never touch the real config (CLAUDE.md).
+  process.env.FOX_AGENT_CONFIG = join(home, "config.toml");
     try {
       const { isTrusted, markTrusted, trustFilePath } = await import("../src/core/trust.ts");
       const dir = join(home, "some-repo");
@@ -22,6 +27,7 @@ describe("trusted folders are saved", () => {  test("markTrusted persists to $FO
     } finally {
       if (prev === undefined) delete process.env.FOX_AGENT_HOME;
       else process.env.FOX_AGENT_HOME = prev;
+      delete process.env.FOX_AGENT_CONFIG;
     }
   });
 });

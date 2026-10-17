@@ -132,14 +132,14 @@ export interface Config {
   diagnostics: boolean;
   /** cap on one tool result's text (default 30000, min 1000) */
   toolOutputCap: number;
+  /** cap on one `read` result's text in chars (default 50000, min 1000) */
+  readCap: number;
   /** how many sessions /sessions, `fox ls` and the picker list (default 50) */
   sessionListLimit: number;
   /** TUI: collapsed tool output preview length (default 240) */
   tuiCollapsedChars: number;
   /** TUI: chars kept when a tool result is folded inline (default 4000) */
   tuiKeptChars: number;
-  /** TUI rich mode: syntax-tinted code fences + diff-colored tool output (default off) */
-  tuiRich: boolean;
   /**
    * TUI scrollbar: dedicated track column at the right edge of the transcript
    * (default on). Set false to hide the scrollbar entirely — text then wraps
@@ -242,10 +242,10 @@ const DEFAULTS: Omit<Config, "projectInstructions"> = {
   lsp: {},
   diagnostics: true,
   toolOutputCap: 30_000,
+  readCap: 50_000,
   sessionListLimit: 50,
   tuiCollapsedChars: 240,
   tuiKeptChars: 4_000,
-  tuiRich: false,
   tuiScrollbar: true,
   tuiScrollStep: 2,
   statusBar: "cwd provider model ctx cost",
@@ -403,6 +403,8 @@ function applyEnv(cfg: Config, env: Record<string, string | undefined>) {
   if (effort === "low" || effort === "medium" || effort === "high") cfg.reasoningEffort = effort;
   const outCap = Number(env.FOX_AGENT_TOOL_OUTPUT_CAP);
   if (Number.isFinite(outCap) && outCap >= 1000) cfg.toolOutputCap = Math.floor(outCap);
+  const readCap = Number(env.FOX_AGENT_READ_CAP);
+  if (Number.isFinite(readCap) && readCap >= 1000) cfg.readCap = Math.floor(readCap);
 }
 
 /**
@@ -414,11 +416,20 @@ function applyEnv(cfg: Config, env: Record<string, string | undefined>) {
  * comment on `Config`), and a source-blind version of this function could not
  * tell a global file from a project one — both are applied through here.
  */
+/**
+ * Keys fox-agent once accepted, with what replaced them. Not in `KNOWN_KEYS`, so
+ * they are never applied — this only changes the WARNING a stale config gets, so
+ * an upgrade does not greet every turn with an unexplained "unknown key".
+ */
+const REMOVED_KEYS: Record<string, string> = {
+  tuiRich: "syntax-tinted code fences and diff-colored tool output are always on now, nothing to set",
+};
+
 const KNOWN_KEYS = new Set([
   "model", "baseUrl", "apiKey", "provider", "maxSteps", "retryLimit", "compactAt", "compactAtTokens",
   "requestTimeoutMs", "diagnostics", "mcpServers", "agents", "lsp", "plugins",
-  "providers", "disabledPlugins", "toolOutputCap", "sessionListLimit",
-  "tuiCollapsedChars", "tuiKeptChars", "tuiRich", "tuiScrollbar", "tuiScrollStep", "statusBar", "debug", "tuiFrameMs", "theme", "contextMarkers", "acpHistory",
+  "providers", "disabledPlugins", "toolOutputCap", "readCap", "sessionListLimit",
+  "tuiCollapsedChars", "tuiKeptChars", "tuiScrollbar", "tuiScrollStep", "statusBar", "debug", "tuiFrameMs", "theme", "contextMarkers", "acpHistory",
   "reasoningEffort",
 ]);
 
@@ -467,7 +478,13 @@ function applyTable(cfg: Config, t: Record<string, unknown> | null, scope: "glob
   // a typo'd key used to vanish silently, leaving the user on defaults with no
   // idea why — name it the way a project-file plugin entry already is
   for (const k of Object.keys(t)) {
-    if (!KNOWN_KEYS.has(k)) cfg.warnings.push(`${scope} config: unknown key '${k}' — ignored (typo?)`);
+    if (!KNOWN_KEYS.has(k)) {
+      // A key we REMOVED is not a typo, and "unknown key 'x' — ignored (typo?)"
+      // in every turn's warnings would be both wrong and unrestorable: the user
+      // has no reason to know the knob went away. Name what happened instead.
+      if (REMOVED_KEYS[k]) cfg.warnings.push(`${scope} config: '${k}' was removed — ${REMOVED_KEYS[k]}`);
+      else cfg.warnings.push(`${scope} config: unknown key '${k}' — ignored (typo?)`);
+    }
   }
   if (typeof t.model === "string") cfg.model = t.model;
   if (typeof t.baseUrl === "string") {
@@ -494,10 +511,11 @@ function applyTable(cfg: Config, t: Record<string, unknown> | null, scope: "glob
   if (typeof t.requestTimeoutMs === "number" && t.requestTimeoutMs >= 0) cfg.requestTimeoutMs = Math.floor(t.requestTimeoutMs);
   if (typeof t.diagnostics === "boolean") cfg.diagnostics = t.diagnostics;
   if (typeof t.toolOutputCap === "number" && t.toolOutputCap >= 1000) cfg.toolOutputCap = Math.floor(t.toolOutputCap);
+  if (typeof t.readCap === "number" && t.readCap >= 1000) cfg.readCap = Math.floor(t.readCap);
   if (typeof t.sessionListLimit === "number" && t.sessionListLimit >= 1) cfg.sessionListLimit = Math.floor(t.sessionListLimit);
   if (typeof t.tuiCollapsedChars === "number" && t.tuiCollapsedChars >= 40) cfg.tuiCollapsedChars = Math.floor(t.tuiCollapsedChars);
   if (typeof t.tuiKeptChars === "number" && t.tuiKeptChars >= 200) cfg.tuiKeptChars = Math.floor(t.tuiKeptChars);
-  if (typeof t.tuiRich === "boolean") cfg.tuiRich = t.tuiRich;
+
   if (typeof t.tuiScrollbar === "boolean") cfg.tuiScrollbar = t.tuiScrollbar;
   if (typeof t.tuiScrollStep === "number" && t.tuiScrollStep >= 1 && t.tuiScrollStep <= 40) cfg.tuiScrollStep = Math.floor(t.tuiScrollStep);
   if (typeof t.statusBar === "string" && t.statusBar.trim()) cfg.statusBar = t.statusBar.trim().split(/\s+/).join(" ");
@@ -848,6 +866,13 @@ export const SETTINGS: SettingSpec[] = [
     fmt: (v) => (v === undefined ? "30000" : String(v)),
   },
   {
+    key: "readCap",
+    desc: "per-`read`-result text cap in chars (min 1000)",
+    def: "50000",
+    validate: num(1000),
+    fmt: (v) => (v === undefined ? "50000" : String(v)),
+  },
+  {
     key: "sessionListLimit",
     desc: "how many sessions /sessions and fox ls list",
     def: "50",
@@ -868,7 +893,6 @@ export const SETTINGS: SettingSpec[] = [
     validate: num(200),
     fmt: (v) => (v === undefined ? "4000" : String(v)),
   },
-  { key: "tuiRich", desc: "rich markdown: syntax-tinted fences + diff colors", def: "false", validate: bool, fmt: showBool },
   {
     key: "tuiScrollStep",
     desc: "transcript rows per wheel notch (1..40)",

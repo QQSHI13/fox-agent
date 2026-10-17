@@ -169,6 +169,11 @@ describe("runTurnCore with a timing-out provider", () => {
   function session(): string {
     const home = mkdtempSync(join(tmpdir(), "fox-timeout-"));
     process.env.FOX_AGENT_HOME = join(home, ".fox");
+    // BOTH: loadConfig reads the global config from FOX_AGENT_CONFIG when set,
+    // else ~/.config — setting only the home left this suite asserting against
+    // the developer's real config (a stray key there flips expect(warnings)).
+    // Point it inside the tmp home; never touch the real config (CLAUDE.md).
+    process.env.FOX_AGENT_CONFIG = join(home, ".fox", "config.toml");
     // db module reads FOX_AGENT_HOME lazily per call, so importing after the env set
     // is not required — but the session must be created through the store
     return home;

@@ -9,6 +9,11 @@ let dir: string;
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "fox-compact-"));
   process.env.FOX_AGENT_HOME = dir;
+  // BOTH: loadConfig reads the global config from FOX_AGENT_CONFIG when set,
+  // else ~/.config — setting only the home left this suite asserting against
+  // the developer's real config (a stray key there flips expect(warnings)).
+  // Point it inside the tmp home; never touch the real config (CLAUDE.md).
+  process.env.FOX_AGENT_CONFIG = join(dir, "config.toml");
   // afterEach clears registrations; re-arm the fixture model every test
   setConfiguredModels([{ id: MODEL, contextWindow: WINDOW }]);
 });
@@ -16,6 +21,8 @@ beforeEach(() => {
 afterEach(() => {
   setConfiguredModels([]); // a test-registered model must not outlive itself
   rmSync(dir, { recursive: true, force: true });
+  delete process.env.FOX_AGENT_HOME;
+  delete process.env.FOX_AGENT_CONFIG;
 });
 
 describe("estimateTokens: CJK-aware", () => {

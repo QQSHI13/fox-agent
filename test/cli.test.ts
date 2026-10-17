@@ -28,6 +28,11 @@ function runCli(args: string[], env: Record<string, string> = {}) {
     env: {
       ...process.env,
       FOX_AGENT_HOME: home,
+      // BOTH: the subprocess reads its global config from FOX_AGENT_CONFIG when
+      // set, else ~/.config — without this it would load the developer's real
+      // config and a stray key there would leak into these assertions. Point it
+      // at a path in the tmp home that does not exist (see CLAUDE.md).
+      FOX_AGENT_CONFIG: join(home, "config.toml"),
       FOX_AGENT_API_KEY: "test-key",
       // a closed port: an unintended turn shows up as a connection error, and a
       // silently-passing test cannot be hiding a real provider call

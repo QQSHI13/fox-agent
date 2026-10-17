@@ -13,11 +13,18 @@ beforeEach(() => {
   home = mkdtempSync("/tmp/fox-transfer-");
   carry = mkdtempSync("/tmp/fox-carry-");
   process.env.FOX_AGENT_HOME = home;
+  // BOTH: loadConfig reads the global config from FOX_AGENT_CONFIG when set,
+  // else ~/.config — setting only the home left this suite asserting against
+  // the developer's real config (a stray key there flips expect(warnings)).
+  // Point it inside the tmp home; never touch the real config (CLAUDE.md).
+  process.env.FOX_AGENT_CONFIG = join(home, "config.toml");
   closeAll();
 });
 afterAll(() => {
   closeAll();
   if (home) rmSync(home, { recursive: true, force: true });
+  delete process.env.FOX_AGENT_HOME;
+  delete process.env.FOX_AGENT_CONFIG;
   if (carry) rmSync(carry, { recursive: true, force: true });
 });
 

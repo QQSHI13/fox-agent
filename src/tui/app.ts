@@ -6,9 +6,10 @@ import { appendFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { Screen } from "./screen.ts";
+import { Screen, Plane, type Style } from "./screen.ts";
 import { computeFrame, dockRows, itemEdgeSpan, scrollbarScrollTop, viewportHeight, chipGutter, contentOrigin, contentOriginForChip, contentWidth, type Frame, type FrameInput, type Row } from "./layout.ts";
 import { activePlugins } from "../plugins/load.ts";
+import type { TuiRegionPlane } from "../plugins/types.ts";
 import { createDecoder, type Key } from "./keys.ts";
 import { graphemeBack, graphemeForward, type Ch } from "./edit.ts";
 import {
@@ -111,14 +112,14 @@ export function setTuiCaps(collapsed: number, kept: number): void {
 }
 
 /**
- * Rich rendering is ALWAYS on (the `tuiRich` config toggle was removed):
- * syntax-tinted code fences and diff-colored tool output are the only path.
- * `richRev` is kept (always 0 now) so the cached-row invalidation logic is
- * unchanged; `setTuiRich` is a no-op kept for the config-apply call site.
+ * Cap a tool result's kept text at the TAIL, not the head. The most recent
+ * output is what the model needs, so for an over-long result we keep the end
+ * and note the dropped head — same direction the live streaming body already
+ * keeps (`slice(-KEPT_TOOL_CHARS)`), so a body the user watched stream does not
+ * snap to a disjoint prefix the moment it settles.
  */
-let richRev = 0;
-export function setTuiRich(_on: boolean): void {
-  richRev++;
+function keepTail(text: string, cap: number): string {
+  return text.length > cap ? `… (${text.length - cap} chars dropped)\n${text.slice(-cap)}` : text;
 }
 
 /**
@@ -570,7 +571,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   // the region declares, so a plugin physically cannot paint outside its
   // region. Dropped regions just stop being created; their plane is removed
   // and the screen underneath shows through at the next composite.
-  type PluginRegion = { key: string; z: number; rect: [number, number, number, number]; paint: (p: any) => boolean | void; plane: any; owner: string };
+  type PluginRegion = { key: string; z: number; rect: [number, number, number, number]; paint: (p: TuiRegionPlane) => boolean | void; plane: Plane; owner: string };
   let pluginRegionsRev = -1;
   let pluginRegions: PluginRegion[] = [];
   const regionWarned = new Set<string>();
@@ -597,12 +598,12 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       let ok = false;
       try {
         ok = r.paint({
-          text: (x: number, y: number, str: string, style: any) => void r.plane.text(x, y, str, screen.sgr(style)),
-          fillRow: (y: number, x0: number, x1: number, style: any) => r.plane.fillRow(y, x0, x1, screen.sgr(style)),
+          text: (x: number, y: number, str: string, style: Style) => void r.plane.text(x, y, str, screen.sgr(style)),
+          fillRow: (y: number, x0: number, x1: number, style: Style) => r.plane.fillRow(y, x0, x1, screen.sgr(style)),
           restyle: (y: number, x0: number, x1: number, bg: string) => r.plane.restyle(y, x0, x1, bg),
           w: W,
           h: H,
-        }) !== false;
+        } satisfies TuiRegionPlane) !== false;
       } catch (e) {
         if (!regionWarned.has(r.key)) {
           regionWarned.add(r.key);
@@ -706,6 +707,16 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
 
   const revs = new Map<number, number>();
   const touch = (k: number) => revs.set(k, (revs.get(k) ?? 0) + 1);
+  /**
+   * Render-signature of a settled item, keyed by its stable `k`. Used by
+   * refresh() to touch ONLY the nodes that actually changed, so a rebuild does
+   * not re-render the whole history. Prior nodes are append-only — their stored
+   * content never changes — so a cached row stays valid until its text, kind, or
+   * expand/policy inputs move. Without this, refresh() touched every item and
+   * the stable-key cache was defeated (O(history) re-wrap each rebuild).
+   */
+  const itemSigs = new Map<number, string>();
+  const itemSig = (it: Item): string => `${it.kind}|${it.text}|${it.expanded ? 1 : 0}|${it.mdBody ? 1 : 0}|${it.detail ?? ""}`;
   let dirty = true;
   /** spinner tick landed: only the status region needs re-deriving */
   let statusOnly = false;
@@ -863,6 +874,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   }
 
   function refresh() {
+    const prev = items;
     items = loadItems(); // loadItems already restores expandedRefs
     // log items keep stable seq-derived keys, so their cache entries stay
     // warm across rebuilds (the whole point); minted-key items (welcome,
@@ -872,12 +884,48 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       const live = new Set(items.map((i) => i.k));
       for (const k of lineCache.keys()) if (!live.has(k)) lineCache.delete(k);
     }
-    for (const it of items) touch(it.k);
+    // Diff-and-touch: bump the revision ONLY of nodes whose render signature
+    // changed, so a rebuild re-renders just the tail that moved — not the whole
+    // history. Prior nodes are append-only (stored content never changes), so
+    // an unchanged node keeps its cached rows; the previous blanket
+    // `for (it of items) touch(it.k)` invalidated everything and made refresh()
+    // O(history) re-wrap each time.
+    const prevByKey = new Map(prev.map((i) => [i.k, i]));
+    for (const it of items) {
+      const sig = itemSig(it);
+      if (itemSigs.get(it.k) !== sig) {
+        touch(it.k);
+        itemSigs.set(it.k, sig);
+      }
+      prevByKey.delete(it.k);
+    }
+    // nodes that vanished (ctx hid them, session trimmed): drop their sigs so a
+    // later same-key node is not mistaken for the old one
+    for (const k of prevByKey.keys()) itemSigs.delete(k);
     // the rebuild drops the startup block with everything else — its lifetime
     // ends here, so a later refreshWelcome() must not resurrect it
     welcomed = false;
     statsRev++;
     markDirty();
+  }
+
+  /**
+   * Force a re-render of the items a context op touched. A ctx delete/replace
+   * changes what a node shows (hidden, or new content), so its cached rows are
+   * stale even though the underlying message row is append-only — the VIEW
+   * changed. Callers that know a set of seqs changed (ctx ops, compaction)
+   * touchSeq() then refresh(), so only those nodes re-render, not the history.
+   */
+  function touchSeq(seq: number): void {
+    // a seq maps to up to 4 slots (seq*4+slot); a tool node has a head (1) and
+    // body (2). Touch every slot the seq could own so the pair re-renders.
+    for (let slot = 0; slot < 4; slot++) {
+      const k = seqKey(seq, slot);
+      if (itemSigs.has(k)) {
+        touch(k);
+        itemSigs.delete(k); // force the sig to mismatch on next refresh -> re-render
+      }
+    }
   }
 
   function loadItems(): Item[] {
@@ -934,7 +982,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           kind: "toolbody",
           seq: m.seq,
           markerCont: true, // indents under the head's [N]; a tool pair shows ONE chip
-          text: m.content.slice(0, KEPT_TOOL_CHARS * 4),
+          text: keepTail(m.content, KEPT_TOOL_CHARS * 4),
           ref: m.seq,
           toolResult: true,
           mdBody: isTodo || undefined,
@@ -1464,7 +1512,6 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     try {
       const r = applyConfig();
       setTuiCaps(state.config?.tuiCollapsedChars ?? 240, state.config?.tuiKeptChars ?? 4_000);
-      setTuiRich(!!state.config?.tuiRich);
       setTuiScrollbar(state.config?.tuiScrollbar ?? true);
       setTuiScrollStep(state.config?.tuiScrollStep ?? 2);
       setDebug(!!state.config?.debug);
@@ -1884,9 +1931,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           // as md (see itemRows mdBody); a task list hidden behind a click is
           // useless and collapsed markdown punctuation looks like garbage
           if (ev.name === "todo") {
-            push("toolbody", ev.output.slice(0, KEPT_TOOL_CHARS * 4), { ref: ev.seq, expanded: true, toolResult: true, mdBody: true });
+            push("toolbody", keepTail(ev.output, KEPT_TOOL_CHARS * 4), { ref: ev.seq, expanded: true, toolResult: true, mdBody: true });
           } else {
-            push("toolbody", ev.output.slice(0, KEPT_TOOL_CHARS * 4), { ref: ev.seq, expanded: bodyOpenFinal, toolResult: true });
+            push("toolbody", keepTail(ev.output, KEPT_TOOL_CHARS * 4), { ref: ev.seq, expanded: bodyOpenFinal, toolResult: true });
           }
           statsRev++;
         } else if (ev.type === "child_tool") {
@@ -2887,6 +2934,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       appendOps(state.sessionId, [{ kind: "delete", ids }]);
       // the projection cache must not survive the surgery
       void import("../context/view.ts").then((m) => m.dropViewCache(state.sessionId!)).catch(() => {});
+      // force the hidden nodes to re-render (they now show as dimmed/summarized)
+      for (const id of ids) touchSeq(id);
+      refresh();
       flash(`reverted — hid [${seq}]..[${ids[ids.length - 1]}] from context (/undo restores)`);
     }
   }
@@ -3110,7 +3160,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   // (evicting W): 60ms+ of pure re-render per scroll tick on a long session.
   // Nested by width keeps both warm; the prune sweep walks the outer (item)
   // keys and stays correct, and the clear()s are whole-map as before.
-  const lineCache = new Map<number, Map<number, { rev: number; rows: Row[]; rich: number; hl: number; span: [number, number] }>>();
+  const lineCache = new Map<number, Map<number, { rev: number; rows: Row[]; hl: number; span: [number, number] }>>();
 
   function itemStyle(kind: ItemKind): Partial<Seg> {
     switch (kind) {
@@ -3195,7 +3245,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   function itemRows(it: Item, w: number): { rows: Row[]; span: [number, number] } {
     const perWidth = lineCache.get(it.k);
     const cached = perWidth?.get(w);
-    if (cached && cached.rev === revs.get(it.k) && cached.rich === richRev && cached.hl === highlightVersion()) {
+    if (cached && cached.rev === revs.get(it.k) && cached.hl === highlightVersion()) {
       // LRU touch: delete+set refreshes Map iteration order so the eviction
       // scan below (oldest-first) drops the width not used the longest
       perWidth!.delete(w);
@@ -3332,7 +3382,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       rows = wrapSegs([{ t: it.text, ...itemStyle(it.kind) }], cw).map((segs) => ({ segs }));
     }
     if (rowSeq(it) !== undefined) rows = withMarker(rows, rowSeq(it)!, it.markerCont);
-    const entry = { rev: revs.get(it.k) ?? 0, rows, rich: richRev, hl: highlightVersion(), span: itemEdgeSpan(rows) };
+    const entry = { rev: revs.get(it.k) ?? 0, rows, hl: highlightVersion(), span: itemEdgeSpan(rows) };
     let pw = lineCache.get(it.k);
     if (!pw) {
       pw = new Map();

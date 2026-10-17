@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { loadConfig, resolveProfile, type Config } from "./core/config.ts";
 import type { ProviderConfig } from "./providers/types.ts";
 import { ConfigError, errMsg } from "./core/errors.ts";
+import { assertNever } from "./core/events.ts";
 
 import { runTurnCore } from "./loop/turn.ts";
 import { resolveChat } from "./providers/index.ts";
@@ -641,6 +642,17 @@ function emitHuman(ev: import("./core/events.ts").AgentEvent, color = false) {
         process.exitCode = 1;
       } else process.stdout.write("\n");
       break;
+    case "tool_start":
+    case "tool_output":
+    case "usage":
+    case "user":
+    case "assistant":
+    case "step":
+      // in-flight streaming detail and per-step chatter: the headless printer
+      // shows settled results only, so these are deliberately not rendered here
+      break;
+    default:
+      assertNever(ev);
   }
 }
 

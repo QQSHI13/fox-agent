@@ -1,6 +1,6 @@
 import { lookupModel, type ModelInfo } from "../providers/models.ts";
 import { lastPromptTokens } from "../store/db.ts";
-import { projectView, visibleNodes } from "./view.ts";
+import { projectView, visibleNodes, parseToolCalls, type ViewNode } from "./view.ts";
 import { nodeTokenEstimate } from "./render.ts";
 
 export function modelBudget(model: string): ModelInfo {
@@ -8,25 +8,44 @@ export function modelBudget(model: string): ModelInfo {
 }
 
 /**
+ * True when a node renders to nothing and so costs nothing to send: a deleted
+ * node, or an assistant whose text is empty AND every tool call it carried is
+ * hidden (a "kept" call is one whose tool result is still visible). This is
+ * the renderer's own rule (renderNode's early `return base`), lifted out so
+ * the budget estimate and the renderer agree on what is actually on the wire —
+ * one definition, not a second hand-rolled heuristic.
+ */
+export function nodeRendersToNothing(n: ViewNode, visibleToolIds: Set<string>): boolean {
+  if (n.deleted) return true;
+  if (n.msg.role !== "assistant") return false;
+  const text = n.content;
+  const kept = n.msg.tool_calls ? parseToolCalls(n.msg).filter((c) => visibleToolIds.has(c.id)) : [];
+  return !text && kept.length === 0;
+}
+
+/**
  * Current context size: the larger of the provider's last report and the
- * chars/4 estimate of the whole visible history. The report alone under-reads
- * whenever the endpoint tokenizes loosely (probed on kimi-for-coding: ~1
- * token/word, ~25% under chars/4) and lags the live window by everything
- * appended since it; the estimate alone misses system-prompt/tool-schema
- * overhead the report captures. `max` tracks the window better than either —
- * and never double-counts, since both are totals of the same history.
+ * estimate of the whole visible history, where a node's cost is counted only
+ * if it actually renders (see nodeRendersToNothing — the same rule the renderer
+ * uses, so the estimate and what is really sent cannot drift apart). The report
+ * alone under-reads whenever the endpoint tokenizes loosely (probed on kimi-for-
+ * coding: ~1 token/word, ~25% under chars/4) and lags the live window; the
+ * estimate alone misses system-prompt/tool-schema overhead the report captures.
+ * `max` tracks the window better than either — and never double-counts, since
+ * both are totals of the same history.
  */
 export function sessionContextTokens(sessionId: string): number {
   const measured = lastPromptTokens(sessionId);
   const vis = visibleNodes(projectView(sessionId));
+  // the same visible-tool set the renderer builds (renderContext) — a call
+  // counts only while its result is visible, so a hidden result stops its
+  // call from billing without a second, parallel notion of "visible".
+  const visibleToolIds = new Set(
+    vis.filter((n) => n.msg.role === "tool" && n.msg.tool_call_id).map((n) => n.msg.tool_call_id!),
+  );
   let estimated = 0;
   for (const n of vis) {
-    if (n.msg.role === "assistant" && n.msg.tool_calls) {
-      // assistant nodes render as the tool calls they carry — estimate the
-      // calls, not the (empty) content
-      const p = n.msg.parent_id;
-      if (p && vis.some((m) => m.msg.id === p && m.msg.role === "user")) continue;
-    }
+    if (nodeRendersToNothing(n, visibleToolIds)) continue;
     estimated += nodeTokenEstimate(n);
   }
   return Math.max(measured, estimated);
@@ -87,12 +106,14 @@ export interface BudgetCheck {
 export function checkBudget(
   sessionId: string,
   model: string,
-  _unused = 0,
   compactAt = 0.85,
   compactAtTokens = DEFAULT_COMPACT_AT_TOKENS,
+  reportedPrecomputed?: number,
 ): BudgetCheck {
   const info = modelBudget(model);
-  const reported = sessionContextTokens(sessionId);
+  // The turn loop measures this once per step and hands it in, so compaction and
+  // the budget header read the SAME number instead of each re-walking the view.
+  const reported = reportedPrecomputed ?? sessionContextTokens(sessionId);
   return {
     reported,
     limit: info.contextWindow,

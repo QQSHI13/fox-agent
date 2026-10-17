@@ -1,6 +1,6 @@
 // Library entry: embed fox-agent in other tools or scripts.
 //   import { createAgent } from "fox-agent/sdk";
-import { createSession, getSession } from "./store/db.ts";
+import { createSession, getSession, pinSession, unpinSession } from "./store/db.ts";
 import { loadConfig, resolveProfile } from "./core/config.ts";
 import { errMsg } from "./core/errors.ts";
 import type { AgentEvent } from "./core/events.ts";
@@ -81,19 +81,27 @@ export async function createAgent(opts: {
       let text = "";
       let reason = "";
       let usage: AgentRunResult["usage"] = null;
-      for await (const ev of runTurnCore(sessionId, provider, prompt, runOpts.signal, {
-        maxSteps: runOpts.turn?.maxSteps ?? config.maxSteps,
-        retryLimit: runOpts.turn?.retryLimit ?? config.retryLimit,
-        compactAt: runOpts.turn?.compactAt ?? config.compactAt,
-        projectInstructions: config.projectInstructions,
-        config,
-        chat: resolveChat,
-      })) {
-        runOpts.onEvent?.(ev);
-        if (ev.type === "text") text += ev.delta;
-        else if (ev.type === "usage")
-          usage = { prompt_tokens: ev.prompt_tokens, completion_tokens: ev.completion_tokens, cached_tokens: ev.cached_tokens ?? 0 };
-        else if (ev.type === "done") reason = ev.reason;
+      // pin for the turn's lifetime so a concurrent open of another session's
+      // db cannot evict this handle mid-append (the picker-eviction RangeError
+      // the pin exists to prevent — same reason the TUI pins)
+      pinSession(sessionId);
+      try {
+        for await (const ev of runTurnCore(sessionId, provider, prompt, runOpts.signal, {
+          maxSteps: runOpts.turn?.maxSteps ?? config.maxSteps,
+          retryLimit: runOpts.turn?.retryLimit ?? config.retryLimit,
+          compactAt: runOpts.turn?.compactAt ?? config.compactAt,
+          projectInstructions: config.projectInstructions,
+          config,
+          chat: resolveChat,
+        })) {
+          runOpts.onEvent?.(ev);
+          if (ev.type === "text") text += ev.delta;
+          else if (ev.type === "usage")
+            usage = { prompt_tokens: ev.prompt_tokens, completion_tokens: ev.completion_tokens, cached_tokens: ev.cached_tokens ?? 0 };
+          else if (ev.type === "done") reason = ev.reason;
+        }
+      } finally {
+        unpinSession(sessionId);
       }
       return { text: text.trim(), reason, usage };
     },

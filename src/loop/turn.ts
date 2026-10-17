@@ -1,4 +1,5 @@
 import { appendMessage, getSession, recordUsage } from "../store/db.ts";
+import { estimateTokens } from "../providers/models.ts";
 import type { ProviderConfig, ChatMessage, ToolDef, ToolCall, ChatFn } from "../providers/types.ts";
 import { resolveChat } from "../providers/index.ts";
 import { classifyProviderError, FoxError, isTimeout } from "../core/errors.ts";
@@ -17,7 +18,7 @@ import type { UiBridge } from "../core/ui.ts";
 import { buildSystemPrompt, buildRuntimeHeader } from "./prompt.ts";
 import { renderContext, stripEchoedMarkers } from "../context/render.ts";
 import { compactIfNeeded } from "../context/compact.ts";
-import { checkBudget } from "../context/budget.ts";
+import { checkBudget, sessionContextTokens } from "../context/budget.ts";
 
 export interface TurnOptions {
   maxSteps?: number;
@@ -57,7 +58,16 @@ interface StepOutcome {
   reasoning: string;
 }
 
-const estTok = (s: string) => Math.ceil(s.length / 4);
+/**
+ * Single token estimator, shared with the render/compact/budget paths.
+ *
+ * This used to be its own `Math.ceil(s.length / 4)`, a second estimator that
+ * disagreed with `estimateTokens` (which is CJK-aware: non-ASCII counts 1) by
+ * up to 4x on CJK-dense history. Both write and read sides now agree, so a
+ * stored `tokens` figure and a live `nodeTokenEstimate` of the same text can
+ * never diverge. The append-side formula is otherwise unchanged.
+ */
+const estTok = estimateTokens;
 
 /**
  * A queue for events a tool emits while it is still running.
@@ -193,9 +203,6 @@ function safeParseArgs(s: string): { args: any; error?: string } {
 }
 
 function missingRequired(def: ToolDef, args: any): string | null {
-  // `validateArgs` covers both halves now — unknown keys AND missing required
-  // ones — and prefixes the tool name itself, so the caller just wraps it in
-  // `error:`. Renaming it here would ripple through the call site for nothing.
   return validateArgs(def.name, def, args);
 }
 
@@ -312,14 +319,9 @@ export async function* runTurnCore(
       setupWarnings = [...(effCfg.warnings ?? []), ...res.warnings];
       // buildRegistry registers plugin providers; the override path must too,
       // or provider=<plugin> throws unknown-provider here but works in prod.
-      const { setCustomProviders } = await import("../providers/index.ts");
-      const custom = new Map();
-      for (const p of plugins) {
-        for (const [name, fn] of Object.entries(p.providers ?? {})) {
-          if (typeof fn === "function") custom.set(name, fn);
-        }
-      }
-      setCustomProviders(custom);
+      // registerPluginProviders is the one shared copy of the rule.
+      const { registerPluginProviders } = await import("../tools/index.ts");
+      registerPluginProviders(plugins);
     } else {
       setupWarnings = [...(effCfg.warnings ?? [])];
     }
@@ -458,19 +460,22 @@ export async function* runTurnCore(
       if (!quiet) yield { type: "steered", text };
     }
 
+    // Measure context size ONCE this step and share it between compaction and
+    // the budget header — they were each re-walking the whole view per step for
+    // the same number. A compaction does not refresh the provider report, so
+    // the step that just pruned still reads `over` from this same measurement
+    // and is suppressed for exactly that step (the next step reads a fresh one).
+    const ctxTokens = sessionContextTokens(sessionId);
+
     // compaction is not chatter — subagents need it too or they hard-fail on
     // a full window. Only the *event* is suppressed when quiet.
-    const cEv = await compactIfNeeded(sessionId, reqCfg, chat, { compactAt, compactAtTokens, signal }).catch(() => null);
+    const cEv = await compactIfNeeded(sessionId, reqCfg, chat, { compactAt, compactAtTokens, signal, reportedPrecomputed: ctxTokens }).catch(() => null);
     if (!quiet) {
       if (cEv && cEv.type === "compacted" && cEv.removed.length) yield cEv;
       yield { type: "step", n: step };
     }
 
-    // The budget reads last step's provider report, which a compaction does not
-    // update — so the step that just pruned would still read `over` and nag the
-    // model to prune again. Suppress it for exactly that step; the next step
-    // reads this step's fresh report.
-    const budget = checkBudget(sessionId, cfg.model, 0, compactAt, compactAtTokens);
+    const budget = checkBudget(sessionId, cfg.model, compactAt, compactAtTokens, ctxTokens);
     // Step-stable by construction: identity, project instructions, tool roster
     // and doctrine. Nothing in here moves between steps, which is what lets the
     // provider cache it (loop/prompt.ts buildSystemPrompt).
@@ -589,25 +594,18 @@ export async function* runTurnCore(
     if (outcome.usage && !quiet) yield { type: "usage", ...outcome.usage };
 
     if (!prepared.length) {
-      // A steer parked during this final provider call (ctrl+s, or a background
-      // task finishing) would sit undelivered if the turn ended here — the
-      // drain at the top of the loop only runs when there IS a next step. Peek
-      // instead: steered text deserves an answer, so fall through to one more
-      // step (the top-of-loop drain persists it and emits `steered`). The cap
-      // is still honored — an over-cap turn ends without consuming the steer.
-      const steeredWaiting = peekSteer(sessionId).length > 0;
-      const capOk = maxSteps <= 0 || step + 1 <= maxSteps;
-      if (steeredWaiting && capOk) continue;
-      // Reaching here with a steer still parked means the cap refused the extra
-      // step. The persist MUST therefore be unconditional: it used to run only
-      // under `!steeredWaiting`, so a steer parked during the final provider
-      // call under a positive maxSteps was drained by nobody — it sat in the
-      // queue (the TUI kept rendering "steering 1/1" under a turn that had
-      // already ended) and was silently answered by some later turn, or never.
-      // `persistParkedSteers` drains, so calling it with nothing queued is a
-      // no-op; it also closes the non-atomic window between this peek and
-      // endTurn, where the model finishes and the user hits ctrl+s in between.
-      // Same path an abort takes: a real user node, so the text survives.
+      // A steer parked during this call (ctrl+s, a background task finishing)
+      // deserves an ANSWER, not just a save. `continue` re-enters the loop: the
+      // top-of-loop drain persists the steer and emits `steered`, and the next
+      // call answers it. This is the "steer at end of turn" fix — keep taking
+      // steps while a steer is waiting, instead of peeking once and stranding a
+      // steer that arrives after the final reply resolved. The cap still bounds
+      // it: an over-cap turn ends without consuming the steer.
+      if (peekSteer(sessionId).length > 0 && (maxSteps <= 0 || step + 1 <= maxSteps)) continue;
+      // No steer waiting (or the cap refused the extra step): drain whatever is
+      // parked NOW so it is never stranded in the queue under a finished turn.
+      // `persistParkedSteers` drains, so a no-op when nothing is queued; a real
+      // user node either way, so the text survives to be answered next turn.
       persistParkedSteers(asstNode.id);
       yield await endTurn(outcome.finish.startsWith("error") ? outcome.finish : outcome.finish || "stop", step);
       return;

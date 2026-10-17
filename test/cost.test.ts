@@ -12,6 +12,11 @@ beforeEach(() => {
   home = join(tmpdir(), `fox-cost-${Date.now()}-${Math.random().toString(36).slice(2)}`);
   mkdirSync(join(home, "sessions"), { recursive: true });
   process.env.FOX_AGENT_HOME = home;
+  // BOTH: loadConfig reads the global config from FOX_AGENT_CONFIG when set,
+  // else ~/.config — setting only the home left this suite asserting against
+  // the developer's real config (a stray key there flips expect(warnings)).
+  // Point it inside the tmp home; never touch the real config (CLAUDE.md).
+  process.env.FOX_AGENT_CONFIG = join(home, "config.toml");
   // a tiny catalog: one priced model, one unpriced, to pin both branches
   writeFileSync(
     join(home, "models.dev.json"),
@@ -35,6 +40,7 @@ beforeEach(() => {
 
 afterEach(() => {
   delete process.env.FOX_AGENT_HOME;
+  delete process.env.FOX_AGENT_CONFIG;
   delete process.env.FOX_AGENT_MODELS_CACHE;
   rmSync(home, { recursive: true, force: true });
 });

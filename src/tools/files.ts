@@ -10,7 +10,21 @@ import { applyEdits, syntaxWarning, type EditOp } from "./patch.ts";
 import { diagnose } from "../lsp/client.ts";
 
 const execFileP = promisify(execFile);
-export const READ_CAP = 50_000; // chars
+/**
+ * The `read` tool's per-result text cap (chars). Configurable (`readCap` in
+ * config, applied by `buildRegistry`); module-level for the same reason as
+ * OUT_CAP below — `read` reads it directly and threading it through ToolContext
+ * would touch signatures for a constant nobody changes mid-turn. Distinct from
+ * OUT_CAP: `read` pages by line, so it wants its own larger ceiling before the
+ * shared tail-cap applies.
+ */
+let READ_CAP_VALUE = 50_000;
+export function readCap(): number {
+  return READ_CAP_VALUE;
+}
+export function setReadCap(n: number): void {
+  if (Number.isFinite(n) && n >= 1000) READ_CAP_VALUE = Math.floor(n);
+}
 export const MAX_READ_BYTES = 10_000_000;
 
 /**
@@ -105,13 +119,13 @@ export function modelAcceptsMedia(kind: MediaKind, ctx: ToolContext): boolean {
 export const readDef: ToolDef = {
   name: "read",
   description:
-    "Read a text file. Returns line-numbered content (n: line). Caps at 2000 lines / 50KB. Image/audio/video/pdf files are attached as media when the current model accepts that kind of input (otherwise an error says so). Refuses other binary files.",
+    "Read a file's contents. Text returns line-numbered (n: line) output; use offset/limit to page through a large file. Image/audio/video/pdf attach as media when the model accepts that kind (otherwise an error says so); other binary files are refused.",
   parameters: {
     type: "object",
     properties: {
-      path: { type: "string", description: "File path (absolute or relative to cwd)" },
+      path: { type: "string", description: "File path" },
       offset: { type: "number", description: "1-based start line" },
-      limit: { type: "number", description: "Max lines to return" },
+      limit: { type: "number", description: "Max lines to return (page through a large file)" },
     },
     required: ["path"],
   },
@@ -156,7 +170,7 @@ export async function readRun(args: { path: string; offset?: number; limit?: num
   let out = "";
   for (let i = 0; i < lines.length; i++) {
     const l = `${off + i}: ${lines[i]}\n`;
-    if (out.length + l.length > READ_CAP) return ok(cap(out, `\n… truncated at line ${off + i} of ${total} total`));
+    if (out.length + l.length > readCap()) return ok(cap(out, `\n… truncated at line ${off + i} of ${total} total`));
     out += l;
   }
   const body = out.trimEnd() || "(empty file)";
@@ -171,7 +185,7 @@ export const writeDef: ToolDef = {
   parameters: {
     type: "object",
     properties: {
-      path: { type: "string", description: "File path (absolute or relative to cwd)" },
+      path: { type: "string", description: "File path" },
       content: { type: "string", description: "Full new contents of the file" },
     },
     required: ["path", "content"],
@@ -192,11 +206,11 @@ export async function writeRun(args: { path: string; content: string }, ctx: Too
 export const editDef: ToolDef = {
   name: "edit",
   description:
-    "Edit a file. Pass edits:[{oldString,newString,replaceAll?}] (multiple changes applied in order) or the legacy single oldString/newString. Exact-match first; falls back to whitespace-tolerant match preserving relative indentation.",
+    "Edit a file. Pass edits:[{oldString,newString,replaceAll?}] (multiple changes applied in order) or a single oldString/newString. Exact-match first; falls back to whitespace-tolerant match preserving relative indentation.",
   parameters: {
     type: "object",
     properties: {
-      path: { type: "string", description: "File path (absolute or relative to cwd)" },
+      path: { type: "string", description: "File path" },
       edits: {
         type: "array",
         items: {
@@ -210,9 +224,9 @@ export const editDef: ToolDef = {
         },
         description: "Batch of replacements applied in order",
       },
-      oldString: { type: "string", description: "Legacy single-edit form: text to find" },
-      newString: { type: "string", description: "Legacy single-edit form: replacement text" },
-      replaceAll: { type: "boolean", description: "Legacy single-edit form: replace every occurrence" },
+      oldString: { type: "string", description: "Text to find" },
+      newString: { type: "string", description: "Replacement text" },
+      replaceAll: { type: "boolean", description: "Replace every occurrence" },
     },
     required: ["path"],
   },

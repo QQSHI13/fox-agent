@@ -8,10 +8,18 @@ let dir: string;
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "fox-cmd-"));
   process.env.FOX_AGENT_HOME = dir;
+  // BOTH: loadConfig reads the global config from FOX_AGENT_CONFIG when set, else
+  // ~/.config — setting only the home left this suite asserting against the
+  // developer's real config (one stray key there turned expect(warnings) into a
+  // coin flip). Point it at a path in the tmp home that does not exist (see
+  // CLAUDE.md: set both, never touch the real config).
+  process.env.FOX_AGENT_CONFIG = join(dir, "config.toml");
 });
 
 afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
+  delete process.env.FOX_AGENT_HOME;
+  delete process.env.FOX_AGENT_CONFIG;
 });
 
 async function setup() {
@@ -736,7 +744,7 @@ describe("/settings", () => {
     // is walked by a wizard instead (see the test below)
     state.interactive = false;
     const res = tt.runSlashCommand("/settings", state)!;
-    for (const key of ["maxSteps", "retryLimit", "compactAt", "tuiRich", "contextMarkers", "acpHistory"]) {
+    for (const key of ["maxSteps", "retryLimit", "compactAt", "tuiScrollbar", "contextMarkers", "acpHistory"]) {
       expect(res.output).toContain(key);
     }
     expect(res.output).toContain("0.85"); // default shown
@@ -765,7 +773,7 @@ describe("/settings", () => {
     // the value step prefills what is set and says what the default is
     const valueStep = p.steps[1];
     expect(resolveField(valueStep.initial, { key: "tuiFrameMs" })).toBe("16");
-    expect(resolveField(valueStep.initial, { key: "tuiRich" })).toBe("false"); // loader defaults, not blank
+    expect(resolveField(valueStep.initial, { key: "tuiScrollbar" })).toBe("true"); // loader defaults, not blank
     expect(resolveField(valueStep.hint, { key: "compactAt" })).toContain("default 0.85");
 
     const out = p.run({ key: "tuiFrameMs", value: "16" }, state);
@@ -791,8 +799,9 @@ describe("/settings", () => {
     expect(state.config.compactAt).toBe(0.7); // applied live
     expect(readFileSync(cfgPath, "utf8")).toContain("compactAt = 0.7"); // persisted
 
-    const set2 = tt.runSlashCommand("/settings tuiRich=true", state)!;
-    expect(state.config.tuiRich).toBe(true);
+    // a boolean knob, applied live to the running TUI the same way
+    const set2 = tt.runSlashCommand("/settings tuiScrollbar=false", state)!;
+    expect(state.config.tuiScrollbar).toBe(false);
 
     const reset = tt.runSlashCommand("/settings compactAt=", state)!;
     expect(reset.output).toContain("(default 0.85)");
@@ -800,10 +809,67 @@ describe("/settings", () => {
     expect(readFileSync(cfgPath, "utf8")).not.toContain("compactAt");
 
     expect(tt.runSlashCommand("/settings compactAt=2", state)!.output).toContain("fraction");
-    expect(tt.runSlashCommand("/settings tuiRich=maybe", state)!.output).toContain("not a boolean");
+    expect(tt.runSlashCommand("/settings tuiScrollbar=maybe", state)!.output).toContain("not a boolean");
     expect(tt.runSlashCommand("/settings frobnicate=1", state)!.output).toContain("unknown setting");
     // rejected writes changed nothing
     expect(state.config.compactAt).toBeUndefined();
+  });
+
+  test("toolOutputCap reaches the running tools, not just the file", async () => {
+    // it lives in a module-level OUT_CAP that every tool reads through outCap();
+    // buildRegistry was the only other writer, so a change used to say
+    // "live now" while the running turn kept the old cap until /reload
+    const tt = await setup();
+    const cfgPath = join(dir, "config.toml");
+    writeFileSync(cfgPath, 'model = "m"\n');
+    const { loadConfig } = await import("../src/core/config.ts");
+    const { outCap } = await import("../src/tools/files.ts");
+    const s = tt.createSession("/w", "m1");
+    const state = mkState(cfgPath, s.id, loadConfig({ cwd: "/w", configPath: cfgPath }, {}));
+
+    expect(outCap()).toBe(30_000);
+    tt.runSlashCommand("/settings toolOutputCap=8000", state)!;
+    expect(state.config.toolOutputCap).toBe(8000);
+    expect(readFileSync(cfgPath, "utf8")).toContain("toolOutputCap = 8000");
+    // applyResultLive is async (a dynamic import inside it), so give it a turn
+    await new Promise((r) => setTimeout(r, 50));
+    expect(outCap()).toBe(8000);
+
+    // and a reset puts the documented default back in the running process
+    tt.runSlashCommand("/settings toolOutputCap=", state)!;
+    await new Promise((r) => setTimeout(r, 50));
+    expect(outCap()).toBe(30_000);
+  });
+
+  test("every live-applied setting resets to DEFAULTS, not a stale literal", async () => {
+    // two of these appliers used a fallback that disagreed with DEFAULTS
+    // (frame 33 vs 16, wheel step 1 vs 2): a cleared key left the running
+    // process on one value and the next load on another. Asserted through
+    // liveSettingFor, which is the single place that resolves the fallback.
+    const tt = await setup();
+    const cfgPath = join(dir, "config.toml");
+    writeFileSync(cfgPath, 'model = "m"\n');
+    const { loadConfig, defaultConfig, SETTINGS } = await import("../src/core/config.ts");
+    const cmds = await import("../src/commands.ts");
+    const s = tt.createSession("/w", "m1");
+    const state = mkState(cfgPath, s.id, loadConfig({ cwd: "/w", configPath: cfgPath }, {}));
+
+    const d = defaultConfig();
+    for (const key of ["tuiCollapsedChars", "tuiKeptChars", "toolOutputCap", "tuiScrollbar", "tuiScrollStep", "tuiFrameMs", "debug"]) {
+      expect(`${key}:${cmds.liveSettingFor(SETTINGS.find((x) => x.key === key)!, state)}`).toBe(`${key}:${(d as unknown as Record<string, unknown>)[key]}`);
+    }
+
+    // a SET value is what the running process gets, and clearing it is the default
+    expect(cmds.liveSettingFor(SETTINGS.find((x) => x.key === "tuiFrameMs")!, state)).toBe(16);
+    tt.runSlashCommand("/settings tuiFrameMs=120", state)!;
+    expect(cmds.liveSettingFor(SETTINGS.find((x) => x.key === "tuiFrameMs")!, state)).toBe(120);
+    tt.runSlashCommand("/settings tuiFrameMs=", state)!;
+    expect(cmds.liveSettingFor(SETTINGS.find((x) => x.key === "tuiFrameMs")!, state)).toBe(16);
+
+    tt.runSlashCommand("/settings tuiScrollStep=", state)!;
+    expect(cmds.liveSettingFor(SETTINGS.find((x) => x.key === "tuiScrollStep")!, state)).toBe(d.tuiScrollStep);
+    // a key with no live effect reports null rather than a made-up value
+    expect(cmds.liveSettingFor(SETTINGS.find((x) => x.key === "compactAt")!, state)).toBeNull();
   });
 
   test("acpHistory accepts full/last/N and refuses junk", async () => {

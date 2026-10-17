@@ -23,8 +23,7 @@ model = "..."                          # active model
 baseUrl = "..."  apiKey = "..."        # fallback creds for the flat slot
 reasoningEffort = "low|medium|high"
 theme = "default"                      # theme name (see themes doc)
-tuiRich = true                         # markdown rendering
-tuiScrollbar = true
+tuiScrollbar = true                    # dedicated scrollbar column
 tuiScrollStep = 3                      # rows per wheel notch
 tuiFrameMs = 16                        # frame budget
 statusBar = "cwd provider model ctx"   # space-separated segment template

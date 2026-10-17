@@ -97,6 +97,44 @@ describe("fetch SSRF gate", () => {
     }
   });
 
+  /**
+   * IPv6 literals arrive BRACKETED from `URL.hostname`, so every prefix test
+   * written against the address text missed them: `::1`, `fe80::`, `fc00::`,
+   * `fec0::` and `::ffff:<private-v4>` all reached the network. The gate is
+   * only a gate if it refuses these, so each form is pinned here.
+   */
+  test("refuses IPv6 loopback, link-local, ULA and IPv4-mapped private", async () => {
+    const { fetchRun } = await import("../src/tools/fetch.ts");
+    const ctx = { sessionId: "s", cwd: dir } as any;
+    for (const u of [
+      "http://[::1]/",
+      "http://[::]/",
+      "http://[fe80::1]/",
+      "http://[fe80:0:0:0:0:0:0:1]/",
+      "http://[fec0::1]/",
+      "http://[fc00::1]/",
+      "http://[fd12:3456::1]/",
+      "http://[::ffff:127.0.0.1]/",
+      "http://[::ffff:10.0.0.1]/",
+      "http://[::ffff:169.254.169.254]/",
+      "http://[::ffff:7f00:1]/",
+      "http://[64:ff9b::7f00:1]/",
+    ]) {
+      const r = await fetchRun({ url: u }, ctx);
+      expect(`${u} -> ${r.output}`).toMatch(/private\/local/);
+      expect(r.ok).toBe(false);
+    }
+  });
+
+  /** The other half: a public IPv6 literal must NOT be refused by the gate. Offline — asserts the gate's decision directly, never reaching the network. */
+  test("allows a public IPv6 literal (the gate is not just \"reject all v6\")", async () => {
+    const { checkUrl } = await import("../src/tools/fetch.ts");
+    expect(checkUrl(new URL("http://[2606:4700::1111]/"))).toBeNull();
+    expect(checkUrl(new URL("http://[2001:db8::1]/"))).toBeNull();
+    expect(checkUrl(new URL("https://example.com/"))).toBeNull();
+  });
+
+
   test("FOX_AGENT_ALLOW_PRIVATE_FETCH=1 re-allows local (tests rely on this)", async () => {
     process.env.FOX_AGENT_ALLOW_PRIVATE_FETCH = "1";
     const server = Bun.serve({ port: 0, fetch: () => new Response("hello-local") });

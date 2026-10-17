@@ -28,6 +28,8 @@ import {
   forkSession,
   getSession,
   listSessions,
+  pinSession,
+  unpinSession,
   type MessageRow,
 } from "../store/db.ts";
 import { projectView } from "../context/view.ts";
@@ -264,6 +266,12 @@ export function buildAgent(opts: AcpServerOptions): acp.AgentApp {
       const onAbort = () => ctl.abort();
       signal.addEventListener("abort", onAbort, { once: true });
       running.set(params.sessionId, ctl);
+      // Pin the handle for the turn's lifetime, exactly as the TUI does: the
+      // client may interleave session/list / session/load / session/fork (each
+      // opens other session dbs), and an unpinned handle is the LRU-oldest —
+      // the picker eviction that closes it mid-append is the RangeError the
+      // pin exists to prevent.
+      pinSession(params.sessionId);
 
       let stop: acp.StopReason = "end_turn";
       try {
@@ -284,6 +292,8 @@ export function buildAgent(opts: AcpServerOptions): acp.AgentApp {
         }
       } finally {
         signal.removeEventListener("abort", onAbort);
+        // release the pin the turn held; the next prompt re-pins
+        unpinSession(params.sessionId);
         // keyed delete: close may have already removed this entry and a NEW
         // prompt may hold the slot — deleting unconditionally would drop the
         // new controller and unguard `running.has` above

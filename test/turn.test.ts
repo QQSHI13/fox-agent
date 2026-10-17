@@ -8,10 +8,17 @@ let dir: string;
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "fox-turn-"));
   process.env.FOX_AGENT_HOME = dir;
+  // BOTH: loadConfig reads the global config from FOX_AGENT_CONFIG when set,
+  // else ~/.config — setting only the home left this suite asserting against
+  // the developer's real config (a stray key there flips expect(warnings)).
+  // Point it inside the tmp home; never touch the real config (CLAUDE.md).
+  process.env.FOX_AGENT_CONFIG = join(dir, "config.toml");
 });
 
 afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
+  delete process.env.FOX_AGENT_HOME;
+  delete process.env.FOX_AGENT_CONFIG;
 });
 
 // ---- mock provider plumbing ----
@@ -407,6 +414,37 @@ describe("steering", () => {
     steer(s.id, "gone");
     drainSteer(s.id);
     expect(withdrawSteer(s.id)).toBeUndefined();
+  });
+
+  test("a steer parked in the final call is ANSWERED in the same turn (steer-at-end-of-turn)", async () => {
+    const t = await setup();
+    const s = t.createSession("/w", "m1");
+    const { steer, peekSteer } = await import("../src/loop/steer.ts");
+    // The "steer at end of turn" bug: the user hits ctrl+s while the model's
+    // FINAL reply (no tool calls) is streaming. The turn is about to end, and
+    // the old code peeked once and ended — so the steer was left in the queue
+    // for a LATER turn to answer (or nobody did). The fix keeps the turn alive
+    // while a steer is waiting, so it is drained, emitted as `steered`, and the
+    // very next call answers it — all in this turn.
+    // Steer only on the FIRST call; the continuation (triggered by the steer)
+    // re-invokes this generator, and a second steer would loop forever.
+    let steered = false;
+    const chat = async function* (): AsyncGenerator<any> {
+      if (!steered) {
+        steered = true;
+        steer(s.id, "also do this");
+      }
+      yield { type: "text", delta: "first" };
+      yield { type: "done", reason: "stop" };
+    };
+    const events = await collect(t.runTurnCore(s.id, cfg(), "hi", undefined, { chat: chat as any }));
+    // the steer was delivered (steered) AND answered (a second assistant turn)
+    expect(events.some((e) => e.type === "steered" && e.text === "also do this")).toBe(true);
+    const msgs = t.allMessages(s.id);
+    expect(msgs.map((m: any) => m.role)).toEqual(["user", "assistant", "user", "assistant"]);
+    expect(msgs[2].content).toBe("also do this"); // the steered user message
+    expect(msgs[3].role).toBe("assistant"); // answered THIS turn, not left for later
+    expect(peekSteer(s.id)).toEqual([]); // drained, not stranded
   });
 
   test("a steer parked in the final call under a step cap persists instead of stranding", async () => {
