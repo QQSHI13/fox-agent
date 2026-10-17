@@ -400,10 +400,15 @@ export async function* runTurnCore(
   // silently dropping the user's message. Persisting it here (as a real user node,
   // parented like a steered message) keeps it in the context so it is answered on
   // the next turn instead of vanishing. Called on every abort exit path.
-  const persistParkedSteers = (parentId: string) => {
+  // Returns true when it drained at least one steer (so the caller can decide to
+  // answer it now rather than leave it for a later turn).
+  const persistParkedSteers = (parentId: string): boolean => {
+    let drained = false;
     for (const text of drainSteer(sessionId)) {
+      drained = true;
       appendMessage(sessionId, { parent_id: parentId, role: "user", content: text, tokens: estTok(text) });
     }
+    return drained;
   };
 
   for (const p of hooked) {
@@ -602,11 +607,15 @@ export async function* runTurnCore(
       // steer that arrives after the final reply resolved. The cap still bounds
       // it: an over-cap turn ends without consuming the steer.
       if (peekSteer(sessionId).length > 0 && (maxSteps <= 0 || step + 1 <= maxSteps)) continue;
-      // No steer waiting (or the cap refused the extra step): drain whatever is
-      // parked NOW so it is never stranded in the queue under a finished turn.
-      // `persistParkedSteers` drains, so a no-op when nothing is queued; a real
-      // user node either way, so the text survives to be answered next turn.
-      persistParkedSteers(asstNode.id);
+      // No steer waiting at the peek (or the cap refused the extra step): drain
+      // whatever parked between the peek and now. A steer that arrived in this
+      // window used to be persisted as a user node and then LEFT THERE — answered
+      // by some later turn, or never, which read as "my steered message was
+      // ignored". It deserves an answer NOW: `continue` re-enters the loop so the
+      // next call answers it in this turn. Only when the drain is empty (or the
+      // cap is hit) does the turn actually end.
+      const drainedLate = persistParkedSteers(asstNode.id);
+      if (drainedLate && (maxSteps <= 0 || step + 1 <= maxSteps)) continue;
       yield await endTurn(outcome.finish.startsWith("error") ? outcome.finish : outcome.finish || "stop", step);
       return;
     }
