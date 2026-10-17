@@ -25,7 +25,7 @@
   "dependencies": {
     "@agentclientprotocol/sdk": "^1.5.1",
     "@ai-sdk/anthropic": "^4.0.69",
-    "@ai-sdk/google": "^4.0.86",
+    "@ai-sdk/google": "^4.0.95",
     "@ai-sdk/openai": "^4.0.82",
     "@ai-sdk/openai-compatible": "^3.0.60",
     "@modelcontextprotocol/sdk": "^1.31.0",
