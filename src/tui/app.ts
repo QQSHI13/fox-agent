@@ -53,6 +53,7 @@ import {
   type PromptRequest,
 } from "../commands.ts";
 import { isCustomOption, resolveField, visibleOptions, type UiBridge, type UiStep } from "../core/ui.ts";
+import { createWizard, type PromptState, type Wizard } from "./wizard.ts";
 import { childEnv } from "../core/childenv.ts";
 import { shellPath } from "../core/shell.ts";
 import { killTree } from "../tools/exec.ts";
@@ -825,37 +826,42 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
    * running underneath: a tool awaiting `ui.select` is just one more pending
    * promise, and escape resolving it with `undefined` is how the user says no.
    */
-  let prompt: {
-    title: string;
-    steps: UiStep[];
-    idx: number;
-    answers: Record<string, string>;
-    sel: number;
-    /** typed filter for a select step's option list */
-    filter: string;
-    /**
-     * The step's `custom` row is open and the dock is its answer box. While
-     * set the select behaves like a text step — except escape, which backs
-     * out to the option list instead of cancelling the whole wizard.
-     */
-    entering: boolean;
-    /**
-     * The select options as of step entry. Endpoint/catalog refreshes landing
-     * mid-navigation used to reorder the live list under the user's fingers,
-     * so the highlight jumped rows between keypresses — every consumer
-     * (paint, commit, click) reads the snapshot, and only (re-)entering the
-     * step re-resolves it against the answers so far.
-     */
-    snap: { idx: number; opts: { value: string; label: string }[] } | null;
-    /**
-     * The main input box's draft, saved when the wizard opens and restored when
-     * it closes. The wizard reuses `buf`/`cur` for its filter/custom answer box,
-     * which used to WIPE a half-typed command the moment a wizard popped over it.
-     */
-    savedBuf: Ch[];
-    savedCur: number;
-    done: (answers: Record<string, string> | null) => void;
-  } | null = null;
+  /**
+   * The question wizard's live state is owned by ./wizard.ts; app.ts hosts the
+   * module (injects the closures it needs over this scope) and reads the state
+   * back through getPrompt(). While a wizard is active the input dock is its
+   * answer field — the step label replaces the `❯` prefix, selects draw their
+   * option list where the command hints would float, and `secret` steps paint
+   * bullets. One hosting implementation for both consumers: slash commands
+   * (a PromptRequest, see commands.ts) and plugin tools (the UiBridge, see
+   * core/ui.ts).
+   */
+  const wizard: Wizard = createWizard({
+    getBuf: () => ({ buf, cur, inputRev }),
+    setBuf: (b, c) => {
+      buf = b as Ch[];
+      cur = c;
+      inputRev++;
+    },
+    chsSet: (...a) => chsSet(...a),
+    display: (...a) => display(...a),
+    insertText: (...a) => insertText(...a),
+    width: () => W,
+    dockTop: () => dockFloats().top,
+    scrollStep: () => SCROLL_STEP,
+    wrapText: (...a) => wrapText(...a),
+    flash: (...a) => flash(...a),
+    markDirty: (...a) => markDirty(...a),
+    run: (answers) => runPromptHandler(answers),
+    reportError: (...a) => reportError(...a),
+  });
+  /** The command's run handler, captured when startPrompt opens the wizard. */
+  let promptHandler: ((a: Record<string, string>) => unknown) | null = null;
+  function runPromptHandler(answers: Record<string, string>): unknown {
+    const h = promptHandler;
+    promptHandler = null;
+    return h ? h(answers) : undefined;
+  }
   const hasSel = () => selA !== null && selB !== null && !(selA.row === selB.row && selA.col === selB.col);
   function clearSel() {
     if (selA || selB) {
@@ -1125,402 +1131,53 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   }
 
   // ---- prompt wizard hosting (slash commands + plugin UiBridge) ----
+  // The interaction logic lives in ./wizard.ts; these just delegate.
+  /** The wizard's live state, read by paint/dock/key routing. Delegates to the module. */
+  const getPrompt = (): PromptState | null => wizard.state();
+  /** Visible option count for the active select step (floats signature). */
+  const wizardOptionsCount = (): number => wizard.rows().rows.filter((r) => r.opt >= 0).length;
   function startPrompt(req: PromptRequest) {
-    // save the half-typed command so the wizard's reuse of `buf` doesn't eat it
-    prompt = {
-      title: req.title,
-      steps: req.steps,
-      idx: 0,
-      answers: {},
-      sel: 0,
-      filter: "",
-      entering: false,
-      snap: null,
-      savedBuf: buf,
-      savedCur: cur,
-      done: (answers) => {
-        if (answers === null) return flash("cancelled");
-        try {
-          applyResult(req.run(answers, state));
-        } catch (e) {
-          reportError(`prompt run failed: ${(e as Error).message ?? e}`, e);
-        }
-      },
+    // Capture the command's run handler; the wizard calls it via deps.run on finish.
+    promptHandler = (answers) => {
+      try {
+        applyResult(req.run(answers, state));
+      } catch (e) {
+        reportError(`prompt run failed: ${(e as Error).message ?? e}`, e);
+      }
     };
-    prompt.idx = nextLiveStep(0, 1);
-    enterPromptStep();
+    wizard.start({ title: req.title, steps: req.steps, run: (a) => a });
   }
 
   /** The UiBridge handed to every turn, so plugin tools can ask questions. */
   const uiBridge: UiBridge = {
     select: (title, options, opts) =>
-      askPrompt(title, [
-        {
-          key: "v",
-          label: title,
-          kind: "select",
-          options: options.map((o) => ({ value: o.value, label: o.label ?? o.value })),
-          initial: opts?.initial,
-        },
-      ]).then((a) => a?.v),
+      wizard
+        .ask(title, [
+          {
+            key: "v",
+            label: title,
+            kind: "select",
+            options: options.map((o) => ({ value: o.value, label: o.label ?? o.value })),
+            initial: opts?.initial,
+          },
+        ])
+        .then((a) => a?.v),
     input: (title, opts) =>
-      askPrompt(title, [
-        {
-          key: "v",
-          label: title,
-          kind: "text",
-          initial: opts?.initial,
-          hint: opts?.hint,
-          secret: opts?.secret,
-          allowEmpty: opts?.allowEmpty,
-        },
-      ]).then((a) => a?.v),
-    wizard: (title, steps) => askPrompt(title, steps),
+      wizard
+        .ask(title, [
+          {
+            key: "v",
+            label: title,
+            kind: "text",
+            initial: opts?.initial,
+            hint: opts?.hint,
+            secret: opts?.secret,
+            allowEmpty: opts?.allowEmpty,
+          },
+        ])
+        .then((a) => a?.v),
+    wizard: (title, steps) => wizard.ask(title, steps),
   };
-
-  function askPrompt(title: string, steps: UiStep[]): Promise<Record<string, string> | undefined> {
-    // One question at a time: a second caller (two tools racing in one step's
-    // Promise.all) queues behind the first rather than clobbering its wizard.
-    return new Promise((resolve) => {
-      askQueue.push({ title, steps, resolve });
-      pumpAskQueue();
-    });
-  }
-  const askQueue: { title: string; steps: UiStep[]; resolve: (a: Record<string, string> | undefined) => void }[] = [];
-  function pumpAskQueue() {
-    if (prompt || !askQueue.length) return;
-    const { title, steps, resolve } = askQueue.shift()!;
-    // save the half-typed command so the wizard's reuse of `buf` doesn't eat it
-    prompt = {
-      title,
-      steps,
-      idx: 0,
-      answers: {},
-      sel: 0,
-      filter: "",
-      entering: false,
-      snap: null,
-      savedBuf: buf,
-      savedCur: cur,
-      done: (answers) => {
-        resolve(answers ?? undefined);
-        pumpAskQueue();
-      },
-    };
-    prompt.idx = nextLiveStep(0, 1);
-    enterPromptStep();
-  }
-
-  /** The filtered option list of the current select step (all of them on a text step). */
-  function promptOptions(): { value: string; label: string }[] {
-    const p = prompt!;
-    const st = p.steps[p.idx];
-    const all = (p.snap && p.snap.idx === p.idx ? p.snap.opts : resolveField(st.options, p.answers)) ?? [];
-    return visibleOptions(all, p.filter, st.kind === "select" && st.custom === true);
-  }
-
-  function enterPromptStep() {
-    const p = prompt!;
-    const st = p.steps[p.idx];
-    p.filter = "";
-    p.entering = false;
-    if (st.kind === "select") {
-      const opts = resolveField(st.options, p.answers) ?? [];
-      p.snap = { idx: p.idx, opts };
-      // a revisited step starts on its previous answer, not the default
-      const initial = p.answers[st.key] ?? resolveField(st.initial, p.answers);
-      const i = opts.findIndex((o) => o.value === initial);
-      // A value with no row of its own is the case the custom box exists for:
-      // open it there and then, prefilled, rather than silently highlighting
-      // some other model than the one in use. Nothing to prefill means a plain
-      // unlisted start, which just lands on the first row.
-      const prefill = i < 0 && st.custom === true && initial ? initial : null;
-      p.sel = i >= 0 ? i : prefill ? opts.length : 0; // custom rows append last
-      p.entering = prefill !== null;
-      buf = [];
-      cur = 0;
-      inputRev++;
-      if (prefill !== null) chsSet(prefill);
-    } else {
-      chsSet(p.answers[st.key] ?? resolveField(st.initial, p.answers) ?? "");
-    }
-    markDirty();
-  }
-
-  function finishPrompt(answers: Record<string, string> | null) {
-    const p = prompt!;
-    prompt = null;
-    // restore the half-typed command the wizard's answer box borrowed `buf` for
-    // — never a plain clear, which used to eat the user's draft on every wizard
-    buf = p.savedBuf;
-    cur = Math.min(p.savedCur, buf.length);
-    inputRev++;
-    markDirty();
-    p.done(answers);
-  }
-
-  /** Store the current step's answer. Returns false when a required field is empty. */
-  function commitStep(): boolean {
-    const p = prompt!;
-    const st = p.steps[p.idx];
-    if (st.kind === "select" && !p.entering && isCustomOption(promptOptions()[p.sel])) {
-      // The row is a request to type, never an answer of its own — reaching it
-      // by any commit route (enter, a second click, pagedown, a menu with no
-      // other row) has to end in the box, or the sentinel would be recorded as
-      // the user's choice. Returning false leaves this step open for it.
-      p.entering = true;
-      chsSet("");
-      return false;
-    }
-    if (st.kind === "select" && p.entering) {
-      const typed = display().trim();
-      if (!typed) {
-        // nothing typed: back to the option list, never an empty answer
-        p.entering = false;
-        chsSet("");
-        return false;
-      }
-      // stored exactly as typed — the handler puts it in the right context, so
-      // reopening the box later shows the same text that will be committed again
-      p.answers[st.key] = typed;
-      return true;
-    }
-    const value = st.kind === "select" ? (promptOptions()[p.sel]?.value ?? "") : display().trim();
-    if (st.kind === "text" && !value && st.allowEmpty === false) {
-      flash("required — esc cancels");
-      return false;
-    }
-    p.answers[st.key] = value;
-    return true;
-  }
-
-  /** First index ≥ from whose step is not skipped; steps.length when none. */
-  function nextLiveStep(from: number, dir: 1 | -1): number {
-    const p = prompt!;
-    let i = from;
-    while (i >= 0 && i < p.steps.length && p.steps[i].skipIf?.(p.answers)) i += dir;
-    return i;
-  }
-
-  /**
-   * Click handling for a select step's floating option list. The row math
-   * mirrors paint()'s wizard block exactly (header, "… above", windowed
-   * options, "… below") — any drift and clicks land on the wrong options.
-   */
-  /** One painted wizard row. `opt` is the option it belongs to, or a sentinel:
-   *  -1 header/placeholder, -2 "… N more above", -3 "… N more below". */
-  interface PromptRow {
-    text: string;
-    opt: number;
-    sel: boolean;
-  }
-
-  /**
-   * The wizard's rows, derived ONCE and read by BOTH the painter and the click
-   * hit-test.
-   *
-   * Long option labels WRAP. They used to be truncated at the right margin by
-   * `clipW`, so a long model name, path or plugin description was cut off and
-   * the part that distinguishes two choices was the part you could not read.
-   * A wrapped continuation is indented under the label so it reads as one entry.
-   *
-   * This MUST be one function. paint and the hit-test used to count one row per
-   * option independently; wrap either one alone and clicks resolve against rows
-   * the menu never occupied — the same "count and paint agree" contract
-   * `countItem`/`renderItem` keeps in layout.ts.
-   */
-  function promptRows(): { rows: PromptRow[]; menuTop: number; start: number; end: number } {
-    const p = prompt!;
-    const st = p.steps[p.idx];
-    const hint = resolveField(st.hint, p.answers);
-    const stepPos = p.steps.length > 1 ? ` ${p.idx + 1}/${p.steps.length}` : "";
-    const header = `${p.title}${stepPos} — ${st.label}${hint ? ` (${hint})` : ""} · esc cancels`;
-    const rows: PromptRow[] = wrapText(header, W - 2).map((t) => ({ text: t, opt: -1, sel: false }));
-    const menuTop = dockFloats().top;
-    let start = 0;
-    let end = 0;
-    if (st.kind !== "select") return { rows, menuTop, start, end };
-    const opts = promptOptions();
-    if (p.entering) {
-      // the custom answer box is open: the dock is a TEXT field now, so a
-      // rendered option list contradicts the placeholder and hides what is
-      // being typed. The list comes back on escape.
-      rows.push({ text: "  (option list hidden — esc to go back)", opt: -1, sel: false });
-      return { rows, menuTop, start, end };
-    }
-    if (!opts.length) {
-      rows.push({ text: "  no matches — backspace to widen", opt: -1, sel: false });
-      return { rows, menuTop, start, end };
-    }
-    // the window shrinks to leave room for the WRAPPED header
-    const MAX = Math.max(1, Math.min(5, menuTop - rows.length));
-    start = opts.length <= MAX ? 0 : Math.max(0, Math.min(p.sel - Math.floor(MAX / 2), opts.length - MAX));
-    end = Math.min(opts.length, start + MAX);
-    if (start > 0) rows.push({ text: `  … ${start} more above`, opt: -2, sel: false });
-    for (let i = start; i < end; i++) {
-      const mark = i === p.sel ? "›" : " ";
-      const lead = ` ${mark} `;
-      const parts = wrapText(opts[i].label, Math.max(8, W - 2 - lead.length));
-      for (let k = 0; k < parts.length; k++) {
-        rows.push({
-          text: k === 0 ? lead + parts[k] : " ".repeat(lead.length) + parts[k],
-          opt: i,
-          sel: i === p.sel,
-        });
-      }
-    }
-    if (end < opts.length) rows.push({ text: `  … ${opts.length - end} more below`, opt: -3, sel: false });
-    // A wrapped label can take several rows, so a nominal 5-option window can
-    // still overflow the dock and paint above row 0. Drop trailing options
-    // until the whole menu fits — bounded by start + 1 so one option always
-    // remains, however long it is.
-    while (rows.length > menuTop && end > start + 1) {
-      rows.pop();
-      end--;
-    }
-    return { rows, menuTop, start, end };
-  }
-
-  function promptClick(x: number, y: number) {
-    void x;
-    const p = prompt!;
-    const opts = promptOptions();
-    if (!opts.length) return;
-    const { rows, menuTop, start, end } = promptRows();
-    const MAX = Math.max(1, end - start);
-    const hTop = menuTop - rows.length;
-    const idx = y - hTop;
-    if (idx < 0 || idx >= rows.length) return; // outside the menu
-    const row = rows[idx];
-    if (row.opt === -2) {
-      p.sel = Math.max(0, p.sel - MAX); // "… above": page the highlight up
-      markDirty();
-      return;
-    }
-    if (row.opt === -3) {
-      p.sel = Math.min(opts.length - 1, p.sel + MAX); // "… below": page down
-      markDirty();
-      return;
-    }
-    if (row.opt < 0) return; // header or placeholder row
-    // a wrapped CONTINUATION carries the same option index as its first line,
-    // so clicking either selects (or, on the selected one, confirms) the same
-    if (row.opt === p.sel) promptSubmit();
-    else {
-      p.sel = row.opt;
-      markDirty();
-    }
-  }
-
-  function promptSubmit() {
-    const p = prompt!;
-    // commitStep opens the answer box instead of committing when the "other…"
-    // row is selected, so its false here means "not yet", not "refused"
-    if (!commitStep()) return;
-    const next = nextLiveStep(p.idx + 1, 1);
-    if (next < p.steps.length) {
-      p.idx = next;
-      enterPromptStep();
-    } else {
-      finishPrompt(p.answers);
-    }
-  }
-
-  /**
-   * Keys a prompt owns outright. Returns false for ordinary editing keys on a
-   * text step, letting them fall through to the normal input handling — the
-   * answer field is the same buffer, with the same cursor rules.
-   */
-  function promptKey(k: Key): boolean {
-    if (!prompt) return false;
-    const p = prompt;
-    const st = p.steps[p.idx];
-    if (k.type === "mouse") {
-      // a question is modal, like the picker — but a select step's options are
-      // clickable: first click highlights, a second click on the same row
-      // submits. Clicks used to die here entirely, so choosing with the mouse
-      // left the stale highlight behind and enter committed the wrong answer —
-      // notably landing /login on the "model id" text step after "picking" a
-      // listed model. With the custom box open there is no list to click: the
-      // dock owns the step until escape backs out of it.
-      if (p.entering) return true;
-      if (k.action === "up" && st.kind === "select") promptClick(k.x, k.y);
-      return true;
-    }
-    if (k.type === "paste") {
-      if (st.kind === "text" || p.entering) insertText(k.text);
-      else {
-        p.filter += k.text;
-        p.sel = 0;
-        markDirty();
-      }
-      return true;
-    }
-    if (k.type === "char") {
-      if (st.kind === "text" || p.entering) return false; // ordinary editing falls through
-      // a select filters as you type — a 300-model list is not an arrow-key list
-      p.filter += k.ch;
-      p.sel = 0;
-      markDirty();
-      return true;
-    }
-    const { name, ctrl } = k;
-    // ctrl+c cancels too (muscle memory), but only esc is advertised
-    if (name === "escape" || (name === "c" && ctrl)) {
-      if (p.entering) {
-        // out of the answer box, not out of the wizard: the option list is
-        // still open on the same step with its selection where it was
-        p.entering = false;
-        chsSet("");
-        return true;
-      }
-      finishPrompt(null);
-      return true;
-    }
-    if (name === "return") {
-      promptSubmit();
-      return true;
-    }
-    // pgup/pgdn move between the wizard's steps, keeping entered answers
-    if (name === "pageup") {
-      const prev = nextLiveStep(p.idx - 1, -1);
-      if (prev >= 0) {
-        commitStep();
-        p.idx = prev;
-        enterPromptStep();
-      }
-      return true;
-    }
-    if (name === "pagedown") {
-      const next = nextLiveStep(p.idx + 1, 1);
-      if (next < p.steps.length && commitStep()) {
-        p.idx = next;
-        enterPromptStep();
-      }
-      return true;
-    }
-    // with the custom box open the select no longer routes keys: they fall
-    // through as ordinary editing, which is what the box is made of
-    if (st.kind === "select" && !p.entering) {
-      const n = promptOptions().length;
-      if (name === "up" || name === "down") {
-        p.sel = (p.sel + (name === "up" ? -1 : 1) + n) % Math.max(1, n);
-        markDirty();
-      } else if (name === "wheelup" || name === "wheeldown") {
-        // tuiScrollStep rows per notch, like every other scroll surface
-        p.sel = Math.max(0, Math.min(Math.max(0, n - 1), p.sel + (name === "wheelup" ? -SCROLL_STEP : SCROLL_STEP)));
-        markDirty();
-      } else if (name === "backspace") {
-        if (p.filter) {
-          p.filter = p.filter.slice(0, -1);
-          p.sel = 0;
-          markDirty();
-        }
-      }
-      return true; // everything else would be typing into a menu
-    }
-    return false; // text step: normal editing keys fall through
-  }
 
   /**
    * (Re)load config and apply everything it controls — caps, theme, warnings.
@@ -2328,7 +1985,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     // the modal gets first refusal on every key (see overlayKey)
     if (overlayKey(k)) return;
     // an open question wizard owns the input dock next (see promptKey)
-    if (promptKey(k)) return;
+    if (wizard.key(k)) return;
     if (k.type === "paste") {
       // a drag-and-drop arrives as pasted path text — quote/file:// forms both.
       // When every token names a real file, insert mentions, not raw text.
@@ -2641,7 +2298,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
    */
   function hintMatches(): CommandSpec[] {
     // the input dock is answering a question, not naming a command
-    if (prompt) return [];
+    if (getPrompt()) return [];
     const d = display();
     if (firstCharLit() || !d.startsWith("/")) return [];
     // an argument being typed still shows its command, so the usage hint stays
@@ -2920,7 +2577,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       return;
     }
     const body = (msg.content ?? "").replace(/\s+/g, " ").slice(0, 60);
-    const answer = await askPrompt(`[${seq}] ${msg.role} — ${body || "(no text)"}`, [
+    const answer = await wizard.ask(`[${seq}] ${msg.role} — ${body || "(no text)"}`, [
       {
         key: "op",
         label: "operation",
@@ -3522,7 +3179,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
    */
   function inputText(): string {
     const d = display();
-    const st = prompt?.steps[prompt.idx];
+    const st = getPrompt()?.steps[getPrompt()!.idx];
     if (!st?.secret) return d;
     return [...d].map((c) => (c === "\n" ? c : "•")).join("");
   }
@@ -4112,15 +3769,15 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   }
 
   function dockSig(): string {
-    const st0 = prompt?.steps[prompt.idx];
+    const st0 = getPrompt()?.steps[getPrompt()!.idx];
     // cur rides the sig: input drag-selection moves cur without bumping
     // inputRev, and the highlight range is (inSelAnchor, cur)
-    return `${inputRev}|${cur}|${prompt ? `${prompt.idx}|${st0?.kind}|${prompt.filter}` : "-"}|${inSelAnchor ?? "-"}|${nextCaret ? "c" : "-"}`;
+    return `${inputRev}|${cur}|${getPrompt() ? `${getPrompt()!.idx}|${st0?.kind}|${getPrompt()!.filter}` : "-"}|${inSelAnchor ?? "-"}|${nextCaret ? "c" : "-"}`;
   }
 
   function floatsSig(): string {
     const pend = pendingLines();
-    return `${pend.length}|${pend[0] ?? ""}|${cmdOut?.length ?? 0}|${cmdOut?.[0] ?? ""}|${prompt ? `${prompt.idx}|${prompt.sel}|${prompt.filter}|${promptOptions().length}` : "-"}|${hintMatches().length}|${hintSel}|${W}|${inputRev}`;
+    return `${pend.length}|${pend[0] ?? ""}|${cmdOut?.length ?? 0}|${cmdOut?.[0] ?? ""}|${getPrompt() ? `${getPrompt()!.idx}|${getPrompt()!.sel}|${getPrompt()!.filter}|${wizardOptionsCount()}` : "-"}|${hintMatches().length}|${hintSel}|${W}|${inputRev}`;
   }
 
   function overlaySig(): string {
@@ -4297,21 +3954,21 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     // any real char — even whitespace — is content; the placeholder only fills
     // a truly empty box, or it paints over leading indentation the user typed
     const empty = !buf.length;
-    const st0 = prompt?.steps[prompt.idx];
+    const st0 = getPrompt()?.steps[getPrompt()!.idx];
     // with the custom box open the dock shows what is being typed, not the
     // filter — the two would otherwise fight over the same line
-    const selectFilter = prompt && st0?.kind === "select" && !prompt.entering ? prompt.filter : "";
-    const pfx = prompt ? "› " : "❯ ";
+    const gp = getPrompt(); const selectFilter = gp && st0?.kind === "select" && !gp.entering ? gp.filter : "";
+    const pfx = getPrompt() ? "› " : "❯ ";
     // unescaped leading / (slash command) or ! (shell escape) gets its own
     // marker color; the rest of the line stays inputFg. Escaped (\/) stays
     // plain. Detection mirrors dispatch(): first non-whitespace char + !lit.
     const leadCh = buf.find((c) => c.c.trim().length > 0);
     const dockMode =
-      !prompt && leadCh && !leadCh.lit && leadCh.c === "/" ? "cmd" : !prompt && leadCh && !leadCh.lit && leadCh.c === "!" ? "shell" : "plain";
+      !getPrompt() && leadCh && !leadCh.lit && leadCh.c === "/" ? "cmd" : !getPrompt() && leadCh && !leadCh.lit && leadCh.c === "!" ? "shell" : "plain";
     // the arrow itself carries the mode color (cmd=info, shell=ok, else accent);
     // the / or ! stays plain — coloring the arrow reads cleaner than tinting a
     // bare punctuation char and matches how prompts signal "you are in X mode".
-    const pfxArrow = prompt ? "›" : "❯";
+    const pfxArrow = getPrompt() ? "›" : "❯";
     const pfxStyle = dockMode === "cmd" ? S.cmd : dockMode === "shell" ? S.shell : S.prompt;
     const drawPrefix = (y: number, style = pfxStyle) => {
       P.dock.text(1, y, pfxArrow, style);
@@ -4330,14 +3987,14 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       P.dock.text(3, inputTop, selectFilter, S.inputFg);
       pendingCaret = { x: 3 + [...selectFilter].reduce((w, ch) => w + charWidth(ch.codePointAt(0)!), 0), y: inputTop };
     } else if (empty) {
-      const placeholder = prompt
-        ? prompt.entering
+      const placeholder = getPrompt()
+        ? getPrompt()!.entering
           ? "(type an answer not in the list · enter submits · esc back to the list)"
           : st0!.kind === "select"
             ? "(type to filter · ↑↓ choose · enter confirms · esc cancels)"
-            : `(${resolveField(st0!.hint, prompt!.answers) ?? "type your answer"} · enter submits · esc cancels)`
+            : `(${resolveField(st0!.hint, getPrompt()!.answers) ?? "type your answer"} · enter submits · esc cancels)`
         : "(type here — / commands · \\ escapes · ! shell · wheel/pgup scroll · click expands · drag/dbl-click selects)";
-      drawPrefix(inputTop, prompt ? S.prompt : S.dim);
+      drawPrefix(inputTop, getPrompt() ? S.prompt : S.dim);
       P.dock.text(3, inputTop, placeholder, S.dim);
       pendingCaret = { x: 3, y: inputTop };
     } else {
@@ -4392,10 +4049,10 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
 
     // the question wizard floats where the command hints would (it supersedes
     // them — the dock is an answer field while a prompt is open)
-    if (prompt) {
+    if (getPrompt()) {
       // one geometry for paint and clicks (see promptRows) — long labels wrap
       // rather than truncate, and a continuation line selects the same option
-      const { rows, menuTop } = promptRows();
+      const { rows, menuTop } = wizard.rows();
       const hTop = menuTop - rows.length;
       for (let i = 0; i < rows.length; i++) {
         P.floats.fillRow(hTop + i, 0, W, S.barBgRow);
