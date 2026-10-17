@@ -1422,6 +1422,17 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       streamText = null;
       streamSeq = -1; // the turn's stream is over; the settled item carries the real seq
       liveThink = null; // refresh() rebuilds items; no reference may survive it
+      // Settle any still-running live tool as interrupted: on abort its result
+      // is never persisted (no tool_end), so the pair would otherwise keep its
+      // "running" look forever with an empty body. Mark the head so a partially
+      // completed tool reads as interrupted, not hung.
+      if (ac?.signal.aborted) {
+        for (const [, live] of liveTools) {
+          live.head.text = `${live.head.text} — interrupted`;
+          touch(live.head.k);
+        }
+      }
+      liveTools.clear();
       setBusy(false);
       ac = null;
       // end-of-turn notification (OSC 9): a turn that ran long enough to walk
