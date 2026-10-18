@@ -45,8 +45,11 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add package.json
-          git commit -m "release v${{ steps.bump.outputs.version }}"
-          git tag "v${{ steps.bump.outputs.version }}"
+          # Tolerate an already-bumped tree (a prior manual "release vX" commit):
+          # committing nothing is not an error here, the tag + push are what matter.
+          git commit -m "release v${{ steps.bump.outputs.version }}" || echo "tree already bumped"
+          # Also tolerate the tag already existing from a prior attempt.
+          git tag "v${{ steps.bump.outputs.version }}" 2>/dev/null || echo "tag already present"
           git push origin HEAD --tags
 
   build:
