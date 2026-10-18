@@ -426,6 +426,11 @@ async function main() {
       }
       note(`resuming ${id}`);
       sessionId = id;
+    } else if (tuiMode && !printMode && process.stdout.isTTY && process.stdin.isTTY) {
+      // Bare `fox -c` on a real terminal: boot the TUI unbound and let its
+      // session overlay drive the choice (pickSessionOnBoot), rather than a
+      // standalone pre-TUI chooser. sessionId stays "" → pendingSession.
+      sessionId = "";
     } else {
       // the picker can create a session, which needs the real model — load now
       if (!config) applyLoadedConfig(loadConfig(configOverrides));

@@ -4222,6 +4222,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       if (state.pendingSession) welcomeBlock();
       // Second opener of the same session becomes the read-only viewer.
       if (state.sessionId && !state.pendingSession) attachLock(state.sessionId);
+      // Bare `fox -c`: the session choice is an in-TUI overlay, not a pre-TUI
+      // chooser — boot unbound and offer the picker immediately.
+      if (state.pickSessionOnBoot) openPicker({ kind: "sessions" });
 
       // ---- read-only viewer: mirror the owner's live status ----
       /**
