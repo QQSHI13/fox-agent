@@ -1284,7 +1284,14 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           callLabels.set(ev.id, `${ev.name}${argsSummary(ev.args)}`);
           callArgs.set(ev.id, ev.args);
           liveThink = null; // a tool boundary seals the thinking block before it
-          // running header (suggested: `▶ fox — <session> — <tool>`)
+          // Flush the reply text FIRST so the tool head lands UNDER the message
+          // it answers — not above it. (A tool_start with no flush pushed the
+          // head ahead of the still-buffered md, inverting the order.)
+          if (md) {
+            push("md", md, flushStepMarker());
+            md = "";
+            streamText = null;
+          }
           busyMsg = ev.name;
           // Create the head HERE, on tool_start, not on first output: a tool
           // that takes a while and streams nothing (a long build, a test run)

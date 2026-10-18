@@ -6,7 +6,7 @@
     {
       "agent": "fox-agent",
       "installed": true,
-      "bin": "/home/runner/work/fox-agent/fox-agent/bin/fox",
+      "bin": "/home/qq/.openclaw/workspace/projects/fox-agent/bin/fox",
       "version": "0.6.0",
       "disk_mb": 99.0392,
       "disk_kind": "bin",
@@ -43,9 +43,9 @@
     {
       "agent": "claude code",
       "installed": true,
-      "bin": "/home/runner/.npm-global/bin/claude",
-      "version": "2.1.302 (Claude Code)",
-      "disk_mb": 285.793528,
+      "bin": "/home/qq/.local/bin/claude",
+      "version": "2.1.286 (Claude Code)",
+      "disk_mb": 241.667256,
       "disk_kind": "bin",
       "startup_ms": 9.936092000032204,
       "tui_first_byte_ms": 221.01636000002145,
@@ -64,16 +64,16 @@
         "n": 5
       },
       "tui_first_input": {
-        "min": null,
-        "p50": null,
-        "p95": null,
-        "n": 0
+        "min": 2313.6560339917196,
+        "p50": 2313.6560339917196,
+        "p95": 2650.1298950024648,
+        "n": 2
       },
       "tui_input_latency": {
-        "min": null,
-        "p50": null,
-        "p95": null,
-        "n": 0
+        "min": 23.27110100304708,
+        "p50": 23.27110100304708,
+        "p95": 32.13570200023241,
+        "n": 2
       },
       "idle_pss_mb": 190.427734375
     },
@@ -117,9 +117,9 @@
     {
       "agent": "opencode v2",
       "installed": true,
-      "bin": "/home/runner/.npm-global/bin/opencode2",
-      "version": "opencode2 v0.0.0-beta-19271",
-      "disk_mb": 207.439328,
+      "bin": "/home/qq/.opencode/bin/opencode2",
+      "version": "opencode v2.0.29",
+      "disk_mb": 139.430016,
       "disk_kind": "bin",
       "startup_ms": 83.77364499983742,
       "tui_first_byte_ms": 138.49176999997326,
@@ -154,9 +154,9 @@
     {
       "agent": "jcode",
       "installed": true,
-      "bin": "/home/runner/.local/bin/jcode",
-      "version": "jcode v0.98.1 (1c7426eb1)",
-      "disk_mb": 166.776248,
+      "bin": "/home/qq/.local/bin/jcode",
+      "version": "jcode v0.91.0 (439a243bb)",
+      "disk_mb": 135.126488,
       "disk_kind": "bin",
       "startup_ms": 9.321267000018452,
       "tui_first_byte_ms": 12.046875000010004,
@@ -191,9 +191,9 @@
     {
       "agent": "pi",
       "installed": true,
-      "bin": "/home/runner/.npm-global/bin/pi",
-      "version": "1.3.0",
-      "disk_mb": 139.954304,
+      "bin": "/home/qq/.local/bin/pi",
+      "version": "1.0.4",
+      "disk_mb": 139.430016,
       "disk_kind": "bin",
       "startup_ms": 245.7909919999679,
       "tui_first_byte_ms": 329.3352399999776,
@@ -635,9 +635,9 @@
     {
       "agent": "kimi code",
       "installed": true,
-      "bin": "/home/runner/.kimi-code/bin/kimi",
-      "version": "2.2.0",
-      "disk_mb": 191.892672,
+      "bin": "/home/qq/.kimi-code/bin/kimi",
+      "version": "2.1.1",
+      "disk_mb": 190.77856,
       "disk_kind": "bin",
       "startup_ms": 590.418318999923,
       "tui_first_byte_ms": 762.0824629999561,
