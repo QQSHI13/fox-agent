@@ -193,6 +193,13 @@ export interface HarnessState {
    */
   pendingSession?: boolean;
   /**
+   * Bare `fox -c`: boot the TUI unbound and immediately offer the session
+   * picker, so choosing one is an in-TUI overlay (switchSession) rather than a
+   * standalone pre-TUI chooser. Cancelling leaves the TUI in its normal empty
+   * (pendingSession) state.
+   */
+  pickSessionOnBoot?: boolean;
+  /**
    * This process opened a session another live process (TUI, ACP, A2A) already
    * holds — see src/store/lock.ts. The viewer may draft and run read-only
    * commands, but nothing may be sent and nothing may mutate the session.

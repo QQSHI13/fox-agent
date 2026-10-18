@@ -450,7 +450,7 @@ async function main() {
   }
   if (sessionId) getSession(sessionId); // warm
 
-  const state = { sessionId, cwd, provider, config, configPath: (parsed.flags.get("config") as string) || undefined, pendingSession: tuiMode && !sessionId };
+  const state = { sessionId, cwd, provider, config, configPath: (parsed.flags.get("config") as string) || undefined, pendingSession: tuiMode && !sessionId, pickSessionOnBoot: tuiMode && cont === true };
 
   // ---- TUI ----
   if (tuiMode) {

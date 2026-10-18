@@ -1812,7 +1812,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       // the same arrows do — instead of scrolling the transcript under it.
       const hints = hintMatches();
       if (hints.length > 1) {
-        hintSel = Math.max(0, Math.min(hints.length - 1, hintSel + (up ? -1 : 1)));
+        // tuiScrollStep hints per notch (SCROLL_STEP), matching the transcript
+        // and picker — one config value drives every wheel scroll.
+        hintSel = Math.max(0, Math.min(hints.length - 1, hintSel + (up ? -SCROLL_STEP : SCROLL_STEP)));
         markDirty();
         return;
       }
