@@ -1434,9 +1434,12 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       // "running" look forever with an empty body. Mark the head so a partially
       // completed tool reads as interrupted, not hung.
       if (ac?.signal.aborted) {
+        // Remove the in-flight tool pairs entirely: they were never persisted
+        // (no tool_end), so showing them leaves a tool that never happened in
+        // the transcript. Delete from items — the '[interrupted]' error line
+        // already tells the user the turn stopped.
         for (const [, live] of liveTools) {
-          live.head.text = `${live.head.text} — interrupted`;
-          touch(live.head.k);
+          items = items.filter((i) => i !== live.head && i !== live.body);
         }
       }
       liveTools.clear();
