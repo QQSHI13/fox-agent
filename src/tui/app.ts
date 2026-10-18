@@ -4219,7 +4219,10 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       // The startup block comes AFTER refresh() (see welcomeBlock's comment),
       // and only for a genuinely fresh launch — a resumed session has its
       // transcript on screen; a banner on top of it is noise.
-      if (state.pendingSession) welcomeBlock();
+      // Bare `fox -c`: no welcome banner — the session picker is the whole
+      // screen, and a banner underneath it is noise. A normal fresh launch
+      // (no -c) keeps the banner.
+      if (state.pendingSession && !state.pickSessionOnBoot) welcomeBlock();
       // Second opener of the same session becomes the read-only viewer.
       if (state.sessionId && !state.pendingSession) attachLock(state.sessionId);
       // Bare `fox -c`: the session choice is an in-TUI overlay, not a pre-TUI

@@ -79,6 +79,12 @@ describe("picker verbs", () => {
     expect(p.key({ name: "d", ctrl: true })).toEqual({ kind: "cancel" });
   });
 
+  test("ctrl+a returns 'all' when the caller allows it", () => {
+    const p = new Picker(rows("a", "b"), { ...ALL, allowAll: true });
+    expect(p.key({ name: "a", ctrl: true })).toEqual({ kind: "all" });
+    expect(p.footer()).toContain("^a all dirs");
+  });
+
   test("plain verb letters filter even where the verb is allowed — verbs are ctrl-prefixed", () => {
     const p = new Picker(rows("fox", "next", "ax"), ALL);
     expect(p.key({ ch: "f" })).toBeNull();
