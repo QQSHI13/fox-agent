@@ -1808,6 +1808,14 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
 
     if (name === "wheelup" || name === "wheeldown") {
       const up = name === "wheelup";
+      // With the slash-command roster showing, the wheel walks the hint list —
+      // the same arrows do — instead of scrolling the transcript under it.
+      const hints = hintMatches();
+      if (hints.length > 1) {
+        hintSel = Math.max(0, Math.min(hints.length - 1, hintSel + (up ? -1 : 1)));
+        markDirty();
+        return;
+      }
       // route by position: over the dock the wheel walks the input caret, and
       // the dock's caret-follow carries the visible window with it; anywhere
       // else it scrolls the transcript. (A modal consumed the wheel already —
