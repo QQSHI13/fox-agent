@@ -3586,7 +3586,11 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   }
 
   function overlaySig(): string {
-    return overlay ? `${overlay.filter()}|${overlay.selectedIndex()}|${overlay.pendingConfirm()?.id ?? ""}` : "-";
+    // sessAllDirs must ride the signature: ctrl+a flips the all-dirs scope, which
+    // changes the title + rows but not filter/selection/confirm — without it the
+    // toggle fires but paintOverlay is skipped (the signature looks unchanged),
+    // so ctrl+a looks dead.
+    return overlay ? `${sessAllDirs ? 1 : 0}|${overlay.filter()}|${overlay.selectedIndex()}|${overlay.pendingConfirm()?.id ?? ""}` : "-";
   }
 
   let lastOverlaySig = "";
