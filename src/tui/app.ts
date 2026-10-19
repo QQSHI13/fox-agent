@@ -1460,13 +1460,11 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       term.setTitle(`fox — ${state.sessionId || "new"}`);
       // reconcile the live user marker with stored seq
       refresh();
-      // A steer that arrived in the gap between the turn loop's final peek and
-      // the `done` event is still in the queue — nobody drained it, so it would
-      // sit until some LATER turn (read as "my steer was ignored"). Hand it to
-      // the normal dispatch queue so drainQueue starts a fresh turn for it —
-      // one code path, not a re-entrant runAgent call from inside this finally.
-      const leftover = state.sessionId ? peekSteer(state.sessionId) : [];
-      if (leftover.length && state.sessionId && !state.readOnly) {
+      // A steer still queued here arrived after the turn's last step boundary —
+      // it is no longer a steer (there is no running turn to steer), just a user
+      // message. Move it to the dispatch queue as ordinary text; the next turn
+      // answers it like any message.
+      if (state.sessionId) {
         const { drainSteer } = await import("../loop/steer.ts");
         const text = drainSteer(state.sessionId).join("\n");
         if (text.trim()) queued.push({ raw: text, lit: true });
