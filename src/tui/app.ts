@@ -982,12 +982,21 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
    * via frameInput's prepend.
    */
   let banner: string | null = null;
-  function chromeItem(): Item {
+  /** The virtual chrome header, as TWO items: the banner line (info,
+   * highlighted) and the detail block (toolbody, dim) — so only the first
+   * line carries the highlight, matching the original welcome. */
+  function chromeItems(): Item[] {
+    if (!(state.pendingSession && !state.sessionId)) {
+      return [{ k: CHROME_KEY, kind: "info", text: `session ${state.sessionId} · ${state.cwd}` }];
+    }
     if (!banner) banner = BANNERS[Math.floor(Math.random() * BANNERS.length)];
     const info = lookupModel(state.provider.model);
-    const text = state.pendingSession && !state.sessionId
-      ? [
-          `fox-agent v${VERSION} — ${banner}`,
+    return [
+      { k: CHROME_KEY, kind: "info", text: `fox-agent v${VERSION} — ${banner}` },
+      {
+        k: CHROME_KEY - 1,
+        kind: "toolbody",
+        text: [
           `working directory: ${state.cwd}`,
           "session new — created on first message",
           ...(state.provider.apiKey
@@ -997,11 +1006,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
             (state.provider.baseUrl && !/api\.openai\.com/.test(state.provider.baseUrl) ? ` · ${state.provider.baseUrl}` : ""),
           "enter send · \\ newline · ! shell · / commands · esc interrupt · ctrl+t expand all · drag/dbl-click select",
           "/login setup · /model switch · /sessions resume · /usage tokens · /prune context · /upgrade update · /help all",
-        ].join("\n")
-      : `session ${state.sessionId} · ${state.cwd}`;
-    // 'info' kind highlights the first line (the fox-agent banner) like the
-    // original welcome — 'toolbody' would render it dim.
-    return { k: CHROME_KEY, kind: "info", text };
+        ].join("\n"),
+      },
+    ];
   }
   function chromeVisible(): boolean {
     return state.pendingSession || !!state.sessionId;
@@ -3223,7 +3230,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       scrollbar: SCROLLBAR,
       // Chrome (welcome/session-info) renders as a VIRTUAL first item computed
       // from state — never stored in items[], so refresh() never rebuilds it.
-      items: chromeVisible() ? [chromeItem(), ...items] : items,
+      items: chromeVisible() ? [...chromeItems(), ...items] : items,
       streamText,
       renderItem: (it, w) => {
         // edge-stripped, the very same span `countItem` reports — layout's
