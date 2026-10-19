@@ -744,8 +744,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       const isTodo = name === "todo";
       const isCtx = name === "ctx";
       const pinned = isTodo || isCtx;
+      const failed = m.error != null;
       return [
-        { k: seqKey(m.seq, 1), kind: "toolhead", seq: m.seq, text: `» ${callMaps.label.get(m.tool_call_id ?? "") ?? "tool"}`, argsRaw: callMaps.raw.get(m.tool_call_id ?? "") },
+        { k: seqKey(m.seq, 1), kind: "toolhead", seq: m.seq, text: `» ${callMaps.label.get(m.tool_call_id ?? "") ?? "tool"}${failed ? " — failed" : ""}`, argsRaw: callMaps.raw.get(m.tool_call_id ?? "") },
         {
           k: seqKey(m.seq, 2),
           kind: "toolbody",
@@ -1370,21 +1371,46 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
             md = "";
             streamText = null;
           }
-          // raw text, newlines intact: collapsed rendering shows an arrow line,
-          // the expanded view gets the real lines (see itemRows). The [N] marker
-          // rides `seq` (rendered as the column-0 gutter chip), NOT baked into
-          // text like the old prefix.
-          const detail = argsJson(ev.args);
-          push("toolhead", `» ${callLabels.get(ev.id) ?? `${ev.name}${argsSummary(ev.args)}`}${ev.ok ? "" : " — failed"}`, { seq: ev.seq, detail, expanded: headOpen || expandMode === true || undefined });
-          const bodyOpenFinal = expandedRefs.has(ev.seq) || bodyOpen || expandMode === true;
-          if (bodyOpenFinal) expandedRefs.add(ev.seq);
-          // todo bodies are markdown task lists — always visible, rendered
-          // as md (see itemRows mdBody); a task list hidden behind a click is
-          // useless and collapsed markdown punctuation looks like garbage
-          if (ev.name === "todo") {
-            push("toolbody", keepTail(ev.output, KEPT_TOOL_CHARS * 4), { ref: ev.seq, expanded: true, toolResult: true, mdBody: true });
+          // Stage 2 converge: build the settled pair the SAME way loadItems does
+          // (nodeToItems), so the live view and the store rebuild can never drift.
+          // The tool result is persisted before tool_end fires, so getMessage
+          // sees the final row. Fall back to the hand-built pair if the read
+          // fails (should not happen, but never lose the tool).
+          const settledRow = state.sessionId ? getMessage(state.sessionId, ev.seq) : null;
+          if (settledRow) {
+            // carry mid-stream expand into expandedRefs (the mechanism loadItems
+            // honors), so output you were watching does not snap shut
+            if (bodyOpen || expandMode === true || headOpen) expandedRefs.add(ev.seq);
+            // the call maps nodeToItems needs: the tool's own call (this id) is
+            // enough — label/raw/name for THIS tool_call_id. The full-log scan
+            // loadItems does is unnecessary here.
+            const pair = nodeToItems(settledRow, {
+              label: new Map([[ev.id, `${ev.name}${argsSummary(ev.args)}`]]),
+              raw: new Map([[ev.id, ev.args]]),
+              name: new Map([[ev.id, ev.name]]),
+            });
+            for (const it of pair) {
+              if (it.kind === "toolhead" && (headOpen || expandMode === true)) it.expanded = true;
+              items.push(it);
+              touch(it.k);
+            }
           } else {
-            push("toolbody", keepTail(ev.output, KEPT_TOOL_CHARS * 4), { ref: ev.seq, expanded: bodyOpenFinal, toolResult: true });
+            // raw text, newlines intact: collapsed rendering shows an arrow line,
+            // the expanded view gets the real lines (see itemRows). The [N] marker
+            // rides `seq` (rendered as the column-0 gutter chip), NOT baked into
+            // text like the old prefix.
+            const detail = argsJson(ev.args);
+            push("toolhead", `» ${callLabels.get(ev.id) ?? `${ev.name}${argsSummary(ev.args)}`}${ev.ok ? "" : " — failed"}`, { seq: ev.seq, detail, expanded: headOpen || expandMode === true || undefined });
+            const bodyOpenFinal = expandedRefs.has(ev.seq) || bodyOpen || expandMode === true;
+            if (bodyOpenFinal) expandedRefs.add(ev.seq);
+            // todo bodies are markdown task lists — always visible, rendered
+            // as md (see itemRows mdBody); a task list hidden behind a click is
+            // useless and collapsed markdown punctuation looks like garbage
+            if (ev.name === "todo") {
+              push("toolbody", keepTail(ev.output, KEPT_TOOL_CHARS * 4), { ref: ev.seq, expanded: true, toolResult: true, mdBody: true });
+            } else {
+              push("toolbody", keepTail(ev.output, KEPT_TOOL_CHARS * 4), { ref: ev.seq, expanded: bodyOpenFinal, toolResult: true });
+            }
           }
           statsRev++;
         } else if (ev.type === "child_tool") {
