@@ -38,7 +38,7 @@ import { lookupModel } from "../providers/models.ts";
 import { bundledDisabled } from "../plugins/bundled.ts";
 import { costSegment } from "../plugins/cost.ts";
 import { listSessions } from "../store/db.ts";
-import { allMessages, allMessagesLite, appendOps, createSession, forkSession, getMessage, getSession, kvGet, kvSet, pinSession, unpinSession } from "../store/db.ts";
+import { allMessages, allMessagesLite, appendOps, createSession, forkSession, getMessage, getSession, kvGet, kvSet, pinSession, unpinSession, type MessageRow } from "../store/db.ts";
 import { acquireLock, releaseLock } from "../store/lock.ts";
 import {
   runSlashCommand,
@@ -726,6 +726,44 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     }
   }
 
+  /** Per-message items for ONE stored node — the single definition of what a
+   * user/think/assistant/tool node looks like as transcript items. loadItems()
+   * maps the whole log through this; the per-node converge path (Stage 2+)
+   * uses it to reconcile a just-settled node against the SAME construction, so
+   * the live view and the store rebuild can never drift. `callMaps` is the
+   * assistant→tool lookup (label/raw/name per tool_call id). */
+  function nodeToItems(m: MessageRow, callMaps: { label: Map<string, string>; raw: Map<string, string>; name: Map<string, string> }): Item[] {
+    // the [N] marker is not baked into text — it rides `it.seq` as a gutter
+    // chip (see itemRows/withMarker). Text here is the bare content.
+    if (m.role === "user") return [{ k: seqKey(m.seq, 0), kind: "user", seq: m.seq, text: `❯ ${m.content}` }];
+    if (m.role === "tool") {
+      // todo bodies are markdown task lists — rendered as md, always visible.
+      // ctx bodies stay expanded too: the per-op report is the audit trail for
+      // what the model just did to its view.
+      const name = callMaps.name.get(m.tool_call_id ?? "");
+      const isTodo = name === "todo";
+      const isCtx = name === "ctx";
+      const pinned = isTodo || isCtx;
+      return [
+        { k: seqKey(m.seq, 1), kind: "toolhead", seq: m.seq, text: `» ${callMaps.label.get(m.tool_call_id ?? "") ?? "tool"}`, argsRaw: callMaps.raw.get(m.tool_call_id ?? "") },
+        {
+          k: seqKey(m.seq, 2),
+          kind: "toolbody",
+          seq: m.seq,
+          markerCont: true, // indents under the head's [N]; a tool pair shows ONE chip
+          text: keepTail(m.content, KEPT_TOOL_CHARS * 4),
+          ref: m.seq,
+          toolResult: true,
+          mdBody: isTodo || undefined,
+          expanded: pinned || expandedRefs.has(m.seq),
+        },
+      ];
+    }
+    if (m.role === "think")
+      return [{ k: seqKey(m.seq, 0), kind: "think", seq: m.seq, text: m.content, ref: m.seq, expanded: expandedRefs.has(m.seq) }];
+    return [{ k: seqKey(m.seq, 0), kind: "md", seq: m.seq, text: m.content || "" }];
+  }
+
   function loadItems(): Item[] {
     const out: Item[] = [];
     if (!state.sessionId) return out; // pending session: nothing stored yet
@@ -738,59 +776,24 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     // dragging stored base64 blobs through the projection showed up as a
     // large slice of resume time on media-heavy sessions.
     const msgs = allMessagesLite(state.sessionId);
-    const callLabel = new Map<string, string>();
-    const callRaw = new Map<string, string>();
-    const callName = new Map<string, string>();
+    const callMaps = { label: new Map<string, string>(), raw: new Map<string, string>(), name: new Map<string, string>() };
     for (const m of msgs) {
       if (m.role === "assistant" && m.tool_calls) {
         try {
           for (const c of JSON.parse(m.tool_calls) as { id: string; name: string; arguments: string }[]) {
-            callLabel.set(c.id, `${c.name}${argsSummary(c.arguments ?? "")}`);
+            callMaps.label.set(c.id, `${c.name}${argsSummary(c.arguments ?? "")}`);
             // the expanded view shows the FULL JSON call, pretty-printed —
             // not a reconstructed summary. What the model actually sent is
             // the ground truth, and it is what you want when auditing.
             // argsJson runs lazily (fillDetail) — only a head someone actually
             // expands (or that must be width-tested) ever pays for it.
-            callRaw.set(c.id, c.arguments ?? "");
-            callName.set(c.id, c.name);
+            callMaps.raw.set(c.id, c.arguments ?? "");
+            callMaps.name.set(c.id, c.name);
           }
         } catch {}
       }
     }
-    for (const m of msgs) {
-      // the [N] marker is no longer baked into the text — it rides `it.seq` and
-      // renders as a leading gutter chip (see itemRows/withMarker), so it can be
-      // colored, aligned, and clicked. Text here is the bare content.
-      if (m.role === "user") out.push({ k: seqKey(m.seq, 0), kind: "user", seq: m.seq, text: `❯ ${m.content}` });
-      else if (m.role === "tool") {
-        // todo bodies are markdown task lists — rendered as md, always
-        // visible (a task list hidden behind a click is useless). ctx bodies
-        // stay expanded too: the tool edits the agent's own context, and its
-        // per-op report (hidden/replaced/restored) is the audit trail for what
-        // the model just did to its view — burying it behind a fold hides the
-        // one record of a lossy operation.
-        const name = callName.get(m.tool_call_id ?? "");
-        const isTodo = name === "todo";
-        const isCtx = name === "ctx";
-        const pinned = isTodo || isCtx;
-        out.push({ k: seqKey(m.seq, 1), kind: "toolhead", seq: m.seq, text: `» ${callLabel.get(m.tool_call_id ?? "") ?? "tool"}`, argsRaw: callRaw.get(m.tool_call_id ?? "") });
-        // raw text — collapsed/expanded rendering lives in itemRows
-        out.push({
-          k: seqKey(m.seq, 2),
-          kind: "toolbody",
-          seq: m.seq,
-          markerCont: true, // indents under the head's [N]; a tool pair shows ONE chip
-          text: keepTail(m.content, KEPT_TOOL_CHARS * 4),
-          ref: m.seq,
-          toolResult: true,
-          mdBody: isTodo || undefined,
-          // collapsed by default, but an explicit expand survives refresh()
-          expanded: pinned || expandedRefs.has(m.seq),
-        });
-      } else if (m.role === "think")
-        out.push({ k: seqKey(m.seq, 0), kind: "think", seq: m.seq, text: m.content, ref: m.seq, expanded: expandedRefs.has(m.seq) });
-      else out.push({ k: seqKey(m.seq, 0), kind: "md", seq: m.seq, text: m.content || "" });
-    }
+    for (const m of msgs) out.push(...nodeToItems(m, callMaps));
     return out;
   }
 
