@@ -155,3 +155,48 @@ describe("repl tool bridge", () => {
     expect(r.output).toContain("too deep");
   }, 30_000);
 });
+
+describe("repl jobs", () => {
+  test("spawn a shell job, poll it, read incremental output", async () => {
+    // spawn returns the id immediately; the command runs detached
+    const r0 = await replRun({ code: 'jobs.spawn("sleep 0.2; echo shell-job-done")' }, ctx);
+    expect(r0.ok).toBe(true);
+    expect(r0.output).toMatch(/^r\d+$/);
+    const id = r0.output;
+    await new Promise((r) => setTimeout(r, 400)); // let the command finish
+    const p = await replRun({ code: `JSON.stringify(jobs.poll(${JSON.stringify(id)}))` }, ctx);
+    expect(p.ok).toBe(true);
+    expect(p.output).toContain('"done":true');
+    expect(p.output).toContain("shell-job-done");
+  }, 30_000);
+
+  test("spawn a fn job and read its return value", async () => {
+    const r0 = await replRun({ code: 'jobs.spawn(async () => { await new Promise(r => setTimeout(r, 50)); return "fn-result-ok"; }, { label: "compute" })' }, ctx);
+    expect(r0.ok).toBe(true);
+    await new Promise((r) => setTimeout(r, 300)); // let the fn finish
+    const p = await replRun({ code: `JSON.stringify(jobs.poll(${JSON.stringify(r0.output)}))` }, ctx);
+    expect(p.ok).toBe(true);
+    expect(p.output).toContain("fn-result-ok");
+  }, 30_000);
+
+  test("kill a running shell job and list reflects it", async () => {
+    const r0 = await replRun({ code: 'jobs.spawn("sleep 60")' }, ctx);
+    const id = r0.output;
+    const list1 = await replRun({ code: "JSON.stringify(jobs.list())" }, ctx);
+    expect(list1.output).toContain('"done":false');
+    const k = await replRun({ code: `jobs.kill(${JSON.stringify(id)})` }, ctx);
+    expect(k.ok).toBe(true);
+    expect(k.output).toContain("killed");
+    // polling a killed job is an error (it was reaped)
+    const after = await replRun({ code: `jobs.poll(${JSON.stringify(id)})` }, ctx);
+    expect(after.ok).toBe(false);
+  }, 30_000);
+
+  test("jobs survive across repl calls in the session", async () => {
+    await replRun({ code: 'jobs.spawn("sleep 0.3; echo cross-call")' }, ctx);
+    await new Promise((r) => setTimeout(r, 500)); // let it finish
+    const list = await replRun({ code: "JSON.stringify(jobs.list())" }, ctx);
+    expect(list.ok).toBe(true);
+    expect(list.output).toContain("cross-call"); // the label (the cmd) is listed
+  }, 30_000);
+});

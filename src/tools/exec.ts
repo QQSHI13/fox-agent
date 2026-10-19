@@ -50,7 +50,7 @@ export function killTree(pid: number): () => void {
   return () => clearTimeout(t);
 }
 
-function spawnShell(cmd: string, cwd: string) {
+export function spawnShell(cmd: string, cwd: string) {
   // `detached` makes the child lead its own session and process group, which
   // is what killTree targets. It replaces the `setsid` binary, which macOS
   // does not ship — without it the tree kill silently did nothing there, and

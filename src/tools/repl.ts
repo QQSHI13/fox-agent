@@ -14,15 +14,20 @@
  * hooks (documented in the def) — they are invocations, not steps.
  */
 import vm from "node:vm";
+import { appendFileSync, closeSync, mkdirSync, openSync, readSync, rmSync, statSync } from "node:fs";
 import type { ToolDef } from "../providers/types.ts";
 import type { ToolContext, ToolResult } from "./types.ts";
 import { fail, ok, validateArgs } from "./types.ts";
 import { outCap } from "./files.ts";
+import { steer } from "../loop/steer.ts";
+import { agentHome } from "../core/paths.ts";
+import { killTree, spawnShell } from "./exec.ts";
+import { partialTailBytes } from "./pty.ts";
 
 export const replDef: ToolDef = {
   name: "repl",
   description:
-    "In-process JavaScript environment (no shell, no subprocess — works in the compiled binary with no bun on PATH). Full environment: `process`, timers, `fetch`, and dynamic `import()` all work. State persists across calls in this session: assign once (`rows = ...`), reuse for twenty turns. `return` (or a trailing expression) becomes the result; `console.log` lines are captured alongside it. Reach your tools from code as `await tools.call(name, args)` (shell included: `await tools.call(\"exec\", {cmd})`); `tools.list()` and `tools.search(\"...\")` discover them. Direct tool calls bypass the turn loop's beforeTool/afterTool hooks. A hanging eval is killed at timeout_ms.",
+    "In-process JavaScript environment (no shell, no subprocess — works in the compiled binary with no bun on PATH). Full environment: `process`, timers, `fetch`, and dynamic `import()` all work. State persists across calls in this session: assign once (`rows = ...`), reuse for twenty turns. `return` (or a trailing expression) becomes the result; `console.log` lines are captured alongside it. Reach your tools from code as `await tools.call(name, args)` (shell included: `await tools.call(\"exec\", {cmd})`); `tools.list()` and `tools.search(\"...\")` discover them. Direct tool calls bypass the turn loop's beforeTool/afterTool hooks. A hanging eval is killed at timeout_ms. Background work is a `jobs` API: `jobs.spawn(\"shell cmd\" | fn | {description,prompt,agent?})` returns an id, `jobs.poll(id)` reads incremental output/status, `jobs.kill(id)` stops it, `jobs.list()` shows all — jobs notify the agent on completion and reap after a grace window.",
   parameters: {
     type: "object",
     properties: {
@@ -89,10 +94,298 @@ function sessionState(sessionId: string): ReplSession {
   return s;
 }
 
-/** Session end: drop the scratchpad. In-memory only — nothing to kill. */
+// ---- background jobs -------------------------------------------------------
+//
+// The ONE place background work lives. exec and task are foreground-only; any
+// long-running process, detached subagent, or polled computation is a repl job.
+// Three kinds: a shell command (spawned detached, output pumped to a log), a
+// subagent (task's executeTask under an AbortController), or a JS function
+// (runs in-process, its return value becomes the result). Every job notifies
+// the agent on completion via steer and reaps after a grace window.
+
+interface ReplJob {
+  id: string;
+  kind: "shell" | "task" | "fn";
+  label: string;
+  startedAt: number;
+  done: boolean;
+  ok: boolean;
+  result: string; // shell: accumulated output tail; task/fn: the report/return value
+  pid?: number; // shell jobs only — killTree target
+  logPath?: string; // shell jobs only
+  cursor?: number; // shell jobs only — byte offset the model has already polled
+  exitCode?: number | null; // shell jobs only
+  ac?: AbortController; // task jobs only
+  killed?: boolean; // suppresses the completion steer for a deliberately-killed job
+  reaped?: boolean;
+  readAt?: number; // when a settled job was first polled — starts the reap grace
+}
+
+const jobs = new Map<string, Map<string, ReplJob>>(); // sessionId -> id -> job
+let jobSeq = 0;
+const MAX_JOBS_PER_SESSION = 16;
+const JOB_REAP_MS = 10 * 60_000;
+const MAX_POLL_BYTES = 1_000_000;
+const MAX_FN_RESULT = 50_000;
+
+function sessionJobs(sessionId: string): Map<string, ReplJob> {
+  let m = jobs.get(sessionId);
+  if (!m) jobs.set(sessionId, (m = new Map()));
+  return m;
+}
+
+function reapJob(sessionId: string, id: string): void {
+  const job = sessionJobs(sessionId).get(id);
+  if (!job) return;
+  job.reaped = true;
+  sessionJobs(sessionId).delete(id);
+  if (job.logPath) {
+    try {
+      rmSync(job.logPath, { force: true });
+    } catch {}
+  }
+}
+
+function scheduleReap(sessionId: string, job: ReplJob): void {
+  // a settled job stays readable for a grace window after it finishes, so the
+  // model can still read the result if it polls promptly; a forgotten job must
+  // not leak the log fd + map entry for the session
+  const grace = setTimeout(() => {
+    if (!job.reaped && job.done) reapJob(sessionId, job.id);
+  }, JOB_REAP_MS);
+  (grace as { unref?: () => void }).unref?.();
+}
+
+function notifyDone(sessionId: string, job: ReplJob): void {
+  // Tell the agent it finished, wherever it is right now. steer's queue is the
+  // existing delivery path: it arrives at the next step boundary as a real
+  // message, and peekSteer shows it in the TUI meanwhile.
+  if (job.killed) return;
+  const secs = Math.floor((Date.now() - job.startedAt) / 1000);
+  steer(
+    sessionId,
+    `repl job ${job.id} (${job.kind}: ${job.label}) ${job.ok ? "finished" : "FAILED"} after ${secs}s\n` +
+      `its result is ${job.result.length} chars — repl jobs.poll("${job.id}") to read it.`,
+  );
+}
+
+function startShellJob(sessionId: string, cmd: string, cwd: string): ReplJob {
+  const dir = `${agentHome()}/jobs/${sessionId}`;
+  mkdirSync(dir, { recursive: true });
+  const id = `r${++jobSeq}`;
+  const logPath = `${dir}/${id}.log`;
+  appendFileSync(logPath, ""); // create, so a fast-exiting job still polls clean
+  const proc = spawnShell(cmd, cwd);
+  const job: ReplJob = { id, kind: "shell", label: cmd, startedAt: Date.now(), done: false, ok: false, result: "", pid: proc.pid, logPath, cursor: 0, exitCode: null };
+  sessionJobs(sessionId).set(id, job);
+  // pump both streams to the log for the job's whole life; the model only ever
+  // sees what it explicitly polls, so a chatty job cannot flood the context
+  const pump = async (stream: ReadableStream) => {
+    try {
+      for await (const chunk of stream as any) {
+        if (job.reaped) return; // log was unlinked; appending would resurrect it
+        appendFileSync(logPath, chunk as Uint8Array);
+      }
+    } catch {}
+  };
+  void pump(proc.stdout as ReadableStream);
+  void pump(proc.stderr as ReadableStream);
+  void proc.exited.then((code) => {
+    job.exitCode = code;
+    job.done = true;
+    job.ok = code === 0;
+    job.result = `exit ${code}`;
+    notifyDone(sessionId, job);
+    scheduleReap(sessionId, job);
+  });
+  return job;
+}
+
+/** Session end: drop the scratchpad AND kill any jobs still running under it. */
 export function cleanupRepl(sessionId: string): void {
+  const m = jobs.get(sessionId);
+  if (m) {
+    for (const j of m.values()) {
+      if (j.done) continue;
+      j.killed = true; // suppress the completion steer — the session is ending
+      if (j.kind === "shell" && j.pid !== undefined) killTree(j.pid);
+      else j.ac?.abort();
+    }
+    jobs.delete(sessionId);
+  }
   sessions.delete(sessionId);
   depths.delete(sessionId);
+}
+
+/**
+ * Register a task job and kick off executeTask under an AbortController. Shared by
+ * startTaskJob (awaited import) and jobsBridge.spawn (sync — returns the id
+ * immediately, kicking off the lazy import in the background). `executeTask` may
+ * be a getter that returns the function (for the lazy-import case) or the
+ * function itself once loaded.
+ */
+function runTaskJob(
+  sessionId: string,
+  executeTask: () => (spec: { description: string; prompt: string; agent?: string }, ctx: ToolContext) => Promise<ToolResult>,
+  spec: { description: string; prompt: string; agent?: string },
+  ctx: ToolContext,
+): ReplJob {
+  const id = `r${++jobSeq}`;
+  const ac = new AbortController();
+  const job: ReplJob = { id, kind: "task", label: spec.description.trim(), startedAt: Date.now(), done: false, ok: false, result: "", ac };
+  sessionJobs(sessionId).set(id, job);
+  // the job's lifetime is the SESSION's, not the turn's — it keeps going while
+  // the agent moves on, and ends only when the session does (cleanupRepl) or a
+  // jobs.kill asks it to
+  const finish = (r: ToolResult) => {
+    job.done = true;
+    job.ok = r.ok;
+    job.result = r.output;
+    notifyDone(sessionId, job);
+    scheduleReap(sessionId, job);
+  };
+  const fail = (e: unknown) => {
+    job.done = true;
+    job.ok = false;
+    job.result = job.killed ? "killed by request" : `error: ${(e as Error).message ?? e}`;
+    notifyDone(sessionId, job);
+    scheduleReap(sessionId, job);
+  };
+  void Promise.resolve()
+    .then(() => executeTask()(spec, { ...ctx, signal: ac.signal }))
+    .then(finish, fail);
+  return job;
+}
+
+async function startTaskJob(sessionId: string, spec: { description: string; prompt: string; agent?: string }, ctx: ToolContext): Promise<ReplJob> {
+  const { executeTask } = await import("./task.ts");
+  return runTaskJob(sessionId, () => executeTask, spec, ctx);
+}
+
+function startFnJob(sessionId: string, fn: (...a: unknown[]) => unknown, args: unknown[], label: string): ReplJob {
+  const id = `r${++jobSeq}`;
+  const job: ReplJob = { id, kind: "fn", label, startedAt: Date.now(), done: false, ok: false, result: "" };
+  sessionJobs(sessionId).set(id, job);
+  // run the function off the eval's stack so a slow/sleepy fn does not block the
+  // tool call; its return value (or throw) becomes the result the caller polls
+  void (async () => {
+    try {
+      const v = await fn(...args);
+      job.done = true;
+      job.ok = true;
+      job.result = typeof v === "string" ? v : fmt(v);
+    } catch (e) {
+      job.done = true;
+      job.ok = false;
+      job.result = `error: ${(e as Error).message ?? e}`;
+    }
+    if (job.result.length > MAX_FN_RESULT) job.result = job.result.slice(0, MAX_FN_RESULT) + `\n… (${job.result.length - MAX_FN_RESULT} more chars)`;
+    notifyDone(sessionId, job);
+    scheduleReap(sessionId, job);
+  })();
+  return job;
+}
+
+/** Poll a shell job's log for output produced since the caller's last poll. */
+function readShellTail(job: ReplJob): string {
+  if (!job.logPath) return "";
+  try {
+    const st = statSync(job.logPath);
+    const end = st.size;
+    const start = Math.max(job.cursor ?? 0, end - MAX_POLL_BYTES);
+    const skipped = start - (job.cursor ?? 0);
+    const len = end - start;
+    if (len <= 0) return "";
+    const fd = openSync(job.logPath, "r");
+    try {
+      const buf = Buffer.alloc(len);
+      readSync(fd, buf, 0, len, start);
+      const tail = partialTailBytes(buf);
+      job.cursor = end - tail;
+      return (skipped > 0 ? `… (${skipped} bytes skipped, log too chatty)\n` : "") + buf.subarray(0, buf.length - tail).toString("utf8");
+    } finally {
+      closeSync(fd);
+    }
+  } catch {
+    return "";
+  }
+}
+
+/** The `jobs` object exposed inside the repl sandbox: spawn/poll/kill/list. */
+function jobsBridge(sessionId: string, cwd: string, ctx: ToolContext) {
+  const live = () => [...sessionJobs(sessionId).values()].filter((j) => !j.done).length;
+  const guardRoom = () => {
+    if (live() >= MAX_JOBS_PER_SESSION) {
+      throw new Error(`too many live jobs in this session (${live()}/${MAX_JOBS_PER_SESSION}) — poll or kill one before starting more`);
+    }
+  };
+  return {
+    spawn: (what: unknown, opts?: unknown) => {
+      guardRoom();
+      const o = (opts ?? {}) as Record<string, unknown>;
+      // a string is a shell command; a function is an in-process job; an object
+      // with a prompt is a subagent task
+      if (typeof what === "string") {
+        const cmd = what;
+        if (!cmd.trim()) throw new Error("jobs.spawn needs a non-empty shell command");
+        const cwdOpt = typeof o.cwd === "string" ? o.cwd : cwd;
+        const job = startShellJob(sessionId, cmd, cwdOpt);
+        return job.id;
+      }
+      if (typeof what === "function") {
+        const label = typeof o.label === "string" ? o.label : "fn job";
+        const job = startFnJob(sessionId, what as (...a: unknown[]) => unknown, Array.isArray(o.args) ? o.args : [], label);
+        return job.id;
+      }
+      if (what && typeof what === "object" && typeof (what as { prompt?: unknown }).prompt === "string") {
+        const spec = what as { description?: string; prompt: string; agent?: string };
+        if (!spec.description?.trim()) throw new Error("jobs.spawn task needs a description");
+        // fire and forget — the id is returned synchronously; the lazy import
+        // resolves on the next tick, then executeTask runs detached. The getter
+        // hands runTaskJob a function that awaits the import each call (the
+        // module is cached after the first), so the id assignment (which happens
+        // synchronously in runTaskJob, before any await) is stable.
+        const executeTask = async (s: { description: string; prompt: string; agent?: string }, c: ToolContext): Promise<ToolResult> => {
+          const { executeTask: run } = await import("./task.ts");
+          return run(s, c);
+        };
+        return runTaskJob(sessionId, () => executeTask, { description: spec.description!, prompt: spec.prompt, agent: spec.agent }, ctx).id;
+      }
+      throw new Error("jobs.spawn: pass a shell command string, a function, or a {description, prompt, agent?} task");
+    },
+    poll: (id: unknown) => {
+      const job = sessionJobs(sessionId).get(String(id));
+      if (!job) throw new Error(`no job ${String(id)} in this session`);
+      const secs = Math.floor((Date.now() - job.startedAt) / 1000);
+      let data = "";
+      if (job.kind === "shell") data = readShellTail(job);
+      if (!job.done) return { id: job.id, kind: job.kind, label: job.label, done: false, secs, output: data };
+      // first read of a settled job starts the reap grace window
+      if (job.readAt === undefined) job.readAt = Date.now();
+      const out = job.kind === "shell" ? data : job.result;
+      const status = `${job.id} (${job.kind}: ${job.label}) ${job.ok ? "finished" : "FAILED"} after ${secs}s`;
+      return { id: job.id, kind: job.kind, label: job.label, done: true, ok: job.ok, secs, output: `${status}\n${out.trimEnd() || "(no output)"}` };
+    },
+    kill: (id: unknown) => {
+      const job = sessionJobs(sessionId).get(String(id));
+      if (!job) throw new Error(`no job ${String(id)} in this session`);
+      if (job.done) return `${job.id} already ${job.ok ? "finished" : "failed"} — nothing to kill`;
+      job.killed = true;
+      if (job.kind === "shell" && job.pid !== undefined) killTree(job.pid);
+      else job.ac?.abort();
+      reapJob(sessionId, job.id);
+      return `${job.id} (${job.kind}: ${job.label}) killed`;
+    },
+    list: () =>
+      [...sessionJobs(sessionId).values()].map((j) => ({
+        id: j.id,
+        kind: j.kind,
+        label: j.label,
+        done: j.done,
+        ok: j.done ? j.ok : undefined,
+        secs: Math.floor((Date.now() - j.startedAt) / 1000),
+      })),
+  };
 }
 
 function fmt(value: unknown): string {
@@ -161,6 +454,10 @@ export async function replRun(
 
   const sandbox = state.context as Record<string, unknown>;
   sandbox.tools = bridge;
+  // The one place background work lives: a shell command, an in-process
+  // function, or a subagent task — each spawned detached, polled, and killed
+  // from here. See jobsBridge.
+  sandbox.jobs = jobsBridge(sessionId, ctx.cwd, ctx);
   // Capture console output per call. The seeded `console` is replaced with a
   // line-collecting one so `console.log` lands in the tool result; other
   // methods (error/warn/info/debug) also capture, since a scratchpad's output

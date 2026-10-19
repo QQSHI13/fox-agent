@@ -81,12 +81,16 @@ export function renderMarkdown(src: string, state?: MdState, width?: number): Se
     // `**` and half-matched a stray italic from the second star (the "some
     // highlights work, some leak asterisks" report). Lazy `+?` finds the
     // shortest close, recursion styles the inner span.
-    // A single `_` only emphasizes at a WORD boundary (lookaround requires
-    // non-identifier neighbors) — CommonMark's flanking rule. Without it a
-    // snake_case identifier like MAX_BG_TASKS_PER_SESSION has its four
-    // underscores pair up as _BG_ and _PER_ and render as spurious italic.
-    // `*` still emphasizes mid-word.
-    const re = /(\*\*\*((?:[^*]|\*(?!\*))+?)\*\*\*|___((?:[^_]|_(?!__))+?)___|\*\*((?:[^*]|\*(?!\*))+?)\*\*|__((?:[^_]|_(?!_))+?)__|\*([^*\s][^*]*)\*|(?<![A-Za-z0-9_])_([^_\s][^_]*)_(?![A-Za-z0-9_])|`([^`]+)`|!\[([^\]]*)\]\(([^)\s]+)\)|\[([^\]]+)\]\(([^)\s]+)\)|~~([^~]+)~~)/g;
+    // `_` delimiters only emphasize at a WORD boundary (lookaround requires
+    // non-identifier neighbors) — CommonMark's flanking rule: an intraword `_`
+    // run can't open or close emphasis (rules for `_` are stricter than for
+    // `*`), so snake_case like MAX_BG_TASKS_PER_SESSION or a__b__c renders
+    // literal instead of sprouting spurious emphasis. `*` still emphasizes
+    // mid-word (foo*bar*baz). `_`-content patterns allow INNER inert `_` runs
+    // (a lone `_` between alphanumerics never matches, so `_foo_bar_baz_`
+    // spans them: the spec's `<em>foo_bar_baz</em>` example) — same as the
+    // `*` nested-delimiter handling above.
+    const re = /(\*\*\*((?:[^*]|\*(?!\*))+?)\*\*\*|(?<![A-Za-z0-9_])___((?:[^_]|_(?!__))+?)___(?![A-Za-z0-9_])|\*\*((?:[^*]|\*(?!\*))+?)\*\*|(?<![A-Za-z0-9_])__((?:[^_]|_(?!_))+?)__(?![A-Za-z0-9_])|\*([^*\s][^*]*)\*|(?<![A-Za-z0-9_])_((?:[^_]|_(?![A-Za-z0-9_]))+?)_(?![A-Za-z0-9_])|`([^`]+)`|!\[([^\]]*)\]\(([^)\s]+)\)|\[([^\]]+)\]\(([^)\s]+)\)|~~([^~]+)~~)/g;
     let last = 0;
     let m: RegExpExecArray | null;
     while ((m = re.exec(text))) {

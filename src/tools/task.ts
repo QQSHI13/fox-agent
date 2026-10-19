@@ -87,7 +87,7 @@ export async function taskRun(
   return executeTask(args, ctx);
 }
 
-async function executeTask(
+export async function executeTask(
   args: { description?: string; prompt?: string; agent?: string },
   ctx: ToolContext,
 ): Promise<ToolResult> {
