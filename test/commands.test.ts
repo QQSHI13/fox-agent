@@ -324,6 +324,11 @@ describe("interactive wizards", () => {
     );
     const s = t.createSession("/w", "m1");
     const state = { sessionId: s.id, cwd: "/w", provider: { baseUrl: "http://x", apiKey: "k", model: "m" } as any, interactive: true, configPath: join(dir, "config.toml") };
+    // the catalog parse is async (off the startup path) — load it and wait a
+    // tick so the skipIf closures below read the fixture, not an empty memo
+    const { loadCatalog } = await import("../src/providers/modelsdev.ts");
+    loadCatalog();
+    await new Promise((r) => setTimeout(r, 20));
 
     // a provider with catalog models: the select covers listed and typed ids
     // alike, so the separate text step has nothing left to ask
