@@ -787,6 +787,28 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     return [{ k: seqKey(m.seq, 0), kind: "md", seq: m.seq, text: m.content || "" }];
   }
 
+  /**
+   * Reconcile ONE settled store row into the live view — the single place the
+   * converge sites (think / md / tool_end) swap their live/fragment stand-ins
+   * for the anchored items nodeToItems builds. `replace` holds the items being
+   * replaced (the live think, the md fragments, the live tool pair); the
+   * anchored items land at the first replaced item's position. The store row
+   * is fetched by `seq`; null (read failure) leaves the caller's fallback in
+   * place. Returns the anchored items, or null if the row was unreadable.
+   */
+  function reconcileNode(seq: number, callMaps: { label: Map<string, string>; raw: Map<string, string>; name: Map<string, string> }, replace: Item[]): Item[] | null {
+    if (!state.sessionId) return null;
+    const row = getMessage(state.sessionId, seq);
+    if (!row) return null;
+    const anchored = nodeToItems(row, callMaps);
+    const at = replace.length ? items.indexOf(replace[0]) : -1;
+    items = items.filter((i) => !replace.includes(i));
+    if (at >= 0) items.splice(at, 0, ...anchored);
+    else items.push(...anchored);
+    for (const it of anchored) touch(it.k);
+    return anchored;
+  }
+
   function loadItems(): Item[] {
     const out: Item[] = [];
     if (!state.sessionId) return out; // pending session: nothing stored yet
@@ -1299,40 +1321,27 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
             markDirty();
           }
           // Stage 3 think-anchor: the step's think row is persisted just before
-          // the assistant node; thinkSeq names it. Swap the minted liveThink for
-          // an anchored item (same construction as loadItems) so the store
-          // rebuild and the live view cannot drift on the think block.
+          // the assistant node; thinkSeq names it. reconcileNode swaps the minted
+          // liveThink for the anchored item (same construction as loadItems) so
+          // the store rebuild and the live view cannot drift on the think block.
           if (ev.thinkSeq > 0 && liveThink && state.sessionId) {
-            // Capture everything BEFORE the getMessage call — a function call
-            // resets TS's narrowing of the captured `let liveThink`, and reading
-            // it after leaves it typed never. The cast pins the flow-wide type.
+            // Capture the expand state BEFORE reconcileNode — reconcileNode reads
+            // the live item's position, and a function call resets TS's narrowing
+            // of the captured `let liveThink` (read after → typed never).
             const liveItem: Item = liveThink as Item;
             const wasExpanded = !!liveItem.expanded;
-            const idx = items.indexOf(liveItem);
-            const thinkRow = getMessage(state.sessionId, ev.thinkSeq);
-            if (thinkRow) {
+            const anchored = reconcileNode(ev.thinkSeq, { label: new Map(), raw: new Map(), name: new Map() }, [liveItem]);
+            if (anchored) {
               if (wasExpanded) expandedRefs.add(ev.thinkSeq);
-              const anchored = nodeToItems(thinkRow, { label: new Map(), raw: new Map(), name: new Map() })[0];
-              if (idx >= 0) items[idx] = anchored;
-              touch(anchored.k);
               liveThink = null;
             }
           }
           // Stage 3b md-collapse: the store holds ONE assistant row per step,
           // so the N reply fragments pushed at tool boundaries collapse into the
-          // single anchored node — same construction as loadItems. Fragments
-          // are removed from wherever they sit; the anchored node lands at the
-          // first fragment's position (the step's reply starts there).
+          // single anchored node via reconcileNode — it removes the fragments and
+          // lands the anchored node at the first fragment's position.
           if (state.sessionId && (mdFragments.length > 0 || md)) {
-            const asstRow = getMessage(state.sessionId, ev.seq);
-            if (asstRow) {
-              const anchoredMd = nodeToItems(asstRow, { label: new Map(), raw: new Map(), name: new Map() })[0];
-              const fragIdx = mdFragments.length ? items.indexOf(mdFragments[0]) : -1;
-              items = items.filter((i) => !mdFragments.includes(i));
-              if (fragIdx >= 0) items.splice(fragIdx, 0, anchoredMd);
-              else items.push(anchoredMd);
-              touch(anchoredMd.k);
-            }
+            reconcileNode(ev.seq, { label: new Map(), raw: new Map(), name: new Map() }, [...mdFragments]);
             mdFragments.length = 0;
             md = "";
             streamText = null;
@@ -1438,28 +1447,25 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
             md = "";
             streamText = null;
           }
-          // Stage 2 converge: build the settled pair the SAME way loadItems does
-          // (nodeToItems), so the live view and the store rebuild can never drift.
-          // The tool result is persisted before tool_end fires, so getMessage
-          // sees the final row. Fall back to the hand-built pair if the read
+          // Stage 2 converge: reconcileNode builds the settled pair the SAME way
+          // loadItems does (nodeToItems), so the live view and the store rebuild
+          // can never drift. The tool result is persisted before tool_end fires,
+          // so the row is there. Fall back to the hand-built pair if the read
           // fails (should not happen, but never lose the tool).
-          const settledRow = state.sessionId ? getMessage(state.sessionId, ev.seq) : null;
-          if (settledRow) {
+          // The live pair was already removed above; pass it as `replace` so the
+          // anchored pair lands where it sat. Capture the expand state first.
+          const livePair: Item[] = live ? [live.head, live.body] : [];
+          const anchoredPair = reconcileNode(ev.seq, {
+            label: new Map([[ev.id, `${ev.name}${argsSummary(ev.args)}`]]),
+            raw: new Map([[ev.id, ev.args]]),
+            name: new Map([[ev.id, ev.name]]),
+          }, livePair);
+          if (anchoredPair) {
             // carry mid-stream expand into expandedRefs (the mechanism loadItems
             // honors), so output you were watching does not snap shut
             if (bodyOpen || expandMode === true || headOpen) expandedRefs.add(ev.seq);
-            // the call maps nodeToItems needs: the tool's own call (this id) is
-            // enough — label/raw/name for THIS tool_call_id. The full-log scan
-            // loadItems does is unnecessary here.
-            const pair = nodeToItems(settledRow, {
-              label: new Map([[ev.id, `${ev.name}${argsSummary(ev.args)}`]]),
-              raw: new Map([[ev.id, ev.args]]),
-              name: new Map([[ev.id, ev.name]]),
-            });
-            for (const it of pair) {
+            for (const it of anchoredPair) {
               if (it.kind === "toolhead" && (headOpen || expandMode === true)) it.expanded = true;
-              items.push(it);
-              touch(it.k);
             }
           } else {
             // raw text, newlines intact: collapsed rendering shows an arrow line,
