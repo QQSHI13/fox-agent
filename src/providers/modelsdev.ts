@@ -9,7 +9,7 @@
  * refresh lands — the network is never on the critical path of a render or a
  * budget check.
  */
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, readFile, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { agentHome } from "../core/paths.ts";
 
@@ -102,18 +102,37 @@ function cachePath(): string {
 type Catalog = { at: number; providers: CatalogProvider[] };
 let memo: { path: string; data: Catalog | null } | undefined;
 
-/** Cached catalog, or null when nothing has ever been fetched. Memoized per path. */
+/** Cached catalog, or null when nothing has ever been fetched. Memoized per path.
+ * F2: the first parse is kicked off ASYNC (startCatalogParse) so it never
+ * blocks startup — loadCatalog returns null until the background parse lands,
+ * and callers fall through to their cheap default. Once ready, the memo fills
+ * and later calls get real figures. */
+let parseStartedPath: string | null = null;
 export function loadCatalog(): Catalog | null {
   const path = cachePath();
   if (memo?.path === path) return memo.data;
-  let data: Catalog | null = null;
-  try {
-    if (existsSync(path)) data = JSON.parse(readFileSync(path, "utf8"));
-  } catch {
-    data = null;
-  }
-  memo = { path, data };
-  return data;
+  // Not parsed yet — start it in the background rather than parse synchronously
+  // here (a 1.7MB JSON.parse on the main thread was part of the startup cost).
+  startCatalogParse(path);
+  return null;
+}
+
+/** Read + parse the catalog off the synchronous path. Idempotent per path — a
+ * new path (e.g. a test pointing the cache elsewhere) re-arms the parse. */
+function startCatalogParse(path: string): void {
+  if (parseStartedPath === path) return;
+  parseStartedPath = path;
+  void (async () => {
+    try {
+      const text: string = await new Promise((resolve, reject) => {
+        readFile(path, "utf8", (err, data) => (err ? reject(err) : resolve(data as string)));
+      });
+      if (cachePath() !== path) return; // home changed mid-read
+      memo = { path, data: JSON.parse(text) as Catalog };
+    } catch {
+      memo = { path, data: null };
+    }
+  })();
 }
 
 /**

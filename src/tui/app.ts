@@ -30,7 +30,7 @@ import { wrapSegs, type Seg } from "./wrap.ts";
 import { charWidth } from "./screen.ts";
 import { Picker, type PickerAction, type PickerRow } from "./picker.ts";
 import { sessionRows, setPickerWheelStep } from "./pickerui.ts";
-import { runTurn, VERSION } from "../loop/agent.ts";
+import { VERSION } from "../core/version.ts";
 import { steer, peekSteer, withdrawSteer } from "../loop/steer.ts";
 import { projectView } from "../context/view.ts";
 import { sessionContextTokens } from "../context/budget.ts";
@@ -1238,6 +1238,10 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     // session label → its one live progress line (child_tool dedupe)
     const childItems = new Map<string, { item: Item; count: number; last: string }>();
     try {
+      // F3: lazy-import the turn loop — it pulls the whole provider/agent graph
+      // (~52ms) but is only needed when a turn actually runs, not to paint or
+      // accept input. VERSION comes from core/version.ts (light), not here.
+      const { runTurn } = await import("../loop/agent.ts");
       for await (const ev of runTurn(state.sessionId, state.provider, raw, ac.signal, state.config, uiBridge)) {
         if (ev.type === "user") {
           // the turn persisted the user message — stamp its seq on the in-flight

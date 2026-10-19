@@ -40,6 +40,11 @@ describe("models.dev catalog", () => {
         models: [{ id: "foo-1", name: "foo", context: 200_000, output: 16_000, reasoning: true, inputs: ["image", "audio"] }] },
     ]);
     const { lookupModel } = await import("../src/providers/models.ts");
+    // F2 made the catalog parse async (off the startup path) — wait for it to
+    // land before the synchronous lookup, else the memo is still empty.
+    const { loadCatalog } = await import("../src/providers/modelsdev.ts");
+    loadCatalog();
+    await new Promise((r) => setTimeout(r, 20));
     const info = lookupModel("foo-1");
     expect(info.contextWindow).toBe(200_000);
     expect(info.maxOutput).toBe(16_000);
