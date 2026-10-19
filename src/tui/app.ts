@@ -216,6 +216,11 @@ const liveTools = new Map<string, { head: Item; body: Item; text: string }>();
  * scoped (not per-turn) so refresh() can re-attach them across a rebuild.
  * Cleared when a turn ends (their lifetime is the delegation's run). */
 const childItems = new Map<string, { item: Item; count: number; last: string }>();
+/** Reply fragments pushed at tool boundaries (one per step's pre-tool text).
+ * Stage 3b tracks them so the `assistant` reconcile can replace them all with
+ * the single anchored node — the store holds ONE assistant row per step, so
+ * the live view must not keep N fragments. Emptied when the step anchors. */
+const mdFragments: Item[] = [];
 /** Startup taglines; one is picked at random per launch. */
 const BANNERS = [
   "agent-controlled context",
@@ -1329,6 +1334,25 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
               liveThink = null;
             }
           }
+          // Stage 3b md-collapse: the store holds ONE assistant row per step,
+          // so the N reply fragments pushed at tool boundaries collapse into the
+          // single anchored node — same construction as loadItems. Fragments
+          // are removed from wherever they sit; the anchored node lands at the
+          // first fragment's position (the step's reply starts there).
+          if (state.sessionId && (mdFragments.length > 0 || md)) {
+            const asstRow = getMessage(state.sessionId, ev.seq);
+            if (asstRow) {
+              const anchoredMd = nodeToItems(asstRow, { label: new Map(), raw: new Map(), name: new Map() })[0];
+              const fragIdx = mdFragments.length ? items.indexOf(mdFragments[0]) : -1;
+              items = items.filter((i) => !mdFragments.includes(i));
+              if (fragIdx >= 0) items.splice(fragIdx, 0, anchoredMd);
+              else items.push(anchoredMd);
+              touch(anchoredMd.k);
+            }
+            mdFragments.length = 0;
+            md = "";
+            streamText = null;
+          }
         } else if (ev.type === "reasoning") {
           appendToLastThink(ev.delta);
           publishLive(); // think deltas markDirty anyway; piggyback the status
@@ -1351,7 +1375,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           // it answers — not above it. (A tool_start with no flush pushed the
           // head ahead of the still-buffered md, inverting the order.)
           if (md) {
-            push("md", md, flushStepMarker());
+            mdFragments.push(push("md", md, flushStepMarker()));
             md = "";
             streamText = null;
           }
@@ -1384,7 +1408,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           // settled show the same content.
           liveThink = null;
           if (md) {
-            push("md", md, flushStepMarker());
+            mdFragments.push(push("md", md, flushStepMarker()));
             md = "";
             streamText = null;
           }
@@ -1426,7 +1450,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
             liveTools.delete(ev.id);
           }
           if (md) {
-            push("md", md, flushStepMarker());
+            mdFragments.push(push("md", md, flushStepMarker()));
             md = "";
             streamText = null;
           }
@@ -1480,7 +1504,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           // A tool boundary like any other: it seals the thinking block.
           liveThink = null;
           if (md) {
-            push("md", md, flushStepMarker());
+            mdFragments.push(push("md", md, flushStepMarker()));
             md = "";
             streamText = null;
           }
@@ -1498,7 +1522,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         } else if (ev.type === "steered") {
           liveThink = null;
           if (md) {
-            push("md", md, flushStepMarker());
+            mdFragments.push(push("md", md, flushStepMarker()));
             md = "";
             streamText = null;
           }
@@ -1513,7 +1537,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       if (ac?.signal.aborted) push("error", "[interrupted]");
       else reportError(`fox-agent error: ${(e as Error).message ?? e}`, e);
     } finally {
-      if (md) push("md", md, flushStepMarker());
+      if (md) mdFragments.push(push("md", md, flushStepMarker()));
       streamText = null;
       streamSeq = -1; // the turn's stream is over; the settled item carries the real seq
       liveThink = null; // refresh() rebuilds items; no reference may survive it
