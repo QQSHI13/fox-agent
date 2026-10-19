@@ -556,8 +556,11 @@ export async function* runTurnCore(
 
     if (outcome.finish.startsWith("error")) outcome.calls = []; // never execute calls from a broken stream
 
+    let thinkSeq = 0;
     if (outcome.reasoning.trim()) {
-      appendMessage(sessionId, { parent_id: stepParentId, role: "think", content: outcome.reasoning, tokens: estTok(outcome.reasoning) });
+      // Stage 3: capture the think node's seq — the assistant event carries it
+      // so a live UI can anchor the think block to the store (not a minted item)
+      thinkSeq = appendMessage(sessionId, { parent_id: stepParentId, role: "think", content: outcome.reasoning, tokens: estTok(outcome.reasoning) }).seq;
     }
 
     // `beforeTool` resolves BEFORE the assistant node is persisted, so a guard
@@ -594,7 +597,7 @@ export async function* runTurnCore(
       tool_calls: prepared.length ? JSON.stringify(prepared.map((p) => p.call)) : null,
       tokens: estTok(outcome.text) + prepared.reduce((a, p) => a + estTok(p.call.arguments), 0),
     });
-    if (!quiet) yield { type: "assistant", seq: asstNode.seq };
+    if (!quiet) yield { type: "assistant", seq: asstNode.seq, thinkSeq };
     if (outcome.usage) recordUsage(sessionId, asstNode.id, outcome.usage.prompt_tokens, outcome.usage.completion_tokens, outcome.usage.cached_tokens);
     if (outcome.usage && !quiet) yield { type: "usage", ...outcome.usage };
 

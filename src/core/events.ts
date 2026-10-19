@@ -32,8 +32,11 @@ export type AgentEvent =
   | { type: "user"; seq: number; text: string }
   /** the step's assistant node was persisted with this seq — emitted right after
    *  append so a live UI can correct its predicted streaming marker (the reply's
-   *  seq was a guess until now; thinking blocks and tool calls shifted it) */
-  | { type: "assistant"; seq: number }
+   *  seq was a guess until now; thinking blocks and tool calls shifted it).
+   *  thinkSeq: the step's think node, persisted just before the assistant node
+   *  (0 = the step carried no reasoning) — lets a live UI anchor the think block
+   *  to the store instead of leaving it a minted live item. */
+  | { type: "assistant"; seq: number; thinkSeq: number }
   /** user text injected mid-turn (ctrl+s), delivered at a step boundary */
   | { type: "steered"; text: string }
   | { type: "done"; reason: string };

@@ -1270,6 +1270,26 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
             markDirty();
           }
           stepMarkerUsed = false;
+          // Stage 3 think-anchor: the step's think row is persisted just before
+          // the assistant node; thinkSeq names it. Swap the minted liveThink for
+          // an anchored item (same construction as loadItems) so the store
+          // rebuild and the live view cannot drift on the think block.
+          if (ev.thinkSeq > 0 && liveThink && state.sessionId) {
+            // Capture everything BEFORE the getMessage call — a function call
+            // resets TS's narrowing of the captured `let liveThink`, and reading
+            // it after leaves it typed never. The cast pins the flow-wide type.
+            const liveItem: Item = liveThink as Item;
+            const wasExpanded = !!liveItem.expanded;
+            const idx = items.indexOf(liveItem);
+            const thinkRow = getMessage(state.sessionId, ev.thinkSeq);
+            if (thinkRow) {
+              if (wasExpanded) expandedRefs.add(ev.thinkSeq);
+              const anchored = nodeToItems(thinkRow, { label: new Map(), raw: new Map(), name: new Map() })[0];
+              if (idx >= 0) items[idx] = anchored;
+              touch(anchored.k);
+              liveThink = null;
+            }
+          }
         } else if (ev.type === "reasoning") {
           appendToLastThink(ev.delta);
           publishLive(); // think deltas markDirty anyway; piggyback the status
