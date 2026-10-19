@@ -432,7 +432,6 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
    * fragment wore the same [N] — the 'repeated marker' report — and the chips
    * collapsed to one only when refresh() rebuilt from the store at end of turn.
    */
-  let stepMarkerUsed = false;
   let buf: Ch[] = []; // input buffer; lit chars are literal newlines
   let cur = 0; // cursor index into buf
   let busy = false;
@@ -649,19 +648,6 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     touch(it.k);
     markDirty();
     return it;
-  }
-  /**
-   * The current step's assistant marker, spent on its first fragment.
-   *
-   * A step's reply is flushed into a SEPARATE md item at every tool boundary,
-   * but the store holds ONE assistant node per step — so only the first
-   * fragment wears the [N] chip and the rest are continuations (no chip).
-   * Reset per step by the user/assistant events (see stepMarkerUsed).
-   */
-  function flushStepMarker(): { seq?: number; markerCont?: boolean } {
-    if (stepMarkerUsed) return { markerCont: true };
-    stepMarkerUsed = true;
-    return streamSeq > 0 ? { seq: streamSeq } : {};
   }
   function appendToLastThink(delta: string) {
     // Sealed by tool boundaries: thinking belongs to the step that produced
@@ -1299,7 +1285,6 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           // so the streaming tail shows its marker live too (refined when the
           // assistant node actually lands, in case thinking took a slot first)
           streamSeq = ev.seq + 1;
-          stepMarkerUsed = false; // a new turn's first assistant fragment wears the chip
           touch(userItem.k);
           markDirty();
         } else if (ev.type === "assistant") {
@@ -1313,7 +1298,6 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
             streamSeq = ev.seq;
             markDirty();
           }
-          stepMarkerUsed = false;
           // Stage 3 think-anchor: the step's think row is persisted just before
           // the assistant node; thinkSeq names it. Swap the minted liveThink for
           // an anchored item (same construction as loadItems) so the store
@@ -1375,7 +1359,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           // it answers — not above it. (A tool_start with no flush pushed the
           // head ahead of the still-buffered md, inverting the order.)
           if (md) {
-            mdFragments.push(push("md", md, flushStepMarker()));
+            mdFragments.push(push("md", md, {}));
             md = "";
             streamText = null;
           }
@@ -1408,7 +1392,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           // settled show the same content.
           liveThink = null;
           if (md) {
-            mdFragments.push(push("md", md, flushStepMarker()));
+            mdFragments.push(push("md", md, {}));
             md = "";
             streamText = null;
           }
@@ -1450,7 +1434,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
             liveTools.delete(ev.id);
           }
           if (md) {
-            mdFragments.push(push("md", md, flushStepMarker()));
+            mdFragments.push(push("md", md, {}));
             md = "";
             streamText = null;
           }
@@ -1504,7 +1488,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           // A tool boundary like any other: it seals the thinking block.
           liveThink = null;
           if (md) {
-            mdFragments.push(push("md", md, flushStepMarker()));
+            mdFragments.push(push("md", md, {}));
             md = "";
             streamText = null;
           }
@@ -1522,7 +1506,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         } else if (ev.type === "steered") {
           liveThink = null;
           if (md) {
-            mdFragments.push(push("md", md, flushStepMarker()));
+            mdFragments.push(push("md", md, {}));
             md = "";
             streamText = null;
           }
@@ -1537,7 +1521,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       if (ac?.signal.aborted) push("error", "[interrupted]");
       else reportError(`fox-agent error: ${(e as Error).message ?? e}`, e);
     } finally {
-      if (md) mdFragments.push(push("md", md, flushStepMarker()));
+      if (md) mdFragments.push(push("md", md, {}));
       streamText = null;
       streamSeq = -1; // the turn's stream is over; the settled item carries the real seq
       liveThink = null; // refresh() rebuilds items; no reference may survive it
