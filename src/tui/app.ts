@@ -243,6 +243,10 @@ const SEQ_KEY_SPACE = 0x40000000;
 let keySeq = SEQ_KEY_SPACE;
 const nk = () => ++keySeq;
 const seqKey = (seq: number, slot: number) => seq * 4 + slot;
+/** Reserved key for the virtual chrome header (welcome / session-info). Not
+ * transcript content, not stored — computed from state, prepended at
+ * frameInput(). A constant just below the minted range avoids collisions. */
+const CHROME_KEY = SEQ_KEY_SPACE - 1;
 
 /**
  * Diff-and-touch, as a pure helper so it is unit-testable without reaching into
@@ -692,9 +696,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     // O(history) re-wrap each time. The pure helper is unit-testable (see
     // test/difftouch.test.ts).
     for (const k of diffTouchKeys(prev, items, (i) => i.k, itemSig, itemSigs)) touch(k);
-    // the rebuild drops the startup block with everything else — its lifetime
-    // ends here, so a later refreshWelcome() must not resurrect it
-    welcomed = false;
+    // the rebuild drops any chrome header lifetime — it re-derives from state
     statsRev++;
     markDirty();
   }
@@ -841,10 +843,11 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     }
     if (res.newSessionId) switchSession(res.newSessionId);
     if (res.welcome) {
-      // /new is a fresh `fox` launch: reload config (model/theme/caps) and
-      // re-point the new session at the configured model before the banner prints
+      // /new re-points at a fresh session — the virtual chrome header
+      // (chromeItem) re-renders from state (new model/cwd), so just bump its
+      // revision; no welcome items to push.
       applyRuntimeConfig();
-      welcomeBlock();
+      touch(CHROME_KEY);
     }
     const doReload = () => {
       // plugins re-import on the next turn's buildRegistry — /reload exists so
@@ -882,7 +885,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     // a command that rewrote the stored log (/prune compact) must be followed
     // by a replay, or the screen keeps showing seqs/rows that no longer exist
     if (res.storeChanged) refresh();
-    refreshWelcome();
+    // A command result may have changed the model/cwd the virtual chrome header
+    // shows — bump its revision so it re-renders.
+    touch(CHROME_KEY);
     markDirty();
     if (res.exit) gracefulExit(0);
   }
@@ -970,60 +975,34 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   }
 
   /**
-   * The startup/welcome block. Pushed AFTER refresh() — replay replaces the
-   * item list, so anything pushed before it never existed (the banner vanished
-   * that way once). Runs at boot and on /new.
+   * The virtual chrome header — welcome (fresh launch) or session-info (bound
+   * session). Computed fresh from state each frame; NOT stored in items[], so
+   * refresh() (a store rebuild) never has to decide whether to keep it. This is
+   * the Option A root fix for chrome sinking/duplicating. Renders as items[0]
+   * via frameInput's prepend.
    */
-  let welcomed = false;
   let banner: string | null = null;
-  function welcomeBlock() {
-    welcomed = true;
-    refreshWelcome();
-  }
-
-  /**
-   * Rebuild the startup block in place against the LIVE provider and config.
-   * The block is pushed once and then frozen, so a /login that lands a key or
-   * a /model switch left its own contradiction on screen ("no API key" above
-   * a working session). Rebuilding on every command result keeps it honest
-   * for exactly its lifetime: refresh() ends that lifetime by dropping the
-   * items and disarming this (see welcomed), and the tagline is picked once
-   * so the banner does not re-roll under you.
-   */
-  function refreshWelcome() {
-    if (!welcomed) return;
-    const rest = items.filter((it) => !it.welcome);
+  function chromeItem(): Item {
     if (!banner) banner = BANNERS[Math.floor(Math.random() * BANNERS.length)];
-    const head: Item[] = [];
-    const w = (kind: ItemKind, text: string) => {
-      const it: Item = { k: nk(), kind, text, welcome: true };
-      touch(it.k);
-      head.push(it);
-    };
-    w("info", `fox-agent v${VERSION} — ${banner}`);
-    // one item per BLOCK, not per line: itemRows wraps `\n`s as real new lines
-    // (not markdown paragraphs), and buildRows only blanks BETWEEN items — so
-    // the startup block paints without the blank line between every row
     const info = lookupModel(state.provider.model);
-    w(
-      "toolbody",
-      [
-        `working directory: ${state.cwd}`,
-        state.sessionId
-          ? `session ${state.sessionId} · ${state.cwd}`
-          : "session new — created on first message",
-        ...(state.provider.apiKey
-          ? []
-          : ["no API key configured — /login opens the setup wizard (saved to ~/.config/fox-agent/config.toml)"]),
-        `model ${state.provider.model} (${Math.round(info.contextWindow / 1000)}k ctx) · ${providerDisplayName(state)}` +
-          (state.provider.baseUrl && !/api\.openai\.com/.test(state.provider.baseUrl) ? ` · ${state.provider.baseUrl}` : ""),
-        "enter send · \\ newline · ! shell · / commands · esc interrupt · ctrl+t expand all · drag/dbl-click select",
-        "/login setup · /model switch · /sessions resume · /usage tokens · /prune context · /upgrade update · /help all",
-      ].join("\n"),
-    );
-    items = [...head, ...rest];
-    statsRev++;
-    markDirty();
+    const text = state.pendingSession && !state.sessionId
+      ? [
+          `fox-agent v${VERSION} — ${banner}`,
+          `working directory: ${state.cwd}`,
+          "session new — created on first message",
+          ...(state.provider.apiKey
+            ? []
+            : ["no API key configured — /login opens the setup wizard (saved to ~/.config/fox-agent/config.toml)"]),
+          `model ${state.provider.model} (${Math.round(info.contextWindow / 1000)}k ctx) · ${providerDisplayName(state)}` +
+            (state.provider.baseUrl && !/api\.openai\.com/.test(state.provider.baseUrl) ? ` · ${state.provider.baseUrl}` : ""),
+          "enter send · \\ newline · ! shell · / commands · esc interrupt · ctrl+t expand all · drag/dbl-click select",
+          "/login setup · /model switch · /sessions resume · /usage tokens · /prune context · /upgrade update · /help all",
+        ].join("\n")
+      : `session ${state.sessionId} · ${state.cwd}`;
+    return { k: CHROME_KEY, kind: "toolbody", text };
+  }
+  function chromeVisible(): boolean {
+    return state.pendingSession || !!state.sessionId;
   }
 
   /**
@@ -1223,7 +1202,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       state.sessionId = s.id;
       state.pendingSession = false;
       pinSession(s.id);
-      push("toolbody", `session ${s.id} · ${state.cwd}`);
+      // No session-info push here — the chrome header (welcome/session-info) is
+      // a VIRTUAL item from chromeItem(), not stored in items[]. Root fix for
+      // chrome sinking: refresh() never rebuilds it.
     }
     setBusy(true);
     const userItem = push("user", `❯ ${raw}`);
@@ -3238,7 +3219,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       scrollTop,
       stick,
       scrollbar: SCROLLBAR,
-      items,
+      // Chrome (welcome/session-info) renders as a VIRTUAL first item computed
+      // from state — never stored in items[], so refresh() never rebuilds it.
+      items: chromeVisible() ? [chromeItem(), ...items] : items,
       streamText,
       renderItem: (it, w) => {
         // edge-stripped, the very same span `countItem` reports — layout's
@@ -4221,11 +4204,10 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       applyRuntimeConfig();
       // The startup block comes AFTER refresh() (see welcomeBlock's comment),
       // and only for a genuinely fresh launch — a resumed session has its
-      // transcript on screen; a banner on top of it is noise.
-      // Bare `fox -c`: no welcome banner — the session picker is the whole
-      // screen, and a banner underneath it is noise. A normal fresh launch
-      // (no -c) keeps the banner.
-      if (state.pendingSession && !state.pickSessionOnBoot) welcomeBlock();
+      // Chrome (welcome/session-info) is a VIRTUAL header from chromeItem(),
+      // rendered whenever pendingSession/sessionId says so — no explicit
+      // welcomeBlock() push needed. Bare `fox -c`: pickSessionOnBoot hides the
+      // banner via chromeVisible() (the picker is the whole screen).
       // Second opener of the same session becomes the read-only viewer.
       if (state.sessionId && !state.pendingSession) attachLock(state.sessionId);
       // Bare `fox -c`: the session choice is an in-TUI overlay, not a pre-TUI
