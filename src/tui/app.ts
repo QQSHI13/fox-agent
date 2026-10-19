@@ -493,7 +493,13 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   const displayBusy = () => busy || remoteBusy;
 
   const revs = new Map<number, number>();
-  const touch = (k: number) => revs.set(k, (revs.get(k) ?? 0) + 1);
+  // Running total of every touch() — transcriptSig reads this instead of
+  // re-summing all items per frame (the O(n)/frame cost on long sessions).
+  let revSum = 0;
+  const touch = (k: number) => {
+    revs.set(k, (revs.get(k) ?? 0) + 1);
+    revSum++;
+  };
   /**
    * Render-signature of a settled item, keyed by its stable `k`. Used by
    * refresh() to touch ONLY the nodes that actually changed, so a rebuild does
@@ -3537,10 +3543,11 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   let lastClearKey = "";
   /** Does the transcript need re-derivation? Cheap incremental check. */
   function transcriptSig(): string {
-    // items rev sum changes on any touch(); streamText identity per stream;
-    // selection via anchors; scroll offsets are the frame's own inputs.
-    let revSum = 0;
-    for (const it of items) revSum += revs.get(it.k) ?? 0;
+    // items rev total changes on any touch() — touch() maintains it
+    // incrementally, so this reads the running total instead of re-summing
+    // every item per frame (the O(n)/frame cost on long sessions).
+    // streamText identity per stream; selection via anchors; scroll offsets
+    // are the frame's own inputs.
     // pendingCount drives viewportHeight (queue rows reserve transcript rows),
     // so it belongs in the frame signature — a queue change shifts every
     // transcript row and must re-derive the region
