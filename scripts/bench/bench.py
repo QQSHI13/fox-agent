@@ -84,6 +84,7 @@ AGENTS = [
     ("codex", ["codex"]),
     ("jcode", ["jcode"]),
     ("pi", ["pi", "pi-coding-agent"]),
+    ("pi-bolt", ["pi-bolt"]),
     ("gemini cli", ["gemini"]),
     ("copilot cli", ["copilot"]),
     ("crush", ["crush"]),

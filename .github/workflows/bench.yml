@@ -98,6 +98,7 @@ jobs:
           npm i -g @openai/codex                      # codex
           npm i -g @opencode-ai/cli@beta              # opencode v2 (bin opencode2)
           npm i -g @earendil-works/pi-coding-agent    # pi
+           curl -fsSL https://pi-bolt.opensec.in/install.sh | bash  # pi-bolt
           npm i -g @google/gemini-cli                 # gemini
           npm i -g @github/copilot                    # copilot
           npm i -g @charmland/crush                   # crush
