@@ -46,7 +46,17 @@ afterEach(() => {
 });
 
 describe("bundled:cost", () => {
+  // F2 made the catalog parse async — the tests write a fixture then read rates
+  // synchronously, so wait for the background parse to land first (same pattern
+  // as test/modelsdev.test.ts).
+  async function awaitCatalog(): Promise<void> {
+    const { loadCatalog } = await import("../src/providers/modelsdev.ts");
+    loadCatalog();
+    await new Promise((r) => setTimeout(r, 20));
+  }
+
   test("rateFor reads the catalog; unpriced models get null, never a guess", async () => {
+    await awaitCatalog();
     const { rateFor } = await import("../src/plugins/cost.ts");
     expect(rateFor("priced-1")).toEqual({ input: 1, output: 2, cacheRead: 0.1, cacheWrite: undefined });
     expect(rateFor("free-1")).toBeNull();
@@ -54,6 +64,7 @@ describe("bundled:cost", () => {
   });
 
   test("sessionCost prices fresh input, cached input, and output from stored tokens", async () => {
+    await awaitCatalog();
     // import order matters: the store must see FOX_AGENT_HOME before first use
     const { createSession, recordUsage } = await import("../src/store/db.ts");
     const { sessionCost } = await import("../src/plugins/cost.ts");
@@ -78,6 +89,7 @@ describe("bundled:cost", () => {
   });
 
   test("the /cost command prints rates and the session total", async () => {
+    await awaitCatalog();
     const { createSession, recordUsage } = await import("../src/store/db.ts");
     const cost = await import("../src/plugins/cost.ts");
     const s = createSession(home, "priced-1");
