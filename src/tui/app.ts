@@ -100,6 +100,10 @@ interface Item {
    *  indents under the unit's marker instead of repeating the chip, so a tool
    *  pair shows ONE [N], not two. */
   markerCont?: boolean;
+  /** set by a revert (ctx delete) op — the node is hidden from the MODEL's
+   *  context but the transcript keeps it (storage is append-only). Rendered
+   *  dimmed so the op is visible; /undo clears it. */
+  hidden?: boolean;
 }
 
 /**
@@ -754,10 +758,13 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
    * uses it to reconcile a just-settled node against the SAME construction, so
    * the live view and the store rebuild can never drift. `callMaps` is the
    * assistant→tool lookup (label/raw/name per tool_call id). */
-  function nodeToItems(m: MessageRow, callMaps: { label: Map<string, string>; raw: Map<string, string>; name: Map<string, string> }): Item[] {
+  function nodeToItems(m: MessageRow, callMaps: { label: Map<string, string>; raw: Map<string, string>; name: Map<string, string> }, hidden?: boolean): Item[] {
     // the [N] marker is not baked into text — it rides `it.seq` as a gutter
     // chip (see itemRows/withMarker). Text here is the bare content.
-    if (m.role === "user") return [{ k: seqKey(m.seq, 0), kind: "user", seq: m.seq, text: `❯ ${m.content}` }];
+    // `hidden` (a revert hid this node from the model's context) marks every
+    // item so itemRows renders them dimmed — the op stays visible in the
+    // transcript even though storage is append-only.
+    if (m.role === "user") return [{ k: seqKey(m.seq, 0), kind: "user", seq: m.seq, text: `❯ ${m.content}`, hidden }];
     if (m.role === "tool") {
       // todo bodies are markdown task lists — rendered as md, always visible.
       // ctx bodies stay expanded too: the per-op report is the audit trail for
@@ -768,7 +775,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       const pinned = isTodo || isCtx;
       const failed = m.error != null;
       return [
-        { k: seqKey(m.seq, 1), kind: "toolhead", seq: m.seq, text: `» ${callMaps.label.get(m.tool_call_id ?? "") ?? "tool"}${failed ? " — failed" : ""}`, argsRaw: callMaps.raw.get(m.tool_call_id ?? "") },
+        { k: seqKey(m.seq, 1), kind: "toolhead", seq: m.seq, text: `» ${callMaps.label.get(m.tool_call_id ?? "") ?? "tool"}${failed ? " — failed" : ""}`, argsRaw: callMaps.raw.get(m.tool_call_id ?? ""), hidden },
         {
           k: seqKey(m.seq, 2),
           kind: "toolbody",
@@ -779,12 +786,13 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           toolResult: true,
           mdBody: isTodo || undefined,
           expanded: pinned || expandedRefs.has(m.seq),
+          hidden,
         },
       ];
     }
     if (m.role === "think")
-      return [{ k: seqKey(m.seq, 0), kind: "think", seq: m.seq, text: m.content, ref: m.seq, expanded: expandedRefs.has(m.seq) }];
-    return [{ k: seqKey(m.seq, 0), kind: "md", seq: m.seq, text: m.content || "" }];
+      return [{ k: seqKey(m.seq, 0), kind: "think", seq: m.seq, text: m.content, ref: m.seq, expanded: expandedRefs.has(m.seq), hidden }];
+    return [{ k: seqKey(m.seq, 0), kind: "md", seq: m.seq, text: m.content || "", hidden }];
   }
 
   /**
@@ -812,15 +820,15 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   function loadItems(): Item[] {
     const out: Item[] = [];
     if (!state.sessionId) return out; // pending session: nothing stored yet
-    // The FULL message log, not the projected view. The view (compaction,
-    // ctx surgery) is what the MODEL sees — the transcript is the session's
-    // history, and hiding or truncating earlier stuff just because the model
-    // no longer carries it made the top of the transcript drift to whatever
-    // happened to survive first. Storage is append-only; display it all.
-    // Lite columns: the transcript never displays media/tokens/error, and
-    // dragging stored base64 blobs through the projection showed up as a
-    // large slice of resume time on media-heavy sessions.
-    const msgs = allMessagesLite(state.sessionId);
+    // Build from the VIEW (projectView), not raw allMessagesLite: the view's
+    // `deleted` flag is what a revert (ctx delete op) sets, and the transcript
+    // must reflect it — reverted nodes render dimmed so the op is visible.
+    // Compaction/summary drops do NOT set `deleted`, so the append-only
+    // "display the full history" intent is preserved for those. Lite columns
+    // still apply: the view's nodes carry the same lite message rows.
+    const nodes = projectView(state.sessionId);
+    const msgs = nodes.map((n) => n.msg);
+    const hiddenSeqs = new Set(nodes.filter((n) => n.deleted).map((n) => n.msg.seq));
     const callMaps = { label: new Map<string, string>(), raw: new Map<string, string>(), name: new Map<string, string>() };
     for (const m of msgs) {
       if (m.role === "assistant" && m.tool_calls) {
@@ -838,7 +846,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         } catch {}
       }
     }
-    for (const m of msgs) out.push(...nodeToItems(m, callMaps));
+    for (const m of msgs) out.push(...nodeToItems(m, callMaps, hiddenSeqs.has(m.seq)));
     return out;
   }
 
@@ -2965,6 +2973,16 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       rows = wrapSegs([{ t: it.text, ...itemStyle(it.kind) }], cw).map((segs) => ({ segs }));
     }
     if (rowSeq(it) !== undefined) rows = withMarker(rows, rowSeq(it)!, it.markerCont);
+    // A reverted (ctx-delete) node stays in the transcript but reads dimmed —
+    // the op is visible without removing history. Downgrade every seg's fg to
+    // the chrome (dim) color; segs without an fg get one so nothing stays bright.
+    if (it.hidden) {
+      for (const row of rows) {
+        for (const seg of row.segs) {
+          if (seg.bg === undefined) seg.fg = C.chrome;
+        }
+      }
+    }
     const entry = { rev: revs.get(it.k) ?? 0, rows, hl: highlightVersion(), span: itemEdgeSpan(rows) };
     let pw = lineCache.get(it.k);
     if (!pw) {
