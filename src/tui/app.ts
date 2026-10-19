@@ -999,7 +999,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           "/login setup · /model switch · /sessions resume · /usage tokens · /prune context · /upgrade update · /help all",
         ].join("\n")
       : `session ${state.sessionId} · ${state.cwd}`;
-    return { k: CHROME_KEY, kind: "toolbody", text };
+    // 'info' kind highlights the first line (the fox-agent banner) like the
+    // original welcome — 'toolbody' would render it dim.
+    return { k: CHROME_KEY, kind: "info", text };
   }
   function chromeVisible(): boolean {
     return state.pendingSession || !!state.sessionId;
