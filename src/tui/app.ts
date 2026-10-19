@@ -212,6 +212,10 @@ function spinFrames(): string[] {
  * turn-scoped) so the frame loop's tickSpinner can animate the running heads.
  */
 const liveTools = new Map<string, { head: Item; body: Item; text: string }>();
+/** Subagent progress lines, keyed by the delegated session's label — module
+ * scoped (not per-turn) so refresh() can re-attach them across a rebuild.
+ * Cleared when a turn ends (their lifetime is the delegation's run). */
+const childItems = new Map<string, { item: Item; count: number; last: string }>();
 /** Startup taglines; one is picked at random per launch. */
 const BANNERS = [
   "agent-controlled context",
@@ -673,19 +677,46 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
 
   function refresh() {
     const prev = items;
-    // Preserve the items loadItems() cannot reproduce, in their positions: the
-    // welcome block (prepended) and the live tail (in-flight think block,
-    // running tool head+body pairs, subagent progress lines, ephemeral notices).
-    // A rebuild must NOT drop these — they are the overlay the user is watching
-    // (ESC mid-turn, a ctx op mid-turn). Only stored messages (which carry a
-    // storage `seq`) are rebuilt from the store; the rest keep their minted
-    // keys, cache entries, and slots.
-    // A settled tool BODY carries `ref` (its head's seq), not `seq` — so `ref`
-    // items are stored too, NOT live. Excluding them keeps each tool's head and
-    // body together (the toolbody-split fix).
-    const head = prev.filter((i) => i.welcome);
-    const liveTail = prev.filter((i) => i.seq === undefined && i.ref === undefined && !i.welcome);
-    items = [...head, ...loadItems(), ...liveTail]; // loadItems restores expandedRefs
+    // Stage 4: re-attach the genuinely LIVE items by reference — the in-flight
+    // think block, running tool pairs, subagent lines — never by a heuristic.
+    // The old `seq === undefined && ref === undefined` filter caught EVERY minted
+    // item: settled-but-unanchored copies (a think row already in the store), and
+    // stale notices ("switched to …") from previous turns all re-appended after
+    // the store rebuild — thinking "piled to the end" and notices "sank to the
+    // bottom" on every refresh, and session switches re-appended the old
+    // session's leftovers. The store rebuild (loadItems) reproduces every
+    // settled node at its true position; only the currently-referenced live set
+    // must survive, re-inserted where it sits.
+    const liveRefs = new Set<Item>();
+    if (liveThink) liveRefs.add(liveThink);
+    for (const [, live] of liveTools) {
+      liveRefs.add(live.head);
+      liveRefs.add(live.body);
+    }
+    for (const [, child] of childItems) liveRefs.add(child.item);
+    // Preserve each live item's slot: remember its neighbours so it can be
+    // re-inserted in place rather than appended at the end. One loadItems()
+    // call builds both the anchor-key set and the rebuilt array.
+    const rebuilt = loadItems();
+    const anchoredKeys = new Set(rebuilt.map((it) => it.k));
+    const liveSlots: { item: Item; afterKey: number | null }[] = [];
+    for (let i = 0; i < prev.length; i++) {
+      const it = prev[i];
+      if (!liveRefs.has(it)) continue;
+      let afterKey: number | null = null;
+      for (let j = i - 1; j >= 0; j--) {
+        if (anchoredKeys.has(prev[j].k)) {
+          afterKey = prev[j].k;
+          break;
+        }
+      }
+      liveSlots.push({ item: it, afterKey });
+    }
+    items = [...rebuilt];
+    for (const { item, afterKey } of liveSlots) {
+      const at = afterKey === null ? 0 : items.findIndex((a) => a.k === afterKey) + 1;
+      items.splice(at < 0 ? items.length : at, 0, item);
+    }
     // log items keep stable seq-derived keys, so their cache entries stay
     // warm across rebuilds (the whole point); minted-key items (welcome,
     // ephemeral, streaming) die here — sweep their entries once per rebuild
@@ -1239,8 +1270,10 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     // a new turn seals the previous stream: its first reasoning delta must not
     // merge into a replayed think item from history (see liveThink)
     liveThink = null;
-    // session label → its one live progress line (child_tool dedupe)
-    const childItems = new Map<string, { item: Item; count: number; last: string }>();
+    // childItems is module-scoped now (Stage 4): refresh() re-attaches subagent
+    // lines across a rebuild. Clear any from a previous turn — their lifetime
+    // is the delegation's run.
+    childItems.clear();
     try {
       // F3: lazy-import the turn loop — it pulls the whole provider/agent graph
       // (~52ms) but is only needed when a turn actually runs, not to paint or
