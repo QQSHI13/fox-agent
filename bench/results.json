@@ -471,10 +471,10 @@
         "n": 5
       },
       "tui_first_input": {
-        "min": null,
-        "p50": null,
-        "p95": null,
-        "n": 0
+        "min": 836.610935000067,
+        "p50": 836.610935000067,
+        "p95": 836.610935000067,
+        "n": 1
       },
       "tui_input_latency": {
         "min": null,
