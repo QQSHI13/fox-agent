@@ -1027,9 +1027,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
    * highlighted) and the detail block (toolbody, dim) — so only the first
    * line carries the highlight, matching the original welcome. */
   function chromeItems(): Item[] {
-    if (!(state.pendingSession && !state.sessionId)) {
-      return [{ k: CHROME_KEY, kind: "info", text: `session ${state.sessionId} · ${state.cwd}` }];
-    }
+    // Welcome banner only — for a genuinely fresh launch (pendingSession). A
+    // bound session's info line is an EPHEMERAL notice (pushed on create/switch),
+    // not a persistent virtual header.
     if (!banner) banner = BANNERS[Math.floor(Math.random() * BANNERS.length)];
     const info = lookupModel(state.provider.model);
     return [
@@ -1052,7 +1052,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     ];
   }
   function chromeVisible(): boolean {
-    return state.pendingSession || !!state.sessionId;
+    // Welcome banner only for a genuinely fresh launch (no session yet). A bound
+    // session's info line is an ephemeral notice, not a virtual header.
+    return !!state.pendingSession && !state.sessionId;
   }
 
   /**
@@ -1112,6 +1114,10 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     hitTotals = null;
     refresh();
     attachLock(id);
+    // The ephemeral session-info line announces the switch, then dies on the
+    // next keypress (like /todo's notices) — a confirmation, not a persistent
+    // header that would ride the transcript.
+    push("info", `session ${id} · ${state.cwd}`, { ephemeral: true });
   }
 
   /** Build and show the session overlay. */
@@ -1198,7 +1204,6 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       case "choose":
         overlay = null;
         switchSession(action.id);
-        push("info", `switched to ${action.id}`);
         break;
       case "new": {
         overlay = null;
@@ -1252,9 +1257,10 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       state.sessionId = s.id;
       state.pendingSession = false;
       pinSession(s.id);
-      // No session-info push here — the chrome header (welcome/session-info) is
-      // a VIRTUAL item from chromeItem(), not stored in items[]. Root fix for
-      // chrome sinking: refresh() never rebuilds it.
+      // Session-info line is now an EPHEMERAL notice (dies on the next keypress,
+      // like /todo's) — a quick confirmation of the new id, not a persistent
+      // header. Chrome stays welcome-only.
+      push("info", `session ${s.id} · ${state.cwd}`, { ephemeral: true });
     }
     setBusy(true);
     const userItem = push("user", `❯ ${raw}`);
