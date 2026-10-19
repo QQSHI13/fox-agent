@@ -156,47 +156,60 @@ describe("repl tool bridge", () => {
   }, 30_000);
 });
 
-describe("repl jobs", () => {
-  test("spawn a shell job, poll it, read incremental output", async () => {
-    // spawn returns the id immediately; the command runs detached
-    const r0 = await replRun({ code: 'jobs.spawn("sleep 0.2; echo shell-job-done")' }, ctx);
+describe("repl background jobs", () => {
+  test("background returns an id immediately; poll reads the result", async () => {
+    const r0 = await replRun({ code: '"hello-bg"', background: true, label: "compute" }, ctx);
     expect(r0.ok).toBe(true);
-    expect(r0.output).toMatch(/^r\d+$/);
-    const id = r0.output;
-    await new Promise((r) => setTimeout(r, 400)); // let the command finish
-    const p = await replRun({ code: `JSON.stringify(jobs.poll(${JSON.stringify(id)}))` }, ctx);
+    expect(r0.output).toMatch(/^job r\d+ started \(compute\)/);
+    const id = /job (r\d+) started/.exec(r0.output)![1];
+    await new Promise((r) => setTimeout(r, 200)); // let the eval finish
+    const p = await replRun({ job: id }, ctx);
     expect(p.ok).toBe(true);
-    expect(p.output).toContain('"done":true');
-    expect(p.output).toContain("shell-job-done");
+    expect(p.output).toContain("finished");
+    expect(p.output).toContain("hello-bg");
   }, 30_000);
 
-  test("spawn a fn job and read its return value", async () => {
-    const r0 = await replRun({ code: 'jobs.spawn(async () => { await new Promise(r => setTimeout(r, 50)); return "fn-result-ok"; }, { label: "compute" })' }, ctx);
-    expect(r0.ok).toBe(true);
-    await new Promise((r) => setTimeout(r, 300)); // let the fn finish
-    const p = await replRun({ code: `JSON.stringify(jobs.poll(${JSON.stringify(r0.output)}))` }, ctx);
-    expect(p.ok).toBe(true);
-    expect(p.output).toContain("fn-result-ok");
+  test("poll returns incremental console output while running", async () => {
+    const r0 = await replRun({ code: 'console.log("part-a"); await new Promise(r => setTimeout(r, 300)); console.log("part-b"); "done"', background: true }, ctx);
+    const id = /job (r\d+) started/.exec(r0.output)![1];
+    // poll mid-run: sees part-a, not part-b yet
+    const p1 = await replRun({ job: id }, ctx);
+    expect(p1.output).toContain("running");
+    expect(p1.output).toContain("part-a");
+    expect(p1.output).not.toContain("part-b");
+    await new Promise((r) => setTimeout(r, 400)); // let it finish
+    // settled poll: delivers the console output produced since the last poll
+    const p2 = await replRun({ job: id }, ctx);
+    expect(p2.ok).toBe(true);
+    expect(p2.output).toContain("finished");
+    expect(p2.output).toContain("part-b");
   }, 30_000);
 
-  test("kill a running shell job and list reflects it", async () => {
-    const r0 = await replRun({ code: 'jobs.spawn("sleep 60")' }, ctx);
-    const id = r0.output;
-    const list1 = await replRun({ code: "JSON.stringify(jobs.list())" }, ctx);
-    expect(list1.output).toContain('"done":false');
-    const k = await replRun({ code: `jobs.kill(${JSON.stringify(id)})` }, ctx);
+  test("kill a running job stops it; polling a killed job errors", async () => {
+    const r0 = await replRun({ code: 'await new Promise(r => setTimeout(r, 60000)); "never"', background: true }, ctx);
+    const id = /job (r\d+) started/.exec(r0.output)![1];
+    const k = await replRun({ job: id, signal: "kill" }, ctx);
     expect(k.ok).toBe(true);
     expect(k.output).toContain("killed");
-    // polling a killed job is an error (it was reaped)
-    const after = await replRun({ code: `jobs.poll(${JSON.stringify(id)})` }, ctx);
+    // a killed job is reaped — polling it is an error
+    const after = await replRun({ job: id }, ctx);
     expect(after.ok).toBe(false);
+    expect(after.output).toContain("no job");
   }, 30_000);
 
   test("jobs survive across repl calls in the session", async () => {
-    await replRun({ code: 'jobs.spawn("sleep 0.3; echo cross-call")' }, ctx);
-    await new Promise((r) => setTimeout(r, 500)); // let it finish
-    const list = await replRun({ code: "JSON.stringify(jobs.list())" }, ctx);
-    expect(list.ok).toBe(true);
-    expect(list.output).toContain("cross-call"); // the label (the cmd) is listed
+    const r0 = await replRun({ code: '"cross-call-value"', background: true, label: "xcall" }, ctx);
+    const id = /job (r\d+) started/.exec(r0.output)![1];
+    await new Promise((r) => setTimeout(r, 200));
+    // a fresh repl call (no code) polls the job started by a previous call
+    const p = await replRun({ job: id }, ctx);
+    expect(p.ok).toBe(true);
+    expect(p.output).toContain("cross-call-value");
+  }, 30_000);
+
+  test("poll with no code but no job errors cleanly", async () => {
+    const r = await replRun({ job: "r999" }, ctx);
+    expect(r.ok).toBe(false);
+    expect(r.output).toContain("no job r999");
   }, 30_000);
 });
