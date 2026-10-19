@@ -447,6 +447,35 @@ describe("steering", () => {
     expect(peekSteer(s.id)).toEqual([]); // drained, not stranded
   });
 
+  test("a background job finishing just after the reply resolves is answered this turn", async () => {
+    const t = await setup();
+    const s = t.createSession("/w", "m1");
+    const { steer, peekSteer } = await import("../src/loop/steer.ts");
+    // The job-completion steer bug: a background repl job's finish callback fires
+    // on a macrotask AFTER the provider's final reply resolved but BEFORE the
+    // turn returned. The end-of-turn peeks run synchronously at that instant, so
+    // they miss the steer, and the turn ended with the notification stranded in
+    // the queue ("steering isn't sent"). The fix yields one macrotask before
+    // giving up so a just-finished job's steer lands, then re-checks.
+    let steered = false;
+    const chat = async function* (): AsyncGenerator<any> {
+      yield { type: "text", delta: "answer" };
+      yield { type: "done", reason: "stop" };
+      // queue the steer on the next macrotask, the tick after the reply resolved
+      if (!steered) {
+        steered = true;
+        setTimeout(() => steer(s.id, "job finished — report"), 0);
+      }
+    };
+    const events = await collect(t.runTurnCore(s.id, cfg(), "go", undefined, { chat: chat as any }));
+    // the turn stayed alive to answer the late steer, not ended with it queued
+    expect(events.some((e) => e.type === "steered" && e.text === "job finished — report")).toBe(true);
+    expect(peekSteer(s.id)).toEqual([]); // drained, not stranded
+    const msgs = t.allMessages(s.id);
+    expect(msgs.map((m: any) => m.role)).toEqual(["user", "assistant", "user", "assistant"]);
+    expect(msgs[2].content).toBe("job finished — report"); // answered THIS turn
+  });
+
   test("a steer parked in the final call under a step cap persists instead of stranding", async () => {
     const t = await setup();
     const s = t.createSession("/w", "m1");

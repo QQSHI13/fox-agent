@@ -619,6 +619,13 @@ export async function* runTurnCore(
       // step-boundary user message AND emits `steered`, so the next call
       // answers it in this turn.
       if (peekSteer(sessionId).length > 0 && (maxSteps <= 0 || step + 1 <= maxSteps)) continue;
+      // A background job can finish on the macrotask right AFTER the reply
+      // resolved — its completion steer queues a tick later than the synchronous
+      // peeks above, so they miss it and the turn ends with the notification
+      // stranded (the "steering isn't sent" report). Yield one macrotask before
+      // giving up so a just-finished job's steer lands, then re-check once.
+      await new Promise((r) => setTimeout(r, 0));
+      if (peekSteer(sessionId).length > 0 && (maxSteps <= 0 || step + 1 <= maxSteps)) continue;
       // Actually ending (no steer, or the cap refuses the extra step): persist
       // whatever is parked so it survives to be answered next turn.
       persistParkedSteers(asstNode.id);
