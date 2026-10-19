@@ -1114,11 +1114,8 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     }
     if (state.sessionId) {
       // the old session's resources belong to it — onSessionEnd lets every plugin
-      // release what it holds (the bundled pty plugin kills its tmux session here),
-      // and exec jobs die with the session that started them
+      // release what it holds (the bundled pty plugin kills its tmux session here)
       void import("../plugins/load.ts").then((m) => m.fireSessionEnd(state.sessionId, "switch")).catch(() => {});
-      void import("../tools/exec.ts").then((m) => m.killExecJobs(state.sessionId)).catch(() => {});
-      void import("../tools/task.ts").then((m) => m.killTasks(state.sessionId)).catch(() => {});
       unpinSession(state.sessionId);
       releaseLock(state.sessionId);
     }

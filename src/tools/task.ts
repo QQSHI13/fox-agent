@@ -23,7 +23,6 @@ import type { ToolDef } from "../providers/types.ts";
 import type { ExternalAgentConfig } from "../core/config.ts";
 import type { ToolContext, ToolResult } from "./types.ts";
 import { fail, ok } from "./types.ts";
-import { steer } from "../loop/steer.ts";
 
 /**
  * How deep delegation may nest.
@@ -35,15 +34,12 @@ import { steer } from "../loop/steer.ts";
  */
 const MAX_DEPTH = 3;
 const DEPTH_ENV = "FOX_AGENT_DELEGATION_DEPTH";
-// Malware/loop safety, not a capability cut: the agent keeps full delegation,
-// but one session cannot fork-bomb the machine or pin gigabytes of reports.
-const MAX_BG_TASKS_PER_SESSION = 8;
 const MAX_TASK_RESULT = 50_000;
 
 export const taskDef: ToolDef = {
   name: "task",
   description:
-    "Delegate a self-contained subtask to a subagent: a separate agent with its own context window and session — a spawned child process spoken to over ACP, or a remote agent at a configured url spoken to over A2A. It has the same full tool access you do and cannot see this conversation, so give it complete standalone instructions. Returns its final report. With background:true the task starts detached and you get a job id back immediately — poll with task({job}) for status/result.",
+    "Delegate a self-contained subtask to a subagent: a separate agent with its own context window and session — a spawned child process spoken to over ACP, or a remote agent at a configured url spoken to over A2A. It has the same full tool access you do and cannot see this conversation, so give it complete standalone instructions. Returns its final report. For background subagents and polling, use the repl tool's `jobs` API.",
   parameters: {
     type: "object",
     properties: {
@@ -53,9 +49,6 @@ export const taskDef: ToolDef = {
         type: "string",
         description: 'Which agent to delegate to: "default" (another fox-agent) or a name configured in fox-agent.toml [agents.*] (an ACP command or an A2A url)',
       },
-      background: { type: "boolean", description: "Start detached; returns a job id immediately. Poll with task({job})." },
-      job: { type: "string", description: "Poll a background task: status while running, final report when done" },
-      signal: { type: "string", enum: ["kill"], description: "With job: abort that one task (parity with exec)" },
     },
     required: [],
   },
@@ -84,151 +77,12 @@ function resolveAgent(name: string | undefined, agents: Record<string, ExternalA
   return `error: unknown agent "${name}" — configure it in fox-agent.toml under [agents.${name}], or use one of: ${known}`;
 }
 
-// ---- background tasks ------------------------------------------------------
-
-interface TaskJob {
-  id: string;
-  label: string;
-  startedAt: number;
-  done: boolean;
-  ok: boolean;
-  result: string;
-  ac: AbortController;
-  /** set when the job is scheduled for removal (read + grace elapsed, or kill) */
-  reaped?: boolean;
-  /** set when a deliberate kill asked for it — suppresses the "task failed" steer */
-  killed?: boolean;
-  /** a settled job stays readable for a grace window after the first read */
-  readAt?: number;
-}
-
-const taskJobs = new Map<string, Map<string, TaskJob>>(); // sessionId -> id -> job
-let taskSeq = 0;
-// A settled task used to be deleted on FIRST read, so a report the model never
-// polled was destroyed with no error and no warning — the t1 research job in
-// this project ran for over twenty hours and its report surfaced only because a
-// human pasted it. The report now survives a grace window, matching exec's jobs.
-const TASK_REAP_MS = 10 * 60_000;
-
-function sessionTasks(sessionId: string): Map<string, TaskJob> {
-  let m = taskJobs.get(sessionId);
-  if (!m) taskJobs.set(sessionId, (m = new Map()));
-  return m;
-}
-
-/**
- * A settled task's report, capped from the HEAD.
- *
- * The cap used to keep the TAIL (`slice(-MAX)`), which is backwards for a
- * research report or a long analysis: the summary, findings and tables are at
- * the top, so head-truncation silently dropped exactly the part worth reading.
- */
-function reportBody(result: string): string {
-  if (result.length <= MAX_TASK_RESULT) return result;
-  return `${result.slice(0, MAX_TASK_RESULT)}\n… (${result.length - MAX_TASK_RESULT} more chars — full report: ask for it in pieces, or re-run with a tighter scope)`;
-}
-
-function killTask(args: { job: string }, ctx: ToolContext): ToolResult {
-  const job = sessionTasks(ctx.sessionId).get(args.job);
-  if (!job) return fail(`error: no task ${args.job} in this session`);
-  if (job.done) return ok(`task ${job.id} (${job.label}) already ${job.ok ? "finished" : "failed"} after ${Math.floor((Date.now() - job.startedAt) / 1000)}s — nothing to kill`);
-  // `killed` is read by the completion handler, which would otherwise steer
-  // "background task tN failed" at the agent for a job the caller asked to
-  // stop on purpose — noise about a decision already taken.
-  job.killed = true;
-  job.ac.abort();
-  return ok(`task ${job.id} (${job.label}) killed after ${Math.floor((Date.now() - job.startedAt) / 1000)}s — its ACP child is being torn down`);
-}
-
-function pollTask(args: { job: string }, ctx: ToolContext): ToolResult {
-  const job = sessionTasks(ctx.sessionId).get(args.job);
-  if (!job) return fail(`error: no task ${args.job} in this session`);
-  const secs = Math.floor((Date.now() - job.startedAt) / 1000);
-  if (!job.done) return ok(`task ${job.id} (${job.label}) still running (${secs}s) — poll again with task({job:"${job.id}"})`);
-  // keep it readable for a grace window rather than deleting on first read
-  if (job.readAt === undefined) {
-    job.readAt = Date.now();
-    const grace = setTimeout(() => {
-      if (job.reaped) return;
-      job.reaped = true;
-      sessionTasks(ctx.sessionId).delete(args.job);
-    }, TASK_REAP_MS);
-    (grace as { unref?: () => void }).unref?.();
-  }
-  const head = `task ${job.id} (${job.label}) ${job.ok ? "finished" : "failed"} after ${secs}s`;
-  return job.ok ? ok(`${head}\n${reportBody(job.result)}`) : fail(`${head}\n${reportBody(job.result)}`);
-}
-
-/** Session end: abort every detached subagent it started. */
-export function killTasks(sessionId: string): void {
-  const m = taskJobs.get(sessionId);
-  if (!m) return;
-  for (const j of m.values()) if (!j.done) j.ac.abort();
-  taskJobs.delete(sessionId);
-}
-
 export async function taskRun(
-  args: { description?: string; prompt?: string; agent?: string; background?: boolean; job?: string; signal?: string },
+  args: { description?: string; prompt?: string; agent?: string },
   ctx: ToolContext,
 ): Promise<ToolResult> {
-  if (args.job) {
-    if (args.signal === "kill") return killTask({ job: args.job }, ctx);
-    return pollTask({ job: args.job }, ctx);
-  }
   if (!args.prompt?.trim()) return fail("error: task needs prompt");
   if (!args.description?.trim()) return fail("error: task needs description");
-
-  if (args.background) {
-    const live = [...sessionTasks(ctx.sessionId).values()].filter((j) => !j.done).length;
-    if (live >= MAX_BG_TASKS_PER_SESSION) {
-      return fail(`error: too many background tasks in this session (${live}/${MAX_BG_TASKS_PER_SESSION}) — poll one with task({job}) before starting more`);
-    }
-    const id = `t${++taskSeq}`;
-    const ac = new AbortController();
-    const job: TaskJob = { id, label: args.description.trim(), startedAt: Date.now(), done: false, ok: false, result: "", ac };
-    sessionTasks(ctx.sessionId).set(id, job);
-    // The job's lifetime is the SESSION's, not the turn's. It used to link the
-    // caller's (the turn's) signal, so ESC/ctrl+c in the parent aborted every
-    // detached subagent — exactly backwards: a background task was started
-    // precisely to keep going while the agent moved on. It now ends only when
-    // the session does: killTasks, reached from onSessionEnd, a session switch,
-    // and shutdownTools on exit. An ACP child is spawned non-detached, so it
-    // shares our process group and cannot outlive a hard-killed parent either.
-    void executeTask(args, { ...ctx, signal: ac.signal })
-      .then((r) => {
-        job.done = true;
-        job.ok = r.ok;
-        job.result = r.output;
-        // A deliberate kill (`task({job, signal:"kill"})`) aborts the same
-        // controller, so this handler still runs — but the job did not "fail",
-        // the caller asked for it to stop, and steering a failure notice about a
-        // decision already taken is pure noise.
-        if (job.killed) return;
-        // Tell the agent it finished, wherever it is right now. A detached
-        // subagent that completed was previously invisible until the model
-        // happened to poll — and the report was DELETED on first read, so an
-        // unpolled one was destroyed with no error. steer's queue is the
-        // existing delivery path: next step boundary, as a real message, and
-        // peekSteer shows it in the TUI meanwhile.
-        steer(
-          ctx.sessionId,
-          `background task ${id} ${r.ok ? "finished" : "failed"} after ` +
-            `${Math.floor((Date.now() - job.startedAt) / 1000)}s: ${job.label}\n` +
-            `its report is ${job.result.length} chars — task({job:"${id}"}) to read it.`,
-        );
-      })
-      .catch((e) => {
-        job.done = true;
-        job.ok = false;
-        job.result = job.killed ? "killed by request" : `error: ${(e as Error).message ?? e}`;
-        if (job.killed) return;
-        steer(
-          ctx.sessionId,
-          `background task ${id} failed: ${job.label} — task({job:"${id}"}) for the error.`,
-        );
-      });
-    return ok(`task ${id} started in background (${job.label}) — poll with task({job:"${id}"})`);
-  }
 
   return executeTask(args, ctx);
 }

@@ -225,35 +225,6 @@ describe("exec", () => {
     expect(r.output).toContain("marker.txt");
   });
 
-  test("background job: starts instantly, polls incrementally, reaps on exit", async () => {
-    const bg = await execRun({ cmd: "echo first; sleep 0.3; echo second", background: true }, { ...ctx, sessionId: "bg-test" });
-    expect(bg.ok).toBe(true);
-    const id = /job (j\d+)/.exec(bg.output)![1];
-
-    // first poll: may already hold "first", must not hold "second" yet
-    const p1 = await execRun({ job: id }, { ...ctx, sessionId: "bg-test" });
-    expect(p1.output).toContain("running");
-    expect(p1.output).not.toContain("second");
-
-    // wait out the sleep; the final poll reports the exit and reaps the job
-    await new Promise((r) => setTimeout(r, 700));
-    const p2 = await execRun({ job: id }, { ...ctx, sessionId: "bg-test" });
-    expect(p2.output).toContain("exited 0");
-    expect(p2.output).toContain("second");
-    const p3 = await execRun({ job: id }, { ...ctx, sessionId: "bg-test" });
-    expect(p3.ok).toBe(false); // reaped — no such job anymore
-  });
-
-  test("background job: kill terminates and drops the job", async () => {
-    const c = { ...ctx, sessionId: "bg-kill" };
-    const bg = await execRun({ cmd: "sleep 60", background: true }, c);
-    const id = /job (j\d+)/.exec(bg.output)![1];
-    const killed = await execRun({ job: id, signal: "kill" }, c);
-    expect(killed.output).toContain("killed");
-    const after = await execRun({ job: id }, c);
-    expect(after.ok).toBe(false);
-  });
-
   test("foreground output streams to the UI via tool_output, not to the model", async () => {
     const events: { type: string; delta?: string }[] = [];
     const c = { ...ctx, callId: "c1", emit: (ev: any) => events.push(ev) };
@@ -264,31 +235,6 @@ describe("exec", () => {
     expect(streamed).toContain("b");
     // ...while the tool result is still the single merged payload
     expect(r.output).toContain("a");
-  });
-});
-
-describe("task background mode", () => {
-  test("polling an unknown task fails cleanly; background still validates input", async () => {
-    const { taskRun } = await import("../src/tools/task.ts");
-    const nope = await taskRun({ job: "t99" }, ctx);
-    expect(nope.ok).toBe(false);
-    expect(nope.output).toContain("no task t99");
-    const bad = await taskRun({ background: true, description: "x" }, ctx);
-    expect(bad.ok).toBe(false);
-    expect(bad.output).toContain("needs prompt");
-  });
-
-  test("killing an unknown or already-settled task says so instead of pretending", async () => {
-    const { taskRun } = await import("../src/tools/task.ts");
-    // there was no per-job kill at all before — this field used to be accepted
-    // and dropped, so a caller got a normal "still running" line and retried
-    const nope = await taskRun({ job: "t99", signal: "kill" }, ctx);
-    expect(nope.ok).toBe(false);
-    expect(nope.output).toContain("no task t99");
-    const settled = await taskRun({ job: "t1", signal: "kill" }, ctx);
-    // same session id as the real task created below is not assumed; t1 may not
-    // exist here, so both outcomes must be honest rather than a silent success
-    expect(settled.output).toMatch(/no task|already/);
   });
 });
 

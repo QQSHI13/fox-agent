@@ -81,7 +81,12 @@ export function renderMarkdown(src: string, state?: MdState, width?: number): Se
     // `**` and half-matched a stray italic from the second star (the "some
     // highlights work, some leak asterisks" report). Lazy `+?` finds the
     // shortest close, recursion styles the inner span.
-    const re = /(\*\*\*((?:[^*]|\*(?!\*))+?)\*\*\*|___((?:[^_]|_(?!__))+?)___|\*\*((?:[^*]|\*(?!\*))+?)\*\*|__((?:[^_]|_(?!_))+?)__|\*([^*\s][^*]*)\*|_([^_\s][^_]*)_|`([^`]+)`|!\[([^\]]*)\]\(([^)\s]+)\)|\[([^\]]+)\]\(([^)\s]+)\)|~~([^~]+)~~)/g;
+    // A single `_` only emphasizes at a WORD boundary (lookaround requires
+    // non-identifier neighbors) — CommonMark's flanking rule. Without it a
+    // snake_case identifier like MAX_BG_TASKS_PER_SESSION has its four
+    // underscores pair up as _BG_ and _PER_ and render as spurious italic.
+    // `*` still emphasizes mid-word.
+    const re = /(\*\*\*((?:[^*]|\*(?!\*))+?)\*\*\*|___((?:[^_]|_(?!__))+?)___|\*\*((?:[^*]|\*(?!\*))+?)\*\*|__((?:[^_]|_(?!_))+?)__|\*([^*\s][^*]*)\*|(?<![A-Za-z0-9_])_([^_\s][^_]*)_(?![A-Za-z0-9_])|`([^`]+)`|!\[([^\]]*)\]\(([^)\s]+)\)|\[([^\]]+)\]\(([^)\s]+)\)|~~([^~]+)~~)/g;
     let last = 0;
     let m: RegExpExecArray | null;
     while ((m = re.exec(text))) {

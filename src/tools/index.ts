@@ -235,14 +235,7 @@ export async function shutdownTools(sessionId: string): Promise<void> {
   await joinPtyChain().catch(() => {});
   await cleanupPty(ptySessionName(sessionId)); // belt and braces when no registry was ever built
   const { cleanupRepl } = await import("./repl.ts");
-  cleanupRepl(sessionId);
-  const { killExecJobs } = await import("./exec.ts");
-  killExecJobs(sessionId);
-  // detached background subagents (the bundled:task plugin) are reaped through
-  // its onSessionEnd hook; this belt-and-braces pass catches a session whose
-  // tasks outlived any registry build. Dynamic import: no-op when none ran.
-  const { killTasks } = await import("./task.ts");
-  killTasks(sessionId);
+  cleanupRepl(sessionId); // drops the scratchpad AND any repl jobs still running under it
   closeMcp(); // detached: hands the terminal back while children reap in the background
   // an idle tsserver holds a project's worth of memory; leaving one per fox-agent run
   // behind would accumulate across a day of sessions in the same shell
