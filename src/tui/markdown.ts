@@ -75,9 +75,13 @@ export function renderMarkdown(src: string, state?: MdState, width?: number): Se
   const inline = (text: string, base?: Partial<Seg>): Seg[] => {
     const segs: Seg[] = [];
     // Ordered most-delimiter-first so `***` wins over `**`/`*` and `___` over
-    // `__`/`_`. A token is only consumed when its delimiters are not preceded
-    // by a word char (left-flanking), so a bare `x * y` or `a_b_c` stays text.
-    const re = /(\*\*\*([^*]+)\*\*\*|___([^_]+)___|\*\*([^*]+)\*\*|__([^_]+)__|\*([^*\s][^*]*)\*|_([^_\s][^_]*)_|`([^`]+)`|!\[([^\]]*)\]\(([^)\s]+)\)|\[([^\]]+)\]\(([^)\s]+)\)|~~([^~]+)~~)/g;
+    // `__`/`_`. Double/triple content may contain SINGLE inner delimiters
+    // (`\*(?!\*)` = a star not followed by another) so `**foo *bar* baz`**
+    // nests — `[^*]+` used to reject any inner star, so nesting leaked the raw
+    // `**` and half-matched a stray italic from the second star (the "some
+    // highlights work, some leak asterisks" report). Lazy `+?` finds the
+    // shortest close, recursion styles the inner span.
+    const re = /(\*\*\*((?:[^*]|\*(?!\*))+?)\*\*\*|___((?:[^_]|_(?!__))+?)___|\*\*((?:[^*]|\*(?!\*))+?)\*\*|__((?:[^_]|_(?!_))+?)__|\*([^*\s][^*]*)\*|_([^_\s][^_]*)_|`([^`]+)`|!\[([^\]]*)\]\(([^)\s]+)\)|\[([^\]]+)\]\(([^)\s]+)\)|~~([^~]+)~~)/g;
     let last = 0;
     let m: RegExpExecArray | null;
     while ((m = re.exec(text))) {
