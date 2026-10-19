@@ -82,15 +82,21 @@ export function renderMarkdown(src: string, state?: MdState, width?: number): Se
     // highlights work, some leak asterisks" report). Lazy `+?` finds the
     // shortest close, recursion styles the inner span.
     // `_` delimiters only emphasize at a WORD boundary (lookaround requires
-    // non-identifier neighbors) — CommonMark's flanking rule: an intraword `_`
-    // run can't open or close emphasis (rules for `_` are stricter than for
-    // `*`), so snake_case like MAX_BG_TASKS_PER_SESSION or a__b__c renders
-    // literal instead of sprouting spurious emphasis. `*` still emphasizes
-    // mid-word (foo*bar*baz). `_`-content patterns allow INNER inert `_` runs
-    // (a lone `_` between alphanumerics never matches, so `_foo_bar_baz_`
-    // spans them: the spec's `<em>foo_bar_baz</em>` example) — same as the
-    // `*` nested-delimiter handling above.
-    const re = /(\*\*\*((?:[^*]|\*(?!\*))+?)\*\*\*|(?<![A-Za-z0-9_])___((?:[^_]|_(?!__))+?)___(?![A-Za-z0-9_])|\*\*((?:[^*]|\*(?!\*))+?)\*\*|(?<![A-Za-z0-9_])__((?:[^_]|_(?!_))+?)__(?![A-Za-z0-9_])|\*([^*\s][^*]*)\*|(?<![A-Za-z0-9_])_((?:[^_]|_(?![A-Za-z0-9_]))+?)_(?![A-Za-z0-9_])|`([^`]+)`|!\[([^\]]*)\]\(([^)\s]+)\)|\[([^\]]+)\]\(([^)\s]+)\)|~~([^~]+)~~)/g;
+    // non-word neighbors, `[\p{L}\p{N}_]` so Unicode letters like Cyrillic
+    // count too) — CommonMark's flanking rule: an intraword `_` run can't
+    // open or close emphasis (rules for `_` are stricter than for `*`), so
+    // snake_case like MAX_BG_TASKS_PER_SESSION or a__b__c renders literal
+    // instead of sprouting spurious emphasis. `*` still emphasizes mid-word
+    // (foo*bar*baz). `_` CONTENT may span inner inert runs (`_+(?!_)` = a run
+    // of underscores that isn't the closing delimiter), so the spec's
+    // `_foo_bar_baz_` -> <em>foo_bar_baz</em> and
+    // `__foo__bar__baz__` -> <strong>foo__bar__baz</strong> examples hold; a
+    // lone inner `_` never matches as a delimiter (the lookarounds reject
+    // alphanumeric neighbors), so the run is inert text inside the span.
+    // Divergence from the spec's delimiter-stack algorithm: the single-`*`
+    // span is greedy, so sibling emphasis like `*foo *bar**` doesn't nest
+    // (the first `*` closes at the last one rather than pairing inward).
+    const re = /(\*\*\*((?:[^*]|\*(?!\*))+?)\*\*\*|(?<![\p{L}\p{N}_])___((?:[^_]|_(?!__))+?)___(?![\p{L}\p{N}_])|\*\*((?:[^*]|\*(?!\*))+?)\*\*|(?<![\p{L}\p{N}_])__((?:[^_]|_(?!_))+?)__(?![\p{L}\p{N}_])|\*([^*\s][^*]*)\*|(?<![\p{L}\p{N}_])_((?:[^_]|_(?!_))+?)_(?![\p{L}\p{N}_])|`([^`]+)`|!\[([^\]]*)\]\(([^)\s]+)\)|\[([^\]]+)\]\(([^)\s]+)\)|~~([^~]+)~~)/gu;
     let last = 0;
     let m: RegExpExecArray | null;
     while ((m = re.exec(text))) {
