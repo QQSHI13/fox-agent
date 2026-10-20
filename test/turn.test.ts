@@ -476,6 +476,29 @@ describe("steering", () => {
     expect(msgs[2].content).toBe("job finished — report"); // answered THIS turn
   });
 
+  test("an interrupt (esc) mid-stream saves the partial reply AND the think block", async () => {
+    const t = await setup();
+    const s = t.createSession("/w", "m1");
+    const ac = new AbortController();
+    // The abort path used to persist only the reply text and return BEFORE the
+    // think-save, so esc dropped the reasoning block that had streamed before
+    // the interrupt — the "esc doesn't save the last node" report. Both are
+    // partial state and both survive now.
+    const chat = async function* (): AsyncGenerator<any> {
+      yield { type: "reasoning", delta: "thinking deeply" };
+      yield { type: "text", delta: "partial-reply" };
+      await new Promise((_, rej) => ac.signal.addEventListener("abort", () => rej(new DOMException("aborted", "AbortError")), { once: true }));
+      yield { type: "done", reason: "stop" };
+    };
+    setTimeout(() => ac.abort(), 30);
+    const events = await collect(t.runTurnCore(s.id, cfg(), "go", ac.signal, { chat: chat as any, quiet: true }));
+    expect(events.find((e) => e.type === "done")?.reason).toBe("aborted");
+    const msgs = t.allMessages(s.id);
+    expect(msgs.map((m: any) => m.role)).toEqual(["user", "think", "assistant"]);
+    expect(msgs[1].content).toBe("thinking deeply"); // think block survives the interrupt
+    expect(msgs[2].content).toBe("partial-reply"); // partial reply survives too
+  });
+
   test("a steer parked in the final call under a step cap persists instead of stranding", async () => {
     const t = await setup();
     const s = t.createSession("/w", "m1");

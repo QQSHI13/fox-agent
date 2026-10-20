@@ -548,6 +548,13 @@ export async function* runTurnCore(
     if (outcome.text) outcome.text = stripEchoedMarkers(outcome.text);
 
     if (outcome.finish === "aborted") {
+      // esc interrupts mid-stream: keep whatever the model had produced so far —
+      // a partial answer is real work, and dropping it on an interrupt used to
+      // lose the turn's only output. The think block is saved too (it streams
+      // before the reply and is just as much partial state as the text).
+      if (outcome.reasoning.trim()) {
+        appendMessage(sessionId, { parent_id: stepParentId, role: "think", content: outcome.reasoning, tokens: estTok(outcome.reasoning) });
+      }
       if (outcome.text) appendMessage(sessionId, { parent_id: stepParentId, role: "assistant", content: outcome.text, tokens: estTok(outcome.text) });
       persistParkedSteers(stepParentId); // steer parked during this in-flight call
       yield await endTurn("aborted", step);
