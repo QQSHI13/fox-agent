@@ -53,21 +53,23 @@ export function buildSystemPrompt(
   const have = toolNames(opts.tools);
   const sections: string[] = [];
 
-  sections.push(`You are fox-agent, a light coding harness with full machine control — no permission prompts. Work directly and verify your changes.`);
+  sections.push(
+    `You are running inside fox-agent, a harness for autonomous work — full machine access, no permission prompts. ` +
+      `Act on the user's intent directly, and verify what you change.`,
+  );
 
   if (opts.projectInstructions) sections.push(`## Project instructions\n${opts.projectInstructions}`);
 
-  // Names only. The provider already sends every tool's full description and
-  // JSON schema in the API tool block, so restating them here bought nothing —
-  // and the old formatter cut each one at its first ". ", which silently dropped
-  // load-bearing clauses (exec's "working directory never carries over" among
-  // them) and truncated `glob` mid-abbreviation at "(e.g". What is left is the
-  // roster plus the two contracts no JSON schema can express.
+  // Names only, no per-tool restatement: every behavioral contract lives in the
+  // tool's own description (exec's "working directory never carries over", pty's
+  // "KEEPS its working directory", repl's scratchpad + tools.call bridge), which
+  // the provider ships verbatim in the API tool block. Restating them here was
+  // redundant — and an old formatter that cut each description at its first ". "
+  // once silently dropped those clauses, which is why they were hoisted here in
+  // the first place. That formatter is gone, so the contracts went back to the
+  // tool defs where they belong; the prompt only names what is available.
   const roster = [`## Tools`, `Full descriptions and JSON schemas arrive with the API tool definitions — read them there.`];
   roster.push(`Available now: ${opts.tools.map((t) => t.name).join(", ")}`);
-  if (have.has("exec")) roster.push(`- exec never drifts: every call starts in the session directory, and \`workdir\` is per-call, never sticky.`);
-  if (have.has("pty")) roster.push(`- pty is one persistent shell that KEEPS its working directory, environment and processes between calls.`);
-  if (have.has("repl")) roster.push(`- repl is an in-process JS scratchpad with persistent vars; reach tools from code as tools.call(name, args) — direct calls bypass beforeTool/afterTool hooks.`);
   sections.push(roster.join("\n"));
 
   if (["read", "write", "edit", "glob", "grep", "exec", "lsp"].some((n) => have.has(n))) {

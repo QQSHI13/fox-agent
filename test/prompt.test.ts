@@ -226,10 +226,17 @@ describe("tools are presented honestly", () => {
     expect(p).toContain("API tool definitions");
   });
 
-  test("the two contracts no schema can express are stated", async () => {
+  test("the per-tool contracts live in the tool defs, not the prompt", async () => {
+    // The behavioral contracts (exec's cwd-never-drifts, pty's persistent shell,
+    // repl's scratchpad) moved OUT of the system prompt and into each tool's own
+    // description, which the provider ships verbatim — restating them here was
+    // redundant. The prompt only names what is available.
+    const { execDef } = await import("../src/tools/exec.ts");
+    const { ptyDef } = await import("../src/tools/pty.ts");
+    expect(execDef.description).toMatch(/working directory NEVER carries over/);
+    expect(ptyDef.description).toMatch(/KEEPS its own working directory/);
     const p = await build();
-    expect(p).toMatch(/exec never drifts/);
-    expect(p).toMatch(/pty is one persistent shell/);
+    expect(p).not.toMatch(/exec never drifts/); // no restatement in the prompt
   });
 });
 
@@ -253,6 +260,7 @@ describe("nothing describes a tool the registry lacks", () => {
 
   test("a registry without exec or pty makes no cwd promises", async () => {
     const p = await build({ tools: [def("read")] });
+    // no per-tool cwd contract is restated in the prompt regardless of registry
     expect(p).not.toContain("exec never drifts");
     expect(p).not.toContain("persistent shell");
   });
