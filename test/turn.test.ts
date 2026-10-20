@@ -629,6 +629,10 @@ describe("request identity", () => {
     await collect(t.runTurnCore(s.id, cfg(), "hi", undefined, { chat: chat as any, quiet: true }));
     expect(seen.headers["user-agent"]).toMatch(/^fox-agent\//);
     expect(seen.headers["x-opencode-session"]).toBe(s.id);
+    // OpenRouter's token rankings attribute volume via X-Title + HTTP-Referer;
+    // both must be present for a fox-agent session to count toward the rank.
+    expect(seen.headers["x-title"]).toBe("fox-agent");
+    expect(seen.headers["http-referer"]).toBe("https://github.com/QQSHI13/fox-agent");
   });
 });
 

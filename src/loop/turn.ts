@@ -361,13 +361,17 @@ export async function* runTurnCore(
   const compactAtTokens = opts.compactAtTokens ?? effCfg.compactAtTokens;
 
   // Every provider request identifies itself and its conversation: gateways
-  // (opencode's among them) route and cache on these. The user's own
-  // [providers.*] headers win over both.
+  // (opencode's among them) route and cache on these. OpenRouter's token
+  // rankings attribute volume to an app via `X-Title` + `HTTP-Referer`, so a
+  // fox-agent session only counts toward the rank when both are present. The
+  // user's own [providers.*] headers win over all of these.
   const reqCfg: ProviderConfig = {
     ...cfg,
     headers: {
       "user-agent": `fox-agent/${VERSION}`,
       "x-opencode-session": sessionId,
+      "x-title": "fox-agent",
+      "http-referer": "https://github.com/QQSHI13/fox-agent",
       ...cfg.headers,
     },
   };
