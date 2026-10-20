@@ -73,7 +73,7 @@ Full machine control, zero permission prompts. Production turn loop with step ca
 
 </details>
 
-fox-agent headless vs scripted local provider: time to first token **57 ms**, peak RSS **61 MB**.
+fox-agent headless vs scripted local provider: time to first token **43 ms**, peak RSS **64 MB**.
 
 _Generated 2026-10-20T06:46:09Z on Linux x86_64 (6.17.0-1022-azure). [How this is measured](#benchmarks) · [raw JSON](bench/results.json)_
 <!-- bench:end -->
