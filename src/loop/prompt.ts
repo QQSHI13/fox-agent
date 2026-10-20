@@ -54,8 +54,8 @@ export function buildSystemPrompt(
   const sections: string[] = [];
 
   sections.push(
-    `You are running inside fox-agent, a coding harness with full machine control — no permission prompts. ` +
-      `Work directly and verify your changes.`,
+    `You are running inside fox-agent, a harness for autonomous work — full machine access, no permission prompts. ` +
+      `Act on the user's intent directly, and verify what you change.`,
   );
 
   if (opts.projectInstructions) sections.push(`## Project instructions\n${opts.projectInstructions}`);
