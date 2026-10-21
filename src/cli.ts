@@ -199,20 +199,24 @@ async function main() {
   const BUILTIN_SUBS = new Set(["ls", "plugin", "plugins", "upgrade", "json", "mini", "acp", "help", "share", "export", "import"]);
   const firstArg = parsed.rest[0];
   if (firstArg && !BUILTIN_SUBS.has(firstArg)) {
+    // Route to a plugin's CLI subcommand only when config loads cleanly AND a
+    // plugin claims the name. A missing/invalid config or an unclaimed name
+    // falls through to the normal path, which reports "unknown command" —
+    // loading config must not break that fallback.
     try {
       const { effectiveConfigPath, loadConfig: loadCfg } = await import("./core/config.ts");
       const { loadPlugins: loadPlugs, setActivePlugins } = await import("./plugins/load.ts");
+      const { bundledPlugins, bundledDisabled } = await import("./plugins/bundled.ts");
       const cfgPath = effectiveConfigPath((parsed.flags.get("config") as string) || undefined);
       const pcfg = loadCfg({ cwd: process.cwd(), configPath: cfgPath });
-      const loaded = await loadPlugs(pcfg.plugins ?? [], undefined, pcfg.disabledPlugins ?? []);
-      const { bundledPlugins, bundledDisabled } = await import("./plugins/bundled.ts");
       const disabled = pcfg.disabledPlugins ?? [];
+      const loaded = await loadPlugs(pcfg.plugins ?? [], undefined, disabled);
       // bundled plugins are enabled unless explicitly disabled; config plugins are
       // enabled only when listed in config (the loader already honors disabledPlugins).
       const allPlugins = [...bundledPlugins().filter((p) => !bundledDisabled(p.name, disabled)), ...loaded.plugins];
-      setActivePlugins(allPlugins);
       const hit = allPlugins.find((p) => p.cliCommand?.name === firstArg);
       if (hit?.cliCommand) {
+        setActivePlugins(allPlugins);
         // resolve provider like the other headless modes so the plugin can run turns
         const { resolveProfile } = await import("./core/config.ts");
         const p = resolveProfile(pcfg);
@@ -225,15 +229,13 @@ async function main() {
           headers: p.headers,
           requestTimeoutMs: pcfg.requestTimeoutMs,
         };
-        await hit.cliCommand.run(parsed.rest.slice(1), { config: pcfg, provider });
+        await hit.cliCommand.run(parsed.rest.slice(1), { config: pcfg, provider, flags: parsed.flags });
         return;
       }
-      // not a plugin subcommand either — fall through to the normal (session) path,
-      // which reports an unknown arg
-    } catch (e) {
-      console.error(`fox-agent error: ${errMsg(e)}`);
-      process.exitCode = 1;
-      return;
+      // not a plugin subcommand — fall through to the normal (unknown-command) path
+    } catch {
+      // config load failed or no match — fall through to the normal path, which
+      // reports the unknown command; a plugin dispatch must not mask that
     }
   }
 
@@ -242,14 +244,22 @@ async function main() {
     const topic = parsed.rest[0] === "help" ? parsed.rest[1] : undefined;
     const known: Record<string, string> = { ls: "ls", plugin: "plugin", plugins: "plugin", upgrade: "upgrade", json: "json", mini: "mini", acp: "acp", export: "export", import: "import" };
     if (topic && known[topic]) return console.log(commandHelp(known[topic]));
-    // surface plugin CLI subcommands in the overview so `gateway` and friends are discoverable
+    // surface plugin CLI subcommands in the overview so `gateway` and friends are discoverable.
+    // Load plugins (bundled unless disabled + config) — bare `--help` hasn't loaded them yet.
     let pluginCmds: { name: string; description?: string }[] = [];
     try {
-      const { activePlugins } = await import("./plugins/load.ts");
-      pluginCmds = activePlugins()
+      const { effectiveConfigPath, loadConfig: loadCfg } = await import("./core/config.ts");
+      const { bundledPlugins, bundledDisabled } = await import("./plugins/bundled.ts");
+      const { loadPlugins: loadPlugs, setActivePlugins, activePlugins } = await import("./plugins/load.ts");
+      const pcfg = loadCfg({ cwd: process.cwd(), configPath: effectiveConfigPath((parsed.flags.get("config") as string) || undefined) });
+      const disabled = pcfg.disabledPlugins ?? [];
+      const loaded = await loadPlugs(pcfg.plugins ?? [], undefined, disabled);
+      const all = [...bundledPlugins().filter((p) => !bundledDisabled(p.name, disabled)), ...loaded.plugins];
+      setActivePlugins(all);
+      pluginCmds = all
         .filter((p) => p.cliCommand)
         .map((p) => ({ name: p.cliCommand!.name, description: p.cliCommand!.description ?? `${p.name} subcommand` }));
-    } catch { /* plugins not loaded (e.g. bare help) — omit the section */ }
+    } catch { /* plugin load failed — omit the section rather than break help */ }
     return console.log(usage(cliColor(), pluginCmds));
   }
   if (parsed.rest[0] === "plugin" || parsed.rest[0] === "plugins") {

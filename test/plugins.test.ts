@@ -246,6 +246,7 @@ describe("plugin tools in the registry", () => {
       "bundled:question",
       "bundled:lsp",
       "bundled:cost",
+      "bundled:gateway",
       "bundled:openai-compatible",
       "bundled:openai-responses",
       "bundled:anthropic",
