@@ -11,7 +11,6 @@
  *     per-session scratchpad is dropped from `onSessionEnd`.
  */
 import type { FoxPlugin } from "./types.ts";
-import { gatewayPlugin } from "./gateway.ts";
 import { ptyDef, drivePty, cleanupPty, ptySessionName } from "../tools/pty.ts";
 import { todoDef, todoRun } from "../tools/todo.ts";
 import { fetchDef, fetchRun } from "../tools/fetch.ts";
@@ -52,7 +51,7 @@ const taskPlugin: FoxPlugin = {
 
 /** All bundled plugins. Order matters only for shadowing: user plugins load after. */
 export function bundledPlugins(): FoxPlugin[] {
-  return [ptyPlugin, todoPlugin, fetchPlugin, replPlugin, taskPlugin, questionPlugin, lspPlugin, costPlugin, gatewayPlugin];
+  return [ptyPlugin, todoPlugin, fetchPlugin, replPlugin, taskPlugin, questionPlugin, lspPlugin, costPlugin];
 }
 
 /**
