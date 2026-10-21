@@ -826,9 +826,11 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     // Compaction/summary drops do NOT set `deleted`, so the append-only
     // "display the full history" intent is preserved for those. Lite columns
     // still apply: the view's nodes carry the same lite message rows.
-    const nodes = projectView(state.sessionId);
+    // Reverted (ctx-delete) nodes DISAPPEAR from the transcript entirely — hidden
+    // like the ctx tool hides them, not grayed out. Filter them out here so they
+    // never become items; `hiddenSeqs` no longer needs tagging for rendering.
+    const nodes = projectView(state.sessionId).filter((n) => !n.deleted);
     const msgs = nodes.map((n) => n.msg);
-    const hiddenSeqs = new Set(nodes.filter((n) => n.deleted).map((n) => n.msg.seq));
     const callMaps = { label: new Map<string, string>(), raw: new Map<string, string>(), name: new Map<string, string>() };
     for (const m of msgs) {
       if (m.role === "assistant" && m.tool_calls) {
@@ -846,7 +848,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         } catch {}
       }
     }
-    for (const m of msgs) out.push(...nodeToItems(m, callMaps, hiddenSeqs.has(m.seq)));
+    for (const m of msgs) out.push(...nodeToItems(m, callMaps, false));
     return out;
   }
 
@@ -2970,16 +2972,8 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       rows = wrapSegs([{ t: it.text, ...itemStyle(it.kind) }], cw).map((segs) => ({ segs }));
     }
     if (rowSeq(it) !== undefined) rows = withMarker(rows, rowSeq(it)!, it.markerCont);
-    // A reverted (ctx-delete) node stays in the transcript but reads dimmed —
-    // the op is visible without removing history. Downgrade every seg's fg to
-    // the chrome (dim) color; segs without an fg get one so nothing stays bright.
-    if (it.hidden) {
-      for (const row of rows) {
-        for (const seg of row.segs) {
-          if (seg.bg === undefined) seg.fg = C.chrome;
-        }
-      }
-    }
+    // Hidden (reverted) nodes are filtered out of `loadItems`, so they never reach
+    // here — no dimming needed; they disappear entirely like the ctx tool hides them.
     const entry = { rev: revs.get(it.k) ?? 0, rows, hl: highlightVersion(), span: itemEdgeSpan(rows) };
     let pw = lineCache.get(it.k);
     if (!pw) {

@@ -222,6 +222,20 @@ export interface FoxPlugin {
   /** slash commands (`/deploy`, …) — run through the same result as built-ins */
   commands?: PluginCommand[];
   /**
+   * A top-level CLI subcommand this plugin serves (`gateway`, `web`, …) — invoked
+   * as `fox <name> [args]`, before the TUI starts, without entering a session. The
+   * hook receives the args after the subcommand and a minimal context. Only bundled
+   * / explicitly trusted plugins should bind a subcommand; it runs with full machine
+   * access and no TUI. A name colliding with a built-in subcommand never fires (the
+   * built-in wins) and is reported at registry build.
+   */
+  cliCommand?: {
+    name: string;
+    /** shown in `fox --help` under "plugin commands" */
+    description?: string;
+    run: (args: string[], ctx: { config: unknown; provider: unknown; flags?: Map<string, string | boolean> }) => Promise<void> | void;
+  };
+  /**
    * Status bar slots this plugin contributes, by name — a config's `statusBar`
    * template lists segment names and any name registered here paints as a
    * ` · `-joined segment. Return null to hide the slot this repaint (a plugin

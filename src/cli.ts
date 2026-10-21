@@ -27,7 +27,7 @@ import { shutdownTools } from "./tools/index.ts";
 import { VERSION } from "./core/version.ts";
 import { expandMentions } from "./core/mentions.ts";
 
-function usage(color?: boolean): string {
+function usage(color?: boolean, pluginCommands: { name: string; description?: string }[] = []): string {
   const st = {
     b: (s: string) => (color ? `\x1b[1m${s}\x1b[0m` : s),
     dim: (s: string) => (color ? `\x1b[2m${s}\x1b[0m` : s),
@@ -79,7 +79,10 @@ ${cmd("mini", "plain streaming REPL, no TUI")}
 ${cmd("acp", "serve the Agent Client Protocol on stdio (for Zed, acpx, ...)")}
 ${cmd("upgrade [--beta|<version>]", "self-update from GitHub releases")}
 ${cmd("help [command]", "show overview, or help for one command")}
-
+${pluginCommands.length ? `
+${st.dim("plugin commands")}
+${pluginCommands.map((c) => cmd(c.name, c.description ?? `plugin: ${c.name}`)).join("\n")}
+` : ""}
 ${st.dim("inside a session")}: ${st.green("/help")} lists slash commands`;
 }
 
@@ -187,12 +190,67 @@ async function main() {
   void import("./core/upgrade.ts").then((m) => m.ensureAlias()).catch(() => {});
 
   if (parsed.flags.get("version")) return console.log(VERSION);
+
+  // ---- plugin CLI subcommands ----
+  // A plugin may expose a top-level subcommand (`fox gateway`, …) that runs
+  // before the TUI, without a session. Load plugins and route only when the
+  // first arg is NOT a built-in subcommand (built-ins win). Kept lazy: plugins
+  // load only when there's a non-built-in first arg to route.
+  const BUILTIN_SUBS = new Set(["ls", "plugin", "plugins", "upgrade", "json", "mini", "acp", "help", "share", "export", "import"]);
+  const firstArg = parsed.rest[0];
+  if (firstArg && !BUILTIN_SUBS.has(firstArg)) {
+    try {
+      const { effectiveConfigPath, loadConfig: loadCfg } = await import("./core/config.ts");
+      const { loadPlugins: loadPlugs, setActivePlugins } = await import("./plugins/load.ts");
+      const cfgPath = effectiveConfigPath((parsed.flags.get("config") as string) || undefined);
+      const pcfg = loadCfg({ cwd: process.cwd(), configPath: cfgPath });
+      const loaded = await loadPlugs(pcfg.plugins ?? [], undefined, pcfg.disabledPlugins ?? []);
+      const { bundledPlugins, bundledDisabled } = await import("./plugins/bundled.ts");
+      const disabled = pcfg.disabledPlugins ?? [];
+      // bundled plugins are enabled unless explicitly disabled; config plugins are
+      // enabled only when listed in config (the loader already honors disabledPlugins).
+      const allPlugins = [...bundledPlugins().filter((p) => !bundledDisabled(p.name, disabled)), ...loaded.plugins];
+      setActivePlugins(allPlugins);
+      const hit = allPlugins.find((p) => p.cliCommand?.name === firstArg);
+      if (hit?.cliCommand) {
+        // resolve provider like the other headless modes so the plugin can run turns
+        const { resolveProfile } = await import("./core/config.ts");
+        const p = resolveProfile(pcfg);
+        const provider = {
+          baseUrl: p.baseUrl,
+          apiKey: p.apiKey,
+          model: pcfg.model,
+          provider: p.format,
+          label: p.label,
+          headers: p.headers,
+          requestTimeoutMs: pcfg.requestTimeoutMs,
+        };
+        await hit.cliCommand.run(parsed.rest.slice(1), { config: pcfg, provider });
+        return;
+      }
+      // not a plugin subcommand either — fall through to the normal (session) path,
+      // which reports an unknown arg
+    } catch (e) {
+      console.error(`fox-agent error: ${errMsg(e)}`);
+      process.exitCode = 1;
+      return;
+    }
+  }
+
   if (parsed.flags.get("help") || parsed.rest[0] === "help") {
     // `fox help <cmd>` documents one subcommand; bare help stays the overview
     const topic = parsed.rest[0] === "help" ? parsed.rest[1] : undefined;
     const known: Record<string, string> = { ls: "ls", plugin: "plugin", plugins: "plugin", upgrade: "upgrade", json: "json", mini: "mini", acp: "acp", export: "export", import: "import" };
     if (topic && known[topic]) return console.log(commandHelp(known[topic]));
-    return console.log(usage(cliColor()));
+    // surface plugin CLI subcommands in the overview so `gateway` and friends are discoverable
+    let pluginCmds: { name: string; description?: string }[] = [];
+    try {
+      const { activePlugins } = await import("./plugins/load.ts");
+      pluginCmds = activePlugins()
+        .filter((p) => p.cliCommand)
+        .map((p) => ({ name: p.cliCommand!.name, description: p.cliCommand!.description ?? `${p.name} subcommand` }));
+    } catch { /* plugins not loaded (e.g. bare help) — omit the section */ }
+    return console.log(usage(cliColor(), pluginCmds));
   }
   if (parsed.rest[0] === "plugin" || parsed.rest[0] === "plugins") {
     if (parsed.rest[1] === "--help" || parsed.rest[1] === "-h") return console.log(commandHelp("plugin"));
