@@ -150,6 +150,9 @@ export function buildAgent(opts: AcpServerOptions): acp.AgentApp {
 
   /** in-flight prompts, so `session/cancel` can abort the right turn */
   const running = new Map<string, AbortController>();
+  /** per-session model override, set by `session/set_config_option`; a session
+   * without an entry uses the process's configured provider.model. */
+  const sessionModels = new Map<string, string>();
 
   return acp
     .agent({ name: "fox-agent" })
@@ -163,9 +166,48 @@ export function buildAgent(opts: AcpServerOptions): acp.AgentApp {
         // each `{}` advertises support; omitted means unsupported
         sessionCapabilities: { list: {}, delete: {}, fork: {}, resume: {}, close: {} },
       },
+      // A model selector so a client (e.g. the gateway plugin) can route a
+      // session to a specific model via `session/set_config_option`. The list
+      // is the process's configured model; the current one is preselected.
+      configOptions: [{
+        id: "model",
+        name: "Model",
+        description: "The model this session routes its turns to.",
+        category: "model",
+        type: "select",
+        currentValue: provider.model,
+        options: [{ value: provider.model, name: provider.model }],
+      }],
     }))
+    .onRequest(acp.methods.agent.session.setConfigOption, async ({ params }) => {
+      checkId(params.sessionId);
+      if (!getSession(params.sessionId)) throw RequestError.resourceNotFound(params.sessionId);
+      if (params.configId !== "model") {
+        throw RequestError.invalidParams(undefined, `unknown config option ${JSON.stringify(params.configId)}`);
+      }
+      // A select option sends the value id; boolean options send a boolean. The
+      // model selector is a select, so a boolean here is a malformed request.
+      if (typeof params.value === "boolean") {
+        throw RequestError.invalidParams(undefined, "model config expects a value id, not a boolean");
+      }
+      const model = String(params.value);
+      if (!lookupModel(model)) throw RequestError.invalidParams(undefined, `unknown model ${JSON.stringify(model)}`);
+      sessionModels.set(params.sessionId, model);
+      // The response echoes the full option set with the new current value.
+      return {
+        configOptions: [{
+          id: "model",
+          name: "Model",
+          description: "The model this session routes its turns to.",
+          category: "model",
+          type: "select",
+          currentValue: model,
+          options: [{ value: provider.model, name: provider.model }],
+        }],
+      };
+    })
     .onRequest(acp.methods.agent.session.new, async ({ params }) => {
-      const s = createSession(params.cwd, provider.model);
+      const s = createSession(params.cwd, sessionModels.get("") ?? provider.model);
       acquireLock(s.id, "acp");
       return { sessionId: s.id };
     })
@@ -258,6 +300,11 @@ export function buildAgent(opts: AcpServerOptions): acp.AgentApp {
       // the message is the *second* argument; the first is JSON-RPC `data`, which
       // does not reach a client's error string
       if (!text) throw RequestError.invalidParams(undefined, "prompt has no text content");
+      // A `session/set_config_option` may have routed this session to a different
+      // model than the process default; clone the provider with that override.
+      const modelOverride = sessionModels.get(params.sessionId);
+      const turnProvider = modelOverride ? { ...provider, model: modelOverride } : provider;
+      const turnContextWindow = lookupModel(turnProvider.model).contextWindow;
 
       // Two ways a turn can be cut short: the client's `session/cancel`, and the
       // request's own signal (connection dropped, `$/cancel_request`). Both must
@@ -275,7 +322,7 @@ export function buildAgent(opts: AcpServerOptions): acp.AgentApp {
 
       let stop: acp.StopReason = "end_turn";
       try {
-        for await (const ev of runTurnCore(params.sessionId, provider, text, ctl.signal, {
+        for await (const ev of runTurnCore(params.sessionId, turnProvider, text, ctl.signal, {
           maxSteps: config.maxSteps,
           retryLimit: config.retryLimit,
           compactAt: config.compactAt,
@@ -287,7 +334,7 @@ export function buildAgent(opts: AcpServerOptions): acp.AgentApp {
             stop = stopReasonFor(ev.reason);
             break;
           }
-          const update = toSessionUpdate(ev, { contextWindow });
+          const update = toSessionUpdate(ev, { contextWindow: turnContextWindow });
           if (update) await client.notify(acp.methods.client.session.update, { sessionId: params.sessionId, update });
         }
       } finally {
