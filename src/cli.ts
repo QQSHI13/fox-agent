@@ -55,6 +55,8 @@ ${st.dim("headless / scripted")}
 ${flag("-p, --print", "run one prompt headless, print the answer, exit", "(reads stdin when no prompt given or stdin is piped)")}
 ${flag("--json", "with -p: emit NDJSON agent events instead of text (see: fox json)")}
 ${flag("--acp", "serve the Agent Client Protocol on stdio (see: fox acp)")}
+${flag("--a2a", "serve the Agent2Agent protocol on HTTP (see: fox a2a)")}
+${flag("--port <n>", "port for --a2a (default 0 = ephemeral)")}
 
 ${st.dim("overrides")}
 ${flag("--model <id>", "override model")}
@@ -103,6 +105,7 @@ export function parseArgv(argv: string[]): Parsed {
     "--compact-at",
     "--request-timeout-ms",
     "--config",
+    "--port",
     "-p",
     "--print",
   ]);
@@ -118,6 +121,7 @@ export function parseArgv(argv: string[]): Parsed {
     else if (a === "--no-tui") flags.set("no-tui", true);
     else if (a === "--json") flags.set("json", true);
     else if (a === "--acp") flags.set("acp", true);
+    else if (a === "--a2a") flags.set("a2a", true);
     else if (a === "--trust") flags.set("trust", true);
     else if (a === "-h" || a === "--help") {
       // after a known subcommand this belongs to it (`fox upgrade --help`
@@ -345,7 +349,7 @@ async function main() {
     };
     setActiveEndpoint(p.baseUrl);
   }
-  const needsConfigNow = !!parsed.flags.get("acp") || parsed.flags.has("print") || !process.stdout.isTTY || !!parsed.flags.get("no-tui");
+  const needsConfigNow = !!parsed.flags.get("acp") || !!parsed.flags.get("a2a") || parsed.flags.has("print") || !process.stdout.isTTY || !!parsed.flags.get("no-tui");
   if (needsConfigNow) applyLoadedConfig(loadConfig(configOverrides));
 
   // ---- ACP server ----
@@ -360,6 +364,18 @@ async function main() {
   if (parsed.flags.get("acp")) {
     const { runAcpServer } = await import("./acp/server.ts");
     await runAcpServer({ config: config!, provider });
+    return;
+  }
+
+  // ---- A2A server ----
+  // The horizontal peer-agent surface: other agents (and the gateway plugin)
+  // discover this fox-agent at /.well-known/agent-card.json and delegate via
+  // message/send, message/stream (SSE), or tasks/get. Runs a turn through the
+  // same runTurnCore engine as everything else. Binds local-only by default.
+  if (parsed.flags.get("a2a")) {
+    const { runA2aServer } = await import("./a2a/server.ts");
+    const port = Number(parsed.flags.get("port") ?? 0) || 0;
+    await runA2aServer({ config: config!, provider, port });
     return;
   }
 
