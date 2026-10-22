@@ -27,66 +27,15 @@ import {
 import { shutdownTools } from "./tools/index.ts";
 import { VERSION } from "./core/version.ts";
 import { expandMentions } from "./core/mentions.ts";
+import { commandHelp, usage, findCommand, registerCommand, CLI_COMMANDS } from "./cli/registry.ts";
+import { registerBuiltins } from "./cli/builtins.ts";
+// re-exported so `fox help <cmd>` and the tests keep one import site
+export { commandHelp, usage };
 
-function usage(color?: boolean, pluginCommands: { name: string; description?: string }[] = []): string {
-  const st = {
-    b: (s: string) => (color ? `\x1b[1m${s}\x1b[0m` : s),
-    dim: (s: string) => (color ? `\x1b[2m${s}\x1b[0m` : s),
-    cyan: (s: string) => (color ? `\x1b[36m${s}\x1b[0m` : s),
-    yellow: (s: string) => (color ? `\x1b[33m${s}\x1b[0m` : s),
-    green: (s: string) => (color ? `\x1b[32m${s}\x1b[0m` : s),
-  };
-  // subcommands read as actions (cyan), flags read as options (yellow value
-  // hints), so a long help page scans by shape before it scans by text
-  const cmd = (spec: string, desc: string, extra = "") =>
-    `  ${st.cyan(spec.padEnd(24))} ${desc}${extra ? `\n${" ".repeat(28)}${st.dim(extra)}` : ""}`;
-  const flag = (spec: string, desc: string, extra = "") =>
-    `  ${st.b(spec.padEnd(24))} ${desc}${extra ? `\n${" ".repeat(28)}${st.dim(extra)}` : ""}`;
-  return `${st.b(`fox-agent v${VERSION}`)} \u2014 light coding harness with agent-controlled context
+// The built-in commands exist as soon as this module is loaded, so `fox help
+// <cmd>` works for anyone importing cli.ts — not only through main().
+registerBuiltins();
 
-${st.dim("usage:")} fox ${st.yellow("[options]")} ${st.yellow("[-p \"prompt\"]")}
-
-${st.dim("launch")}
-${flag("(no args)", "open TUI in a new session bound to cwd")}
-${flag("-c, --continue [n|id]", "continue a session: latest, a 'fox ls' index, or an id", "(no argument + a real terminal opens the picker)")}
-${flag("--no-tui", "plain streaming mode (see: fox mini)")}
-${flag("--trust", "mark this directory trusted and skip the TUI trust prompt", "(trust = project fox-agent.toml / AGENTS.md may run code as you)")}
-
-${st.dim("headless / scripted")}
-${flag("-p, --print", "run one prompt headless, print the answer, exit", "(reads stdin when no prompt given or stdin is piped)")}
-${flag("--json", "with -p: emit NDJSON agent events instead of text (see: fox json)")}
-${flag("--acp", "serve the Agent Client Protocol on stdio (see: fox acp)")}
-${flag("--debug [spec]", "verbose diagnostics: off|error|warn|info|debug|trace, or categories (provider,turn,...)")}
-${flag("--a2a", "serve the Agent2Agent protocol on HTTP (see: fox a2a)")}
-${flag("--port <n>", "port for --a2a (default 0 = ephemeral)")}
-
-${st.dim("overrides")}
-${flag("--model <id>", "override model")}
-${flag("--provider <p>", "openai-compatible | anthropic | google | plugin-registered")}
-${flag("--base-url <u>", "override API base url")}
-${flag("--max-steps <n>", "turn step cap (default 0 = unlimited)")}
-${flag("--retry-limit <n>", "provider retry attempts (default 3)")}
-${flag("--compact-at <f>", "auto-compact at this fraction of the context window (default 0.85)")}
-${flag("--request-timeout-ms <n>", "abort a provider request silent this long (default 120000, 0 = never)")}
-${flag("--config <path>", "config file override")}
-
-${st.dim("subcommands")}
-${cmd("ls", "list sessions")}
-${cmd("export <id> [file]", "pack a session into a .zip to move to another device")}
-${cmd("import <file>", "install a session .zip from another device")}
-${cmd("share [file]", "render this session as one offline HTML file")}
-${cmd("plugin [on|off|add|rm|info <name>]", "manage plugins without the TUI")}
-${cmd("json", "headless NDJSON event stream (use with -p \"prompt\" or piped stdin)")}
-${cmd("mini", "plain streaming REPL, no TUI")}
-${cmd("acp", "serve the Agent Client Protocol on stdio (for Zed, acpx, ...)")}
-${cmd("upgrade [--beta|<version>]", "self-update from GitHub releases")}
-${cmd("help [command]", "show overview, or help for one command")}
-${pluginCommands.length ? `
-${st.dim("plugin commands")}
-${pluginCommands.map((c) => cmd(c.name, c.description ?? `plugin: ${c.name}`)).join("\n")}
-` : ""}
-${st.dim("inside a session")}: ${st.green("/help")} lists slash commands`;
-}
 
 interface Parsed {
   flags: Map<string, string | boolean>;
@@ -217,20 +166,6 @@ export function parseArgv(argv: string[]): Parsed {
   return { flags, rest };
 }
 
-/** Usage for one subcommand: `fox <cmd> --help` and `fox help <cmd>`. */
-export function commandHelp(cmd: string): string {
-  const H: Record<string, string> = {
-    ls: `usage: fox ls\n\nlist sessions, most recently worked-in first, across all directories.\nPass an index to resume it: fox -c 2 (or fox -c <id>).`,
-    plugin: `usage: fox plugin [on|off|add|rm|info <name>]\n\nlist plugins and switch them on/off without entering the TUI.\nNames accept the short form (pty), the full form (bundled:pty), the\nplugin's own name, or the configured path. (Also: fox plugins, /plugin.)`,
-    upgrade: `usage: fox upgrade [--beta|<version>]\n\nbare: latest stable release; beta: newest release including betas;\na version installs that tag (e.g. fox upgrade 0.5.0-beta.1).\nDownloads are SHA-256 verified; the previous binary is kept as .fox-previous.\nGitHub API rate limits apply — set GITHUB_TOKEN (or GH_TOKEN) to raise them.`,
-    json: `usage: fox json [-p "prompt"]\n\nheadless NDJSON agent events on stdout (same as -p ... --json).\nReads stdin when no prompt is given or stdin is piped.`,
-    mini: `usage: fox mini [-p "prompt"]\n\nplain streaming REPL, no TUI: runtime header, colors, tab completion\nfor /commands, ! shell mode, queued turns. Piped stdin stays non-interactive.`,
-    acp: `usage: fox acp\n\nserve the Agent Client Protocol on stdio, for Zed, acpx and other\nACP clients. Stdout is the protocol stream: nothing else may be written to it.`,
-    export: `usage: fox export <session-id|current> [file]\n\npack a session's database into a .fox.zip you can move to any device\nwith fox-agent (scp, syncthing, a usb stick). Inside fox the same\ncommand is /export. Import on the other machine: fox import <file>.`,
-    import: `usage: fox import <file.zip>\n\ninstall a session exported from another device. It lands under its\nown id and appears in fox ls / fox -c like a local session; an\nexisting session with the same id is replaced. Inside fox: /import.`,
-  };
-  return H[cmd] ?? usage();
-}
 
 /** informational startup lines — gray, not the alarming default stderr red */
 const note = (msg: string) => console.error(process.stderr.isTTY ? `\x1b[90m${msg}\x1b[0m` : msg);
@@ -291,6 +226,22 @@ async function main() {
       const hit = allPlugins.find((p) => p.cliCommand?.name === firstArg);
       if (hit?.cliCommand) {
         setActivePlugins(allPlugins);
+        // The plugin's command joins the SAME table as the built-ins, so it gets
+        // dispatch, `fox help <name>` and the usage listing for free.
+        const { registerCommand } = await import("./cli/registry.ts");
+        const pluginCmd = hit.cliCommand;
+        registerCommand({
+          name: pluginCmd.name,
+          summary: pluginCmd.description ?? `plugin: ${hit.name} subcommand`,
+          help: `usage: fox ${pluginCmd.name} [args]\n\n${pluginCmd.description ?? `provided by the ${hit.name} plugin`}`,
+          run: async ({ args, flags }) => {
+        // `--help` is the TABLE's job, not the plugin's: a plugin command that
+        // binds a port when asked for help (the gateway did) is the worst
+        // possible answer to "what does this do".
+        if (args[0] === "--help" || args[0] === "-h") {
+          console.log(`usage: fox ${pluginCmd.name} [args]\n\n${pluginCmd.description ?? `provided by the ${hit.name} plugin`}`);
+          return;
+        }
         // resolve provider like the other headless modes so the plugin can run turns
         const { resolveProfile } = await import("./core/config.ts");
         if (!pcfg) {
@@ -322,17 +273,18 @@ async function main() {
         // failure and report "unknown command", which sent the reader hunting for
         // a command that plainly existed. The plugin's own error is the truth.
         try {
-          await hit.cliCommand.run(parsed.rest.slice(1), { config: pcfg, provider, flags: parsed.flags });
+          await pluginCmd.run(args, { config: pcfg, provider, flags });
         } catch (e) {
           const detail = e instanceof Error ? (e.stack ?? e.message) : String(e);
-          console.error(`fox-agent: plugin command '${firstArg}' failed: ${(e as Error)?.message ?? detail}`);
+          console.error(`fox-agent: plugin command '${pluginCmd.name}' failed: ${(e as Error)?.message ?? detail}`);
           console.error(detail);
           console.error(`fox-agent: the full trace is in ${debugLogPath()}`);
           const { debugLog } = await import("./core/debuglog.ts");
-          debugLog(`plugin command '${firstArg}' failed`, detail);
+          debugLog(`plugin command '${pluginCmd.name}' failed`, detail);
           process.exitCode = 1;
         }
-        return;
+          },
+        });
       }
       // not a plugin subcommand — fall through to the normal (unknown-command) path
     } catch (e) {
@@ -351,10 +303,12 @@ async function main() {
   }
 
   if (parsed.flags.get("help") || parsed.rest[0] === "help") {
-    // `fox help <cmd>` documents one subcommand; bare help stays the overview
-    const topic = parsed.rest[0] === "help" ? parsed.rest[1] : undefined;
-    const known: Record<string, string> = { ls: "ls", plugin: "plugin", plugins: "plugin", upgrade: "upgrade", json: "json", mini: "mini", acp: "acp", export: "export", import: "import" };
-    if (topic && known[topic]) return console.log(commandHelp(known[topic]));
+    // `fox help <cmd>` documents one subcommand; `fox <cmd> --help` documents
+    // that command too (the parser folds --help into a flag for a command it
+    // does not know yet — a PLUGIN command, say — so the topic is rest[0]).
+    // Bare help stays the overview.
+    const topic = parsed.rest[0] === "help" ? parsed.rest[1] : parsed.rest[0];
+    if (topic && findCommand(topic)) return console.log(commandHelp(topic));
     // surface plugin CLI subcommands in the overview so `gateway` and friends are discoverable.
     // Load plugins (bundled unless disabled + config) — bare `--help` hasn't loaded them yet.
     let pluginCmds: { name: string; description?: string }[] = [];
@@ -373,100 +327,15 @@ async function main() {
     } catch { /* plugin load failed — omit the section rather than break help */ }
     return console.log(usage(cliColor(), pluginCmds));
   }
-  if (parsed.rest[0] === "plugin" || parsed.rest[0] === "plugins") {
-    if (parsed.rest[1] === "--help" || parsed.rest[1] === "-h") return console.log(commandHelp("plugin"));
-    // plugin management without entering the TUI — same inventory and
-    // verbs the /plugin slash command works through, in terminal colors
-    const { cliColor, pluginAddPath, pluginInfoText, pluginListText, pluginRemovePath, pluginSetEnabled } =
-      await import("./commands.ts");
-    try {
-      const flagPath = (parsed.flags.get("config") as string) || undefined;
-      const { effectiveConfigPath } = await import("./core/config.ts");
-      const configPath = effectiveConfigPath(flagPath);
-      const pcfg = loadConfig({ cwd: process.cwd(), configPath });
-      const [sub, ...words] = parsed.rest.slice(1);
-      const name = words.join(" ");
-      const color = cliColor();
-      const ctx = { config: pcfg, configPath, color };
-      const out =
-        (sub === "on" || sub === "off") && name
-          ? await pluginSetEnabled(ctx, name, sub === "on")
-          : sub === "add" && name
-            ? await pluginAddPath(ctx, name)
-            : (sub === "rm" || sub === "remove" || sub === "uninstall") && name
-              ? await pluginRemovePath(ctx, name)
-              : sub === "info" && name
-                ? await pluginInfoText(ctx, name)
-                : sub === undefined
-                  ? await pluginListText(ctx)
-                  : "usage: fox plugin [on|off|add|rm|info <name>]";
-      console.log(out);
-    } catch (e) {
-      console.error(`fox-agent error: ${errMsg(e)}`);
-      process.exitCode = 1;
+  // ---- command dispatch: one lookup, one table ----
+  // The built-ins and every plugin-provided command live in the same table
+  // (src/cli/registry.ts), so a new command is an entry, not a branch here.
+  {
+    const cmd = findCommand(parsed.rest[0]);
+    if (cmd) {
+      await cmd.run({ args: parsed.rest.slice(1), flags: parsed.flags });
+      return;
     }
-    return;
-  }
-  if (parsed.rest[0] === "ls") {
-    if (parsed.rest[1] === "--help" || parsed.rest[1] === "-h") return console.log(commandHelp("ls"));
-    // same renderer the TUI and `/sessions` use, so a session that looks stale
-    // here looks stale there too — this used to be its own loop over
-    // `created_at` and disagreed with every other listing about ordering
-    console.log(formatSessionList(sessionList({ limit: loadConfig({ cwd: process.cwd() }).sessionListLimit }), { color: cliColor() }));
-    return;
-  }
-  if (parsed.rest[0] === "share") {
-    if (parsed.rest[1] === "--help" || parsed.rest[1] === "-h") return console.log(commandHelp("share"));
-    try {
-      const { shareSession } = await import("./store/share.ts");
-      const target = parsed.rest[1] === "current" || !parsed.rest[1] ? (await import("./store/db.ts")).latestSessionFor(process.cwd())?.id : parsed.rest[1];
-      if (!target) return console.log(`no session found for ${process.cwd()}`);
-      const out = parsed.rest[2] || join(process.cwd(), `fox-session-${target}.html`);
-      const r = shareSession(target, out);
-      console.log(`shared ${target} -> ${r.path} (${(r.bytes / 1024).toFixed(0)} KB, ${r.messages} messages)`);
-    } catch (e) {
-      console.error(`fox-agent error: ${errMsg(e)}`);
-      process.exitCode = 1;
-    }
-    return;
-  }
-  if (parsed.rest[0] === "export" || parsed.rest[0] === "import") {
-    const verb = parsed.rest[0];
-    if (parsed.rest[1] === "--help" || parsed.rest[1] === "-h" || !parsed.rest[1]) return console.log(commandHelp(verb));
-    const { exportSession, importSession } = await import("./store/transfer.ts");
-    try {
-      if (verb === "export") {
-        // "current" = this directory's latest session (the one `fox -c` resumes)
-        const target = parsed.rest[1] === "current" ? (await import("./store/db.ts")).latestSessionFor(process.cwd())?.id : parsed.rest[1];
-        if (!target) return console.log(`no session found for ${process.cwd()}`);
-        const dest = await exportSession(target, parsed.rest[2] || undefined, VERSION);
-        console.log(`exported ${target} -> ${dest}`);
-      } else {
-        const r = await importSession(parsed.rest[1]);
-        console.log(`${r.replaced ? "replaced" : "imported"} session ${r.id} (${r.messages} messages) — resume with: fox -c ${r.id}`);
-      }
-    } catch (e) {
-      console.error(`fox-agent error: ${errMsg(e)}`);
-      process.exitCode = 1;
-    }
-    return;
-  }
-  if (parsed.rest[0] === "upgrade") {
-    if (parsed.rest[1] === "--help" || parsed.rest[1] === "-h") return console.log(commandHelp("upgrade"));
-    const sel = parsed.rest[1];
-    const opts: import("./core/upgrade.ts").UpgradeOptions =
-      sel === "--beta" || sel === "beta" ? { beta: true }
-      : sel ? { to: sel.replace(/^v/, "") }
-      : {};
-    try {
-      const { upgrade } = await import("./core/upgrade.ts");
-      const r = await upgrade(opts, console.log);
-      console.log(r.changed ? `upgraded to v${r.version} — restart fox to run it` : `already on v${r.version}`);
-    } catch (e) {
-      console.error(`fox-agent error: ${errMsg(e)}`);
-      process.exitCode = 1;
-    }
-    return;
   }
   // a positional argument that survived flag parsing is a command we don't
   // have — refuse it rather than silently opening a TUI the user didn't ask for
