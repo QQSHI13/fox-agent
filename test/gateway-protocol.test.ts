@@ -251,8 +251,8 @@ class Client {
       if (typeof f.id === "number") {
         const w = this.waiters.get(f.id);
         if (w) {
-          w(f);
           this.waiters.delete(f.id);
+          w(f);
         }
         return;
       }

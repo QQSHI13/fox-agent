@@ -133,20 +133,45 @@ it runs in an opaque origin and cannot read the gateway page, its state, the
 session list, or `localStorage`. Verified in a browser: `contentDocument` and
 `contentWindow` both throw `SecurityError`.
 
-A panel talks to the gateway only through the postMessage bridge:
+A panel talks to the gateway over a **`MessagePort`** handed to it on load, not
+over `window.postMessage`:
 
 ```js
 // inside the panel
-parent.postMessage({ type: "fox.rpc", id: "r1", method: "status", params: {} }, "*");
+let port = null;
+const pending = new Map();
+let seq = 0;
 
 addEventListener("message", (e) => {
-  const d = e.data;
-  if (d.type === "fox.hello") { /* { plugin, theme, model, sessionId } */ }
-  if (d.type === "fox.reply" && d.id === "r1") {
-    d.error ? console.error(d.error) : console.log(d.result);
+  if (e.data && e.data.type === "fox.hello" && e.ports[0]) {
+    port = e.ports[0];
+    port.onmessage = (ev) => {
+      const d = ev.data;
+      if (d.type === "fox.reply" && pending.has(d.id)) {
+        const [resolve, reject] = pending.get(d.id);
+        pending.delete(d.id);
+        d.error ? reject(new Error(d.error)) : resolve(d.result);
+      }
+    };
+    // e.data also carries { plugin, theme, model }
   }
 });
+
+function rpc(method, params) {
+  return new Promise((resolve, reject) => {
+    const id = "r" + ++seq;
+    pending.set(id, [resolve, reject]);
+    port.postMessage({ type: "fox.rpc", id, method, params });
+  });
+}
 ```
+
+Why a port instead of `window.postMessage`: a sandboxed frame has an **opaque
+origin**, so a window message can only be addressed with `targetOrigin: "*"`,
+which means "whoever occupies that frame when it is delivered". If the panel
+document ever navigated, the new document would receive replies meant for the
+panel. A `MessagePort` is bound to the document that received it and dies with
+it, so the only `"*"` message is the one-shot handshake that transfers the port.
 
 `method` is appended to **your** plugin's namespace by the gateway, so a panel
 can only ever reach its own plugin's methods — it cannot name another plugin's

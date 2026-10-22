@@ -46,8 +46,23 @@ interface HostApi {
   sessions: {
     list(limit?: number): { id: string; title: string | null; cwd: string; model: string; updated_at: number }[];
     get(id: string): { id: string; title: string | null; cwd: string; model: string; updated_at: number } | null;
-    messages(id: string): { role: string; content: string; seq: number }[];
+    messages(id: string): {
+      role: string;
+      content: string;
+      seq: number;
+      tool_calls?: string | null;
+      tool_call_id?: string | null;
+    }[];
     create(cwd?: string): { id: string };
+    /** token accounting for the status strip; optional so an older host still works */
+    usage?(id: string): {
+      prompt: number;
+      completion: number;
+      cached: number;
+      last: number;
+      window: number;
+      trigger: number;
+    };
   };
   turn(sessionId: string, prompt: string, signal?: AbortSignal): AsyncGenerator<{ type: string; [k: string]: unknown }>;
   commands: {
@@ -392,6 +407,18 @@ export async function createGateway(opts: GatewayOptions = {}): Promise<GatewayH
               }
               const page = pageMessages(all, p);
               reply({ ...meta, messages: page.messages, hasMore: page.hasMore, total: all.length });
+              break;
+            }
+            case "session.usage": {
+              // Optional on the host: a gateway that demanded it would break
+              // against an older binary, and the strip is informational only.
+              const id = String(msg.params?.id ?? "");
+              const fn = h.sessions.usage;
+              if (!fn) {
+                reply(null);
+                break;
+              }
+              reply(id ? fn(id) : null);
               break;
             }
             case "session.new":

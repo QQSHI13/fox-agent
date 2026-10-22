@@ -11,7 +11,7 @@
  * This is the plugin/host boundary in one place: everything a plugin can reach
  * is listed in `FoxHostApi` below.
  */
-import { listSessions, getSession, allMessagesLite, createSession, appendMessage } from "../store/db.ts";
+import { listSessions, getSession, allMessagesLite, createSession, appendMessage, sessionUsage, lastPromptTokens } from "../store/db.ts";
 import { runTurnCore } from "../loop/turn.ts";
 import { resolveChat } from "../providers/index.ts";
 import { VERSION } from "../core/version.ts";
@@ -23,6 +23,7 @@ import type { FoxPlugin } from "../plugins/types.ts";
 import type { Config } from "../core/config.ts";
 import type { ProviderConfig } from "../providers/types.ts";
 import type { AgentEvent } from "../core/events.ts";
+import { modelBudget, triggerTokens } from "../context/budget.ts";
 
 export interface FoxHostApi {
   version: string;
@@ -48,6 +49,24 @@ export interface FoxHostApi {
      */
     messages(id: string): { role: string; content: string; seq: number; tool_calls?: string | null; tool_call_id?: string | null }[];
     create(cwd?: string): { id: string };
+    /**
+     * Token accounting for one session, for a status bar that tells the truth.
+     *
+     * `prompt`/`completion`/`cached` are running totals for the session, so a
+     * cache-hit ratio has real numerators; `last` is the size of the most
+     * recent request's prompt (the live window, which drops after a
+     * compaction) and `window` is the model's capacity, so a "context used"
+     * figure is a ratio rather than a guess. `trigger` is where compaction
+     * fires, computed by the same function the engine uses.
+     */
+    usage(id: string): {
+      prompt: number;
+      completion: number;
+      cached: number;
+      last: number;
+      window: number;
+      trigger: number;
+    };
   };
   /** run one turn, yielding the same events the TUI renders */
   turn(sessionId: string, prompt: string, signal?: AbortSignal): AsyncGenerator<AgentEvent>;
@@ -127,6 +146,16 @@ export function installHostApi(config: Config, provider: ProviderConfig): FoxHos
       create: (cwd) => {
         const s = createSession(cwd ?? process.cwd(), provider.model);
         return { id: s.id };
+      },
+      usage: (id) => {
+        if (!getSession(id)) return { prompt: 0, completion: 0, cached: 0, last: 0, window: 0, trigger: 0 };
+        const u = sessionUsage(id);
+        return {
+          ...u,
+          last: lastPromptTokens(id),
+          window: modelBudget(provider.model).contextWindow,
+          trigger: triggerTokens(provider.model, config.compactAt),
+        };
       },
     },
     turn: (sessionId, prompt, signal) =>

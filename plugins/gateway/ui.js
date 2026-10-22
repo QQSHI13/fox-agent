@@ -125,9 +125,13 @@
     S.status = kind;
     var bar = $("#statusBar");
     var dot = $("#connDot");
+    var label = $("#connText");
+    dot.dataset.state = kind;
+    // The rail carries the connection state in words when it is not normal:
+    // "Connected" is the resting truth and needs no announcement.
+    if (label) label.textContent = kind === "open" ? "Connected" : kind === "down" ? "Offline" : "Connecting";
     if (kind === "open") {
       bar.classList.remove("on");
-      dot.dataset.state = "open";
       dot.title = "connected";
       $("#retryBtn").hidden = true;
       return;
@@ -135,7 +139,6 @@
     bar.classList.add("on");
     bar.dataset.kind = kind === "down" ? "down" : "";
     $("#statusText").textContent = text;
-    dot.dataset.state = kind === "down" ? "down" : "connecting";
     dot.title = text;
     $("#retryBtn").hidden = !canRetry;
   }
@@ -275,11 +278,16 @@
   // ---- theme -------------------------------------------------------------
 
   var THEMES = ["auto", "light", "dark"];
+  var THEME_LABEL = { auto: "Auto", light: "Light", dark: "Dark" };
   function applyTheme(t) {
     S.theme = THEMES.indexOf(t) >= 0 ? t : "auto";
     document.documentElement.dataset.theme = S.theme;
-    $("#themeBtn").textContent = "Theme: " + S.theme;
-    $("#themeBtn").setAttribute("aria-label", "Theme: " + S.theme + " (click to change)");
+    var b = $("#themeBtn");
+    // The control shows the VALUE it is set to, not a description of itself:
+    // "Dark" tells you what you are looking at, "Theme: dark" repeats the label.
+    b.textContent = THEME_LABEL[S.theme];
+    b.title = "Theme: " + S.theme + " (click to change)";
+    b.setAttribute("aria-label", "Theme: " + S.theme + ". Click to change.");
     try { localStorage.setItem("fox.theme", S.theme); } catch (e) {}
   }
   function cycleTheme() {
@@ -320,33 +328,45 @@
     b.setAttribute("aria-selected", String(s.id === S.sid));
     if (s.id === S.sid) b.setAttribute("aria-current", "true");
 
-    var t = el("div", "t");
-    t.appendChild(el("span", "label", s.title || "(untitled)"));
+    var row1 = el("div", "row1");
     var run = S.runs.get(s.id);
-    if (run && run.live) t.appendChild(el("span", "run"));
-    b.appendChild(t);
+    if (run && run.live) row1.appendChild(el("span", "run-dot"));
+    row1.appendChild(el("span", "label", s.title || "(untitled)"));
+    // The age sits at the row's right edge, where the eye can scan it down the
+    // column, instead of riding along in a mixed-content subtitle.
+    if (s.updated_at) row1.appendChild(el("span", "at", shortAge(s.updated_at)));
+    b.appendChild(row1);
 
-    var m = el("div", "m");
-    m.textContent = shortPath(s.cwd || "") + (s.updated_at ? " · " + when(s.updated_at) : "");
-    b.appendChild(m);
+    b.appendChild(el("div", "row2", shortPath(s.cwd || "")));
     b.title = (s.title || s.id) + "\n" + (s.cwd || "") + "\n" + s.id;
     b.addEventListener("click", function () { openSession(s.id); closeDrawer(); });
     return b;
+  }
+
+  /** Compact age for a list row: now, 4m, 5h, 3d, 12 Oct. */
+  function shortAge(ts) {
+    var t = Number(ts) || 0;
+    if (!t) return "";
+    var s = Math.max(0, Math.floor((Date.now() - t) / 1000));
+    if (s < 60) return "now";
+    if (s < 3600) return Math.round(s / 60) + "m";
+    if (s < 86400) return Math.round(s / 3600) + "h";
+    if (s < 86400 * 7) return Math.round(s / 86400) + "d";
+    return new Date(t).toLocaleDateString(undefined, { day: "numeric", month: "short" });
   }
 
   function renderSessions(err) {
     var box = $("#sessionList");
     box.textContent = "";
     var list = filtered();
-    $("#sessionCount").textContent = S.sessions.length + (S.sessions.length === 1 ? " session" : " sessions");
 
     if (!S.sessions.length) {
       var st = el("div", "state");
       st.style.margin = "8vh auto 0";
       st.appendChild(el("h2", "", err ? "Could not load sessions" : "No sessions yet"));
-      st.appendChild(el("p", "", err ? String(err.message || err) : "Start one with the New button."));
+      st.appendChild(el("p", "", err ? String(err.message || err) : "Start one with New session."));
       if (err) {
-        var rb = el("button", "btn btn-sm", "Retry");
+        var rb = el("button", "link-btn", "Retry");
         rb.addEventListener("click", function () { reloadSessions().catch(function () {}); });
         st.appendChild(rb);
       }
@@ -354,11 +374,11 @@
       return;
     }
     if (!list.length) {
-      box.appendChild(el("div", "empty-row", "No session matches \u201c" + S.sessionFilter.trim() + "\u201d"));
+      box.appendChild(el("div", "empty-row", "Nothing matches \u201c" + S.sessionFilter.trim() + "\u201d"));
       return;
     }
 
-    // Group by day only when unfiltered: a filtered list is a search result and
+    // Group by day only when unfiltered: a filtered list is a search result, and
     // date headers there are noise.
     if (S.sessionFilter.trim()) {
       list.forEach(function (s) { box.appendChild(sessionRow(s)); });
@@ -368,7 +388,7 @@
     list.forEach(function (s) {
       var g = dayGroup(s.updated_at);
       if (g !== lastGroup) {
-        box.appendChild(el("div", "session-group", g));
+        box.appendChild(el("div", "group-label", g));
         lastGroup = g;
       }
       box.appendChild(sessionRow(s));
@@ -378,24 +398,32 @@
   function patchSessionMeta() {
     var m = S.meta;
     var title = $("#title");
+    var cwd = $("#cwdChip");
+    var sep = $("#metaSep");
+    var mc = $("#modelChip");
     if (!m) {
       title.textContent = "No session";
       title.dataset.empty = "true";
-      $("#cwdChip").hidden = true;
+      title.removeAttribute("title");
+      cwd.hidden = true;
+      sep.hidden = true;
+      mc.querySelector("span").textContent = MODELS.model || "model";
       return;
     }
     title.textContent = m.title || "(untitled session)";
     title.dataset.empty = m.title ? "false" : "true";
     title.title = m.id;
-    var cwd = $("#cwdChip");
     if (m.cwd) {
       cwd.hidden = false;
-      cwd.textContent = shortPath(m.cwd);
-      cwd.title = m.cwd + " (click to copy)";
-    } else cwd.hidden = true;
+      sep.hidden = false;
+      cwd.querySelector("span").textContent = shortPath(m.cwd);
+      cwd.title = m.cwd + " \u2014 click to copy";
+    } else {
+      cwd.hidden = true;
+      sep.hidden = true;
+    }
     var model = m.model || MODELS.model;
-    var mc = $("#modelChip");
-    mc.textContent = model || "model";
+    mc.querySelector("span").textContent = model || "model";
     mc.title = "model: " + (model || "unknown");
   }
 
@@ -412,7 +440,68 @@
     $("#prompt").placeholder = running ? "A turn is running — Stop it to type a new message" : "Message fox-agent…";
     $("#footHint").innerHTML = running
       ? '<span class="kbd">Esc</span> stop the turn'
-      : '<span class="kbd">Enter</span> send · <span class="kbd">Shift+Enter</span> newline · <span class="kbd">/</span> commands';
+      : '<span class="kbd">Enter</span> send <span class="kbd">Shift+Enter</span> newline <span class="kbd">/</span> commands';
+    renderStats();
+  }
+
+  /**
+   * The stat strip under the composer.
+   *
+   * Every number here comes from the session (host `usage()`), so it is a
+   * statement of fact rather than decoration: the cache-hit ratio is the one
+   * figure that explains cost, and the context bar is the same fraction the
+   * compactor fires on. A UI that shows neither leaves the user guessing why a
+   * long session suddenly gets slower or why a compaction happened.
+   */
+  var lastStats = 0;
+  function renderStats() {
+    var box = $("#stats");
+    if (!box) return;
+    var u = S.usage;
+    if (!S.sid || !u) {
+      box.textContent = "";
+      return;
+    }
+    var parts = [];
+    var total = (u.prompt || 0) + (u.completion || 0);
+    if (total) {
+      parts.push('<span class="stat"><b>' + fmtTok(total) + '</b> tok</span>');
+    }
+    if (u.prompt && u.cached) {
+      parts.push('<span class="stat opt">cache <b>' + Math.round((u.cached / u.prompt) * 100) + '%</b></span>');
+    }
+    if (u.window) {
+      var pct = Math.min(100, Math.round((u.last / u.trigger) * 100));
+      parts.push(
+        '<span class="stat" title="context: ' + fmtTok(u.last) + ' of ' + fmtTok(u.trigger) +
+          ' tokens before compaction">' +
+          '<span class="bar" data-hot="' + (pct >= 85) + '"><i style="width:' + pct + '%"></i></span>' +
+          pct + '%</span>',
+      );
+    }
+    box.innerHTML = parts.join('<span class="sep">·</span>');
+  }
+
+  /** 1234567 -> 1.2M. Token counts are read as magnitudes, not digits. */
+  function fmtTok(n) {
+    var v = Number(n) || 0;
+    if (v >= 1e9) return (v / 1e9).toFixed(1) + "B";
+    if (v >= 1e6) return (v / 1e6).toFixed(1) + "M";
+    if (v >= 1e3) return (v / 1e3).toFixed(v >= 1e5 ? 0 : 1) + "k";
+    return String(v);
+  }
+
+  function loadUsage(id) {
+    if (!id) return;
+    rpc("session.usage", { id: id })
+      .then(function (u) {
+        if (id !== S.sid) return;
+        S.usage = u;
+        renderStats();
+      })
+      .catch(function () {
+        /* the strip is informational: a missing host method must not surface */
+      });
   }
 
   // ---- transcript scaffolding -------------------------------------------
@@ -425,62 +514,81 @@
     S.oldest = null;
   }
 
+  /** The chevron every disclosure uses. Inline SVG so it scales with the type. */
+  function chev() {
+    var svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("class", "chev");
+    svg.setAttribute("viewBox", "0 0 16 16");
+    svg.setAttribute("aria-hidden", "true");
+    var p = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    p.setAttribute("d", "M6 3.5 10.5 8 6 12.5");
+    p.setAttribute("fill", "none");
+    p.setAttribute("stroke", "currentColor");
+    p.setAttribute("stroke-width", "1.8");
+    p.setAttribute("stroke-linecap", "round");
+    p.setAttribute("stroke-linejoin", "round");
+    svg.appendChild(p);
+    return svg;
+  }
+
   function showState(opts) {
     clearTranscript();
     var st = el("div", "state");
+    st.appendChild(el("div", "mark", opts.mark || "fox"));
+    st.appendChild(el("h2", "", opts.title));
+    if (opts.body) st.appendChild(el("p", "", opts.body));
     if (opts.spinner) {
-      st.appendChild(el("div", "big", opts.icon || "\uD83E\uDD8A"));
-      st.appendChild(el("h2", "", opts.title));
-      if (opts.body) st.appendChild(el("p", "", opts.body));
       var sk = el("div", "skeleton");
       ["w90", "w70", "w40"].forEach(function (w) { sk.appendChild(el("div", "skel " + w)); });
       st.appendChild(sk);
-    } else {
-      st.appendChild(el("div", "big", opts.icon || "\uD83E\uDD8A"));
-      st.appendChild(el("h2", "", opts.title));
-      if (opts.body) st.appendChild(el("p", "", opts.body));
-      if (opts.actions) {
-        var row = el("div", "row");
-        opts.actions.forEach(function (a) {
-          var b = el("button", "btn" + (a.primary ? " btn-primary" : ""), a.label);
-          b.addEventListener("click", a.onClick);
-          row.appendChild(b);
-        });
-        st.appendChild(row);
-      }
+    } else if (opts.actions) {
+      var row = el("div", "row");
+      opts.actions.forEach(function (a) {
+        var b = el("button", "ghost-btn", a.label);
+        b.addEventListener("click", a.onClick);
+        row.appendChild(b);
+      });
+      st.appendChild(row);
     }
     scrollBox().appendChild(st);
   }
 
-  function userNode(text, seq) {
-    var d = el("div", "msg user");
-    var av = el("div", "avatar", "You".slice(0, 1));
-    av.setAttribute("aria-hidden", "true");
-    d.appendChild(av);
+  /**
+   * A transcript entry is a ledger row: [seq] in the gutter, content in the
+   * body.
+   *
+   * The seq is the address the TUI shows too, so a message can be referred to
+   * by number in both front ends - and it is what /view and /undo take. Putting
+   * it in a fixed gutter (rather than inline in a header) is what lets a long
+   * session be scanned by eye and copied by number.
+   */
+  function entryNode(kind, roleLabel, seq) {
+    var d = el("div", "entry " + kind);
+    var gutter = el("div", "gutter");
+    gutter.setAttribute("aria-hidden", "true");
+    gutter.appendChild(el("span", "seq", seq === undefined || seq === null ? "" : String(seq)));
+    d.appendChild(gutter);
     var body = el("div", "body");
-    var who = el("div", "who");
-    who.appendChild(el("span", "", "you"));
-    if (seq !== undefined && seq !== null) who.appendChild(el("span", "seq", "[" + seq + "]"));
-    body.appendChild(who);
-    var b = el("div", "bubble");
-    b.textContent = text;
-    body.appendChild(b);
+    if (roleLabel) body.appendChild(el("div", "role", roleLabel));
     d.appendChild(body);
+    d._body = body;
     return d;
   }
 
-  function assistantNode() {
-    var d = el("div", "msg assistant");
-    var av = el("div", "avatar", "F");
-    av.setAttribute("aria-hidden", "true");
-    d.appendChild(av);
-    var body = el("div", "body");
-    var who = el("div", "who");
-    who.appendChild(el("span", "", "fox-agent"));
-    body.appendChild(who);
-    var b = el("div", "bubble");
-    body.appendChild(b);
-    d.appendChild(body);
+  function userNode(text, seq) {
+    var d = entryNode("user", "You", seq);
+    var p = el("div", "prose");
+    // User text is literal. A prompt containing markdown characters is still a
+    // prompt, and rendering it would silently change what they typed.
+    p.textContent = text;
+    d._body.appendChild(p);
+    return d;
+  }
+
+  function assistantNode(seq) {
+    var d = entryNode("assistant", "fox-agent", seq);
+    var b = el("div", "prose");
+    d._body.appendChild(b);
     d._bubble = b;
     return d;
   }
@@ -489,31 +597,33 @@
     if (m.role === "user") return userNode(m.content || "", m.seq);
     if (m.role === "assistant") {
       // A step whose only act was to call tools stores an EMPTY assistant row.
-      // Rendering it produces a floating name and a blank bubble between tool
-      // cards, which reads like a failed message. The tool card IS the record of
-      // that step, so an empty row is skipped rather than drawn.
+      // Drawing it would put a bare role label between tool cards, which reads
+      // like a failed message. The tool card IS the record of that step.
       if (!String(m.content || "").trim()) return null;
-      var a = assistantNode();
+      var a = assistantNode(m.seq);
       a._bubble.innerHTML = MD.render(m.content);
-      var who = $(".who", a);
-      if (m.seq !== undefined) who.appendChild(el("span", "seq", "[" + m.seq + "]"));
       return a;
     }
     if (m.role === "think") {
-      var words = String(m.content || "").trim().split(/\s+/).filter(Boolean).length;
-      var th = thinkNode("Thought · " + words + (words === 1 ? " word" : " words"), true);
-      th._content.textContent = m.content || "";
-      th._raw = m.content || "";
+      var text = String(m.content || "");
+      var words = text.trim().split(/\s+/).filter(Boolean).length;
+      var th = thinkNode("Thought for " + words + (words === 1 ? " word" : " words"), m.seq);
+      th._content.textContent = text;
+      th._raw = text;
       return th;
     }
     if (m.role === "system") {
-      var n = el("div", "notice");
-      n.dataset.kind = "warn";
-      n.appendChild(el("div", "nbody", m.content || ""));
+      var n = entryNode("system", "system", m.seq);
+      var no = el("div", "notice");
+      no.dataset.kind = "warn";
+      no.appendChild(el("div", "nbody", m.content || ""));
+      n._body.appendChild(no);
       return n;
     }
-    var o = el("div", "notice");
-    o.appendChild(el("div", "nbody", (m.role || "message") + ": " + (m.content || "")));
+    var o = entryNode("system", m.role || "message", m.seq);
+    var nb = el("div", "notice");
+    nb.appendChild(el("div", "nbody", m.content || ""));
+    o._body.appendChild(nb);
     return o;
   }
 
@@ -526,7 +636,7 @@
    */
   function itemNode(it) {
     if (it.kind === "tool") {
-      return toolNode({ name: it.name, args: it.args, output: it.output, ok: it.ok });
+      return toolNode({ name: it.name, args: it.args, output: it.output, ok: it.ok, seq: it.seq });
     }
     return messageNode(it);
   }
@@ -541,34 +651,36 @@
     });
   }
 
-  function thinkNode(label, done) {
-    var wrap = el("div", "think");
+  function thinkNode(label, seq) {
+    var wrap = entryNode("think-entry", "", seq);
     var det = document.createElement("details");
+    det.className = "think";
     var sum = document.createElement("summary");
-    sum.appendChild(el("span", "chev", "\u25B6"));
-    var txt = el("span", "lbl", label);
+    sum.appendChild(chev());
+    var txt = el("span", "", label);
     sum.appendChild(txt);
     det.appendChild(sum);
     var content = el("div", "content");
     det.appendChild(content);
-    wrap.appendChild(det);
+    wrap._body.appendChild(det);
     wrap._content = content;
     wrap._label = txt;
     wrap._det = det;
-    // Thinking is NOT shown by default (it is long, low-value on re-read, and
-    // the transcript's job is the answer). The summary line keeps it findable.
-    det.open = !!done && false;
+    // Thinking is NOT shown by default: it is long, low-value on a re-read, and
+    // the transcript's job is the answer. The one-line summary keeps it findable.
+    det.open = false;
     return wrap;
   }
 
   function toolNode(t) {
+    var wrap = entryNode("tool-entry", "", t.seq);
     var d = document.createElement("details");
     d.className = "tool";
     var sum = document.createElement("summary");
-    sum.appendChild(el("span", "chev", "\u25B6"));
+    sum.appendChild(chev());
     sum.appendChild(el("span", "nm", t.name || "tool"));
     sum.appendChild(el("span", "arg", t.args ? String(t.args) : ""));
-    var state = el("span", "tstat");
+    var state = el("span", "tool-state");
     state.dataset.s = t.ok === false ? "fail" : t.output === undefined ? "running" : "ok";
     state.textContent = t.ok === false ? "failed" : t.output === undefined ? "running" : "ok";
     sum.appendChild(state);
@@ -579,20 +691,28 @@
       pane.appendChild(el("div", "lbl", "arguments"));
       pane.appendChild(el("pre", "", String(t.args)));
     }
-    var out = el("pre", t.output ? "" : "muted", t.output === undefined ? "running…" : (t.output || "(no output)"));
-    out.classList.add("out");
     pane.appendChild(el("div", "lbl", "output"));
+    var out = el("pre", t.output ? "" : "muted", t.output === undefined ? "running…" : (t.output || "(no output)"));
     pane.appendChild(out);
     d.appendChild(pane);
     d._state = state;
     d._out = out;
     d._pane = pane;
+    wrap._body.appendChild(d);
     // A failure is the one case worth opening without being asked.
     if (t.ok === false) d.open = true;
-    return d;
+    return wrap;
   }
 
+  /**
+   * An inline notice (command output, a failed turn, a cancellation).
+   *
+   * Wrapped in an entry so it keeps the transcript's gutter alignment: a
+   * notice that starts at the left edge while every message starts at the
+   * gutter reads as a different kind of object than it is.
+   */
   function notice(kind, title, body, actions) {
+    var wrap = entryNode("notice-entry", "", null);
     var d = el("div", "notice");
     d.dataset.kind = kind || "";
     if (title) d.appendChild(el("div", "nhead", title));
@@ -602,13 +722,15 @@
     if (actions && actions.length) {
       var row = el("div", "nactions");
       actions.forEach(function (a) {
-        var btn = el("button", "btn btn-sm", a.label);
+        var btn = el("button", "", a.label);
         btn.addEventListener("click", a.onClick);
         row.appendChild(btn);
       });
       d.appendChild(row);
     }
-    return d;
+    wrap._body.appendChild(d);
+    wrap._notice = d;
+    return wrap;
   }
 
   // ---- scroll pinning ----------------------------------------------------
@@ -648,6 +770,7 @@
     var token = ++S.openToken;
     S.sid = id;
     S.meta = null;
+    S.usage = null;
     S.pinned = true;
     S.firstSeq = null;
     S.hasMore = false;
@@ -665,7 +788,7 @@
       if (!res) {
         S.runs.delete(id);
         showState({
-          icon: "\u26A0\uFE0F",
+          mark: "!",
           title: "Session not found",
           body: "It may have been deleted. Pick another one.",
           actions: [{ label: "Sessions", primary: true, onClick: openSwitcher }, { label: "New session", onClick: newSession }],
@@ -675,13 +798,14 @@
       S.meta = { id: res.id, title: res.title, cwd: res.cwd, model: res.model, updated_at: res.updated_at };
       if (opts && opts.fromDrop) S.sessionFilter = "";
       patchSessionMeta();
+      loadUsage(res.id);
       paintTranscript(res);
       var inp = $("#prompt");
       if (window.matchMedia("(min-width: 821px)").matches && !opts?.keepFocus) inp.focus();
     }).catch(function (e) {
       if (token !== S.openToken) return;
       showState({
-        icon: "\u26A0\uFE0F",
+        mark: "!",
         title: "Could not open the session",
         body: String(e.message || e),
         actions: [{ label: "Retry", primary: true, onClick: function () { openSession(id); } }],
@@ -698,7 +822,7 @@
     S.firstSeq = msgs.length ? msgs[0].seq : null;
 
     if (S.hasMore) {
-      var more = el("button", "btn btn-sm", "Load earlier messages" + (S.total ? " (" + S.total + " total)" : ""));
+      var more = el("button", "", "Load earlier messages" + (S.total ? " (" + S.total + " total)" : ""));
       more.id = "loadOlder";
       more.addEventListener("click", function () { loadOlder(more); });
       box.appendChild(more);
@@ -708,7 +832,7 @@
       var run0 = S.runs.get(res.id);
       if (!run0 || !run0.live) {
         showState({
-          icon: "\uD83D\uDCAC",
+          mark: "fox",
           title: "Empty session",
           body: "Say something to start the conversation. Type / for the command list.",
         });
@@ -731,7 +855,7 @@
     if (!run || run.done) return;
     if (run.userText) box.appendChild(userNode(run.userText));
     if (run.think) {
-      var th = thinkNode("Thinking…", false);
+      var th = thinkNode("Thinking…");
       th._content.textContent = run.think;
       box.appendChild(th);
       run.thinkEl = th;
@@ -853,7 +977,7 @@
       r.think += ev.delta || "";
       if (visible) {
         if (!r.thinkEl) {
-          var th = thinkNode("Thinking…", false);
+          var th = thinkNode("Thinking…");
           $("#scroll").appendChild(th);
           r.thinkEl = th;
         }
@@ -1084,8 +1208,12 @@
     input.style.height = Math.min(input.scrollHeight, Math.round(window.innerHeight * 0.4)) + "px";
   }
   function updateCount() {
-    var n = input.value.length;
+    // The counter is an aid, not a feature the app depends on: it is absent
+    // on narrow viewports, and a missing element here once threw during boot
+    // and took the whole UI down with it (the socket never opened).
     var c = $("#charCount");
+    if (!c) return;
+    var n = input.value.length;
     c.textContent = n ? n + " chars" : "";
     c.dataset.hot = n > 4000 ? "true" : "false";
   }
@@ -1297,11 +1425,11 @@
       b.setAttribute("aria-selected", String(i === switchIdx));
       var ti = el("div", "pti");
       ti.appendChild(el("div", "pt", s.title || "(untitled)"));
-      ti.appendChild(el("div", "pm", shortPath(s.cwd || "") + " · " + when(s.updated_at) + " · " + s.id.slice(0, 12)));
+      ti.appendChild(el("div", "pm", shortPath(s.cwd || "") + " · " + when(s.updated_at)));
       b.appendChild(ti);
       var run = S.runs.get(s.id);
-      if (run && run.live) b.appendChild(el("span", "prun"));
-      if (s.id === S.sid) b.appendChild(el("span", "kbd", "current"));
+      if (run && run.live) b.appendChild(el("span", "run-dot"));
+      if (s.id === S.sid) b.appendChild(el("span", "here", "current"));
       b.addEventListener("click", function () { chooseSession(s.id); });
       b.addEventListener("mousemove", function () {
         if (switchIdx !== i) { switchIdx = i; paintPickSelection(); }
@@ -1451,34 +1579,48 @@
     $("#panelRefresh").onclick = function () { frame.src = frame.src; };
   }
 
+  /**
+   * Talk to a plugin panel over a MessageChannel, not window.postMessage.
+   *
+   * A sandboxed frame has an OPAQUE origin, so a window message can only be
+   * addressed with targetOrigin "*" - and "*" means "whoever occupies that
+   * frame when it is delivered". If the panel document navigated (its own
+   * anchor, a redirect, a form post), the new document would receive the
+   * replies meant for the panel: a genuine cross-window information leak, and
+   * exactly what a static scanner flags on the "*" argument.
+   *
+   * A MessagePort cannot be redirected: it is bound to the document that
+   * received it, and dies with it. So the ONLY "*" message is the one-shot
+   * handshake that transfers the port, and it carries no session data beyond
+   * the model name the panel is rendered with.
+   */
   function bridgeFrame(frame, pname) {
-    var onMsg = function (e) {
-      if (e.source !== frame.contentWindow) return;
-      var d = e.data;
-      if (!d || d.type !== "fox.rpc" || !d.method) return;
-      // Only THIS plugin's methods are reachable from THIS panel: the namespace
-      // is added here, not supplied by the frame.
-      var method = "plugin." + pname + "." + d.method;
-      var reply = function (payload) {
-        try { frame.contentWindow.postMessage(payload, "*"); } catch (err) {}
-      };
-      rpc(method, d.params).then(function (result) {
-        reply({ type: "fox.reply", id: d.id, result: result });
-      }, function (err) {
-        reply({ type: "fox.reply", id: d.id, error: String(err.message || err) });
-      });
-    };
-    window.addEventListener("message", onMsg);
     frame.addEventListener("load", function () {
+      var channel = new MessageChannel();
+      var port = channel.port1;
+      port.onmessage = function (ev) {
+        var d = ev.data;
+        if (!d || d.type !== "fox.rpc" || typeof d.method !== "string") return;
+        // Only THIS plugin's methods are reachable from THIS panel: the
+        // namespace is added here, never supplied by the frame.
+        var method = "plugin." + pname + "." + d.method;
+        var reply = function (payload) {
+          try { port.postMessage(payload); } catch (err) {}
+        };
+        rpc(method, d.params).then(
+          function (result) { reply({ type: "fox.reply", id: d.id, result: result }); },
+          function (err) { reply({ type: "fox.reply", id: d.id, error: String(err && err.message || err) }); },
+        );
+      };
       try {
-        frame.contentWindow.postMessage({
-          type: "fox.hello",
-          plugin: pname,
-          theme: S.theme,
-          model: (S.meta && S.meta.model) || MODELS.model,
-          sessionId: S.sid,
-        }, "*");
-      } catch (e) {}
+        frame.contentWindow.postMessage(
+          { type: "fox.hello", plugin: pname, theme: S.theme, model: (S.meta && S.meta.model) || MODELS.model },
+          "*",
+          [channel.port2],
+        );
+      } catch (e) {
+        // A frame that never loaded (404, blocked) simply has no bridge.
+      }
     });
   }
 
@@ -1609,7 +1751,7 @@
       }
     }).catch(function (e) {
       showState({
-        icon: "\u26A0\uFE0F",
+        mark: "!",
         title: "Could not load sessions",
         body: String(e.message || e),
         actions: [{ label: "Retry", primary: true, onClick: function () { refreshAll(); } }],
@@ -1621,7 +1763,7 @@
 
   function bootEmpty() {
     showState({
-      icon: "\uD83E\uDD8A",
+      mark: "fox",
       title: "No session selected",
       body: "Pick one from the sidebar, or start a new one.",
       actions: [
@@ -1660,11 +1802,23 @@
     applyTheme("auto");
   }
 
-  autoGrow();
-  updateCount();
-  syncComposer();
+  // Boot order matters: connect() FIRST, so a decorative step that throws
+  // (a missing optional element, a DOM tweak in a later redesign) costs a
+  // cosmetic nicety instead of the socket. That exact failure - updateCount
+  // writing to an element the redesign removed - left the UI stuck on
+  // "Connecting" forever, because every step below ran before the socket did.
   setStatus("connecting", "Connecting…");
   connect();
+
+  [[autoGrow, "autoGrow"], [updateCount, "updateCount"], [syncComposer, "syncComposer"]].forEach(function (step) {
+    try {
+      step[0]();
+    } catch (e) {
+      // A broken add-on must be visible in the console without taking the app
+      // down; the transcript and composer stay usable.
+      console.error("fox: boot step " + step[1] + " failed", e);
+    }
+  });
 
   // expose a tiny surface for tests/automation, not for the app itself
   window.__fox = {
