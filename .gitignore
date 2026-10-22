@@ -1,7 +1,10 @@
 node_modules/
 bin/
 *.log
-cli
+# A BARE `cli` matched at ANY depth, so it silently swallowed src/cli/ and its
+# files never reached the repo — CI (a fresh checkout) then saw src/cli.ts
+# importing modules that did not exist. Anchor it to the repo root.
+/cli
 dist/
 *.backup
 .fox-previous
