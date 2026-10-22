@@ -84,26 +84,23 @@ export function samplingOptions(s: Record<string, unknown> | undefined): Record<
 }
 
 /**
- * `maxOutputTokens` from the model registry, so the AI SDK stops guessing.
+ * `maxOutputTokens` — sent ONLY when the user configured it explicitly.
  *
- * The SDK does not know third-party models (anything not in its own table) and
- * silently clamps them to a 4096 compatibility default, logging
- * "the model X is unknown … limited to 4096". fox-agent already knows the real
- * figure — `lookupModel` merges user config, the endpoint's own /models listing
- * and models.dev — so the ceiling is passed explicitly and the model may use
- * its whole output budget.
+ * The catalog's figure for a model is the MODEL's output capability, not the
+ * ENDPOINT's enforced ceiling. A gateway that serves a model with a bigger
+ * budget (the catalog says 512000) but caps `max_tokens` lower (393216) rejects
+ * the whole request — `HTTP 400 Invalid max_tokens value` — so passing the
+ * catalog number broke the call outright rather than raising a ceiling.
  *
- * An explicit `sampling.maxOutputTokens` still wins: spread this BEFORE
- * `samplingOptions(...)` so a user override lands last.
+ * The provider's own default is the safe answer: it is the one value the
+ * endpoint actually accepts, and it does not need fox-agent to know the
+ * endpoint's cap. So the catalog value is no longer sent; a user who wants a
+ * specific ceiling sets `sampling.maxOutputTokens` and that is sent verbatim.
  */
 export function outputTokenOptions(cfg: ProviderConfig): { maxOutputTokens?: number } {
   const explicit = samplingOptions(cfg.sampling).maxOutputTokens;
   if (typeof explicit === "number" && Number.isFinite(explicit) && explicit > 0) {
     return { maxOutputTokens: explicit };
-  }
-  const known = lookupModel(cfg.model).maxOutput;
-  if (typeof known === "number" && Number.isFinite(known) && known > 0) {
-    return { maxOutputTokens: known };
   }
   return {};
 }
