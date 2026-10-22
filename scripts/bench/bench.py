@@ -12,8 +12,9 @@ invented):
     byte — the real "time to first char" of an interactive launch
   - tui_first_input: best of 3 PTY launches — time from spawn, once the TUI is
     alive and quiet, to a typed probe rendering on screen (time to interactive
-  - tui_input_latency: best of 3 PTY launches, settled 1s, then the same probe —
-    isolates input-handling latency from startup cost
+  - tui_input_latency: best of 3 PTY launches — launch, wait until interactive
+    (alive and quiet, the same readiness tui_first_input measures), wait 500ms,
+    then type the same probe — isolates input-handling latency from startup cost
 
 Plus fox-agent only (hermetic, no API key, no network):
   - ttft: headless `fox -p … --json` against the repo's scripted fake
@@ -651,10 +652,20 @@ def tui_first_input(path, label, probes=3, timeout=15):
     return samples
 
 
-def tui_input_latency(path, label, settle_s=2.0, probes=3, timeout=15):
-    """Input latency after a fixed settle: launch, wait `settle_s`, then measure
-    how fast a typed probe renders. Isolates input-handling latency from startup
-    cost — how responsive the TUI is once it is already up. Best of N.
+def tui_input_latency(path, label, settle_s=0.5, probes=3, timeout=15):
+    """Input latency once the TUI is interactive: launch, wait until it is alive
+    AND quiet (the same readiness tui_first_input measures, but WITHOUT typing
+    into it), wait `settle_s`, then type a probe and time how fast it renders.
+
+    Why readiness-then-a-beat, rather than a fixed wall-clock settle: a fixed
+    settle starts counting at the wrong moment for a slow tool. Two seconds
+    after the first byte is not "the app is up" — it is an arbitrary instant
+    that may still be mid-startup for a heavy TUI, so the number measured
+    input latency on a not-yet-interactive process. Anchoring on the same
+    quiet signal tui_first_input uses makes "ready" mean the same thing in both
+    figures, and the short settle on top absorbs the last repaint so the
+    keystroke lands on a settled screen. Isolates input handling from startup:
+    the clock starts at the keystroke, never at spawn.
     """
     cfg = INPUT_MARKERS.get(label)
     samples = []
@@ -673,12 +684,13 @@ def tui_input_latency(path, label, settle_s=2.0, probes=3, timeout=15):
         try:
             if _wait_output(fd, 15) is None:
                 continue
-            # fixed settle: the point is a stable, reproducible post-startup
-            # baseline, NOT "whenever the app felt quiet" — that is what
-            # tui_first_input measures. Sleep the remainder of settle_s after
-            # the first byte so slow paint does not eat the settle window.
+            # Ready == alive AND quiet, the same signal tui_first_input waits on.
+            # Nothing is typed during readiness, so the probe cannot be swallowed
+            # by a still-starting process.
+            _await_quiet(fd, budget_s=6.0)
+            # ...then one short beat, so the keystroke hits a settled screen
+            # rather than the tail of the startup repaint.
             time.sleep(settle_s)
-            _await_quiet(fd, budget_s=2.0)
             if cfg:
                 try:
                     logf = open(os.path.expanduser(cfg["log"]), "rb")
@@ -842,7 +854,7 @@ def dashboard_svg(panels, out_path):
         f'<rect x="0" y="{HEADER_H - 2}" width="{W}" height="2" fill="{ACC}"/>',
         f'<text x="{PAD}" y="36" fill="{INK}" font-size="20" font-weight="bold">fox-agent · harness bench</text>',
         f'<text x="{PAD}" y="58" fill="{MUT}" font-size="12">startup · TUI latency · footprint · idle memory — github actions ubuntu-latest, refreshed on every push</text>',
-        f'<text x="{PAD}" y="76" fill="{MUT}" font-size="11">{esc("1st byte = PTY launch, best of 5 · 1st input = spawn→quiet→typed→echo, best of 3 · latency = echo after a 1s settle · bundle = binary or pkg dir · PSS at rest")}</text>',
+        f'<text x="{PAD}" y="76" fill="{MUT}" font-size="11">{esc("1st byte = PTY launch, best of 5 · 1st input = spawn→quiet→typed→echo, best of 3 · latency = ready→500ms→typed→echo (keystroke only) · bundle = binary or pkg dir · PSS at rest")}</text>',
     ]
     for pi_, (title, subtitle, rows, unit, fmt) in enumerate(panels):
         col, row = pi_ % NCOL, pi_ // NCOL
@@ -919,7 +931,7 @@ def measure(label, path, n_start, n_probes, n_input):
     ttfb = tui_first_byte(path, n_probes)
     step(label, f"timing time-to-interactive (best of {n_input} PTY launches)")
     tfin = tui_first_input(path, label, n_input)
-    step(label, "timing input latency after 2s settle (best of {n_input})")
+    step(label, f"timing input latency (ready + 500ms settle, best of {n_input})")
     latency = tui_input_latency(path, label, probes=n_input)
     step(label, "measuring idle memory (PSS)")
     pss = idle_pss(path)
@@ -1042,7 +1054,7 @@ def main():
                 fake.kill()
         else:
             print("fox extra: fake provider unavailable")
-    fox_extra["method"] = "headless `fox -p … --json` vs scripted local provider; RSS via /usr/bin/time -v; TUI bytes via PTY; TUI input = spawn→quiet→typed→echo on screen (log marker where echo is suppressed); input latency = echo after a 1s settle"
+    fox_extra["method"] = "headless `fox -p … --json` vs scripted local provider; RSS via /usr/bin/time -v; TUI bytes via PTY; TUI input = spawn→quiet→typed→echo on screen (log marker where echo is suppressed); input latency = ready (alive+quiet)→500ms→typed→echo, timing the keystroke round-trip only"
 
     import platform
 
@@ -1053,8 +1065,9 @@ def main():
             "best of 4 `--version` runs; best of 5 PTY launches (no args) to first output byte; "
             "best of 3 PTY launches measuring time-to-interactive since spawn (TUI alive+quiet, then "
             "probe typed → rendered on screen; log marker where a tool suppresses echo); "
-            "best of 3 PTY launches measuring input latency after a 1s settle (echo round-trip, "
-            "startup cost removed); "
+            "best of 3 PTY launches measuring input latency (ready = alive+quiet, then a 500ms "
+            "settle, probe typed → echo timed; the clock starts at the keystroke, so startup "
+            "cost is removed); "
             "PSS after 1.5s idle from /proc smaps_rollup; bundle = the binary itself, a launcher's "
             "exec target where a wrapper hands off, or the package "
             "dir for script CLIs (entry shims alone would pretend node_modules are free); "
@@ -1089,8 +1102,8 @@ def main():
                 fmt_ms,
             ),
             (
-                "input latency after 1s settle",
-                "launch, settle 1s, type probe, measure echo · best of 3 · lower is better",
+                "input latency (ready+500ms)",
+                "launch, wait ready (alive+quiet), 500ms, type probe, time the echo · best of 3 · lower is better",
                 [(r["agent"], r.get("tui_input_latency_ms"), is_fox(r)) for r in rows],
                 "ms",
                 fmt_ms,
@@ -1128,7 +1141,7 @@ def main():
         return f"{v:.{nd}f}{unit}"
 
     T = [
-        "| agent | version | bin | bundle (MB) | bundle kind | `--version` (ms) | TUI 1st byte (ms) | TUI 1st input (ms) | input latency 1s (ms) | idle PSS (MB) |",
+        "| agent | version | bin | bundle (MB) | bundle kind | `--version` (ms) | TUI 1st byte (ms) | TUI 1st input (ms) | input latency (ms) | idle PSS (MB) |",
         "|---|---|---|---|---|---|---|---|---|---|",
     ]
     for r in rows:
@@ -1151,7 +1164,7 @@ def main():
     # compact headline table; the full-precision 10-column record stays in
     # bench/table.md (linked) so the README top stays readable.
     HT = [
-        "| agent | bundle | `--version` | TUI 1st byte | TUI 1st input | input latency 1s | idle PSS |",
+        "| agent | bundle | `--version` | TUI 1st byte | TUI 1st input | input latency | idle PSS |",
         "|---|---|---|---|---|---|---|",
     ]
     for r in rows:
