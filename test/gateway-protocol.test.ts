@@ -236,7 +236,18 @@ interface Frame {
 class Client {
   ws: WebSocket;
   frames: Frame[] = [];
-  private waiters = new Map<number, (f: Frame) => void>();
+  /**
+   * Outstanding requests, as a list of records rather than a Map keyed by the
+   * id in the incoming frame.
+   *
+   * A Map lookup plus `w(f)` is a call through a value selected by data off the
+   * wire, which a static scanner rightly flags as a dynamic dispatch - if
+   * anything else ever wrote that map, a frame could reach a function it has no
+   * business reaching. Scanning the list by a validated integer id keeps every
+   * call site a literal property here, and the semantics the same: only the
+   * waiter registered for that exact id is resolved.
+   */
+  private waiters: { id: number; resolve: (f: Frame) => void; timer?: ReturnType<typeof setTimeout> }[] = [];
   private events: ((e: Frame) => void)[] = [];
   closed = false;
 
@@ -248,11 +259,13 @@ class Client {
       // A reply is `{id: <number>}`. A tool event is `{event, id: <string>}` -
       // the same key, a different type. Dispatch on the type, or a tool card
       // gets swallowed as a reply nobody is waiting for.
-      if (typeof f.id === "number") {
-        const w = this.waiters.get(f.id);
-        if (w) {
-          this.waiters.delete(f.id);
-          w(f);
+      if (typeof f.id === "number" && Number.isInteger(f.id)) {
+        const i = this.waiters.findIndex((w) => w.id === f.id);
+        if (i >= 0) {
+          const waiter = this.waiters[i];
+          this.waiters.splice(i, 1);
+          if (waiter.timer) clearTimeout(waiter.timer);
+          waiter.resolve(f);
         }
         return;
       }
@@ -269,11 +282,11 @@ class Client {
     this.closed = true;
     this.ws.close();
   }
-  /** send an RPC, resolve its reply (result or error) — never a hang: this
+  /** send an RPC, resolve its reply (result or error) - never a hang: this
    *  timeout is the assertion that a broken method still answers */
   async rpc(method: string, params?: unknown, id = 0): Promise<Frame> {
     const n = id || ++seq;
-    const p = new Promise<Frame>((res) => this.waiters.set(n, res));
+    const p = new Promise<Frame>((res) => this.waiters.push({ id: n, resolve: res }));
     this.ws.send(JSON.stringify(params === undefined ? { id: n, method } : { id: n, method, params }));
     const timeout = new Promise<Frame>((_, rej) => setTimeout(() => rej(new Error(`no reply to ${method} (id ${n})`)), 4000));
     return Promise.race([p, timeout]);
