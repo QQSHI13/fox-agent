@@ -762,10 +762,13 @@
       var msgs = res.messages || [];
       S.hasMore = !!res.hasMore;
       S.firstSeq = msgs.length ? msgs[0].seq : S.firstSeq;
-      // Insert ABOVE the existing transcript: the "load earlier" button is the
-      // first child, so everything goes before it (or before the first node
-      // when the button is gone).
-      var anchor = $("#loadOlder") || box.firstChild;
+      // Insert ABOVE the existing messages but BELOW the "load earlier" button,
+      // which is the transcript's first child while there is more to fetch.
+      // Anchoring on the button itself (rather than on the node after it) put
+      // each newly loaded page above the button, so the button ended up wedged
+      // between two pages of history instead of staying at the very top.
+      var btnEl = $("#loadOlder");
+      var anchor = btnEl ? btnEl.nextSibling : box.firstChild;
       appendItems(box, msgs, anchor);
       if (!S.hasMore) {
         var old = $("#loadOlder");
