@@ -229,6 +229,10 @@ async function main() {
           headers: p.headers,
           requestTimeoutMs: pcfg.requestTimeoutMs,
         };
+        // publish the host API so an ON-DISK plugin can reach the engine without
+        // importing the harness's internals (a compiled binary has no src/ beside it)
+        const { installHostApi } = await import("./gateway/host.ts");
+        installHostApi(pcfg, provider);
         await hit.cliCommand.run(parsed.rest.slice(1), { config: pcfg, provider, flags: parsed.flags });
         return;
       }
