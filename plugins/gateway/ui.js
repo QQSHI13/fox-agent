@@ -603,7 +603,10 @@
   function scrollToLatest(smooth) {
     var box = $("#transcript");
     S.pinned = true;
-    box.scrollTo({ top: box.scrollHeight, behavior: smooth === false ? "auto" : "smooth" });
+    // Smooth scrolling across a 6,000-message session takes seconds, which is
+    // not what "jump" means: past a screenful or two, land immediately.
+    var far = box.scrollHeight - box.scrollTop - box.clientHeight > 3000;
+    box.scrollTo({ top: box.scrollHeight, behavior: smooth === false || far ? "auto" : "smooth" });
     $("#jump").classList.remove("on");
   }
 
