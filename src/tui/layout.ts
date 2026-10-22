@@ -304,10 +304,17 @@ function glued(a: string | null, b: string): boolean {
  * long session became unreachable.
  */
 export function itemEdgeSpan(rows: readonly Row[]): [number, number] {
+  // A row is BLANK only when it has neither text NOR a [N] chip. An assistant
+  // node that carries tool calls has no text of its own — the reply is the
+  // calls — so it rendered as one zero-segment row and was trimmed away
+  // entirely, making its marker vanish: the transcript jumped [2] think -> [4]
+  // tool with [3] gone. The chip IS content (it is the node's address, the
+  // thing you click to view or revert it), so it keeps the row.
+  const blank = (r: Row): boolean => !r.segs.length && !(r.marker && "label" in r.marker);
   let a = 0;
   let b = rows.length;
-  while (a < b && !rows[a].segs.length) a++;
-  while (b > a && !rows[b - 1].segs.length) b--;
+  while (a < b && blank(rows[a])) a++;
+  while (b > a && blank(rows[b - 1])) b--;
   return [a, b];
 }
 

@@ -185,6 +185,19 @@ describe("computeFrame", () => {
     expect(itemEdgeSpan([])).toEqual([0, 0]);
   });
 
+  test("a row carrying a [N] chip is NOT blank (the missing-marker bug)", () => {
+    // An assistant node that carries tool calls has no text of its own — the
+    // reply IS the calls. It rendered as one zero-segment row, and the span
+    // trimmed it away, so its [N] chip never painted and the transcript jumped
+    // [2] think -> [4] tool with [3] missing. The chip is the node's address
+    // (what you click to view or revert it), so it keeps the row alive.
+    const chip = { label: "[3]", bg: "blue", fg: "white", w: 3 };
+    expect(itemEdgeSpan([{ segs: [], marker: chip }])).toEqual([0, 1]); // kept
+    expect(itemEdgeSpan([{ segs: [] }])).toEqual([1, 1]); // a blank without a chip still trims
+    // a chip row bracketed by blanks keeps only itself
+    expect(itemEdgeSpan([{ segs: [] }, { segs: [], marker: chip }, { segs: [] }])).toEqual([1, 2]);
+  });
+
   test("the window holds the transcript's real rows, at every scroll position", () => {
     // Geometry alone cannot catch a skipped-item accounting bug: `total` and
     // `scrollTop` stay honest while the rows inside the window drift, which
