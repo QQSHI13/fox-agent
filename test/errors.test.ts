@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { classifyProviderError, isTimeout, ProviderError, ProviderTimeoutError } from "../src/core/errors.ts";
+import { classifyProviderError, diagnoseProviderError, isTimeout, ProviderError, ProviderTimeoutError } from "../src/core/errors.ts";
 
 describe("classifyProviderError", () => {
   test("passes ProviderError through untouched", () => {
@@ -43,6 +43,37 @@ describe("classifyProviderError", () => {
     expect(classifyProviderError("plain string boom").message).toBe("plain string boom");
     expect(classifyProviderError(undefined).message).toBe("unknown provider error");
     expect(classifyProviderError(null).message).toBe("unknown provider error");
+  });
+});
+
+describe("diagnoseProviderError — the cause and the fix", () => {
+  test("names the cause and the action for the common provider failures", () => {
+    const cases: [string, string][] = [
+      ["HTTP 400: Invalid max_tokens value, the valid range is [1, 393216]", "output tokens"],
+      ["HTTP 401: Invalid API key provided", "API key"],
+      ["You have exceeded your quota", "quota"],
+      ["HTTP 429: Too Many Requests", "rate-limiting"],
+      ["model 'gpt-9' does not exist", "does not serve this model"],
+      ["Endpoint is unavailable", "down or overloaded"],
+      ["fetch failed: ECONNREFUSED", "could not be reached"],
+      ["content policy violation", "safety filter"],
+    ];
+    for (const [msg, cause] of cases) {
+      const d = diagnoseProviderError(msg);
+      expect(d, `no diagnosis for: ${msg}`).not.toBeNull();
+      expect(d!.cause, `wrong cause for: ${msg}`).toContain(cause);
+      expect(d!.fix.length).toBeGreaterThan(10); // a fix, not a platitude
+    }
+  });
+
+  test("a status alone still diagnoses when the body is unhelpful", () => {
+    expect(diagnoseProviderError("forbidden", 403)?.cause).toContain("refused");
+    expect(diagnoseProviderError("not found", 404)?.cause).toContain("path or model");
+    expect(diagnoseProviderError("boom", 500)?.cause).toContain("its side");
+  });
+
+  test("an unrecognized error is not given a made-up cause", () => {
+    expect(diagnoseProviderError("something entirely novel")).toBeNull();
   });
 });
 

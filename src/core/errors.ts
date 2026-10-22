@@ -132,6 +132,42 @@ export function classifyProviderError(e: unknown): ProviderError {
   return new ProviderError(finalMsg, status, retriable, rawMsg.length > finalMsg.length ? clean(rawMsg) : undefined);
 }
 
+/**
+ * A provider error, explained: what most likely went wrong and what to do.
+ *
+ * A raw upstream string ("Upstream request failed: [invalid_request_error]
+ * Invalid max_tokens value…") is technically complete and practically useless —
+ * it names a field, not a cause or a fix. These are the common shapes, mapped to
+ * the thing the user can actually change.
+ */
+const DIAGNOSES: { test: RegExp; cause: string; fix: string }[] = [
+  { test: /max_tokens|max_output_tokens|maximum context|too long|context length/i, cause: "the request asked for more output tokens than this endpoint allows", fix: "lower sampling.maxOutputTokens in your config, or let the provider pick its own default" },
+  { test: /invalid api key|unauthorized|401|authentication|api key not valid|incorrect api key/i, cause: "the API key was rejected", fix: "check the key for this profile (/login re-runs the setup wizard, /model switches profiles)" },
+  { test: /insufficient|quota|credit|billing|payment|余额|额度/i, cause: "the account is out of quota or credit", fix: "top up the account, or switch to another profile with /model" },
+  { test: /rate.?limit|429|too many requests/i, cause: "the endpoint is rate-limiting this key", fix: "wait, or use another profile; the turn is retried automatically a few times" },
+  { test: /model.*not found|unknown model|does not exist|no such model/i, cause: "the endpoint does not serve this model id", fix: "pick a model the endpoint lists (/model, or /models to see the list)" },
+  { test: /endpoint is unavailable|service unavailable|overloaded|502|503|504/i, cause: "the provider is down or overloaded", fix: "retry, or switch profile with /model" },
+  { test: /fetch failed|ENOTFOUND|ECONNREFUSED|network|socket|dns/i, cause: "the endpoint could not be reached", fix: "check the base URL and the network (a proxy or VPN may be needed)" },
+  { test: /timed? ?out|timeout/i, cause: "the provider went quiet before answering", fix: "raise request-timeout-ms, or use a faster model" },
+  { test: /stream.*(closed|ended)|connection closed|premature/i, cause: "the provider closed the stream mid-answer", fix: "usually transient — the turn is retried; if it repeats, try another profile" },
+  { test: /content.?filter|content.?policy|content_policy|safety|refusal/i, cause: "the request was refused by the provider's safety filter", fix: "rephrase, or use a model without that filter" },
+  { test: /tool|function.*(invalid|schema)|json.*invalid/i, cause: "the provider rejected the tool definitions", fix: "an MCP server may be sending a malformed schema; check /mcp" },
+];
+
+/**
+ * Explain a provider error: the status, the likely cause, and the fix.
+ * Returns null when nothing matches — the raw message is then the best we have.
+ */
+export function diagnoseProviderError(message: string, status?: number): { cause: string; fix: string } | null {
+  for (const d of DIAGNOSES) {
+    if (d.test.test(message)) return { cause: d.cause, fix: d.fix };
+  }
+  if (status === 401 || status === 403) return { cause: "the endpoint refused the request (auth or permission)", fix: "check the key and the profile's permissions (/login, /model)" };
+  if (status === 404) return { cause: "the endpoint does not have that path or model", fix: "check the base URL and the model id (/model)" };
+  if (status !== undefined && status >= 500) return { cause: "the provider is failing on its side", fix: "retry, or switch profile with /model" };
+  return null;
+}
+
 export function errMsg(e: unknown): string {
   return (e instanceof Error ? e.message : String(e)).slice(0, 500);
 }

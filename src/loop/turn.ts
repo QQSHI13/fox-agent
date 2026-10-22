@@ -2,7 +2,7 @@ import { appendMessage, getSession, recordUsage } from "../store/db.ts";
 import { estimateTokens } from "../providers/models.ts";
 import type { ProviderConfig, ChatMessage, ToolDef, ToolCall, ChatFn } from "../providers/types.ts";
 import { resolveChat } from "../providers/index.ts";
-import { classifyProviderError, FoxError, isTimeout } from "../core/errors.ts";
+import { classifyProviderError, diagnoseProviderError, FoxError, isTimeout } from "../core/errors.ts";
 import { debugInfo, debugWarn, debugError } from "../core/debuglog.ts";
 import type { AgentEvent } from "../core/events.ts";
 import type { Tool, ToolContext, ToolResult, PtyState } from "../tools/types.ts";
@@ -550,12 +550,15 @@ export async function* runTurnCore(
       outcome = yield* drainStep(chat, reqCfg, messages, toolDefs, signal, opts.retryLimit ?? 3);
     } catch (e) {
       const pe = classifyProviderError(e);
-      // the transcript gets the short line; the full text/stack goes to
-      // messages.error so a bug is still recoverable from the session
+      // the transcript gets the short line PLUS the diagnosis (what went wrong
+      // and what to do); the full text/stack goes to messages.error so a bug is
+      // still recoverable from the session
+      const diag = diagnoseProviderError(pe.message, pe.status);
+      const explained = diag ? `${pe.message} — ${diag.cause}; ${diag.fix}` : pe.message;
       appendMessage(sessionId, {
         parent_id: null,
         role: "system",
-        content: `fox-agent: provider error: ${pe.message}`,
+        content: `fox-agent: provider error: ${explained}`,
         tokens: 24,
         error: pe.detail ?? pe.message,
       });

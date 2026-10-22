@@ -61,6 +61,7 @@ import { shellPath } from "../core/shell.ts";
 import { killTree } from "../tools/exec.ts";
 import { debugLog, debugLogPath, setDebugLevel, debugLevelIsExplicit } from "../core/debuglog.ts";
 import { droppedPath, expandMentions } from "../core/mentions.ts";
+import { diagnoseProviderError } from "../core/errors.ts";
 import { isWindowsTerminal, isWSL } from "../core/wsl.ts";
 import { liveTheme, setTheme, theme, themeName, type Theme } from "./themes.ts";
 import { diffSegs, jsonSegs, statusSegs, pathSegs, wordDiff, ansiSegs, highlightVersion, setHighlightDone } from "./highlight.ts";
@@ -1280,8 +1281,14 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
    */
   function reportError(summary: string, detail?: unknown) {
     debugLog(summary, detail);
+    // A provider error gets its diagnosis: the likely cause AND the fix. "HTTP
+    // 400: Invalid max_tokens value" names a field; "the request asked for more
+    // output tokens than this endpoint allows; lower sampling.maxOutputTokens"
+    // is something the user can act on.
+    const diag = diagnoseProviderError(summary);
     const short = summary.replace(/\s+/g, " ").slice(0, 160);
-    push("error", `error: ${short} · log: ${debugLogPath()}`);
+    const advice = diag ? ` — ${diag.cause}; ${diag.fix}` : "";
+    push("error", `error: ${short}${advice} · log: ${debugLogPath()}`);
   }
 
   async function runAgent(raw: string) {
@@ -4285,13 +4292,19 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       const origOut = process.stdout.write.bind(process.stdout);
       const origErr = process.stderr.write.bind(process.stderr);
       const origConsole = { log: console.log, info: console.info, warn: console.warn, error: console.error };
+      // A write() call can end MID-LINE: the provider's stderr arrives in
+      // chunks, and logging each chunk separately chopped messages in half
+      // ("ailed after 3 attempts" — the head of "Failed" in the next entry).
+      // Buffer the partial tail and log only COMPLETE lines, so one log entry
+      // is one line of output.
+      let partial = "";
       const capStray = (chunk: unknown) => {
         const s = String(chunk);
-        const text = s.endsWith("\n") ? s : s + "\n";
-        stray.push(text);
-        // the log keeps the text too, so it survives the process and can be read
-        // long after the exit panel scrolled away
-        debugLog("stray output", text.trimEnd());
+        stray.push(s);
+        partial += s;
+        const lines = partial.split("\n");
+        partial = lines.pop() ?? ""; // the last piece has no newline yet
+        if (lines.length) debugLog("stray output", lines.join("\n"));
       };
       const swallow = (chunk: unknown, ...rest: unknown[]) => {
         capStray(chunk);
@@ -4306,6 +4319,11 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         (process.stdout as { write: unknown }).write = origOut;
         (process.stderr as { write: unknown }).write = origErr;
         Object.assign(console, origConsole);
+        // flush the last partial line (no trailing newline) so it is not lost
+        if (partial.trim()) {
+          debugLog("stray output", partial.trimEnd());
+          partial = "";
+        }
         // The exit panel: everything the UI swallowed while it was up, in one
         // block. It is the "error panel" — a plugin that printed a stack trace,
         // an MCP child that complained, a library that warned: all of it is here
