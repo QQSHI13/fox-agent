@@ -2,6 +2,7 @@ import { Database } from "bun:sqlite";
 import { existsSync, rmSync } from "node:fs";
 import { estimateTokens } from "../providers/models.ts";
 import { ensureLayout, agentHome, indexDbPath, legacyDbPath, sessionDbPath } from "../core/paths.ts";
+import { debugInfo } from "../core/debuglog.ts";
 
 export type Role = "system" | "user" | "assistant" | "tool" | "think";
 
@@ -309,6 +310,7 @@ export function sessionDb(sessionId: string): Database {
   ensureColumn(d, "usage", "cached_tokens", "cached_tokens INTEGER");
   _sessions.set(sessionId, d);
   evict(sessionId);
+  debugInfo("session", `opened db ${sessionId}`, `file=${sessionDbPath(sessionId)} open=${_sessions.size} cached`);
   return d;
 }
 

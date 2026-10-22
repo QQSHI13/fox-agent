@@ -2,6 +2,7 @@ import { dirname, isAbsolute, join } from "node:path";
 import { homedir } from "node:os";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { ConfigError } from "./errors.ts";
+import { debugInfo } from "./debuglog.ts";
 import { setConfiguredModels } from "../providers/models.ts";
 import { presetById } from "../providers/modelsdev.ts";
 
@@ -1068,6 +1069,16 @@ export interface ResolvedProfile {
  */
 export function resolveProfile(cfg: Config, env: Record<string, string | undefined> = process.env): ResolvedProfile {
   const p = cfg.providers[cfg.provider];
+  // Where the profile came from and what it resolves to — the question behind
+  // "why is it hitting THAT endpoint" — answered without guessing.
+  debugInfo(
+    "config",
+    `profile '${cfg.provider}' resolved`,
+    `model=${cfg.model} profiles=${Object.keys(cfg.providers).join(",") || "(none)"}\n` +
+      `format=${p?.format ?? "(preset or bare)"} baseUrl=${p?.baseUrl ?? cfg.baseUrl}\n` +
+      `apiKey=${p?.apiKey ? "from profile" : cfg.apiKey ? "from top level" : "MISSING"}\n` +
+      `headers=${Object.keys(p?.headers ?? {}).join(",") || "(none)"}`,
+  );
   if (!p) {
     // /model saves a catalog preset id (opencode, deepseek, …) as `provider` —
     // it has no [providers.*] table, so expand it here or the name would leak

@@ -4276,18 +4276,22 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
 
       // Stray-output quarantine. Plugins, MCP children and library code that
       // write to stdout/stderr directly would shred the grid mid-frame. While
-      // the TUI owns the terminal those writes go to the debug log and a buffer,
-      // replayed to stderr after exit — "the output you see after you exit the
-      // TUI". The TUI's own painting goes through Bun.stdout.writer() (term.ts),
-      // which none of this touches.
+      // the TUI owns the terminal those writes are RECORDED and never shown:
+      // they go to the debug log, and the accumulated text is presented at exit
+      // as an error panel (so a broken plugin's output is still reachable, but
+      // it never corrupts the running UI). The TUI's own painting goes through
+      // Bun.stdout.writer() (term.ts), which none of this touches.
       const stray: string[] = [];
       const origOut = process.stdout.write.bind(process.stdout);
       const origErr = process.stderr.write.bind(process.stderr);
       const origConsole = { log: console.log, info: console.info, warn: console.warn, error: console.error };
       const capStray = (chunk: unknown) => {
         const s = String(chunk);
-        stray.push(s.endsWith("\n") ? s : s + "\n");
-        debugLog("stray output", s.trimEnd());
+        const text = s.endsWith("\n") ? s : s + "\n";
+        stray.push(text);
+        // the log keeps the text too, so it survives the process and can be read
+        // long after the exit panel scrolled away
+        debugLog("stray output", text.trimEnd());
       };
       const swallow = (chunk: unknown, ...rest: unknown[]) => {
         capStray(chunk);
@@ -4302,8 +4306,24 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         (process.stdout as { write: unknown }).write = origOut;
         (process.stderr as { write: unknown }).write = origErr;
         Object.assign(console, origConsole);
+        // The exit panel: everything the UI swallowed while it was up, in one
+        // block. It is the "error panel" — a plugin that printed a stack trace,
+        // an MCP child that complained, a library that warned: all of it is here
+        // instead of being lost (or smeared over the grid). The debug log has
+        // the same text, plus the stack traces.
         if (stray.length) {
-          origErr(`\n--- output captured while the TUI was up ---\n${stray.join("")}--- end captured output ---\n`);
+          const text = stray.join("");
+          const lines = text.split("\n").filter((l) => l.trim().length > 0);
+          const shown = lines.slice(-40);
+          origErr(
+            `\n${"─".repeat(Math.min(78, term.size?.().width ?? 78))}\n` +
+              ` fox-agent: ${lines.length} line(s) of output were captured while the TUI was running\n` +
+              `${"─".repeat(Math.min(78, term.size?.().width ?? 78))}\n` +
+              `${shown.join("\n")}\n` +
+              (lines.length > shown.length ? `… ${lines.length - shown.length} more line(s)\n` : "") +
+              ` full log: ${debugLogPath()}\n` +
+              `${"─".repeat(Math.min(78, term.size?.().width ?? 78))}\n`,
+          );
         }
       };
       restoreOutputRef = restoreOutput;
