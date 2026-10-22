@@ -181,7 +181,7 @@ async function main() {
   // a plugin subcommand) logs the same way. An explicit level wins over the
   // config's `debug` key.
   {
-    const { applyDebugSpec, setDebugLevel, setDebugMirrorStderr } = await import("./core/debuglog.ts");
+    const { applyDebugSpec, setDebugLevel, setDebugMirrorStderr, debugLogPath } = await import("./core/debuglog.ts");
     const n = Number(parsed.flags.get("verbosity") ?? 0);
     if (n > 0) setDebugLevel(n >= 3 ? "trace" : n === 2 ? "debug" : "info", true);
     const spec = parsed.flags.get("debug");
@@ -189,6 +189,10 @@ async function main() {
     // headless modes mirror to stderr so `fox -p ... -d 2>&1 | grep` works
     const headless = parsed.flags.has("print") || !process.stdout.isTTY;
     if (headless) setDebugMirrorStderr(true);
+    // Say WHERE the log is, once, when debugging is on. The log lives in the
+    // DATA dir (~/.local/share/fox-agent), not the config dir (~/.config/fox-agent)
+    // — hunting for it in the wrong place cost a debugging round.
+    if (n > 0 || spec) note(`debug log: ${debugLogPath()}`);
   }
 
   if (parsed.flags.get("version")) return console.log(VERSION);

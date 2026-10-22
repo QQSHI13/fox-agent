@@ -48,7 +48,9 @@ type ClientMsg =
   | { id: number; method: "session.get"; params: { id: string } }
   | { id: number; method: "session.new"; params: { cwd?: string } }
   | { id: number; method: "turn.send"; params: { sessionId: string; prompt: string } }
-  | { id: number; method: "turn.cancel"; params: { sessionId: string } };
+  | { id: number; method: "turn.cancel"; params: { sessionId: string } }
+  | { id: number; method: "command.list" }
+  | { id: number; method: "command.run"; params: { sessionId: string; input: string } };
 
 type ServerEvent =
   | { event: "turn.delta"; sessionId: string; delta: string }
@@ -145,7 +147,7 @@ export async function runGateway(opts: { port?: number; hostname?: string } = {}
         clients.clear();
         host().debug.info("gateway", "client disconnected");
       },
-      message(ws, raw) {
+      async message(ws, raw) {
         let msg: ClientMsg;
         try {
           msg = JSON.parse(String(raw));
@@ -187,6 +189,19 @@ export async function runGateway(opts: { port?: number; hostname?: string } = {}
             running.get(msg.params.sessionId)?.abort();
             reply({ ok: true });
             break;
+          case "command.list":
+            // the TUI's slash commands — the UI shows them as hints and can run
+            // them, so the web surface and the terminal surface stay ONE thing
+            reply(h.commands.list());
+            break;
+          case "command.run": {
+            // run one slash command against a session (the TUI's own runner, via
+            // the host API) — /model, /prune, /undo, /ops, /todo, /usage, …
+            const { sessionId, input } = msg.params;
+            const r = await h.commands.run(sessionId, input);
+            reply(r);
+            break;
+          }
         }
       },
     },

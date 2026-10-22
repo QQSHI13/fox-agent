@@ -16,6 +16,7 @@ import { runTurnCore } from "../loop/turn.ts";
 import { resolveChat } from "../providers/index.ts";
 import { VERSION } from "../core/version.ts";
 import { debugAt, type DebugCategory, type DebugLevel } from "../core/debuglog.ts";
+import { COMMANDS, runSlashCommand, type HarnessState } from "../commands.ts";
 import type { Config } from "../core/config.ts";
 import type { ProviderConfig } from "../providers/types.ts";
 import type { AgentEvent } from "../core/events.ts";
@@ -34,6 +35,17 @@ export interface FoxHostApi {
   };
   /** run one turn, yielding the same events the TUI renders */
   turn(sessionId: string, prompt: string, signal?: AbortSignal): AsyncGenerator<AgentEvent>;
+  /**
+   * The slash-command surface — the SAME commands the TUI offers (/model,
+   * /sessions, /delete, /prune, /undo, /ops, /todo, /usage, /view, …). A plugin
+   * (the gateway) gets the whole surface for free instead of reimplementing it.
+   */
+  commands: {
+    /** the command list, for hints and autocomplete */
+    list(): { name: string; desc: string; usage?: string; arg?: boolean }[];
+    /** run one against a session; returns what the TUI would show */
+    run(sessionId: string, input: string): Promise<{ output?: string; newSessionId?: string; handled: boolean }>;
+  };
   /** the chat function the host would use (so a plugin can talk to the model) */
   chat: typeof resolveChat;
   /**
@@ -85,6 +97,29 @@ export function installHostApi(config: Config, provider: ProviderConfig): FoxHos
         config,
         chat: resolveChat,
       }),
+    commands: {
+      list: () => COMMANDS.map((c) => ({ name: c.name, desc: c.desc, usage: c.usage, arg: c.arg })),
+      run: async (sessionId, input) => {
+        // The TUI's OWN command runner, against a state scoped to this session.
+        // A plugin (the gateway) therefore gets /model, /sessions, /delete,
+        // /prune, /undo, /ops, /todo, /usage, /view … for free — the same code
+        // the TUI runs, not a reimplementation that can drift.
+        const s = getSession(sessionId);
+        const state: HarnessState = {
+          sessionId,
+          cwd: s?.cwd ?? process.cwd(),
+          provider,
+          config,
+          configPath: undefined,
+          // NOT interactive: a picker/prompt would block a headless host, so
+          // those commands take their printed/argument form instead.
+          interactive: false,
+        };
+        const res = runSlashCommand(input, state);
+        if (!res) return { handled: false };
+        return { handled: true, output: res.output, newSessionId: res.newSessionId };
+      },
+    },
     chat: resolveChat,
     debug: {
       at: (level, category, message, detail) => debugAt(level, category, message, detail),
