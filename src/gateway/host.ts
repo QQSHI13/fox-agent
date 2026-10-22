@@ -15,7 +15,8 @@ import { listSessions, getSession, allMessagesLite, createSession, appendMessage
 import { runTurnCore } from "../loop/turn.ts";
 import { resolveChat } from "../providers/index.ts";
 import { VERSION } from "../core/version.ts";
-import { debugAt, type DebugCategory, type DebugLevel } from "../core/debuglog.ts";
+import { debugAt, debugLogPath, type DebugCategory, type DebugLevel } from "../core/debuglog.ts";
+import { readFileSync } from "node:fs";
 import { COMMANDS, runSlashCommand, type HarnessState } from "../commands.ts";
 import type { Config } from "../core/config.ts";
 import type { ProviderConfig } from "../providers/types.ts";
@@ -58,6 +59,10 @@ export interface FoxHostApi {
     info(category: DebugCategory, message: string, detail?: unknown): void;
     warn(category: DebugCategory, message: string, detail?: unknown): void;
     error(category: DebugCategory, message: string, detail?: unknown): void;
+    /** where the log lives — a plugin shows it so the user can find it */
+    path(): string;
+    /** the last N lines of the log (a debug panel's content) */
+    tail(lines?: number): string;
   };
 }
 
@@ -126,6 +131,15 @@ export function installHostApi(config: Config, provider: ProviderConfig): FoxHos
       info: (category, message, detail) => debugAt("info", category, message, detail),
       warn: (category, message, detail) => debugAt("warn", category, message, detail),
       error: (category, message, detail) => debugAt("error", category, message, detail),
+      path: () => debugLogPath(),
+      tail: (n = 60) => {
+        try {
+          const lines = readFileSync(debugLogPath(), "utf8").trimEnd().split("\n");
+          return lines.slice(-n).join("\n");
+        } catch {
+          return "(no log yet)";
+        }
+      },
     },
   };
   globalThis.foxHost = api;

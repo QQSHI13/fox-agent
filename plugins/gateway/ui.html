@@ -74,6 +74,11 @@ body{font-family:ui-sans-serif,system-ui,-apple-system,sans-serif;height:100vh;d
 #status.on{display:block}
 #modal{position:fixed;inset:0;background:#000a;display:none;align-items:flex-start;justify-content:center;padding-top:8vh;z-index:9}
 #modal.on{display:flex}
+#logpanel{position:fixed;right:0;top:0;bottom:0;width:min(620px,92vw);background:var(--panel);border-left:1px solid var(--border);z-index:8;display:none;flex-direction:column}
+#logpanel.on{display:flex}
+#logpanel .lh{padding:12px 16px;border-bottom:1px solid var(--border);font-size:14px;display:flex;justify-content:space-between;align-items:center;gap:10px}
+#logpanel .lp{font-size:11px;color:var(--dim);font-family:var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#logpanel pre{flex:1;overflow:auto;padding:12px 16px;font-family:var(--mono);font-size:11.5px;line-height:1.45;color:#c9d1d9;white-space:pre-wrap;word-break:break-word}
 #modal .box2{width:min(680px,92vw);max-height:78vh;background:var(--panel);border:1px solid var(--border);border-radius:12px;overflow:hidden;display:flex;flex-direction:column}
 #modal .mh{padding:12px 16px;border-bottom:1px solid var(--border);font-size:14px;display:flex;justify-content:space-between;align-items:center}
 #modal .mi{padding:10px 16px;border-bottom:1px solid var(--border);cursor:pointer;display:flex;gap:12px;align-items:baseline}
@@ -97,6 +102,7 @@ body{font-family:ui-sans-serif,system-ui,-apple-system,sans-serif;height:100vh;d
     <span class="model" id="model"></span>
     <span class="sp"></span>
     <button id="switcher">Sessions ⌃</button>
+    <button id="logbtn">Log</button>
     <button id="cancel">■ Cancel</button>
   </header>
   <div id="log"><div class="wrap"><div class="empty" id="empty">Pick a session on the left, or create a new one.</div></div></div>
@@ -113,6 +119,14 @@ body{font-family:ui-sans-serif,system-ui,-apple-system,sans-serif;height:100vh;d
   <input class="mf" id="mfilter" placeholder="filter…" autocomplete="off">
   <div id="mlist" style="overflow-y:auto"></div>
 </div></div>
+<div id="logpanel">
+  <div class="lh"><span>Debug log</span><span style="display:flex;gap:8px">
+    <button id="logrefresh" style="background:#161b22;border:1px solid var(--border);color:#c9d1d9;border-radius:6px;padding:3px 9px;font-size:12px;cursor:pointer">Refresh</button>
+    <button id="logclose" style="background:#161b22;border:1px solid var(--border);color:#c9d1d9;border-radius:6px;padding:3px 9px;font-size:12px;cursor:pointer">Close</button>
+  </span></div>
+  <div class="lp" id="logpath"></div>
+  <pre id="logtext"></pre>
+</div>
 <script>
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
@@ -217,6 +231,14 @@ async function openSession(id) {
   log.innerHTML = '<div class="wrap" id="transcript"></div>';
   const tr = $('#transcript');
   for (const m of s.messages) tr.appendChild(renderMsg(m.role, m.content, m.seq));
+  // A turn still running in this session (started from another view): replay what
+  // it has produced so far, so switching back shows the live turn, not a blank.
+  const r = runs.get(id);
+  if (r && r.text) {
+    const b = document.createElement('div'); b.className = 'msg agent';
+    b.innerHTML = '<div class="avatar">F</div><div class="body"><div class="who">fox-agent</div><div class="bubble">' + md(r.text) + '<span class="caret"></span></div></div>';
+    tr.appendChild(b); r.bubble = b;
+  }
   hideError();
   scroll(); renderSessions(); $('#in').focus();
 }
@@ -333,14 +355,31 @@ input.addEventListener('keydown', e => {
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
 });
 
+/* ---- the debug log panel: the web surface is also the debugging surface ---- */
+async function openLog() {
+  const p = $('#logpanel'); p.classList.add('on');
+  $('#logtext').textContent = 'loading…';
+  try {
+    const r = await rpc('debug.log', { lines: 200 });
+    $('#logpath').textContent = r.path;
+    $('#logtext').textContent = r.lines || '(the log is empty — run fox with -d/-dd/-ddd to fill it)';
+  } catch (e) { $('#logtext').textContent = 'could not read the log: ' + (e.message || e); }
+}
+$('#logbtn').onclick = openLog;
+$('#logclose').onclick = () => $('#logpanel').classList.remove('on');
+$('#logrefresh').onclick = openLog;
+
 /* ---- streamed events ---- */
 function onEvent(ev) {
-  if (ev.sessionId !== sid) return;   // another session's turn — it streams into ITS view
+  // A turn streams into ITS session, not the one on screen: keep the buffer for
+  // every session so switching back shows the live turn, and render only the
+  // session being viewed.
+  const r = runs.get(ev.sessionId) || (runs.set(ev.sessionId, r = { bubble: null, text: '', think: '', tools: new Map() }), runs.get(ev.sessionId));
+  if (ev.sessionId !== sid) { renderSessions(); return; }
   const tr = document.getElementById('transcript');
   if (!tr) return;
-  const r = runs.get(sid) || (runs.set(sid, r = { bubble: null, text: '', think: '', tools: new Map() }), runs.get(sid));
   if (ev.event === 'turn.status') {
-    if (ev.state === 'started') { r.text = ''; r.think = ''; $('#cancel').style.display = 'inline-block'; }
+    if (ev.state === 'started') { r.text = ''; r.think = ''; r.bubble = null; $('#cancel').style.display = 'inline-block'; }
     else {
       $('#cancel').style.display = 'none';
       if (ev.state === 'failed') showError('the turn failed', new Error('the provider or a tool failed — see the session log'));

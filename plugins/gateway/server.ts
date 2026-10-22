@@ -50,7 +50,8 @@ type ClientMsg =
   | { id: number; method: "turn.send"; params: { sessionId: string; prompt: string } }
   | { id: number; method: "turn.cancel"; params: { sessionId: string } }
   | { id: number; method: "command.list" }
-  | { id: number; method: "command.run"; params: { sessionId: string; input: string } };
+  | { id: number; method: "command.run"; params: { sessionId: string; input: string } }
+  | { id: number; method: "debug.log"; params: { lines?: number } };
 
 type ServerEvent =
   | { event: "turn.delta"; sessionId: string; delta: string }
@@ -200,6 +201,12 @@ export async function runGateway(opts: { port?: number; hostname?: string } = {}
             const { sessionId, input } = msg.params;
             const r = await h.commands.run(sessionId, input);
             reply(r);
+            break;
+          }
+          case "debug.log": {
+            // the debug panel's content — the SAME log the harness writes, so the
+            // web surface is also the debugging surface
+            reply({ path: h.debug.path(), lines: h.debug.tail(msg.params?.lines ?? 80) });
             break;
           }
         }
