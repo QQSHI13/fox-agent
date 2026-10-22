@@ -15,6 +15,7 @@ import { listSessions, getSession, allMessagesLite, createSession, appendMessage
 import { runTurnCore } from "../loop/turn.ts";
 import { resolveChat } from "../providers/index.ts";
 import { VERSION } from "../core/version.ts";
+import { debugAt, type DebugCategory, type DebugLevel } from "../core/debuglog.ts";
 import type { Config } from "../core/config.ts";
 import type { ProviderConfig } from "../providers/types.ts";
 import type { AgentEvent } from "../core/events.ts";
@@ -35,6 +36,17 @@ export interface FoxHostApi {
   turn(sessionId: string, prompt: string, signal?: AbortSignal): AsyncGenerator<AgentEvent>;
   /** the chat function the host would use (so a plugin can talk to the model) */
   chat: typeof resolveChat;
+  /**
+   * The host's debug log — a plugin writes through the host so its entries land
+   * in the same file, with the same levels and categories, and honour the same
+   * verbosity the user set (-d/-dd/-ddd).
+   */
+  debug: {
+    at(level: DebugLevel, category: DebugCategory, message: string, detail?: unknown): void;
+    info(category: DebugCategory, message: string, detail?: unknown): void;
+    warn(category: DebugCategory, message: string, detail?: unknown): void;
+    error(category: DebugCategory, message: string, detail?: unknown): void;
+  };
 }
 
 declare global {
@@ -74,6 +86,12 @@ export function installHostApi(config: Config, provider: ProviderConfig): FoxHos
         chat: resolveChat,
       }),
     chat: resolveChat,
+    debug: {
+      at: (level, category, message, detail) => debugAt(level, category, message, detail),
+      info: (category, message, detail) => debugAt("info", category, message, detail),
+      warn: (category, message, detail) => debugAt("warn", category, message, detail),
+      error: (category, message, detail) => debugAt("error", category, message, detail),
+    },
   };
   globalThis.foxHost = api;
   return api;

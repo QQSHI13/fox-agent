@@ -20,6 +20,12 @@ import { dirname, join } from "node:path";
 interface HostApi {
   version: string;
   provider: { model: string };
+  debug: {
+    at(level: "off" | "error" | "warn" | "info" | "debug" | "trace", category: string, message: string, detail?: unknown): void;
+    info(category: string, message: string, detail?: unknown): void;
+    warn(category: string, message: string, detail?: unknown): void;
+    error(category: string, message: string, detail?: unknown): void;
+  };
   sessions: {
     list(limit?: number): { id: string; title: string | null; cwd: string; model: string; updated_at: number }[];
     get(id: string): { id: string; title: string | null; cwd: string; model: string; updated_at: number } | null;
@@ -76,6 +82,7 @@ async function runTurn(
   const h = host();
   const ctl = new AbortController();
   running.set(sessionId, ctl);
+  h.debug.info("gateway", `turn started ${sessionId}`, prompt.slice(0, 200));
   push({ event: "turn.status", sessionId, state: "started" });
   try {
     for await (const ev of h.turn(sessionId, prompt, ctl.signal)) {
@@ -89,8 +96,11 @@ async function runTurn(
       }
     }
   } catch (e) {
-    if (ctl.signal.aborted) push({ event: "turn.status", sessionId, state: "cancelled" });
-    else {
+    if (ctl.signal.aborted) {
+      h.debug.info("gateway", `turn cancelled ${sessionId}`);
+      push({ event: "turn.status", sessionId, state: "cancelled" });
+    } else {
+      h.debug.error("gateway", `turn failed ${sessionId}`, (e as Error)?.stack ?? String(e));
       push({ event: "turn.delta", sessionId, delta: `\n[error: ${(e as Error).message ?? e}]` });
       push({ event: "turn.status", sessionId, state: "failed" });
     }
@@ -129,18 +139,22 @@ export async function runGateway(opts: { port?: number; hostname?: string } = {}
     websocket: {
       open(ws) {
         clients.add({ send: (d) => ws.send(d) });
+        host().debug.info("gateway", "client connected", `clients=${clients.size}`);
       },
       close() {
         clients.clear();
+        host().debug.info("gateway", "client disconnected");
       },
       message(ws, raw) {
         let msg: ClientMsg;
         try {
           msg = JSON.parse(String(raw));
         } catch {
+          host().debug.warn("gateway", "malformed message", String(raw).slice(0, 200));
           ws.send(JSON.stringify({ error: "parse error" }));
           return;
         }
+        host().debug.info("gateway", `rpc ${msg.method}`, `id=${msg.id}`);
         const reply = (result: unknown) => ws.send(JSON.stringify({ id: msg.id, result }));
         const broadcast = (ev: ServerEvent) => {
           const data = JSON.stringify(ev);
