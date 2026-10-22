@@ -297,7 +297,7 @@
         "p95": null,
         "n": 0
       },
-      "idle_pss_mb": null
+      "idle_pss_mb": 146.0966796875
     },
     {
       "agent": "copilot cli",
@@ -508,10 +508,10 @@
         "n": 5
       },
       "tui_first_input": {
-        "min": null,
-        "p50": null,
-        "p95": null,
-        "n": 0
+        "min": 797.0517410000184,
+        "p50": 797.0517410000184,
+        "p95": 797.0517410000184,
+        "n": 1
       },
       "tui_input_latency": {
         "min": null,
