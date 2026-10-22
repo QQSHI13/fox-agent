@@ -3,6 +3,7 @@ import { estimateTokens } from "../providers/models.ts";
 import type { ProviderConfig, ChatMessage, ToolDef, ToolCall, ChatFn } from "../providers/types.ts";
 import { resolveChat } from "../providers/index.ts";
 import { classifyProviderError, FoxError, isTimeout } from "../core/errors.ts";
+import { debugInfo, debugWarn, debugError } from "../core/debuglog.ts";
 import type { AgentEvent } from "../core/events.ts";
 import type { Tool, ToolContext, ToolResult, PtyState } from "../tools/types.ts";
 import { validateArgs } from "../tools/types.ts";
@@ -154,6 +155,7 @@ async function* drainStep(
   for (let n = 0; ; n++) {
     try {
       if (n > 0) acc.text = "", (acc.calls = []), (acc.usage = null), (acc.finish = ""), (acc.reasoning = ""); // a retry re-streams from zero — a kept accumulator duplicated reasoning into the persisted think node
+      debugInfo("turn", `provider attempt ${n + 1}`, `model=${cfg.model} messages=${messages.length} tools=${toolDefs.length}`);
       for await (const ev of attempt()) yield ev;
       return acc;
     } catch (e) {
@@ -175,6 +177,7 @@ async function* drainStep(
       }
       // compute the backoff first so the event reports the real wait
       const delay = Math.min(8_000, 500 * 2 ** n) + Math.floor(Math.random() * 250);
+      debugWarn("turn", `provider retry ${n + 1}/${retryLimit}`, `in ${delay}ms: ${pe.message}`);
       yield { type: "retry", attempt: n + 1, delay_ms: delay, error: pe.message };
       // abort-aware sleep: ESC during a 4-8s backoff must not wait out the
       // whole delay before the interrupt is honored
@@ -224,19 +227,32 @@ function eventArgs(args: string): string {
 
 async function execToolCall(call: ToolCall, tools: Map<string, Tool>, tctx: ToolContext): Promise<ToolResult> {
   const tool = tools.get(call.name);
-  if (!tool) return { ok: false, output: `error: unknown tool ${call.name}` };
+  if (!tool) {
+    debugWarn("tools", `unknown tool ${call.name}`);
+    return { ok: false, output: `error: unknown tool ${call.name}` };
+  }
 
   const { args, error: parseErr } = safeParseArgs(call.arguments);
-  if (parseErr) return { ok: false, output: `error: ${parseErr} for ${call.name}; send valid JSON matching the schema` };
+  if (parseErr) {
+    debugWarn("tools", `${call.name}: bad arguments`, parseErr);
+    return { ok: false, output: `error: ${parseErr} for ${call.name}; send valid JSON matching the schema` };
+  }
   const reqErr = missingRequired(tool.def, args);
-  if (reqErr) return { ok: false, output: `error: ${reqErr}` };
+  if (reqErr) {
+    debugWarn("tools", `${call.name}: missing required argument`, reqErr);
+    return { ok: false, output: `error: ${reqErr}` };
+  }
 
+  const t0 = Date.now();
+  debugInfo("tools", `→ ${call.name}`, `args=${JSON.stringify(args).slice(0, 400)}`);
   try {
     const r = await tool.run(args, tctx);
     const result = typeof r === "string" ? { ok: true, output: r } : r;
     const output = result.output.length > outCap() * 2 ? result.output.slice(-outCap() * 2) : result.output; // tail-cap
+    debugInfo("tools", `← ${call.name}`, `ok=${result.ok} ms=${Date.now() - t0} bytes=${result.output.length}`);
     return { ok: result.ok, output, media: result.media };
   } catch (e) {
+    debugError("tools", `${call.name} threw`, `${(e as Error).stack ?? (e as Error).message}`);
     return { ok: false, output: `error: ${(e as Error).message}` };
   }
 }

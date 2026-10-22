@@ -59,7 +59,7 @@ import { createWizard, type PromptState, type Wizard } from "./wizard.ts";
 import { childEnv } from "../core/childenv.ts";
 import { shellPath } from "../core/shell.ts";
 import { killTree } from "../tools/exec.ts";
-import { debugLog, debugLogPath, setDebugLevel } from "../core/debuglog.ts";
+import { debugLog, debugLogPath, setDebugLevel, debugLevelIsExplicit } from "../core/debuglog.ts";
 import { droppedPath, expandMentions } from "../core/mentions.ts";
 import { isWindowsTerminal, isWSL } from "../core/wsl.ts";
 import { liveTheme, setTheme, theme, themeName, type Theme } from "./themes.ts";
@@ -171,8 +171,10 @@ export function setTuiScrollStep(n: number): void {
 let DEBUG_VERBOSE = false;
 export function setDebug(on: boolean): void {
   DEBUG_VERBOSE = on;
-  // widen the shared debug log too: `debug = true` means "show me everything"
-  setDebugLevel(on ? "debug" : "off");
+  // widen the shared debug log too: `debug = true` means "show me everything".
+  // But an EXPLICIT level (fox -ddd, FOX_AGENT_DEBUG) wins — the config must
+  // not silently downgrade a level the user asked for.
+  if (!debugLevelIsExplicit()) setDebugLevel(on ? "debug" : "off");
 }
 export function debugVerbose(): boolean {
   return DEBUG_VERBOSE;

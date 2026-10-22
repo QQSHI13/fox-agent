@@ -6,6 +6,7 @@ import { streamText, jsonSchema, type ToolSet } from "ai";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import type { ChatMessage, ProviderConfig, StreamEvent, ToolDef } from "./types.ts";
 import { classifyProviderError } from "../core/errors.ts";
+import { debugInfo, debugError } from "../core/debuglog.ts";
 import { startWatchdog } from "./watchdog.ts";
 import { reasoningProviderOptions, samplingOptions, outputTokenOptions } from "./index.ts";
 import { toModelMessages } from "./convert.ts";
@@ -35,6 +36,8 @@ export async function* streamChat(
   for (const t of tools) toolSet[t.name] = { description: t.description, inputSchema: jsonSchema(t.parameters as never) };
 
   const wd = startWatchdog(cfg.requestTimeoutMs, signal);
+  const started = Date.now();
+  debugInfo("provider", `request → ${cfg.baseUrl}`, `model=${cfg.model} format=${cfg.provider ?? "openai-compatible"} messages=${messages.length} tools=${tools.length} maxTokens=${outputTokenOptions(cfg).maxOutputTokens ?? "(provider default)"}`);
   try {
     // ai v7 requires system content via the dedicated option, not in messages[]
     const sys = messages
@@ -104,6 +107,7 @@ export async function* streamChat(
               // stops getting charged once a prompt has been seen before
               cached_tokens: part.totalUsage.inputTokenDetails?.cacheReadTokens ?? 0,
             };
+          debugInfo("provider", `response ← ${cfg.model}`, `finish=${finish} in=${part.totalUsage?.inputTokens ?? 0} out=${part.totalUsage?.outputTokens ?? 0} cached=${part.totalUsage?.inputTokenDetails?.cacheReadTokens ?? 0} ms=${Date.now() - started}`);
           break;
         }
       }
@@ -133,7 +137,12 @@ export async function* streamChat(
       err.name = "AbortError";
       throw err;
     }
-    throw classifyProviderError(e);
+    const pe = classifyProviderError(e);
+    // the full truth about a failed call: endpoint, model, status, the provider's
+    // own message, and the raw body. This is where a "400 Invalid max_tokens"
+    // becomes legible instead of a bare upstream string.
+    debugError("provider", `request failed (${pe.status ?? "?"})`, `url=${cfg.baseUrl} model=${cfg.model} ms=${Date.now() - started}\n${pe.message}\n${pe.detail ?? ""}`);
+    throw pe;
   } finally {
     wd.done();
   }

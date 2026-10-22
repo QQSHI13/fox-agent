@@ -72,6 +72,12 @@ let level: DebugLevel = "off";
 let categories: Set<DebugCategory> = new Set();
 /** Mirror entries to stderr as well as the file (for headless runs). */
 let mirrorStderr = false;
+/**
+ * True when a CLI flag or an env var chose the level. The TUI's config-driven
+ * `setDebug(on)` only widens the log when the level was NOT chosen explicitly
+ * — otherwise `fox -ddd` would be silently downgraded to the config's `debug`.
+ */
+let explicitLevel = false;
 
 function parseLevel(v: string | undefined): DebugLevel | null {
   if (!v) return null;
@@ -90,6 +96,7 @@ function parseLevel(v: string | undefined): DebugLevel | null {
 export function applyDebugSpec(spec: string): DebugLevel | null {
   const s = spec.trim().toLowerCase();
   if (!s) return null;
+  explicitLevel = true;
   // "category:level" applies a level to specific categories.
   if (s.includes(":")) {
     const [cats, lvl] = s.split(":");
@@ -143,8 +150,14 @@ export function debugCategories(): DebugCategory[] {
 }
 
 /** Set the level directly (the `/debug` command and the `--debug` flag). */
-export function setDebugLevel(l: DebugLevel): void {
+export function setDebugLevel(l: DebugLevel, explicit = false): void {
   level = l;
+  if (explicit) explicitLevel = true;
+}
+
+/** Was the level chosen explicitly (CLI flag / env var)? */
+export function debugLevelIsExplicit(): boolean {
+  return explicitLevel;
 }
 
 /** Restrict to these categories (empty = all). */
