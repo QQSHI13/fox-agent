@@ -2,7 +2,7 @@ import { appendMessage, getSession, recordUsage } from "../store/db.ts";
 import { estimateTokens } from "../providers/models.ts";
 import type { ProviderConfig, ChatMessage, ToolDef, ToolCall, ChatFn } from "../providers/types.ts";
 import { resolveChat } from "../providers/index.ts";
-import { classifyProviderError, diagnoseProviderError, FoxError, isTimeout } from "../core/errors.ts";
+import { classifyProviderError, diagnoseProviderError, FoxError, isTimeout, isTruncated } from "../core/errors.ts";
 import { debugInfo, debugWarn, debugError } from "../core/debuglog.ts";
 import type { AgentEvent } from "../core/events.ts";
 import type { Tool, ToolContext, ToolResult, PtyState } from "../tools/types.ts";
@@ -170,14 +170,29 @@ async function* drainStep(
         return { ...acc, finish: "aborted" };
       }
       const pe = classifyProviderError(e);
+      // `emitted` normally blocks a retry once text has streamed: re-streaming
+      // would duplicate what the user already watched. A TRUNCATED stream is the
+      // exception, and the reason is the opposite: what streamed was cut off
+      // mid-sentence, so keeping it means keeping a broken answer. Replacing it
+      // is strictly better, so truncation retries even after text.
+      const truncated = isTruncated(e);
       const emitted = acc.text.length > 0 || acc.calls.length > 0;
-      if (!pe.retriable || n >= retryLimit || emitted) {
+      if (!pe.retriable || n >= retryLimit || (emitted && !truncated)) {
         if (emitted) return { ...acc, finish: `error: ${pe.message}` }; // keep partials
         throw pe;
       }
-      // compute the backoff first so the event reports the real wait
-      const delay = Math.min(8_000, 500 * 2 ** n) + Math.floor(Math.random() * 250);
-      debugWarn("turn", `provider retry ${n + 1}/${retryLimit}`, `in ${delay}ms: ${pe.message}`);
+      // Backoff: honor the provider's own Retry-After when it sent one, else
+      // exponential with a LONG ceiling. The old ceiling was 8s, which is far
+      // too short for the failures that actually need waiting — a quota window
+      // resetting, a gateway shedding load — so the retries burned out inside a
+      // few seconds and reported a permanent failure.
+      const backoff = Math.min(60_000, 1_000 * 2 ** n) + Math.floor(Math.random() * 500);
+      const delay = pe.retryAfterMs ?? backoff;
+      debugWarn(
+        "turn",
+        `provider retry ${n + 1}/${retryLimit}`,
+        `in ${delay}ms${pe.retryAfterMs !== undefined ? " (provider Retry-After)" : ""}${truncated ? " [truncated stream]" : ""}: ${pe.message}`,
+      );
       yield { type: "retry", attempt: n + 1, delay_ms: delay, error: pe.message };
       // abort-aware sleep: ESC during a 4-8s backoff must not wait out the
       // whole delay before the interrupt is honored

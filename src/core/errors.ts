@@ -23,6 +23,12 @@ export class ProviderError extends FoxError {
      * filing a bug. Persisted to messages.error.
      */
     readonly detail?: string,
+    /**
+     * How long the provider asked us to wait, in ms (a `Retry-After` header).
+     * Absent when the response carried none — the caller then uses its own
+     * backoff. A rate-limited gateway that says "wait 60s" should be believed.
+     */
+    readonly retryAfterMs?: number,
   ) {
     super(message);
   }
@@ -40,6 +46,38 @@ export class ProviderTimeoutError extends ProviderError {
 }
 
 export const isTimeout = (e: unknown): e is ProviderTimeoutError => e instanceof ProviderTimeoutError;
+
+/**
+ * A stream that ENDED without ever delivering a finish reason.
+ *
+ * The AI SDK's `fullStream` enqueues a `finish` part when the response
+ * completes. No `finish` part therefore means the connection was cut
+ * mid-answer — and reporting that as `reason: "stop"` claimed a clean success
+ * on a truncated reply, so the turn never retried it. `truncated` marks it so
+ * the turn loop may retry even after text has streamed: half an answer from a
+ * dropped socket is worth replacing, not keeping.
+ */
+export class TruncatedStreamError extends ProviderError {
+  readonly truncated = true;
+  constructor(model: string) {
+    super(`the stream ended with no finish reason (${model}) — the connection dropped mid-answer`, undefined, true);
+  }
+}
+
+export const isTruncated = (e: unknown): e is TruncatedStreamError => e instanceof TruncatedStreamError;
+
+/** Read a `Retry-After` header (seconds or an HTTP date) into ms, if present. */
+export function retryAfterMs(headers: unknown): number | undefined {
+  const h = headers as { get?: (k: string) => string | null } | Record<string, string> | undefined;
+  if (!h) return undefined;
+  const raw = typeof (h as { get?: unknown }).get === "function" ? (h as { get: (k: string) => string | null }).get("retry-after") : (h as Record<string, string>)["retry-after"];
+  if (!raw) return undefined;
+  const secs = Number(raw);
+  if (Number.isFinite(secs) && secs >= 0) return Math.round(secs * 1000);
+  // an HTTP-date form
+  const at = Date.parse(raw);
+  return Number.isFinite(at) ? Math.max(0, at - Date.now()) : undefined;
+}
 
 const RETRIABLE_PATTERNS = [
   /429/,
@@ -102,7 +140,15 @@ function withCause(e: unknown, msg: string): string {
 
 export function classifyProviderError(e: unknown): ProviderError {
   if (e instanceof ProviderError) return e;
-  const src = e as { statusCode?: number; status?: number; isRetryable?: boolean; message?: string; name?: string; stack?: string } | undefined;
+  const src = e as {
+    statusCode?: number;
+    status?: number;
+    isRetryable?: boolean;
+    message?: string;
+    name?: string;
+    stack?: string;
+    responseHeaders?: unknown;
+  } | undefined;
   const status = typeof src?.statusCode === "number" ? src.statusCode : typeof src?.status === "number" ? src.status : undefined;
   const name = typeof src?.name === "string" ? src.name : "";
 
@@ -129,7 +175,14 @@ export function classifyProviderError(e: unknown): ProviderError {
   }
   const retriable =
     src?.isRetryable === true || (typeof status === "number" ? status === 429 || status >= 500 : networkish);
-  return new ProviderError(finalMsg, status, retriable, rawMsg.length > finalMsg.length ? clean(rawMsg) : undefined);
+  return new ProviderError(
+    finalMsg,
+    status,
+    retriable,
+    rawMsg.length > finalMsg.length ? clean(rawMsg) : undefined,
+    // a gateway that says "wait 60s" should be believed over our own backoff
+    retryAfterMs(src?.responseHeaders),
+  );
 }
 
 /**

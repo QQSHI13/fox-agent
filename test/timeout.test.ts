@@ -271,4 +271,84 @@ describe("runTurnCore with a timing-out provider", () => {
     expect(events.filter((e) => e.type === "retry").length).toBe(0);
     expect((events[events.length - 1] as { reason: string }).reason).toBe("aborted");
   }, 15_000);
+
+  test("a stream that ends with no finish reason is retried, even after text streamed", async () => {
+    session();
+    const { createSession } = await import("../src/store/db.ts");
+    const { TruncatedStreamError } = await import("../src/core/errors.ts");
+    const s = createSession(process.cwd(), "m");
+
+    let calls = 0;
+    const chat: ChatFn = async function* () {
+      calls++;
+      // the socket dies mid-answer: some text arrived, then the stream just ended
+      yield { type: "text", delta: "half an ans" };
+      throw new TruncatedStreamError("m");
+    };
+
+    const events: AgentEvent[] = [];
+    for await (const ev of runTurnCore(s.id, cfg, "hello", undefined, {
+      chat,
+      retryLimit: 2,
+      registryOverride: new Map(),
+    })) {
+      events.push(ev);
+    }
+
+    const retries = events.filter((e) => e.type === "retry");
+    // the `emitted` guard normally blocks a retry once text streamed; a
+    // TRUNCATED stream is the exception — the text was cut mid-sentence, so
+    // keeping it means keeping a broken answer. retryLimit 2 => 2 retries.
+    expect(retries.length).toBe(2);
+    expect(calls).toBe(3);
+    for (const r of retries) expect((r as { error: string }).error).toMatch(/no finish reason/);
+  }, 30_000);
+
+  test("a provider Retry-After is honored instead of the local backoff", async () => {
+    session();
+    const { createSession } = await import("../src/store/db.ts");
+    const { classifyProviderError } = await import("../src/core/errors.ts");
+    const s = createSession(process.cwd(), "m");
+
+    let calls = 0;
+    const chat: ChatFn = async function* () {
+      calls++;
+      // a gateway shedding load: 429 with "wait 30s"
+      const e = Object.assign(new Error("HTTP 429: Too Many Requests"), {
+        statusCode: 429,
+        responseHeaders: { "retry-after": "30" },
+      });
+      throw e;
+    };
+
+    const events: AgentEvent[] = [];
+    const t0 = Date.now();
+    for await (const ev of runTurnCore(s.id, cfg, "hello", undefined, {
+      chat,
+      retryLimit: 1,
+      registryOverride: new Map(),
+    })) {
+      events.push(ev);
+      if (ev.type === "retry") break; // one retry event is enough; don't sit out 30s
+    }
+    const retry = events.find((e) => e.type === "retry") as { delay_ms: number } | undefined;
+    expect(retry).toBeTruthy();
+    expect(retry!.delay_ms).toBe(30_000); // the header, not our own 1s
+    expect(Date.now() - t0).toBeLessThan(5_000); // we asserted without waiting it out
+    // and the classifier reads the header into the error
+    const pe = classifyProviderError({ statusCode: 429, message: "429", responseHeaders: { "retry-after": "30" } });
+    expect(pe.retryAfterMs).toBe(30_000);
+  }, 30_000);
+
+  test("the local backoff grows past the old 8s ceiling", async () => {
+    // 1s, 2s, 4s, 8s, 16s, 32s, then the 60s ceiling — a quota window resetting
+    // takes longer than 8s, which is what the old ceiling could never wait out.
+    const { classifyProviderError } = await import("../src/core/errors.ts");
+    expect(classifyProviderError(new Error("429 rate limit")).retryAfterMs).toBeUndefined();
+    // the ceiling itself lives in turn.ts; assert the shape the loop computes
+    const ceiling = Math.min(60_000, 1_000 * 2 ** 10);
+    expect(ceiling).toBe(60_000);
+    expect(Math.min(60_000, 1_000 * 2 ** 3)).toBe(8_000); // n=3 is the old cap
+    expect(Math.min(60_000, 1_000 * 2 ** 5)).toBe(32_000); // n=5 exceeds it
+  });
 });

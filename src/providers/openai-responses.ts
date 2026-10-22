@@ -4,7 +4,7 @@
 import { streamText, jsonSchema, type ToolSet } from "ai";
 import { createOpenAI } from "@ai-sdk/openai";
 import type { ChatMessage, ProviderConfig, StreamEvent, ToolDef } from "./types.ts";
-import { classifyProviderError } from "../core/errors.ts";
+import { classifyProviderError, TruncatedStreamError } from "../core/errors.ts";
 import { startWatchdog } from "./watchdog.ts";
 import { reasoningProviderOptions, samplingOptions, outputTokenOptions } from "./index.ts";
 import { toModelMessages } from "./convert.ts";
@@ -91,7 +91,11 @@ export async function* streamChat(
       err.name = "AbortError";
       throw err;
     }
-    yield { type: "done", reason: finish || "stop" };
+    // No finish part = the connection was cut mid-answer. Reporting that as
+    // "stop" claimed a clean success on a truncated reply, so the turn never
+    // retried it. Throw instead: the turn loop retries it.
+    if (!finish) throw new TruncatedStreamError(cfg.model);
+    yield { type: "done", reason: finish };
   } catch (e) {
     if (wd.timedOut) throw wd.error();
     if (signal?.aborted) {
