@@ -33,7 +33,20 @@ export interface FoxHostApi {
   sessions: {
     list(limit?: number): { id: string; title: string | null; cwd: string; model: string; updated_at: number }[];
     get(id: string): { id: string; title: string | null; cwd: string; model: string; updated_at: number } | null;
-    messages(id: string): { role: string; content: string; seq: number }[];
+    /**
+     * The transcript, with the tool metadata a replaying front end needs.
+     *
+     * `tool_calls` (JSON `[{id, name, arguments}]`) sits on the assistant row
+     * that requested the calls; a `tool` row carries the output in `content`
+     * and the call it answers in `tool_call_id`. Handing both through is what
+     * lets a replayed tool card show its name and arguments instead of a bare
+     * "tool" — the gateway had only output before, because this projection
+     * dropped them.
+     *
+     * Still a projection, not `SELECT *`: `media` (base64 blobs) and `tokens`
+     * stay out, since no front end displays them on replay.
+     */
+    messages(id: string): { role: string; content: string; seq: number; tool_calls?: string | null; tool_call_id?: string | null }[];
     create(cwd?: string): { id: string };
   };
   /** run one turn, yielding the same events the TUI renders */
@@ -101,7 +114,16 @@ export function installHostApi(config: Config, provider: ProviderConfig): FoxHos
         const s = getSession(id);
         return s ? { id: s.id, title: s.title, cwd: s.cwd, model: s.model, updated_at: s.updated_at } : null;
       },
-      messages: (id) => (getSession(id) ? allMessagesLite(id).map((m) => ({ role: m.role, content: m.content, seq: m.seq })) : []),
+      messages: (id) =>
+        getSession(id)
+          ? allMessagesLite(id).map((m) => ({
+              role: m.role,
+              content: m.content,
+              seq: m.seq,
+              tool_calls: m.tool_calls,
+              tool_call_id: m.tool_call_id,
+            }))
+          : [],
       create: (cwd) => {
         const s = createSession(cwd ?? process.cwd(), provider.model);
         return { id: s.id };

@@ -506,12 +506,6 @@
       th._raw = m.content || "";
       return th;
     }
-    if (m.role === "tool") {
-      // History carries the tool's OUTPUT and its call id, but not the call's
-      // name or args (the store keeps them on the assistant row). So a replayed
-      // tool card says what it can and never invents a name.
-      return toolNode({ name: "tool", args: "", output: m.content || "", ok: true, replay: true });
-    }
     if (m.role === "system") {
       var n = el("div", "notice");
       n.dataset.kind = "warn";
@@ -521,6 +515,30 @@
     var o = el("div", "notice");
     o.appendChild(el("div", "nbody", (m.role || "message") + ": " + (m.content || "")));
     return o;
+  }
+
+  /**
+   * One render item from FoxReplay.pair -> a node.
+   *
+   * Tool cards are built here rather than in messageNode because a stored tool
+   * row does not know its own name: the name lives on the assistant row's
+   * `tool_calls`, keyed by this row's `tool_call_id`. FoxReplay does the pairing.
+   */
+  function itemNode(it) {
+    if (it.kind === "tool") {
+      return toolNode({ name: it.name, args: it.args, output: it.output, ok: it.ok });
+    }
+    return messageNode(it);
+  }
+
+  /** Pair once, render many: the first page and "load earlier" share this. */
+  function appendItems(box, msgs, before) {
+    FoxReplay.pair(msgs).forEach(function (it) {
+      var n = itemNode(it);
+      if (!n) return;
+      if (before) box.insertBefore(n, before);
+      else box.appendChild(n);
+    });
   }
 
   function thinkNode(label, done) {
@@ -699,7 +717,7 @@
       }
     }
 
-    msgs.forEach(function (m) { var n = messageNode(m); if (n) box.appendChild(n); });
+    appendItems(box, msgs, null);
 
     // A turn that is still running (started in another tab, or before a
     // reload) continues here: replay what it has produced so far.
@@ -744,11 +762,11 @@
       var msgs = res.messages || [];
       S.hasMore = !!res.hasMore;
       S.firstSeq = msgs.length ? msgs[0].seq : S.firstSeq;
-      var frag = document.createDocumentFragment();
-      msgs.forEach(function (m) { var n = messageNode(m); if (n) frag.appendChild(n); });
-      var anchor = $("#loadOlder");
-      if (anchor) anchor.parentNode.insertBefore(frag, anchor);
-      else box.insertBefore(frag, box.firstChild);
+      // Insert ABOVE the existing transcript: the "load earlier" button is the
+      // first child, so everything goes before it (or before the first node
+      // when the button is gone).
+      var anchor = $("#loadOlder") || box.firstChild;
+      appendItems(box, msgs, anchor);
       if (!S.hasMore) {
         var old = $("#loadOlder");
         if (old) old.remove();

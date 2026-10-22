@@ -120,6 +120,7 @@ const here = dirname(new URL(import.meta.url).pathname);
 const ASSETS: Record<string, string> = {
   "/ui.js": "ui.js",
   "/md.js": "md.js",
+  "/replay.js": "replay.js",
 };
 const TYPES: Record<string, string> = {
   ".js": "text/javascript; charset=utf-8",
