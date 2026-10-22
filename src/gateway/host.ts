@@ -18,6 +18,8 @@ import { VERSION } from "../core/version.ts";
 import { debugAt, debugLogPath, type DebugCategory, type DebugLevel } from "../core/debuglog.ts";
 import { readFileSync } from "node:fs";
 import { COMMANDS, runSlashCommand, type HarnessState } from "../commands.ts";
+import { activePlugins } from "../plugins/load.ts";
+import type { FoxPlugin } from "../plugins/types.ts";
 import type { Config } from "../core/config.ts";
 import type { ProviderConfig } from "../providers/types.ts";
 import type { AgentEvent } from "../core/events.ts";
@@ -31,7 +33,20 @@ export interface FoxHostApi {
   sessions: {
     list(limit?: number): { id: string; title: string | null; cwd: string; model: string; updated_at: number }[];
     get(id: string): { id: string; title: string | null; cwd: string; model: string; updated_at: number } | null;
-    messages(id: string): { role: string; content: string; seq: number }[];
+    /**
+     * The transcript, with the tool metadata a replaying front end needs.
+     *
+     * `tool_calls` (JSON `[{id, name, arguments}]`) sits on the assistant row
+     * that requested the calls; a `tool` row carries the output in `content`
+     * and the call it answers in `tool_call_id`. Handing both through is what
+     * lets a replayed tool card show its name and arguments instead of a bare
+     * "tool" — the gateway had only output before, because this projection
+     * dropped them.
+     *
+     * Still a projection, not `SELECT *`: `media` (base64 blobs) and `tokens`
+     * stay out, since no front end displays them on replay.
+     */
+    messages(id: string): { role: string; content: string; seq: number; tool_calls?: string | null; tool_call_id?: string | null }[];
     create(cwd?: string): { id: string };
   };
   /** run one turn, yielding the same events the TUI renders */
@@ -43,12 +58,24 @@ export interface FoxHostApi {
    */
   commands: {
     /** the command list, for hints and autocomplete */
-    list(): { name: string; desc: string; usage?: string; arg?: boolean }[];
+    list(): { name: string; desc: string; usage?: string; arg?: boolean; mutates?: boolean }[];
     /** run one against a session; returns what the TUI would show */
     run(sessionId: string, input: string): Promise<{ output?: string; newSessionId?: string; handled: boolean }>;
   };
   /** the chat function the host would use (so a plugin can talk to the model) */
   chat: typeof resolveChat;
+  /**
+   * The loaded plugins themselves, bundled ones included.
+   *
+   * A front-end plugin (the gateway) serves other plugins' contributions —
+   * `gateway.methods`, `gateway.routes`, `gateway.panels` — so it needs the
+   * live list, not a copy taken before loading finished. Read on every call:
+   * `/reload` swaps the array, and a server that cached it would keep serving
+   * the plugins it booted with.
+   */
+  plugins: {
+    active(): FoxPlugin[];
+  };
   /**
    * The host's debug log — a plugin writes through the host so its entries land
    * in the same file, with the same levels and categories, and honour the same
@@ -87,7 +114,16 @@ export function installHostApi(config: Config, provider: ProviderConfig): FoxHos
         const s = getSession(id);
         return s ? { id: s.id, title: s.title, cwd: s.cwd, model: s.model, updated_at: s.updated_at } : null;
       },
-      messages: (id) => (getSession(id) ? allMessagesLite(id).map((m) => ({ role: m.role, content: m.content, seq: m.seq })) : []),
+      messages: (id) =>
+        getSession(id)
+          ? allMessagesLite(id).map((m) => ({
+              role: m.role,
+              content: m.content,
+              seq: m.seq,
+              tool_calls: m.tool_calls,
+              tool_call_id: m.tool_call_id,
+            }))
+          : [],
       create: (cwd) => {
         const s = createSession(cwd ?? process.cwd(), provider.model);
         return { id: s.id };
@@ -103,7 +139,7 @@ export function installHostApi(config: Config, provider: ProviderConfig): FoxHos
         chat: resolveChat,
       }),
     commands: {
-      list: () => COMMANDS.map((c) => ({ name: c.name, desc: c.desc, usage: c.usage, arg: c.arg })),
+      list: () => COMMANDS.map((c) => ({ name: c.name, desc: c.desc, usage: c.usage, arg: c.arg, mutates: c.mutates })),
       run: async (sessionId, input) => {
         // The TUI's OWN command runner, against a state scoped to this session.
         // A plugin (the gateway) therefore gets /model, /sessions, /delete,
@@ -126,6 +162,7 @@ export function installHostApi(config: Config, provider: ProviderConfig): FoxHos
       },
     },
     chat: resolveChat,
+    plugins: { active: () => activePlugins() },
     debug: {
       at: (level, category, message, detail) => debugAt(level, category, message, detail),
       info: (category, message, detail) => debugAt("info", category, message, detail),
