@@ -59,7 +59,7 @@ import { createWizard, type PromptState, type Wizard } from "./wizard.ts";
 import { childEnv } from "../core/childenv.ts";
 import { shellPath } from "../core/shell.ts";
 import { killTree } from "../tools/exec.ts";
-import { debugLog, debugLogPath } from "../core/debuglog.ts";
+import { debugLog, debugLogPath, setDebugLevel } from "../core/debuglog.ts";
 import { droppedPath, expandMentions } from "../core/mentions.ts";
 import { isWindowsTerminal, isWSL } from "../core/wsl.ts";
 import { liveTheme, setTheme, theme, themeName, type Theme } from "./themes.ts";
@@ -171,6 +171,8 @@ export function setTuiScrollStep(n: number): void {
 let DEBUG_VERBOSE = false;
 export function setDebug(on: boolean): void {
   DEBUG_VERBOSE = on;
+  // widen the shared debug log too: `debug = true` means "show me everything"
+  setDebugLevel(on ? "debug" : "off");
 }
 export function debugVerbose(): boolean {
   return DEBUG_VERBOSE;
@@ -1030,6 +1032,16 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       // may just be a plugin theme that has not loaded yet — fall back silently
       if (wantTheme !== themeName()) setTheme(wantTheme);
       for (const w of r.warnings) push("info", `! ${w}`);
+      // The welcome block is VIRTUAL (recomputed per frame) but its ROWS are
+      // cached per item key, and the frame loop only repaints when dirty. The
+      // config load lands after the first paint, so without this the block kept
+      // the placeholder provider forever ("model … (131k ctx)", "no API key
+      // configured") until something else happened to dirty the screen. Invalidate
+      // both chrome keys and ask for a repaint, so the block updates the moment
+      // the real config is in.
+      touch(CHROME_KEY);
+      touch(CHROME_KEY - 1);
+      markDirty();
     } catch (e) {
       // a broken config was always a one-line exit; keep it that way
       term.end();
@@ -1062,13 +1074,13 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         kind: "toolbody",
         text: [
           `working directory: ${state.cwd}`,
-          "session new — created on first message",
+          "session none — created on first message",
           ...(state.provider.apiKey
             ? []
             : ["no API key configured — /login opens the setup wizard (saved to ~/.config/fox-agent/config.toml)"]),
           `model ${state.provider.model} (${Math.round(info.contextWindow / 1000)}k ctx) · ${providerDisplayName(state)}` +
             (state.provider.baseUrl && !/api\.openai\.com/.test(state.provider.baseUrl) ? ` · ${state.provider.baseUrl}` : ""),
-          "enter send · \\ newline · ! shell · / commands · esc interrupt · ctrl+t expand all · drag/dbl-click select",
+          "enter send · \\ escapes · ! shell · / commands · esc interrupt · ctrl+t expand all · drag/dbl-click select",
           "/login setup · /model switch · /sessions resume · /usage tokens · /prune context · /upgrade update · /help all",
         ].join("\n"),
       },

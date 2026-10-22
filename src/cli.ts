@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { loadConfig, resolveProfile, type Config } from "./core/config.ts";
 import type { ProviderConfig } from "./providers/types.ts";
 import { ConfigError, errMsg } from "./core/errors.ts";
+import { debugLogPath } from "./core/debuglog.ts";
 import { assertNever } from "./core/events.ts";
 
 import { runTurnCore } from "./loop/turn.ts";
@@ -55,6 +56,7 @@ ${st.dim("headless / scripted")}
 ${flag("-p, --print", "run one prompt headless, print the answer, exit", "(reads stdin when no prompt given or stdin is piped)")}
 ${flag("--json", "with -p: emit NDJSON agent events instead of text (see: fox json)")}
 ${flag("--acp", "serve the Agent Client Protocol on stdio (see: fox acp)")}
+${flag("--debug [spec]", "verbose diagnostics: off|error|warn|info|debug|trace, or categories (provider,turn,...)")}
 ${flag("--a2a", "serve the Agent2Agent protocol on HTTP (see: fox a2a)")}
 ${flag("--port <n>", "port for --a2a (default 0 = ephemeral)")}
 
@@ -109,6 +111,7 @@ export function parseArgv(argv: string[]): Parsed {
     "--request-timeout-ms",
     "--config",
     "--port",
+    "--debug",
     "-p",
     "--print",
   ]);
@@ -233,13 +236,35 @@ async function main() {
         // importing the harness's internals (a compiled binary has no src/ beside it)
         const { installHostApi } = await import("./gateway/host.ts");
         installHostApi(pcfg, provider);
-        await hit.cliCommand.run(parsed.rest.slice(1), { config: pcfg, provider, flags: parsed.flags });
+        // A plugin that THROWS must say so: the bare catch below used to swallow
+        // its failure and report "unknown command", which sent the reader hunting
+        // for a command that plainly existed. The plugin's own error is the truth.
+        try {
+          await hit.cliCommand.run(parsed.rest.slice(1), { config: pcfg, provider, flags: parsed.flags });
+        } catch (e) {
+          const detail = e instanceof Error ? (e.stack ?? e.message) : String(e);
+          console.error(`fox-agent: plugin command '${firstArg}' failed: ${(e as Error)?.message ?? detail}`);
+          console.error(detail);
+          console.error(`fox-agent: the full trace is in ${debugLogPath()}`);
+          const { debugLog } = await import("./core/debuglog.ts");
+          debugLog(`plugin command '${firstArg}' failed`, detail);
+          process.exitCode = 1;
+        }
         return;
       }
       // not a plugin subcommand — fall through to the normal (unknown-command) path
-    } catch {
-      // config load failed or no match — fall through to the normal path, which
-      // reports the unknown command; a plugin dispatch must not mask that
+    } catch (e) {
+      // The plugin LOAD failed (bad path, a throwing import, an invalid export).
+      // That is NOT "unknown command" — say what broke, or the reader chases a
+      // command that exists while the real fault is a broken plugin file.
+      const detail = e instanceof Error ? (e.stack ?? e.message) : String(e);
+      console.error(`fox-agent: could not load plugins for '${firstArg}': ${(e as Error)?.message ?? detail}`);
+      console.error(detail);
+      console.error(`fox-agent: the full trace is in ${debugLogPath()}`);
+      const { debugLog } = await import("./core/debuglog.ts");
+      debugLog(`plugin load failed for '${firstArg}'`, detail);
+      process.exitCode = 1;
+      return;
     }
   }
 
