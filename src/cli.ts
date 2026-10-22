@@ -98,6 +98,24 @@ const SUBCOMMANDS = new Set(["ls", "plugin", "plugins", "upgrade", "json", "mini
 const SUBCOMMAND_FLAGS: Record<string, Set<string>> = {
   upgrade: new Set(["--beta"]),
 };
+/**
+ * Does this word look like a debug spec (and so may be consumed by --debug)?
+ * A subcommand name is not a spec, so `fox --debug gateway` still routes to
+ * the gateway rather than swallowing the name as a filter.
+ */
+function isDebugSpec(word: string): boolean {
+  const s = word.trim().toLowerCase();
+  if (!s) return false;
+  if (s === "all" || s === "verbose") return true;
+  if (["off", "error", "warn", "info", "debug", "trace"].includes(s)) return true;
+  // a category list, or "category:level"
+  const cats = s.includes(":") ? s.split(":")[0] : s;
+  return cats
+    .split(",")
+    .map((c) => c.trim())
+    .filter(Boolean)
+    .every((c) => ["provider", "turn", "plugin", "session", "tools", "gateway", "tui", "config", "core"].includes(c));
+}
 export function parseArgv(argv: string[]): Parsed {
   const flags = new Map<string, string | boolean>();
   const rest: string[] = [];
@@ -111,13 +129,33 @@ export function parseArgv(argv: string[]): Parsed {
     "--request-timeout-ms",
     "--config",
     "--port",
-    "--debug",
     "-p",
     "--print",
   ]);
+  // `-d`, `-dd`, `-ddd` — npm-style verbosity, countable. Handled here (not in
+  // VALUED) so the count survives; the level is resolved at startup.
+  const VERBOSITY = /^-d{1,3}$/;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a === "-c" || a === "--continue") {
+    if (VERBOSITY.test(a)) {
+      // the deepest wins: -dd -d is still debug
+      const n = a.length - 1;
+      const prev = Number(flags.get("verbosity") ?? 0);
+      flags.set("verbosity", String(Math.max(prev, n)));
+    }
+    else if (a === "--debug") {
+      // `--debug` takes an OPTIONAL spec: `--debug` alone is the debug level,
+      // `--debug provider,turn` filters by category. A following word that is
+      // not a spec (a subcommand, say) is left alone for the next iteration.
+      const next = argv[i + 1];
+      if (next !== undefined && !next.startsWith("-") && isDebugSpec(next)) {
+        flags.set("debug", next);
+        i++;
+      } else {
+        flags.set("debug", "debug");
+      }
+    }
+    else if (a === "-c" || a === "--continue") {
       // optionally followed by a session selector: `fox -c 2` or `fox -c <id>`.
       // A following flag is never the selector, so `-c -p '...'` still parses.
       const next = argv[i + 1];
@@ -162,7 +200,17 @@ export function parseArgv(argv: string[]): Parsed {
       if (sub !== undefined && SUBCOMMANDS.has(sub) && (a === "--help" || a === "-h" || SUBCOMMAND_FLAGS[sub]?.has(a))) {
         rest.push(a);
       } else {
-        throw new ConfigError(`unknown flag ${a}`);
+        // An unknown flag must SAY WHAT TO DO: which command rejected it, what
+        // it accepts, and where the full list lives. "unknown flag -z" sent the
+        // reader hunting for a flag that does not exist anywhere.
+        const where = sub !== undefined && SUBCOMMANDS.has(sub) ? `fox ${sub}` : "fox";
+        const known = [...VALUED, "--no-tui", "--json", "--acp", "--a2a", "--trust", "--help", "--version"].sort();
+        throw new ConfigError(
+          `unknown flag ${a} for ${where}\n` +
+            `  known flags: ${known.join(", ")}\n` +
+            `  verbosity: -d, -dd, -ddd (or --debug <level|category>)\n` +
+            `  run ${where} --help for details`,
+        );
       }
     }
   }
@@ -192,6 +240,22 @@ async function main() {
   // installed-binary housekeeping: keep a fox-agent alias beside `fox`
   void import("./core/upgrade.ts").then((m) => m.ensureAlias()).catch(() => {});
 
+  // ---- debug verbosity ----
+  // npm-style: -d (info) / -dd (debug) / -ddd (trace), plus --debug <spec> and
+  // FOX_AGENT_DEBUG. Applied BEFORE anything else so every mode (headless, TUI,
+  // a plugin subcommand) logs the same way. An explicit level wins over the
+  // config's `debug` key.
+  {
+    const { applyDebugSpec, setDebugLevel, setDebugMirrorStderr } = await import("./core/debuglog.ts");
+    const n = Number(parsed.flags.get("verbosity") ?? 0);
+    if (n > 0) setDebugLevel(n >= 3 ? "trace" : n === 2 ? "debug" : "info", true);
+    const spec = parsed.flags.get("debug");
+    if (typeof spec === "string" && spec) applyDebugSpec(spec);
+    // headless modes mirror to stderr so `fox -p ... -d 2>&1 | grep` works
+    const headless = parsed.flags.has("print") || !process.stdout.isTTY;
+    if (headless) setDebugMirrorStderr(true);
+  }
+
   if (parsed.flags.get("version")) return console.log(VERSION);
 
   // ---- plugin CLI subcommands ----
@@ -202,18 +266,25 @@ async function main() {
   const BUILTIN_SUBS = new Set(["ls", "plugin", "plugins", "upgrade", "json", "mini", "acp", "help", "share", "export", "import"]);
   const firstArg = parsed.rest[0];
   if (firstArg && !BUILTIN_SUBS.has(firstArg)) {
-    // Route to a plugin's CLI subcommand only when config loads cleanly AND a
-    // plugin claims the name. A missing/invalid config or an unclaimed name
-    // falls through to the normal path, which reports "unknown command" —
-    // loading config must not break that fallback.
+    // Route to a plugin's CLI subcommand only when a plugin claims the name.
+    // A config that fails to load must NOT hijack the unknown-command report:
+    // `fox frobnicate` with no config file is an unknown command, not a config
+    // error. The config error is only reported when a plugin actually claims
+    // the name and then fails.
+    let pcfg: Config | undefined;
+    let configError: unknown;
     try {
       const { effectiveConfigPath, loadConfig: loadCfg } = await import("./core/config.ts");
+      const cfgPath = effectiveConfigPath((parsed.flags.get("config") as string) || undefined);
+      pcfg = loadCfg({ cwd: process.cwd(), configPath: cfgPath });
+    } catch (e) {
+      configError = e;
+    }
+    try {
       const { loadPlugins: loadPlugs, setActivePlugins } = await import("./plugins/load.ts");
       const { bundledPlugins, bundledDisabled } = await import("./plugins/bundled.ts");
-      const cfgPath = effectiveConfigPath((parsed.flags.get("config") as string) || undefined);
-      const pcfg = loadCfg({ cwd: process.cwd(), configPath: cfgPath });
-      const disabled = pcfg.disabledPlugins ?? [];
-      const loaded = await loadPlugs(pcfg.plugins ?? [], undefined, disabled);
+      const disabled = pcfg?.disabledPlugins ?? [];
+      const loaded = pcfg ? await loadPlugs(pcfg.plugins ?? [], undefined, disabled) : { plugins: [], warnings: [], files: [] };
       // bundled plugins are enabled unless explicitly disabled; config plugins are
       // enabled only when listed in config (the loader already honors disabledPlugins).
       const allPlugins = [...bundledPlugins().filter((p) => !bundledDisabled(p.name, disabled)), ...loaded.plugins];
@@ -222,6 +293,17 @@ async function main() {
         setActivePlugins(allPlugins);
         // resolve provider like the other headless modes so the plugin can run turns
         const { resolveProfile } = await import("./core/config.ts");
+        if (!pcfg) {
+          // a plugin claims the name but the config is broken — that IS the
+          // reason the command cannot run, so say so instead of "unknown command"
+          const detail = configError instanceof Error ? (configError.stack ?? configError.message) : String(configError);
+          console.error(`fox-agent: '${firstArg}' needs a readable config: ${(configError as Error)?.message ?? detail}`);
+          console.error(`fox-agent: the full trace is in ${debugLogPath()}`);
+          const { debugLog } = await import("./core/debuglog.ts");
+          debugLog(`plugin command '${firstArg}' could not run: config error`, detail);
+          process.exitCode = 1;
+          return;
+        }
         const p = resolveProfile(pcfg);
         const provider = {
           baseUrl: p.baseUrl,
@@ -236,9 +318,9 @@ async function main() {
         // importing the harness's internals (a compiled binary has no src/ beside it)
         const { installHostApi } = await import("./gateway/host.ts");
         installHostApi(pcfg, provider);
-        // A plugin that THROWS must say so: the bare catch below used to swallow
-        // its failure and report "unknown command", which sent the reader hunting
-        // for a command that plainly existed. The plugin's own error is the truth.
+        // A plugin that THROWS must say so: the bare catch used to swallow its
+        // failure and report "unknown command", which sent the reader hunting for
+        // a command that plainly existed. The plugin's own error is the truth.
         try {
           await hit.cliCommand.run(parsed.rest.slice(1), { config: pcfg, provider, flags: parsed.flags });
         } catch (e) {
@@ -254,7 +336,7 @@ async function main() {
       }
       // not a plugin subcommand — fall through to the normal (unknown-command) path
     } catch (e) {
-      // The plugin LOAD failed (bad path, a throwing import, an invalid export).
+      // The plugin LOAD itself failed (a throwing import, an invalid export).
       // That is NOT "unknown command" — say what broke, or the reader chases a
       // command that exists while the real fault is a broken plugin file.
       const detail = e instanceof Error ? (e.stack ?? e.message) : String(e);
