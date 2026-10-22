@@ -18,4 +18,37 @@ node_modules/
 *.log
 *.backup
 .fox-previous
+
+# Python: scripts/bench/bench.py is real code and runs from a checkout, so its
+# cache lands here. Unanchored on purpose — any __pycache__ is junk.
 __pycache__/
+*.py[cod]
+
+# OS junk. This repo is developed on WSL2 against a Windows filesystem, so
+# Windows and macOS droppings both appear.
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+.directory
+.Trash-*
+.fuse_hidden*
+.nfs*
+
+# Editor scratch. Unanchored: a swap file anywhere is never wanted.
+*.swp
+*.swo
+*.swx
+*~
+\#*\#
+.#*
+*.orig
+*.rej
