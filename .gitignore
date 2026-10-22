@@ -1,11 +1,21 @@
-node_modules/
-bin/
-*.log
-# A BARE `cli` matched at ANY depth, so it silently swallowed src/cli/ and its
-# files never reached the repo — CI (a fresh checkout) then saw src/cli.ts
-# importing modules that did not exist. Anchor it to the repo root.
+# Anchored to the repo root on purpose.
+#
+# An UNANCHORED pattern matches at ANY depth. A bare `cli` here once swallowed
+# src/cli/ — the two files the registry refactor added were silently ignored,
+# never committed, and CI (a fresh checkout) saw src/cli.ts importing modules
+# that did not exist. It stayed red for hours, while a local checkout looked
+# perfectly healthy because the files were still on disk.
+#
+# `bin` and `dist` are the same class of latent bug: they are safe today only
+# because no nested bin/ or dist/ exists yet. Anchoring makes that explicit
+# instead of accidental.
+/bin/
+/dist/
 /cli
-dist/
+
+# Dependency and build artifacts.
+node_modules/
+*.log
 *.backup
 .fox-previous
 __pycache__/
