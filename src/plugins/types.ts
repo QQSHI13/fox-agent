@@ -197,6 +197,51 @@ export interface TuiRegionPlane {
   readonly h: number;
 }
 
+/**
+ * What a gateway contribution gets when a client calls one of its RPC methods.
+ *
+ * Deliberately plain data + two functions: a `GatewayContribution` lives in the
+ * plugin (a separate program), while the gateway that serves it is another
+ * plugin, so neither can import the other. The shape here is the contract both
+ * satisfy structurally.
+ */
+export interface GatewayMethodContext {
+  /** the session the client called from, when it named one */
+  sessionId?: string;
+  /** the contributing plugin's own name — so a method need not repeat it */
+  plugin: string;
+  /** push an event to every connected gateway client (`{event, ...}`) */
+  broadcast(event: Record<string, unknown>): void;
+}
+
+/**
+ * The web surface a non-gateway plugin can contribute to the gateway.
+ *
+ * The gateway owns the wire; a plugin owns its own corner of it. Everything is
+ * namespaced by the contributing plugin's `name` so two plugins cannot collide:
+ *
+ *   methods  -> RPC `plugin.<name>.<method>`, params/reply passed through
+ *   routes   -> `GET|POST /plugin/<name>/<path>`
+ *   panels   -> an HTML document at `/plugin/<name>/<panelId>.html`, shown in a
+ *               sandboxed iframe inside the gateway UI
+ *
+ * All three are optional; a plugin with none of them is simply not listed.
+ */
+export interface GatewayContribution {
+  /** RPC handlers, keyed by the method name the client appends after `plugin.<name>.` */
+  methods?: Record<string, (params: unknown, ctx: GatewayMethodContext) => unknown | Promise<unknown>>;
+  /** HTTP handlers, keyed by the path segment after `/plugin/<name>/` */
+  routes?: Record<string, (req: Request) => Response | Promise<Response>>;
+  /**
+   * UI panels, keyed by id. `html` is either the document itself or a thunk
+   * (so a panel can read a file on each request). It is served from the
+   * gateway's origin but rendered in a sandboxed iframe with no same-origin
+   * access; it talks to the gateway only through the documented postMessage
+   * bridge, which can reach this plugin's `methods` and nothing else.
+   */
+  panels?: Record<string, { title: string; html: string | (() => string) }>;
+}
+
 export interface FoxPlugin {
   /** identifies the plugin in warnings; the only required field */
   name: string;
@@ -253,4 +298,10 @@ export interface FoxPlugin {
    * false from `paint`.
    */
   regions?: Record<string, TuiRegion>;
+  /**
+   * This plugin's corner of the gateway's web surface (`fox gateway`): RPC
+   * methods, HTTP routes, and UI panels, all namespaced by `name`. Ignored by
+   * every other front end; a plugin that omits it is untouched by the gateway.
+   */
+  gateway?: GatewayContribution;
 }

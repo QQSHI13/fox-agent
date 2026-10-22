@@ -294,12 +294,24 @@ export interface CommandSpec {
   help?: string;
   /** takes an argument, so completing it should not fire the command */
   arg?: boolean;
+  /**
+   * This command changes the harness itself — the global config, another
+   * session's database, the running provider, the binary — rather than reading
+   * state or acting on one session.
+   *
+   * Declared here so a front end can decide: the TUI runs everything, while a
+   * non-interactive surface (the gateway's web UI) refuses these and says why.
+   * The alternative — the web surface offering `/login` and `/upgrade` as plain
+   * buttons — is a foot-gun with a credential-writing and a
+   * binary-replacing case in it. Unmarked means "safe to run anywhere".
+   */
+  mutates?: boolean;
 }
 
 export const COMMANDS: CommandSpec[] = [
   { name: "/help", aliases: ["/?"], desc: "show commands" },
   { name: "/new", desc: "start a fresh session" },
-  { name: "/init", desc: "guided AGENTS.md setup for this repo", usage: "[focus]", arg: true, help: "bare: analyzes the repo and writes/updates AGENTS.md; anything typed becomes the focus/constraints the agent honors" },
+  { name: "/init", desc: "guided AGENTS.md setup for this repo", usage: "[focus]", arg: true, mutates: true, help: "bare: analyzes the repo and writes/updates AGENTS.md; anything typed becomes the focus/constraints the agent honors" },
   {
     name: "/debug",
     desc: "verbose diagnostics on/off, or tail debug.log",
@@ -321,6 +333,7 @@ export const COMMANDS: CommandSpec[] = [
     desc: "delete another session for good (needs 'yes')",
     usage: "<id|n> yes",
     arg: true,
+    mutates: true,
     help: "delete that session's database for good — not the current one, and /undo cannot reach it",
   },
   { name: "/undo", desc: "revert last ctx op (append-only)" },
@@ -329,27 +342,29 @@ export const COMMANDS: CommandSpec[] = [
     desc: "reclaim disk from hidden context",
     usage: "[compact] [yes]",
     arg: true,
+    mutates: true,
     help:
       'report reclaimable disk; "/prune yes" vacuums hidden context (summary anchors kept); ' +
       '"/prune compact yes" also removes the hidden context entirely, splices summaries back as real rows and renumbers [N] markers 1..n. Bare in the TUI: a menu pick, no "yes" typing.',
   },
   { name: "/ops", desc: "show context surgery ops" },
-  { name: "/export", desc: "pack this session into a .zip you can move to any device", usage: "[file]", arg: true, help: "bare: writes fox-session-<id>.zip into cwd; with a path, writes there. Pair with /import on the other machine." },
-  { name: "/import", desc: "install a session .zip exported from another device", usage: "<file>", arg: true, help: "lands the session under its own id — it then appears in /sessions and fox -c like a local one; an existing session with the same id is replaced" },
-  { name: "/share", desc: "render this session as one self-contained HTML file", usage: "[file]", arg: true, help: "bare: writes fox-session-<id>.html into cwd; with a path, writes there. Fully offline (styles and images inline). Credential-shaped text is masked; very long content is capped." },
+  { name: "/export", desc: "pack this session into a .zip you can move to any device", usage: "[file]", arg: true, mutates: true, help: "bare: writes fox-session-<id>.zip into cwd; with a path, writes there. Pair with /import on the other machine." },
+  { name: "/import", desc: "install a session .zip exported from another device", usage: "<file>", arg: true, mutates: true, help: "lands the session under its own id — it then appears in /sessions and fox -c like a local one; an existing session with the same id is replaced" },
+  { name: "/share", desc: "render this session as one self-contained HTML file", usage: "[file]", arg: true, mutates: true, help: "bare: writes fox-session-<id>.html into cwd; with a path, writes there. Fully offline (styles and images inline). Credential-shaped text is masked; very long content is capped." },
   { name: "/view", desc: "preview visible nodes ([N] role preview)" },
   { name: "/todo", aliases: ["/todos"], desc: "show agent todo list" },
   { name: "/usage", desc: "token totals + budget" },
-  { name: "/model", desc: "show or switch model — picker lists every configured profile and catalog model", usage: "[profile/][name]", arg: true },
-  { name: "/theme", desc: "show or switch the color theme", usage: "[name]", arg: true, help: "bare: searchable chooser in the TUI; with a name, switches and saves to the global config" },
-  { name: "/thinking", desc: "reasoning effort for reasoning models", usage: "[low|medium|high|default]", arg: true, help: "bare: chooser in the TUI; sets provider reasoning options (OpenAI reasoningEffort, Anthropic thinking budget, Google thinkingConfig) and saves to the global config" },
-  { name: "/reload", desc: "re-read config files and re-apply model, theme, caps and plugins" },
+  { name: "/model", desc: "show or switch model — picker lists every configured profile and catalog model", usage: "[profile/][name]", arg: true, mutates: true },
+  { name: "/theme", desc: "show or switch the color theme", usage: "[name]", arg: true, mutates: true, help: "bare: searchable chooser in the TUI; with a name, switches and saves to the global config" },
+  { name: "/thinking", desc: "reasoning effort for reasoning models", usage: "[low|medium|high|default]", arg: true, mutates: true, help: "bare: chooser in the TUI; sets provider reasoning options (OpenAI reasoningEffort, Anthropic thinking budget, Google thinkingConfig) and saves to the global config" },
+  { name: "/reload", desc: "re-read config files and re-apply model, theme, caps and plugins", mutates: true },
   {
     name: "/plugin",
     aliases: ["/plugins"],
     desc: "manage plugins: list, inspect, install, switch on/off",
     usage: "[on|off|add|rm|info <name>]",
     arg: true,
+    mutates: true,
     help: "bare: interactive wizard in the TUI, printed list elsewhere; on/off flips it live, add/rm installs/uninstalls a file, info details one",
   },
   {
@@ -357,6 +372,7 @@ export const COMMANDS: CommandSpec[] = [
     desc: "show or change config settings (caps, limits, markers…)",
     usage: "[key[=value]]",
     arg: true,
+    mutates: true,
     help: "bare in the TUI: pick a key, then type its value (empty resets). Elsewhere bare lists all with current values; key shows one; key=value sets. Saved to the global config, applied live.",
   },
   {
@@ -364,6 +380,7 @@ export const COMMANDS: CommandSpec[] = [
     desc: "upgrade fox-agent to the latest release",
     usage: "[beta|<version>]",
     arg: true,
+    mutates: true,
     help: "bare: latest stable; 'beta': newest release incl. betas; a version installs that tag. TUI offers a chooser",
   },
   {
@@ -371,6 +388,7 @@ export const COMMANDS: CommandSpec[] = [
     desc: "set provider credentials, live and in the global config",
     usage: "[provider=<p>] [key=<k>] [baseUrl=<u>] [model=<m>]",
     arg: true,
+    mutates: true,
     help: "bare: interactive setup wizard in the TUI, status print elsewhere; with key=value pairs, saves to the global config and activates immediately",
   },
   { name: "/exit", aliases: ["/quit"], desc: "quit fox-agent" },
