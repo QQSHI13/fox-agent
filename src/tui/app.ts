@@ -542,8 +542,33 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   let paintTimer: ReturnType<typeof setTimeout> | null = null;
   // set from startTui once frameTick exists (same pattern as clearKeyRef)
   let tickRef: (() => void) | null = null;
-  const schedulePaint = (ms = 8) => {
-    if (paintTimer) return;
+  /**
+   * When the last frame actually ran. The paint window below is a *burst*
+   * coalescer, and a burst is defined by frames arriving close together — so
+   * this is what distinguishes "the 40th keypress of a burst" (coalesce it)
+   * from "the first keypress on an idle screen" (there is nothing to coalesce;
+   * waiting out the window is pure added latency). Measured: a settled frame
+   * costs 1–2.5ms, so an idle keystroke's whole latency was this timer.
+   */
+  let lastTickAt = 0;
+  const BURST_MS = 8; // coalescing window while frames are already flowing
+  const IDLE_MS = 24; // no frame for this long ⇒ the next event starts fresh
+  // idle-path coalescer: a microtask, not a timer. Everything typed into one
+  // read batch resolves in the same macrotask, so a microtask still collapses
+  // a burst to a single paint — while costing zero timer latency, which is
+  // exactly what an idle keystroke was paying. The timer path stays for bursts.
+  let microPending = false;
+  const schedulePaint = (ms = BURST_MS) => {
+    if (paintTimer || microPending) return;
+    if (performance.now() - lastTickAt >= IDLE_MS) {
+      microPending = true;
+      queueMicrotask(() => {
+        microPending = false;
+        if (exiting) return;
+        tickRef?.();
+      });
+      return;
+    }
     paintTimer = setTimeout(() => {
       paintTimer = null;
       // a frame scheduled before exit must not paint after the alt screen is
@@ -4499,6 +4524,11 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           // hide/show round-trip. paint() runs BEFORE the caret is read: nextCaret
           // is computed inside paint, so reading it first would place the cursor
           // one frame (one keystroke) behind the text.
+          //
+          // Marks the burst window as live (see schedulePaint): only a FULL paint
+          // counts — a spinner-only tick must not reset it, or a long turn would
+          // keep the window armed and make every keystroke pay it.
+          lastTickAt = performance.now();
           const q0 = PROF ? performance.now() : 0;
           paint();
           const q1 = PROF ? performance.now() : 0;
