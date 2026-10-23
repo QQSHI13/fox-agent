@@ -157,7 +157,7 @@
 <text x="792" y="146" fill="#e6e1d8" font-size="12">opencode v2</text>
 <rect x="940" y="134" width="4" height="14" rx="3" fill="#5b7fa6"/>
 <text x="1084" y="145" fill="#8a8578" font-size="11">🥈0.1 ms</text>
-<text x="792" y="176" fill="#e6e1d8" font-size="12">iflow cli</text>
+<text x="792" y="176" fill="#e6e1d8" font-size="12">opencode v2</text>
 <rect x="940" y="164" width="4" height="14" rx="3" fill="#5b7fa6"/>
 <text x="1084" y="175" fill="#8a8578" font-size="11">🥉0.1 ms</text>
 <text x="792" y="206" fill="#8a8578" font-size="12">qwen code</text>
@@ -166,10 +166,10 @@
 <text x="792" y="236" fill="#8a8578" font-size="12">gemini cli</text>
 <rect x="940" y="224" width="4" height="14" rx="3" fill="#5b7fa6"/>
 <text x="1084" y="235" fill="#8a8578" font-size="11">0.1 ms</text>
-<text x="792" y="266" fill="#8a8578" font-size="12">goose</text>
+<text x="792" y="266" fill="#8a8578" font-size="12">gemini cli</text>
 <rect x="940" y="254" width="4" height="14" rx="3" fill="#5b7fa6"/>
-<text x="1084" y="265" fill="#8a8578" font-size="11">0.2 ms</text>
-<text x="792" y="296" fill="#8a8578" font-size="12">jcode</text>
+<text x="1084" y="265" fill="#8a8578" font-size="11">0.3 ms</text>
+<text x="792" y="296" fill="#8a8578" font-size="12">codex</text>
 <rect x="940" y="284" width="4" height="14" rx="3" fill="#5b7fa6"/>
 <text x="1084" y="295" fill="#8a8578" font-size="11">0.5 ms</text>
 <text x="792" y="326" fill="#8a8578" font-size="12">codex</text>
@@ -208,10 +208,10 @@
 <text x="792" y="656" fill="#8a8578" font-size="12">claude code</text>
 <rect x="940" y="644" width="138" height="14" rx="3" fill="#3a382f"/>
 <text x="948" y="655" fill="#8a8578" font-size="10">n/a</text>
-<text x="792" y="686" fill="#8a8578" font-size="12">copilot cli</text>
+<text x="792" y="686" fill="#8a8578" font-size="12">cursor-agent</text>
 <rect x="940" y="674" width="138" height="14" rx="3" fill="#3a382f"/>
 <text x="948" y="685" fill="#8a8578" font-size="10">n/a</text>
-<text x="792" y="716" fill="#8a8578" font-size="12">cursor-agent</text>
+<text x="792" y="716" fill="#8a8578" font-size="12">kilo code</text>
 <rect x="940" y="704" width="138" height="14" rx="3" fill="#3a382f"/>
 <text x="948" y="715" fill="#8a8578" font-size="10">n/a</text>
 <text x="792" y="746" fill="#8a8578" font-size="12">cline</text>
@@ -297,7 +297,7 @@
 <rect x="408" y="826" width="364" height="1" fill="#2e2b25"/>
 <text x="408" y="842" fill="#e6e1d8" font-size="12">jcode</text>
 <rect x="556" y="830" width="12" height="14" rx="3" fill="#5b7fa6"/>
-<text x="700" y="841" fill="#8a8578" font-size="11">🥇32 MB</text>
+<text x="700" y="841" fill="#8a8578" font-size="11">🥇31 MB</text>
 <text x="408" y="872" fill="#e0803c" font-size="12">fox-agent</text>
 <rect x="556" y="860" width="14" height="14" rx="3" fill="#e0803c"/>
 <text x="700" y="871" fill="#e6e1d8" font-size="11">🥈37 MB</text>
@@ -332,7 +332,7 @@
 <rect x="556" y="1160" width="38" height="14" rx="3" fill="#5b7fa6"/>
 <text x="700" y="1171" fill="#8a8578" font-size="11">97 MB</text>
 <text x="408" y="1202" fill="#8a8578" font-size="12">goose</text>
-<rect x="556" y="1190" width="42" height="14" rx="3" fill="#5b7fa6"/>
+<rect x="556" y="1190" width="43" height="14" rx="3" fill="#5b7fa6"/>
 <text x="700" y="1201" fill="#8a8578" font-size="11">109 MB</text>
 <text x="408" y="1232" fill="#8a8578" font-size="12">opencode v2</text>
 <rect x="556" y="1220" width="50" height="14" rx="3" fill="#5b7fa6"/>
