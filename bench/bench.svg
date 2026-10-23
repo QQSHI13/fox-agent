@@ -293,7 +293,7 @@
 <rect x="556" y="830" width="12" height="14" rx="3" fill="#5b7fa6"/>
 <text x="700" y="841" fill="#8a8578" font-size="11">🥇32 MB</text>
 <text x="408" y="872" fill="#e0803c" font-size="12">fox-agent</text>
-<rect x="556" y="860" width="14" height="14" rx="3" fill="#e0803c"/>
+<rect x="556" y="860" width="15" height="14" rx="3" fill="#e0803c"/>
 <text x="700" y="871" fill="#e6e1d8" font-size="11">🥈36 MB</text>
 <text x="408" y="902" fill="#e6e1d8" font-size="12">aider</text>
 <rect x="556" y="890" width="26" height="14" rx="3" fill="#5b7fa6"/>
@@ -390,7 +390,7 @@
 <text x="1084" y="1081" fill="#8a8578" font-size="11">83.0 ms</text>
 <text x="792" y="1112" fill="#8a8578" font-size="12">copilot cli</text>
 <rect x="940" y="1100" width="10" height="14" rx="3" fill="#5b7fa6"/>
-<text x="1084" y="1111" fill="#8a8578" font-size="11">107 ms</text>
+<text x="1084" y="1111" fill="#8a8578" font-size="11">110 ms</text>
 <text x="792" y="1142" fill="#8a8578" font-size="12">droid</text>
 <rect x="940" y="1130" width="11" height="14" rx="3" fill="#5b7fa6"/>
 <text x="1084" y="1141" fill="#8a8578" font-size="11">114 ms</text>
