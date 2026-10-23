@@ -70,6 +70,9 @@ import * as L_ts from "@speed-highlight/core/languages/ts.js";
 import * as L_uri from "@speed-highlight/core/languages/uri.js";
 import * as L_xml from "@speed-highlight/core/languages/xml.js";
 import * as L_yaml from "@speed-highlight/core/languages/yaml.js";
+// The library ships no C++ grammar (see the module for why mapping `cpp` onto C
+// was not good enough: every C++-only keyword would render as a bare identifier).
+import { cppGrammar } from "./langs/cpp.ts";
 
 type LangData = Parameters<typeof tokenizeWith>[1];
 
@@ -77,6 +80,12 @@ type LangData = Parameters<typeof tokenizeWith>[1];
 const GRAMMARS: Record<string, LangData> = {
   asm: L_asm.default as LangData, bash: L_bash.default as LangData, bf: L_bf.default as LangData,
   c: L_c.default as LangData, css: L_css.default as LangData, csv: L_csv.default as LangData,
+  // C++ — the grammar lives in ./langs/cpp.ts because the library ships none.
+  // The extensions are here too: a model writes ```cpp, ```c++, or ```hpp
+  // about equally often, and a fence id it guesses is a fence id we should serve.
+  cpp: cppGrammar as LangData, "c++": cppGrammar as LangData, cxx: cppGrammar as LangData,
+  hpp: cppGrammar as LangData, hxx: cppGrammar as LangData, cc: cppGrammar as LangData,
+  cxxm: cppGrammar as LangData, h: cppGrammar as LangData,
   diff: L_diff.default as LangData, dockerfile: L_docker.default as LangData, docker: L_docker.default as LangData,
   git: L_git.default as LangData, go: L_go.default as LangData, html: L_html.default as LangData,
   http: L_http.default as LangData, ini: L_ini.default as LangData, java: L_java.default as LangData,
