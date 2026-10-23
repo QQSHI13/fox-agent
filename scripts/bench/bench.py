@@ -26,7 +26,11 @@ Outputs (all under bench/):
 
 snippet.md is the top-of-README block: the bench workflow splices it between
 <!-- bench:start --> and <!-- bench:end --> markers so the graphs and numbers
-at the top of the README refresh with every run.
+at the top of the README refresh with every run. The default view is one
+compact table — a row per metric, fox-agent's absolute score and its rank in
+the field — because a 23-row grid of everyone else's numbers is a reference
+document, not a headline. The dashboard SVG, the rounded per-agent grid and
+the full-precision table all live inside folded <details> blocks.
 
 Usage:
   python3 scripts/bench/bench.py [--quick] [--out bench] [--debug]
@@ -1096,6 +1100,7 @@ def main():
     quick = "--quick" in sys.argv
     out = sys.argv[sys.argv.index("--out") + 1] if "--out" in sys.argv else os.path.join(ROOT, "bench")
     os.makedirs(out, exist_ok=True)
+
     n_start = 2 if quick else 4
     n_probes = 2 if quick else 5
     # first-input is slower per probe (full launch + typing + echo wait)
@@ -1186,10 +1191,50 @@ def main():
     with open(os.path.join(out, "results.json"), "w") as f:
         json.dump(payload, f, indent=2)
 
+    render_outputs(out, rows, fox_extra, payload)
+    print("wrote", out)
+
+
+# One entry per metric lane: (key, column label, unit, formatter). Order is the
+# order the README summary lists them in — the headline metric first.
+METRICS = [
+    ("tui_first_byte_ms", "TUI 1st byte", "ms", lambda v: f"{v:.0f} ms"),
+    ("tui_first_input_ms", "TUI 1st input", "ms", lambda v: f"{v:.0f} ms"),
+    ("tui_input_latency_ms", "input latency", "ms", lambda v: f"{v:.0f} ms"),
+    ("disk_mb", "bundle", "MB", lambda v: f"{v:.0f} MB"),
+    ("idle_pss_mb", "idle PSS", "MB", lambda v: f"{v:.0f} MB"),
+    ("startup_ms", "`--version`", "ms", lambda v: f"{v:.0f} ms"),
+]
+
+
+def rank_of(rows, key, fox_name="fox-agent"):
+    """fox's position for one metric plus how many tools the field has.
+
+    Ties count as the same rank (1 + number of strictly better tools), which
+    matters for the metrics where several tools report 0 ms. Anything not
+    installed or not measured is excluded rather than ranked last — an n/a row
+    is not a slow one.
+    """
+    vals = [(r["agent"], r[key]) for r in rows if r.get(key) is not None]
+    fox = next((v for a, v in vals if a == fox_name), None)
+    if fox is None:
+        return None, len(vals)
+    return 1 + sum(1 for _, v in vals if v < fox), len(vals)
+
+
+def render_outputs(out, rows, fox_extra, payload):
+    """Write every generated artifact from already-measured rows.
+
+    Split out of main() so the generated artifacts are one pure function of
+    the measured rows: results.json is written first, then every rendered
+    artifact derives from it — nothing is ever rendered from a number that was
+    not just measured.
+    """
     # expandable dashboard: 3 columns x 2 rows of metric lanes, one <details>
     # per lane so the README can show the headline graphs and tuck the rest
     # behind a click. Full numbers live in table.md regardless.
     is_fox = lambda r: r["agent"] == "fox-agent"  # noqa: E731
+
     dashboard_svg(
         [
             (
@@ -1264,37 +1309,51 @@ def main():
         f.write(table_md)
 
     # README snapshot block: the bench workflow splices this between
-    # <!-- bench:start --> and <!-- bench:end --> so the top-of-README
-    # numbers refresh with every run instead of going stale. The README shows a
-    # compact headline table; the full-precision 10-column record stays in
-    # bench/table.md (linked) so the README top stays readable.
+    # <!-- bench:start --> and <!-- bench:end --> so the top-of-README numbers
+    # refresh with every run instead of going stale.
+    #
+    # Default view = one row per metric: fox-agent's absolute score and its
+    # rank in the field. Anything a reader has to do arithmetic on (or scroll
+    # sideways through 23 competitor rows to interpret) is behind a fold. The
+    # per-agent grid, the dashboard SVG and the full-precision record are all
+    # still generated and still one click away.
     HT = [
+        "| metric | fox-agent | rank |",
+        "|---|---|---|",
+    ]
+    for key, label, unit, fmt in METRICS:
+        fox_row = next((r for r in rows if r["agent"] == "fox-agent"), None)
+        val = fox_row.get(key) if fox_row else None
+        rank, field = rank_of(rows, key)
+        if val is None:
+            HT.append(f"| {label} | — | — |")
+            continue
+        rank_s = f"**#{rank}** of {field}" if rank is not None else f"of {field}"
+        HT.append(f"| {label} | **{fmt(val)}** | {rank_s} |")
+    summary_md = "\n".join(HT)
+
+    # Rounded per-agent grid, folded: the reference view for "where does tool X
+    # land", which nobody needs before they have decided to care.
+    GT = [
         "| agent | bundle | `--version` | TUI 1st byte | TUI 1st input | input latency | idle PSS |",
         "|---|---|---|---|---|---|---|",
     ]
     for r in rows:
         if not r.get("installed"):
-            HT.append(f"| {r['agent']} | — | — | — | — | — | — |")
+            GT.append(f"| {r['agent']} | — | — | — | — | — | — |")
             continue
         name = f"**{r['agent']}**" if r["agent"] == "fox-agent" else r["agent"]
         disk = f"{r['disk_mb']:.0f} MB" if r.get("disk_mb") is not None else "—"
         st = f"{r['startup_ms']:.0f} ms" if r.get("startup_ms") is not None else "—"
-        tb = f"**{r['tui_first_byte_ms']:.0f} ms**" if r.get("tui_first_byte_ms") is not None else "—"
-        ti = f"**{r['tui_first_input_ms']:.0f} ms**" if r.get("tui_first_input_ms") is not None else "—"
-        la = f"**{r['tui_input_latency_ms']:.0f} ms**" if r.get("tui_input_latency_ms") is not None else "—"
+        tb = f"{r['tui_first_byte_ms']:.0f} ms" if r.get("tui_first_byte_ms") is not None else "—"
+        ti = f"{r['tui_first_input_ms']:.0f} ms" if r.get("tui_first_input_ms") is not None else "—"
+        la = f"{r['tui_input_latency_ms']:.0f} ms" if r.get("tui_input_latency_ms") is not None else "—"
         pss = f"{r['idle_pss_mb']:.0f} MB" if r.get("idle_pss_mb") is not None else "—"
-        HT.append(f"| {name} | {disk} | {st} | {tb} | {ti} | {la} | {pss} |")
-    headline_md = "\n".join(HT)
+        GT.append(f"| {name} | {disk} | {st} | {tb} | {ti} | {la} | {pss} |")
+    grid_md = "\n".join(GT)
+
     S = [
-        "![harness bench dashboard](bench/bench.svg)",
-        "",
-        headline_md,
-        "",
-        "<details><summary>full precision · all collected fields</summary>",
-        "",
-        table_md.rstrip(),
-        "",
-        "</details>",
+        summary_md,
         "",
     ]
     if fox_extra.get("ttft_ms") is not None:
@@ -1305,10 +1364,28 @@ def main():
             f"peak RSS **{rss_s}**."
         )
         S.append("")
-    S.append(f"_Generated {payload['generated']} on {payload['machine']}. [How this is measured](#benchmarks) · [raw JSON](bench/results.json)_")
+    S += [
+        f"<details><summary>every tool, every metric</summary>",
+        "",
+        "![harness bench dashboard](bench/bench.svg)",
+        "",
+        grid_md,
+        "",
+        "</details>",
+        "",
+        "<details><summary>full precision · all collected fields</summary>",
+        "",
+        table_md.rstrip(),
+        "",
+        "</details>",
+        "",
+    ]
+    S.append(
+        f"_Generated {payload['generated']} on {payload['machine']}. "
+        f"[Method and caveats](#benchmarks) · [raw JSON](bench/results.json)_"
+    )
     with open(os.path.join(out, "snippet.md"), "w") as f:
         f.write("\n".join(S) + "\n")
-    print("wrote", out)
 
 
 if __name__ == "__main__":

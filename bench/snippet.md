@@ -1,3 +1,16 @@
+| metric | fox-agent | rank |
+|---|---|---|
+| TUI 1st byte | **14 ms** | **#3** of 22 |
+| TUI 1st input | **374 ms** | **#2** of 18 |
+| input latency | **0 ms** | **#10** of 18 |
+| bundle | **118 MB** | **#4** of 23 |
+| idle PSS | **36 MB** | **#2** of 22 |
+| `--version` | **13 ms** | **#6** of 23 |
+
+fox-agent headless vs scripted local provider: time to first token **81 ms**, peak RSS **61 MB**.
+
+<details><summary>every tool, every metric</summary>
+
 ![harness bench dashboard](bench/bench.svg)
 
 | agent | bundle | `--version` | TUI 1st byte | TUI 1st input | input latency | idle PSS |

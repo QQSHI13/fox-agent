@@ -1,0 +1,124 @@
+site_name: fox-agent
+site_author: QQ
+site_description: >-
+  A light coding harness with agent-controlled context.
+  Full machine control, zero permission prompts.
+site_url: https://qqshi13.github.io/fox-agent/
+repo_name: QQSHI13/fox-agent
+repo_url: https://github.com/QQSHI13/fox-agent
+edit_uri: edit/main/docs/
+
+docs_dir: docs
+site_dir: site
+
+copyright: Copyright © 2026 — Apache-2.0
+
+nav:
+  - title: Home
+    path: index.md
+  - title: Getting Started
+    children:
+      - title: Install
+        path: getting-started/install.md
+      - title: Quickstart
+        path: getting-started/quickstart.md
+  - title: Configuration
+    children:
+      - title: Overview
+        path: configuration/index.md
+      - title: Providers & profiles
+        path: configuration/providers.md
+      - title: Environment variables
+        path: configuration/environment-variables.md
+  - title: Tools
+    children:
+      - title: Overview
+        path: tools/index.md
+      - title: Files
+        path: tools/files.md
+      - title: exec & pty
+        path: tools/exec-pty.md
+      - title: Context editing (ctx)
+        path: tools/ctx.md
+      - title: Delegation (task)
+        path: tools/task.md
+      - title: MCP
+        path: tools/mcp.md
+      - title: Language servers (lsp)
+        path: tools/lsp.md
+      - title: fetch & repl
+        path: tools/fetch-repl.md
+      - title: Questions (question)
+        path: tools/question.md
+  - title: The TUI
+    path: tui/index.md
+  - title: Plugins
+    path: plugins/index.md
+  - title: Sessions
+    path: sessions/index.md
+  - title: Protocols
+    children:
+      - title: Overview
+        path: protocols/index.md
+      - title: ACP
+        path: protocols/acp.md
+      - title: A2A
+        path: protocols/a2a.md
+  - title: Architecture
+    path: architecture/index.md
+
+# Agent-facing docs. They ship inside the binary (docs/agent is embedded and
+# materialized under $FOX_AGENT_HOME/docs) and are written for an agent to read
+# with its `read` tool, not as site pages — so they are kept out of the nav, and
+# out of the built site entirely: a second copy of them here would be a copy
+# that drifts from the one the binary serves.
+not_in_nav: |
+  agent/
+exclude_docs: |
+  agent/
+
+# The blog plugin is one of docsforge's always-loaded core plugins, and it
+# scaffolds `docs/blog/index.md` into the source tree on every run. We have no
+# blog, so declaring it here (user declarations load before the core set, and
+# dedup suppresses the auto-load) is the way to stop it writing files.
+plugins:
+  blog:
+    enabled: false
+
+# No service worker. The default mode is `cache-first`, which precaches every
+# page and serves from cache first — great for a docs site whose readers want
+# offline access, wrong for anything that must never show a stale page after a
+# release. `none` also removes sw.js and cache-manifest.json from the build
+# entirely, and drops the template copy under assets/
+offline:
+  mode: none
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.top
+    - navigation.sections
+    - navigation.indexes
+    - navigation.tracking
+    - navigation.instant
+    - content.action.view
+    - content.code.copy
+    - search.highlight
+    - search.share
+    - search.suggest
+    - toc.follow
