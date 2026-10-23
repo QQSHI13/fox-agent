@@ -1,30 +1,45 @@
+| metric | fox-agent | rank |
+|---|---|---|
+| TUI 1st byte | **14 ms** | **#3** of 22 |
+| TUI 1st input | **374 ms** | **#2** of 18 |
+| input latency | **0 ms** | **#10** of 18 |
+| bundle | **118 MB** | **#4** of 23 |
+| idle PSS | **36 MB** | **#2** of 22 |
+| `--version` | **13 ms** | **#6** of 23 |
+
+fox-agent headless vs scripted local provider: time to first token **81 ms**, peak RSS **61 MB**.
+
+<details><summary>every tool, every metric</summary>
+
 ![harness bench dashboard](bench/bench.svg)
 
 | agent | bundle | `--version` | TUI 1st byte | TUI 1st input | input latency | idle PSS |
 |---|---|---|---|---|---|---|
-| **fox-agent** | 118 MB | 13 ms | **14 ms** | **374 ms** | **0 ms** | 36 MB |
-| claude code | 293 MB | 11 ms | **199 ms** | — | — | 196 MB |
-| codex | 430 MB | 36 ms | **38 ms** | **904 ms** | **0 ms** | 49 MB |
-| opencode v2 | 207 MB | 69 ms | **113 ms** | **482 ms** | **0 ms** | 125 MB |
-| jcode | 171 MB | 9 ms | **11 ms** | **701 ms** | **0 ms** | 32 MB |
-| pi | 112 MB | 193 ms | **251 ms** | **739 ms** | **0 ms** | 132 MB |
-| pi-bolt | 262 MB | 12 ms | **34 ms** | **513 ms** | **1 ms** | 96 MB |
-| gemini cli | 103 MB | 1175 ms | **1247 ms** | **1270 ms** | **0 ms** | — |
-| copilot cli | 198 MB | 87 ms | **637 ms** | — | — | 47 MB |
-| crush | 129 MB | 122 ms | **772 ms** | **1194 ms** | **56 ms** | 69 MB |
-| goose | 304 MB | 6 ms | **6 ms** | **367 ms** | **0 ms** | 110 MB |
-| aider | 643 MB | 683 ms | **572 ms** | **971 ms** | **8 ms** | 67 MB |
-| amp | 161 MB | 163 ms | **177 ms** | **546 ms** | **1 ms** | 138 MB |
-| cursor-agent | 583 MB | 381 ms | **353 ms** | — | — | 252 MB |
-| qwen code | 155 MB | 32 ms | **654 ms** | **1085 ms** | **0 ms** | 320 MB |
-| codebuff | 140 MB | 745 ms | **739 ms** | **1259 ms** | **0 ms** | 58 MB |
-| kilo code | 661 MB | 693 ms | **2034 ms** | **5701 ms** | **2485 ms** | 46 MB |
-| droid | 319 MB | 92 ms | **78 ms** | **3254 ms** | **1889 ms** | 293 MB |
-| kimi code | 192 MB | 469 ms | **585 ms** | **969 ms** | **3 ms** | 355 MB |
-| devin | 200 MB | 4 ms | **20 ms** | **1024 ms** | **143 ms** | 94 MB |
-| cline | 330 MB | 796 ms | **1079 ms** | — | — | 55 MB |
+| **fox-agent** | 118 MB | 13 ms | 14 ms | 374 ms | 0 ms | 36 MB |
+| claude code | 293 MB | 11 ms | 199 ms | — | — | 196 MB |
+| codex | 430 MB | 36 ms | 38 ms | 904 ms | 0 ms | 49 MB |
+| opencode v2 | 207 MB | 69 ms | 113 ms | 482 ms | 0 ms | 125 MB |
+| jcode | 171 MB | 9 ms | 11 ms | 701 ms | 0 ms | 32 MB |
+| pi | 112 MB | 193 ms | 251 ms | 739 ms | 0 ms | 132 MB |
+| pi-bolt | 262 MB | 12 ms | 34 ms | 513 ms | 1 ms | 96 MB |
+| gemini cli | 103 MB | 1175 ms | 1247 ms | 1270 ms | 0 ms | — |
+| copilot cli | 198 MB | 87 ms | 637 ms | — | — | 47 MB |
+| crush | 129 MB | 122 ms | 772 ms | 1194 ms | 56 ms | 69 MB |
+| goose | 304 MB | 6 ms | 6 ms | 367 ms | 0 ms | 110 MB |
+| aider | 643 MB | 683 ms | 572 ms | 971 ms | 8 ms | 67 MB |
+| amp | 161 MB | 163 ms | 177 ms | 546 ms | 1 ms | 138 MB |
+| cursor-agent | 583 MB | 381 ms | 353 ms | — | — | 252 MB |
+| qwen code | 155 MB | 32 ms | 654 ms | 1085 ms | 0 ms | 320 MB |
+| codebuff | 140 MB | 745 ms | 739 ms | 1259 ms | 0 ms | 58 MB |
+| kilo code | 661 MB | 693 ms | 2034 ms | 5701 ms | 2485 ms | 46 MB |
+| droid | 319 MB | 92 ms | 78 ms | 3254 ms | 1889 ms | 293 MB |
+| kimi code | 192 MB | 469 ms | 585 ms | 969 ms | 3 ms | 355 MB |
+| devin | 200 MB | 4 ms | 20 ms | 1024 ms | 143 ms | 94 MB |
+| cline | 330 MB | 796 ms | 1079 ms | — | — | 55 MB |
 | continue | 83 MB | 902 ms | — | — | — | 317 MB |
-| iflow cli | 180 MB | 970 ms | **1067 ms** | **1799 ms** | **0 ms** | 58 MB |
+| iflow cli | 180 MB | 970 ms | 1067 ms | 1799 ms | 0 ms | 58 MB |
+
+</details>
 
 <details><summary>full precision · all collected fields</summary>
 
@@ -56,6 +71,4 @@
 
 </details>
 
-fox-agent headless vs scripted local provider: time to first token **81 ms**, peak RSS **61 MB**.
-
-_Generated 2026-10-23T02:20:23Z on Linux x86_64 (6.17.0-1022-azure). [How this is measured](#benchmarks) · [raw JSON](bench/results.json)_
+_Generated 2026-10-23T02:20:23Z on Linux x86_64 (6.17.0-1022-azure). [Method and caveats](#benchmarks) · [raw JSON](bench/results.json)_

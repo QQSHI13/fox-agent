@@ -17,12 +17,22 @@ import { join } from "path";
 import { agentHome } from "../core/paths.ts";
 import { VERSION as version } from "../core/version.ts";
 import hacking from "../../docs/agent/hacking.md" with { type: "text" };
+import index from "../../docs/agent/index.md" with { type: "text" };
 import config from "../../docs/agent/config.md" with { type: "text" };
 import plugins from "../../docs/agent/plugins.md" with { type: "text" };
+import tools from "../../docs/agent/tools.md" with { type: "text" };
 import sessionsAcp from "../../docs/agent/sessions-acp.md" with { type: "text" };
 import themesTui from "../../docs/agent/themes-tui.md" with { type: "text" };
 
-const EMBEDDED: Record<string, string> = { hacking, config, plugins, "sessions-acp": sessionsAcp, "themes-tui": themesTui };
+const EMBEDDED: Record<string, string> = {
+  index,
+  hacking,
+  config,
+  plugins,
+  tools,
+  "sessions-acp": sessionsAcp,
+  "themes-tui": themesTui,
+};
 
 /** docs/agent/<name>.md → content, keyed by bare file name ("config"). */
 export function agentDocs(): Record<string, string> {
