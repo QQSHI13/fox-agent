@@ -1373,6 +1373,18 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
             mdFragments.length = 0;
             md = "";
             streamText = null;
+          } else if (state.sessionId) {
+            // An assistant node that carries tool calls has NO text of its own —
+            // the reply IS the calls. Nothing streamed, so nothing above anchored
+            // it, and the node stayed invisible until the next loadItems() rebuilt
+            // the transcript from the store at turn end. Its [N] marker then
+            // popped into existence after the fact, and the gap in numbering
+            // during the turn made the batch look like it skipped a message.
+            //
+            // Anchor it NOW. `replace` is empty, so the item lands at the end —
+            // which is the right place: the tool items do not exist yet (they are
+            // created per tool_start, and those arrive after this event).
+            reconcileNode(ev.seq, { label: new Map(), raw: new Map(), name: new Map() }, []);
           }
         } else if (ev.type === "reasoning") {
           appendToLastThink(ev.delta);

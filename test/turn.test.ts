@@ -244,6 +244,42 @@ describe("turn manager", () => {
     expect(ends.find((e) => e.name === "boom")!.output).toContain("exploded");
   });
 
+  test("the assistant node is announced BEFORE its tool calls start", async () => {
+    // An assistant node that carries tool calls has no text of its own — the
+    // reply IS the calls. A live UI can only anchor that node when it hears
+    // `assistant`, so that event must arrive before the `tool_start`s: arriving
+    // after would leave the node invisible (and its [N] missing) for the whole
+    // turn, popping into the transcript only at the next store rebuild.
+    const t = await setup();
+    const s = t.createSession("/w", "m1");
+    const registry = new Map([echoTool()]);
+    const mock = mockChat([
+      [
+        { type: "tool_call", call: { id: "t1", name: "echo", arguments: "{}" } },
+        { type: "tool_call", call: { id: "t2", name: "echo", arguments: "{}" } },
+        { type: "done", reason: "tool_calls" },
+      ],
+      textDone("done"),
+    ]);
+    // NOT quiet: `quiet` suppresses the assistant/tool events entirely (a
+    // subagent does not need them), and this test is about the UI-facing stream.
+    const events = await collect(
+      t.runTurnCore(s.id, cfg(), "go", undefined, { chat: mock.fn as any, registryOverride: registry }),
+    );
+    const ai = events.findIndex((e) => e.type === "assistant");
+    const firstTool = events.findIndex((e) => e.type === "tool_start");
+    expect(ai).toBeGreaterThanOrEqual(0);
+    expect(firstTool).toBeGreaterThan(ai); // strictly after
+    // the announced seq matches the stored row, so the UI's anchor is exact
+    const asst = events[ai] as Extract<(typeof events)[number], { type: "assistant" }>;
+    const stored = t.allMessages(s.id).filter((m: any) => m.role === "assistant");
+    expect(stored.some((m: any) => m.seq === asst.seq)).toBe(true);
+    // that row carries the calls and no text — the case that used to be invisible
+    const row = stored.find((m: any) => m.seq === asst.seq)!;
+    expect(row.content).toBe("");
+    expect(row.tool_calls).toContain("t1");
+  });
+
   test("unknown tool gets an error result the model can recover from", async () => {
     const t = await setup();
     const s = t.createSession("/w", "m1");
