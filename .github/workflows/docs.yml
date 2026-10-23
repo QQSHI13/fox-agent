@@ -84,10 +84,11 @@ jobs:
           touch site/.nojekyll
 
       - uses: actions/configure-pages@v5
-        with:
-          # Creates the Pages site on first run (build_type: workflow) instead
-          # of failing with "Pages is not enabled". Idempotent afterwards.
-          enablement: true
+        # NOT `enablement: true`. Creating the Pages site needs admin rights
+        # that the workflow's GITHUB_TOKEN does not have — that option fails
+        # with "Resource not accessible by integration". The site is created
+        # once, out of band (Settings -> Pages -> Source: GitHub Actions), and
+        # this step only reads its config from then on.
 
       - uses: actions/upload-pages-artifact@v3
         with:
