@@ -54,6 +54,12 @@ import tempfile
 import termios
 import time
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from screen import Screen  # noqa: E402  (terminal grid: what is actually on screen)
+
+
+
+
 DEBUG = "--debug" in sys.argv
 
 
@@ -446,12 +452,90 @@ def tui_first_byte(path, probes=5):
     return samples
 
 
-def idle_pss(path, settle=1.5):
+def _ppid_of(pid):
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as f:
+            data = f.read()
+    except OSError:
+        return None
+    # comm may contain spaces/parens; it is the only parenthesised field
+    rparen = data.rfind(b")")
+    if rparen < 0:
+        return None
+    fields = data[rparen + 2 :].split()
+    if len(fields) < 2:
+        return None
+    try:
+        return int(fields[1])
+    except ValueError:
+        return None
+
+
+def _pss_of(pid):
+    """PSS of one process in MB, or None."""
+    try:
+        with open(f"/proc/{pid}/smaps_rollup") as f:
+            for line in f:
+                if line.startswith("Pss:"):
+                    return int(line.split()[1]) / 1024
+    except (FileNotFoundError, ProcessLookupError, ValueError, PermissionError):
+        pass
+    return None
+
+
+def _pss_tree(root_pid):
+    """PSS of a process AND its descendants, in MB.
+
+    Summing the tree, rather than reading the direct child alone, is the honest
+    number for these CLIs: most are launchers (a node shim, a `.sh` wrapper, an
+    npm `bin` stub) that exec or spawn the binary which actually renders the
+    TUI. Reading only the root either reports a wrapper's few megabytes or, when
+    the wrapper has already handed off and exited, nothing at all.
+
+    Descendants are found by scanning /proc for the parent link, which costs one
+    pass over a few hundred entries — cheap next to the settle window, and it
+    keeps working when a tool spawns grandchildren.
+    """
+    kids = {}
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        pid = int(entry)
+        ppid = _ppid_of(pid)
+        if ppid is not None:
+            kids.setdefault(ppid, []).append(pid)
+    total = 0.0
+    seen = set()
+    stack = [root_pid]
+    while stack:
+        pid = stack.pop()
+        if pid in seen:
+            continue
+        seen.add(pid)
+        v = _pss_of(pid)
+        if v is not None:
+            total += v
+        stack.extend(kids.get(pid, ()))
+    return total if total > 0 else None
+
+
+def idle_pss(path, settle=1.5, tries=12):
     """PSS after launching the TUI and letting it settle (Linux only).
 
     Same launch as tui_first_byte, but instead of killing on first byte, wait
     out the settle window and read smaps_rollup — idle harness cost, before
     any model traffic (which would dominate everything).
+
+    Two things this does that a single timed read does not:
+
+      * it sums the PROCESS TREE (see _pss_tree), because these entries are
+        often launchers for the process that actually draws the TUI;
+      * it retries instead of sampling once at exactly `settle` seconds. A
+        single read raced the last startup write and reported None for a tool
+        that was perfectly measurable a moment later — goose did exactly that
+        in a published run while every other tool reported fine. The first
+        successful reading wins; a tool that really never comes up still ends
+        as None.
     """
     try:
         pid, fd = pty.fork()
@@ -463,25 +547,27 @@ def idle_pss(path, settle=1.5):
             os.execv(path, [path])
         except Exception:
             os._exit(127)
-    time.sleep(settle)
+
     pss = None
     try:
-        with open(f"/proc/{pid}/smaps_rollup") as f:
-            for line in f:
-                if line.startswith("Pss:"):
-                    pss = int(line.split()[1]) / 1024
-                    break
-    except (FileNotFoundError, ProcessLookupError, ValueError):
-        pass
-    try:
-        os.close(fd)
-    except OSError:
-        pass
-    try:
-        os.kill(pid, signal.SIGKILL)
-        os.waitpid(pid, 0)
-    except (ProcessLookupError, ChildProcessError, OSError):
-        pass
+        time.sleep(settle)
+        for _ in range(tries):
+            pss = _pss_tree(pid)
+            if pss is not None:
+                break
+            if not _alive(pid):
+                break
+            time.sleep(0.25)
+    finally:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        try:
+            os.kill(pid, signal.SIGKILL)
+            os.waitpid(pid, 0)
+        except (ProcessLookupError, ChildProcessError, OSError):
+            pass
     return pss
 
 
@@ -501,20 +587,13 @@ INPUT_MARKERS = {
     # "antigravity": {"log": "~/.antigravity/input-ready.log", "marker": r"..."},
 }
 
-# Strips terminal control traffic so probe text is matched against what is
-# actually RENDERED: OSC (BEL and ST terminated), CSI (incl. the `$p` form
-# DECRQM-style replies use), DCS/APC (ST terminated), DEC private modes,
-# cursor movement, CR. Without the DCS and `$p` arms, opencode's startup
-# queries leak through as text and a stray "p" could fake a match.
-ANSI_RE = re.compile(
-    rb"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)"  # OSC, BEL or ST terminated
-    rb"|\x1bP.*?\x1b\\"  # DCS ... ST
-    rb"|\x1b_[^\x1b]*\x1b\\"  # APC ... ST
-    rb"|\x1b\[[0-9;?<>=!]*[$\" ]*[a-zA-Z@`]"  # CSI, incl. $p / " p forms
-    rb"|\x1b[()][0-9A-Z]"  # charset selection
-    rb"|\x1b[=>78M]"  # keypad / save cursor / reverse index
-    rb"|\r"
-)
+
+# `ANSI_RE` used to live here: it stripped control traffic so the probe could
+# be matched against the remaining bytes. That approach is gone — a cell-diffing
+# TUI never emits the probe as one contiguous run, and a wrapped input box
+# splits it across rows. `screen.py` parses the stream into a character grid and
+# the probe is searched there instead, which is the only thing "did my typing
+# appear" ever meant. Kept as a note so the idea is not reintroduced.
 
 
 def _wait_output(fd, timeout):
@@ -586,9 +665,16 @@ def _echo_mode(fd):
     return "kernel-echo" if lflag & termios.ECHO else "render"
 
 
-def _await_echo(fd, t0, deadline, logf, cfg):
+def _await_echo(fd, t0, budget, logf, cfg):
     """Type PROBE_TEXT and wait until it is actually VISIBLE, not merely until
     the PTY twitches. Returns (ms from t0, signal) or (None, None).
+
+    `budget` is a DURATION in seconds, not an absolute deadline, and it starts
+    at the keystroke. That distinction is load-bearing: readiness (first output
+    plus a quiet settle) can legitimately consume most of a caller's patience on
+    a slow runner, and an absolute deadline computed from spawn then expired
+    before the tool had any chance to draw -- which is what silently turned 15
+    working tools into n/a rows.
 
     The old version returned on the first output chunk after a quiet baseline.
     That is wrong for a TUI for two reasons:
@@ -601,21 +687,24 @@ def _await_echo(fd, t0, deadline, logf, cfg):
          accepted as the answer. Measured on fox: 0 of 6 probes contained the
          typed text; all 6 were status ticks.
 
-    So: accumulate everything since t0, strip ANSI, and only stop when the probe
-    text itself is on screen. That is what a person perceives as their input
-    appearing, and it is the same expression for both metrics (t0 = spawn for
-    first_input, t0 = keystroke for latency).
+    So: feed everything since the keystroke into a terminal grid (see
+    screen.py) and stop only when the probe text reads out of that grid. That is
+    what a person perceives as their input appearing, and it is the same
+    expression for both metrics (t0 = spawn for first_input, t0 = keystroke for
+    latency).
 
-    Up to two typing rounds against one deadline: a tool still starting up may
-    swallow early keystrokes, and the honest number is "how long until my input
-    renders", not n/a. A tool that never renders still times out honestly.
+    Up to two typing rounds: a tool still starting up may swallow early
+    keystrokes, and the honest number is "how long until my input renders", not
+    n/a. A tool that never renders still times out honestly.
     """
     probe = PROBE_TEXT.encode()
     for attempt in (1, 2):
         if attempt == 2:
+            # one flush of late startup output before retyping; its own small
+            # budget, never the (possibly already spent) probe budget
             quiet_end = time.perf_counter() + 1.0
-            while time.perf_counter() < min(quiet_end, deadline):
-                r, _, _ = select.select([fd], [], [], max(0, min(quiet_end, deadline) - time.perf_counter()))
+            while time.perf_counter() < quiet_end:
+                r, _, _ = select.select([fd], [], [], max(0, quiet_end - time.perf_counter()))
                 if not r:
                     break
                 try:
@@ -627,11 +716,20 @@ def _await_echo(fd, t0, deadline, logf, cfg):
             os.write(fd, probe)
         except OSError:
             return None, None
-        # everything received since the keystroke; the probe must show up in it
-        # with the control traffic stripped, so a cursor-hide or a spinner tick
-        # can no longer satisfy the wait.
-        seen = b""
-        while time.perf_counter() < deadline:
+        # Everything received since the keystroke is parsed into a character
+        # grid; the probe counts as landed only when it reads out of the GRID.
+        # Matching literal bytes was wrong three ways: a cell-diffing TUI never
+        # emits the probe as one contiguous run (jcode redraws with cursor
+        # moves), a wrapped input box splits it across rows, and escape traffic
+        # can interleave between its characters. The grid resolves all three to
+        # their visible result -- which is what a person judges.
+        screen = Screen()
+        # The wait budget starts when the probe was TYPED, not when the process
+        # was spawned: readiness (output + quiet) can legitimately consume most
+        # of `budget` on a slow runner, and inheriting a spawn-relative deadline
+        # made the loop expire before the tool had a chance to draw anything.
+        probe_deadline = time.perf_counter() + budget
+        while time.perf_counter() < probe_deadline:
             if logf is not None:
                 try:
                     chunk = logf.read()
@@ -642,7 +740,7 @@ def _await_echo(fd, t0, deadline, logf, cfg):
                         return time.perf_counter() - t0, "log-marker"
                 time.sleep(0.2)
                 continue
-            r, _, _ = select.select([fd], [], [], max(0, deadline - time.perf_counter()))
+            r, _, _ = select.select([fd], [], [], max(0, probe_deadline - time.perf_counter()))
             if not r:
                 continue
             try:
@@ -656,8 +754,8 @@ def _await_echo(fd, t0, deadline, logf, cfg):
                 # timeout — this is what devin/cline/continue hit every probe.
                 dbg("echo: child closed PTY (exited) — abandoning probe early")
                 return None, None
-            seen += data
-            if probe in ANSI_RE.sub(b"", seen):
+            screen.feed(data)
+            if screen.contains(probe):
                 return time.perf_counter() - t0, "drained"
     return None, None
 
@@ -697,12 +795,13 @@ def tui_first_input(path, label, probes=3, timeout=15):
                     logf.seek(0, os.SEEK_END)
                 except OSError:
                     logf = None
-            # classify BEFORE typing: the line discipline is already in the mode
-            # the tool will read input with, so this says whether a hit will be
-            # kernel echo (cooked) or the app's own render (raw).
+            # Classify BEFORE typing, but only after the mode stops changing: a
+            # TUI that boots cooked and switches to raw would otherwise be
+            # labelled kernel-echo and its number would describe the kernel.
+            # See _await_stable_mode.
             if signal_kind is None:
-                signal_kind = _echo_mode(fd)
-            hit, via = _await_echo(fd, start, start + timeout, logf, cfg)
+                signal_kind = _await_stable_mode(fd)
+            hit, via = _await_echo(fd, start, timeout, logf, cfg)
             if hit is not None:
                 samples.append(hit * 1000)
                 if via == "log-marker":
@@ -733,6 +832,74 @@ def _alive(pid):
     except OSError:
         return False
     return True
+
+
+def _await_stable_mode(fd, budget_s=6.0, need_stable=3):
+    """Wait until the line discipline stops changing, then report its mode.
+
+    Sampling ECHO once is not enough. Several TUIs boot in COOKED mode and only
+    switch to raw when their UI takes over — measured, same machine, ECHO bit
+    sampled at 0.5/1.5/3.0/5.0s:
+
+        jcode    ON  ON  off off
+        pi-bolt  ON  ON  off off
+        fox      off off off off
+        cat      ON  ON  ON  ON
+
+    Reading it early therefore labelled a real TUI `kernel-echo`, measured the
+    kernel's own echo instead of the app's render, and produced numbers an order
+    of magnitude too fast.
+
+    NOTE: "stable for a few samples" is NOT sufficient, which is why this keeps
+    the longer-window check below. kimi stays cooked for ~2.8s before switching,
+    so a short stability window reported `kernel-echo` for it and the answer
+    still depended on timing.
+    """
+    return _classify_mode(fd, budget_s=budget_s, need_stable=need_stable)
+
+
+def _classify_mode(fd, budget_s=6.0, need_stable=3):
+    """Decide whether this tool will read raw keys, by watching for the switch.
+
+    The question the metric actually asks is "does the app render my typing, or
+    does the kernel echo it for them?" — and the honest way to answer that is to
+    watch the transition rather than sample a state:
+
+      * ECHO turns OFF at any point during boot  -> the tool took the terminal
+        into raw mode and redraws its own cells: `render`.
+      * ECHO stays ON for the whole boot window  -> a cooked-mode CLI that never
+        takes raw control (`cat`, a plain REPL): `kernel-echo`.
+
+    Boot windows measured on this machine: jcode ~2.5s, pi-bolt ~2.5s,
+    kimi ~2.8s, fox immediate. The window below covers those with margin. The
+    stable-mode short-circuit is kept for the common case (a tool that is
+    already raw when we look), so the full window is only ever paid by tools
+    that genuinely stay cooked.
+    """
+    deadline = time.perf_counter() + budget_s
+    saw_on = False
+    last = None
+    while time.perf_counter() < deadline:
+        # DRAIN while polling. A TUI that keeps painting while we watch will
+        # fill the PTY buffer (~64KB) and block on its next write — and a
+        # process blocked mid-startup never reaches the code that switches the
+        # terminal to raw mode. Then the loop records `kernel-echo` forever
+        # because it starved the very transition it was waiting for. Reading is
+        # what keeps the tool running.
+        r, _, _ = select.select([fd], [], [], 0.1)
+        if r:
+            try:
+                if not os.read(fd, 65536):
+                    break
+            except OSError:
+                break
+        cur = _echo_mode(fd)
+        if cur == "render":
+            return "render"  # took raw mode: the app owns the echo
+        if cur == "kernel-echo":
+            saw_on = True
+        last = cur
+    return "kernel-echo" if saw_on else (last or None)
 
 
 def tui_input_latency(path, label, settle_s=0.5, probes=3, timeout=15):
@@ -787,10 +954,14 @@ def tui_input_latency(path, label, settle_s=0.5, probes=3, timeout=15):
                     logf.seek(0, os.SEEK_END)
                 except OSError:
                     logf = None
-            t0 = time.perf_counter()
+            # Classify BEFORE the clock starts. Waiting for the mode to settle is
+            # startup observation, not the keystroke round-trip, and running it
+            # inside the timed window charged the whole wait to the measurement
+            # (`cat` read 3007ms instead of ~0.3ms — half the 6s mode budget).
             if signal_kind is None:
-                signal_kind = _echo_mode(fd)
-            hit, via = _await_echo(fd, t0, t0 + timeout, logf, cfg)
+                signal_kind = _await_stable_mode(fd)
+            t0 = time.perf_counter()
+            hit, via = _await_echo(fd, t0, timeout, logf, cfg)
             if hit is not None:
                 samples.append(hit * 1000)
                 if via == "log-marker":
@@ -1152,6 +1323,64 @@ def self_test():
                 os.environ.pop("HOME", None)
             else:
                 os.environ["HOME"] = old_home
+
+    if fails:
+        print(f"\nself-test FAILED ({len(fails)})")
+        return 1
+
+    # --- terminal grid (screen.py) --------------------------------------
+    # Each of these encodes a defect that produced a WRONG published number, so
+    # they are checks on the metric, not on the parser's aesthetics.
+    from screen import Screen
+
+    probe = b"hellobench"
+
+    # 1. A cell-diffing TUI draws the probe with cursor moves around it and never
+    #    emits it contiguously (jcode). Byte-matching called this "never echoed".
+    s = Screen()
+    s.feed(b"\x1b[?2026h\x1b[2D\x1b[3B\r\x1b[2C\x1b[3Ahellobench\x1b[?2026l")
+    check("grid: probe drawn with cursor moves is found", s.contains(probe))
+
+    # 2. Escape sequences arrive split across PTY reads — fox's first chunk is a
+    #    bare 6-byte cursor-hide. Feeding the tail as text painted the sequence
+    #    literally and shifted everything after it.
+    s = Screen()
+    s.feed(b"\x1b[?25l")
+    s.feed(b"\x1b[23;1H\x1b[38;2;1;2;3m hellobench")
+    check("grid: split escape sequence does not leak as text", s.contains(probe))
+
+    # 3. A CSI cut mid-parameters ("\x1b[3" + "8;2;1m") must not paint its
+    #    parameters onto the screen.
+    s = Screen()
+    s.feed(b"\x1b[3")
+    s.feed(b"8;2;192;202;245mok")
+    check("grid: mid-split CSI params stay invisible", "38;" not in s.snapshot(200),
+          repr(s.snapshot(60)))
+
+    # 4. Multibyte glyphs occupy ONE cell each. Byte-per-cell decoding put 3 junk
+    #    cells per box-drawing char and pushed the probe off its real column.
+    s = Screen()
+    s.feed("▐▛███▜".encode())
+    s.feed(b"X")
+    check("grid: utf8 glyph is one cell", s.snapshot(60).startswith("▐▛███▜X"),
+          repr(s.snapshot(60)))
+
+    # 5. A wrapped input box splits the probe across rows; both halves are still
+    #    the same visible text.
+    s = Screen(width=8, height=4)
+    s.feed(b"hello")
+    s.feed(b"bench")
+    check("grid: probe spanning a wrap is found", s.contains(probe))
+
+    # 6. SGR interleaved between the probe's characters (cell-level styling).
+    s = Screen()
+    s.feed(b"hello\x1b[1m\x1b[0mbench")
+    check("grid: sgr interleaved inside probe is found", s.contains(probe))
+
+    # 7. Absolute cursor addressing still places text.
+    s = Screen()
+    s.feed(b"\x1b[5;10HZ")
+    check("grid: absolute cursor position honoured", "Z" in s.snapshot(200))
 
     if fails:
         print(f"\nself-test FAILED ({len(fails)})")
