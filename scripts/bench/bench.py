@@ -108,6 +108,15 @@ AGENTS = [
 
 VERSION_FALLBACKS = [["--version"], ["-v"], ["version"], ["--help"]]
 
+# Tools whose real binary is fetched on FIRST RUN into a data dir, so the file a
+# shim points at is not the cost (the downloader spawns it from child_process,
+# which no exec-line walk can see). Label -> paths relative to $HOME. Add a row
+# per tool; the lookup is keyed by label so one tool's download cannot be
+# reported as another's footprint.
+FIRST_RUN_DOWNLOADERS = {
+    "codebuff": [os.path.join(".config", "manicode", "codebuff")],
+}
+
 
 def which(names):
     for n in names:
@@ -299,7 +308,33 @@ def _contains_js_runtime(path):
     return bool(_runtime_dirs_under(path))
 
 
-def footprint(path):
+def _first_run_downloader(agent_label):
+    """Data-dir binary a tool downloads on first run, if it has one.
+
+    Keyed by the TOOL, because the lookup used to be unconditional: every tool
+    fell into codebuff's `~/.config/manicode/codebuff` and was reported at that
+    file's size. Thirteen unrelated vendors came out at exactly 139.954304 MB —
+    including aider, which is Python — and none of them had their package dir
+    measured at all. The size was real; it just belonged to one tool.
+
+    A downloader is invisible to the exec-line walk (the shim spawns the binary
+    from child_process), so it has to be named here. Add a row per tool that
+    needs one: label -> path relative to $HOME.
+    """
+    rels = FIRST_RUN_DOWNLOADERS.get(agent_label)
+    if not rels:
+        return None
+    for rel in rels:
+        cand = os.path.join(os.path.expanduser("~"), rel)
+        try:
+            if os.path.isfile(cand) and is_binary_file(cand):
+                return cand
+        except OSError:
+            pass
+    return None
+
+
+def footprint(path, agent_label=None):
     """Honest on-disk cost of a CLI as (mb, kind).
 
     A native executable is its own whole cost ("bin"). A script/shim is not —
@@ -329,17 +364,14 @@ def footprint(path):
         except OSError:
             pass
     # a first-run downloader spawns its real binary from a data dir via
-    # child_process, not an exec line — the walk above cannot see it
-    # (codebuff: 3MB npm shim -> 133MB ELF in ~/.config/manicode). The
-    # FRESH-download caveat lives in the workflow comment: CI installs are
-    # cold, so this only pays off after the probe launches have warmed it.
-    for d in (os.path.join(".config", "manicode"),):  # (tool, dir) pairs as needed
-        cand = os.path.join(os.path.expanduser("~"), d, "codebuff")
-        try:
-            if os.path.isfile(cand) and is_binary_file(cand):
-                return os.path.getsize(cand) / 1e6, "bin"
-        except OSError:
-            pass
+    # child_process, not an exec line — the walk above cannot see it. Scoped to
+    # the tool that owns it: an unconditional lookup reported one file as twelve
+    # vendors' footprint. The FRESH-download caveat lives in the workflow
+    # comment: CI installs are cold, so this only pays off after the probe
+    # launches have warmed it.
+    cand = _first_run_downloader(agent_label)
+    if cand:
+        return os.path.getsize(cand) / 1e6, "bin"
     d = os.path.dirname(real)
     for _ in range(5):
         if os.path.isfile(os.path.join(d, "package.json")) or os.path.isfile(os.path.join(d, "pyvenv.cfg")):
@@ -924,7 +956,7 @@ def measure(label, path, n_start, n_probes, n_input):
     step(label, "probing version")
     ver = version_of(path)
     step(label, "measuring on-disk footprint", os.path.basename(path))
-    disk, kind = footprint(path)
+    disk, kind = footprint(path, label)
     step(label, f"timing `--version` startup (best of {n_start})")
     startup = best_startup(path, n_start, ver=ver)  # reuse ver: no extra spawn
     step(label, f"timing TUI first byte (best of {n_probes} PTY launches)")
@@ -987,7 +1019,80 @@ def opencode_label(ver):
     return None
 
 
+def self_test():
+    """Regression checks for the footprint logic — no network, no tools needed.
+
+    Written because a single unconditional lookup silently reported ONE tool's
+    140MB downloader as thirteen unrelated vendors' footprint (including aider,
+    which is Python). The tell was thirteen byte-identical sizes; the check here
+    is the direct one: only the owning tool may claim a downloader.
+    """
+    import tempfile
+
+    fails = []
+
+    def check(name, cond, detail=""):
+        if cond:
+            print(f"  ok   {name}")
+        else:
+            print(f"  FAIL {name} {detail}")
+            fails.append(name)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        home = os.path.join(tmp, "home")
+        # a fake first-run download for codebuff only
+        manicode = os.path.join(home, ".config", "manicode")
+        os.makedirs(manicode)
+        dl = os.path.join(manicode, "codebuff")
+        with open(dl, "wb") as f:
+            f.write(b"\x00" * 4096)
+
+        # two unrelated npm-style shims, each in its own package dir
+        shims = {}
+        for pkg in ("codex", "aider"):
+            d = os.path.join(tmp, "npm", "lib", "node_modules", pkg)
+            os.makedirs(os.path.join(d, "bin"))
+            with open(os.path.join(d, "package.json"), "w") as f:
+                f.write('{"name": "%s"}' % pkg)
+            p = os.path.join(d, "bin", pkg)
+            with open(p, "w") as f:
+                f.write("#!/usr/bin/env node\n")
+            os.chmod(p, 0o755)
+            shims[pkg] = p
+
+        old_home = os.environ.get("HOME")
+        os.environ["HOME"] = home
+        try:
+            # the bug: these inherited codebuff's size when the lookup was global
+            for pkg, p in shims.items():
+                mb, kind = footprint(p, pkg)
+                check(
+                    f"{pkg} does not inherit codebuff's downloader",
+                    mb < 1.0 and kind in ("pkg", "app"),
+                    f"got {mb:.1f} MB kind={kind}",
+                )
+            # ...and only the owner claims it
+            mb, kind = footprint(shims["codex"], "codebuff")
+            check("codebuff claims its downloader", mb > 0 and kind == "bin", f"got {mb:.1f} MB kind={kind}")
+            # an unknown label gets no downloader, not someone else's
+            mb2, _ = footprint(shims["aider"], "not-a-real-tool")
+            check("an unknown label claims nothing", mb2 < 1.0, f"got {mb2:.1f} MB")
+        finally:
+            if old_home is None:
+                os.environ.pop("HOME", None)
+            else:
+                os.environ["HOME"] = old_home
+
+    if fails:
+        print(f"\nself-test FAILED ({len(fails)})")
+        return 1
+    print("\nself-test ok")
+    return 0
+
+
 def main():
+    if "--self-test" in sys.argv:
+        sys.exit(self_test())
     quick = "--quick" in sys.argv
     out = sys.argv[sys.argv.index("--out") + 1] if "--out" in sys.argv else os.path.join(ROOT, "bench")
     os.makedirs(out, exist_ok=True)

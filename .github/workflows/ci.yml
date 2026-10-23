@@ -18,3 +18,7 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
       - run: bun test
+      # The bench harness is Python and has no pytest suite; its own checks run
+      # here so footprint logic cannot silently regress again (once reported one
+      # tool's 140MB downloader as thirteen vendors' footprint).
+      - run: python3 scripts/bench/bench.py --self-test
