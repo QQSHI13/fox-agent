@@ -44,6 +44,7 @@ are changing them.
   than pretending the shell is intact. Released via `onSessionEnd`.
 - **`repl`** — in-process `vm`; real host globals. `tools.call(name, args)` bypasses
   the turn loop's `beforeTool`/`afterTool` hooks. Nesting capped at 3.
+  `timeout_ms` is the caller's to set — no upper bound, `0` = never time out.
 - **`task`** — foreground only; protocol follows the `[agents.*]` entry's shape
   (`command` → ACP, `url` → A2A). Delegation depth capped at 3 via
   `FOX_AGENT_DELEGATION_DEPTH`. `default` cannot be rebound.

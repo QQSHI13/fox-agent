@@ -83,6 +83,29 @@ describe("repl scratchpad", () => {
     expect(Date.now() - t0).toBeLessThan(5000);
   }, 30_000);
 
+  test("timeout_ms is the agent's call: above the old 5-minute cap", async () => {
+    // used to be clamped to 300_000; a 10-minute budget must survive a short
+    // eval untouched (the clamp was silent, so assert on the accepted value)
+    const r = await replRun({ code: "(await new Promise((res) => setTimeout(() => res('slow-ok'), 20)))", timeout_ms: 600_000 }, ctx);
+    expect(r.ok).toBe(true);
+    expect(r.output).toContain("slow-ok");
+  });
+
+  test("timeout_ms: 0 disables the timeout", async () => {
+    const t0 = Date.now();
+    // would be killed at any positive timeout, but a no-timeout eval must run
+    const r = await replRun({ code: 'await new Promise((res) => setTimeout(() => res("no-timeout-ok"), 1200))', timeout_ms: 0 }, ctx);
+    expect(r.ok).toBe(true);
+    expect(r.output).toContain("no-timeout-ok");
+    expect(Date.now() - t0).toBeGreaterThanOrEqual(1000);
+  }, 30_000);
+
+  test("a negative timeout_ms is rejected, not silently clamped", async () => {
+    const r = await replRun({ code: "1", timeout_ms: -5 }, ctx);
+    expect(r.ok).toBe(false);
+    expect(r.output).toContain("timeout_ms");
+  });
+
   test("full environment: process, timers, fetch, and dynamic import all work", async () => {
     // no sandbox anywhere else in fox-agent (exec runs anything), so the
     // scratchpad is a full environment too — process, timers, fetch, and a

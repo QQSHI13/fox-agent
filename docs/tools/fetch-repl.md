@@ -78,6 +78,9 @@ knowing if you are debugging a hook that seems not to fire.
 Poll instead of re-running. You are notified when a job finishes; the job is
 reaped after a grace window.
 
-A hanging foreground eval is killed at `timeout_ms` (default 30 000). Nesting
+A hanging foreground eval is killed at `timeout_ms` (default 30 000). You set
+that budget yourself: there is no upper bound (anything positive is honoured),
+and `timeout_ms: 0` disables the timeout entirely so an eval runs until it
+finishes. Negative values are rejected. Nesting
 `repl` inside `repl` is capped at 3 deep — unbounded nesting is a hang with extra
 steps.
