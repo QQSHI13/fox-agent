@@ -5,11 +5,14 @@
  * adding a command means adding an entry HERE, not editing `cli.ts`.
  */
 import { registerCommand, type CliCommand } from "./registry.ts";
-import { loadConfig, effectiveConfigPath } from "../core/config.ts";
 import { errMsg } from "../core/errors.ts";
-import { latestSessionFor } from "../store/db.ts";
 import { join } from "node:path";
 import { VERSION } from "../core/version.ts";
+
+// NOTE: nothing heavy is imported at module scope. This module is loaded by the
+// ENTRY (cli.ts) to populate the command table, so a static `../store/db.ts`
+// here would pull bun:sqlite into every `fox --version` run — the exact cost the
+// entry/app split exists to avoid. The store and config load inside each run().
 
 /**
  * commands.ts is loaded lazily: it pulls the TUI-facing command surface in, and
@@ -42,6 +45,7 @@ plugin's own name, or the configured path. (Also: fox plugins, /plugin.)`,
     // verbs the /plugin slash command works through, in terminal colors
     try {
       const { cliColor, pluginAddPath, pluginInfoText, pluginListText, pluginRemovePath, pluginSetEnabled } = await cmds();
+      const { loadConfig, effectiveConfigPath } = await import("../core/config.ts");
       const flagPath = (flags.get("config") as string) || undefined;
       const configPath = effectiveConfigPath(flagPath);
       const pcfg = loadConfig({ cwd: process.cwd(), configPath });
@@ -85,6 +89,7 @@ Pass an index to resume it: fox -c 2 (or fox -c <id>).`,
     // here looks stale there too — this used to be its own loop over
     // `created_at` and disagreed with every other listing about ordering
     const { cliColor, formatSessionList, sessionList } = await cmds();
+    const { loadConfig } = await import("../core/config.ts");
     console.log(formatSessionList(sessionList({ limit: loadConfig({ cwd: process.cwd() }).sessionListLimit }), { color: cliColor() }));
   },
 };
@@ -102,6 +107,7 @@ render a session as a single offline HTML file you can open anywhere.`,
     }
     try {
       const { shareSession } = await import("../store/share.ts");
+      const { latestSessionFor } = await import("../store/db.ts");
       const target = args[0] === "current" || !args[0] ? latestSessionFor(process.cwd())?.id : args[0];
       if (!target) return console.log(`no session found for ${process.cwd()}`);
       const out = args[1] || join(process.cwd(), `fox-session-${target}.html`);
@@ -128,6 +134,7 @@ command is /export. Import on the other machine: fox import <file>.`,
       return;
     }
     const { exportSession } = await import("../store/transfer.ts");
+    const { latestSessionFor } = await import("../store/db.ts");
     try {
       // "current" = this directory's latest session (the one `fox -c` resumes)
       const target = args[0] === "current" ? latestSessionFor(process.cwd())?.id : args[0];
