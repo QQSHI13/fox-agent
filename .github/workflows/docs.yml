@@ -1,0 +1,106 @@
+name: Docs
+
+# Builds the docs site and publishes it to GitHub Pages.
+#
+# The build runs here rather than on a Pages builder because the site comes
+# from docsforge (a PyPI package) — there is no Jekyll/Markdown pipeline that
+# can produce it. Actions installs docsforge, builds site/, and uploads that
+# directory as a Pages artifact.
+#
+# PRs build but do not deploy, so a broken nav entry or a dead link fails the
+# PR instead of the live site.
+#
+# No secrets required: Pages deploys with the workflow's own GITHUB_TOKEN via
+# OIDC (pages: write + id-token: write below).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - "docsforge.yml"
+      - ".github/workflows/docs.yml"
+  pull_request:
+    paths:
+      - "docs/**"
+      - "docsforge.yml"
+      - ".github/workflows/docs.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One Pages deploy at a time, and never cancel one mid-flight: a cancelled
+# publish can leave the environment serving a partial build. Unlike most
+# concurrency groups this one is deliberately not per-ref — every deploy
+# targets the same Pages site.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+env:
+  # Pin docsforge: an unpinned `pip install` lets a docsforge release change
+  # the site's output on a morning nobody touched the docs.
+  DOCSFORGE_VERSION: "13.0.2"
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: install docsforge
+        run: pip install --disable-pip-version-check "docsforge==${{ env.DOCSFORGE_VERSION }}"
+
+      - name: validate config
+        run: docsforge check
+
+      - name: build site
+        # NOT --strict: the site legitimately carries warnings (docs/agent is
+        # excluded from the site on purpose and is reported as "not in nav").
+        # A warning here is not a failure; a bad nav path already fails `check`.
+        run: docsforge build
+
+      - name: verify the build is deployable
+        # A silently empty or half-written site would still publish fine and
+        # take the live docs down. Assert the things that must exist.
+        run: |
+          set -eu
+          test -f site/index.html || { echo "missing site/index.html"; exit 1; }
+          test -f site/404.html   || { echo "missing site/404.html"; exit 1; }
+          pages=$(find site -name index.html | wc -l)
+          echo "pages: $pages"
+          test "$pages" -ge 20 || { echo "only $pages pages — the nav did not render"; exit 1; }
+          # .nojekyll stops Pages from running the output through Jekyll, which
+          # would drop files and directories whose names begin with an underscore
+          # (docsforge emits site/search/ and hashed asset dirs).
+          touch site/.nojekyll
+
+      - uses: actions/configure-pages@v5
+        with:
+          # Creates the Pages site on first run (build_type: workflow) instead
+          # of failing with "Pages is not enabled". Idempotent afterwards.
+          enablement: true
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    # publish from main only; a PR run stops after the build job
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4
