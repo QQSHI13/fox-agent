@@ -6,6 +6,7 @@ import type { ChatFn, ProviderConfig } from "./types.ts";
 import { lookupModel } from "./models.ts";
 import { FoxError } from "../core/errors.ts";
 import { BUNDLED_PROVIDER_NAMES, bundledProviderFns, isAnthropic } from "./bundled.ts";
+import { REASONING_EFFORTS, THINKING_BUDGET, isReasoningEffort, type ReasoningEffort } from "../core/reasoning.ts";
 
 export { isAnthropic };
 export * from "./types.ts";
@@ -105,24 +106,60 @@ export function outputTokenOptions(cfg: ProviderConfig): { maxOutputTokens?: num
   return {};
 }
 
-/** Thinking budgets for providers that take a token budget rather than a name. */
-const THINKING_BUDGET: Record<string, number> = { low: 2_048, medium: 8_192, high: 32_768 };
+/**
+ * Which rung of the shared scale each provider can express.
+ *
+ * The scale (`off` … `xhigh`) is what the user picks; this is what the wire
+ * accepts. A provider that has no `xhigh` gets `high` — degrading to the nearest
+ * rung it HAS beats failing the request, because the user's intent ("think as
+ * hard as you can") is still satisfiable.
+ */
+const OPENAI_EFFORTS: ReadonlySet<string> = new Set(["none", "minimal", "low", "medium", "high", "xhigh"]);
+
+function clampEffort(e: ReasoningEffort, accepted: ReadonlySet<string>): string {
+  const wanted = e === "off" ? "none" : e;
+  if (accepted.has(wanted)) return wanted;
+  // nearest rung downward, never upward — asking for more than a provider has
+  // is a rejected request, asking for less is just a cheaper answer
+  const order = e === "off" ? [] : (REASONING_EFFORTS as readonly string[]);
+  const i = order.indexOf(e);
+  for (let j = i; j >= 0; j--) if (accepted.has(order[j] as string)) return order[j] as string;
+  return "minimal";
+}
 
 /**
  * Provider options for reasoning effort, keyed the way each AI SDK expects
  * them (`reasoningEffort` travels in `sampling` like any sampling override).
+ *
  * Undefined when no effort is set — the provider's native default then rules.
+ * `off` IS set: it is an explicit request for a non-reasoning answer, and each
+ * family says it differently (Anthropic disables thinking, Google zeroes the
+ * budget, the OpenAI family names "none"). Previously clearing the setting was
+ * the only way to reach a fast answer, which cannot work on a reasoning model —
+ * the provider's default there is ON.
  */
 export function reasoningProviderOptions(cfg: ProviderConfig): { providerOptions: Record<string, import("@ai-sdk/provider").JSONObject> } | undefined {
   const effort = cfg.sampling?.reasoningEffort;
-  if (typeof effort !== "string" || !/^(low|medium|high)$/.test(effort)) return undefined;
+  if (!isReasoningEffort(effort)) return undefined;
   const options: Record<string, import("@ai-sdk/provider").JSONObject> = {};
-  if (cfg.provider === "anthropic") options.anthropic = { thinking: { type: "enabled", budgetTokens: THINKING_BUDGET[effort] } };
-  else if (cfg.provider === "google") options.google = { thinkingConfig: { thinkingBudget: THINKING_BUDGET[effort] } };
-  else if (cfg.provider === "openai-responses") options.openai = { reasoningEffort: effort };
-  // openai-compatible (and anything else speaking the chat-completions shape):
-  // the SDK's option namespace is "openaiCompatible"
-  else options.openaiCompatible = { reasoningEffort: effort };
+  if (cfg.provider === "anthropic") {
+    // no budget to name when thinking is off; enabling one always carries a budget
+    options.anthropic =
+      effort === "off"
+        ? { thinking: { type: "disabled" } }
+        : { thinking: { type: "enabled", budgetTokens: THINKING_BUDGET[effort] } };
+  } else if (cfg.provider === "google") {
+    // 0 is the documented way to disable thinking on a budgeted model
+    options.google = { thinkingConfig: { thinkingBudget: effort === "off" ? 0 : THINKING_BUDGET[effort] } };
+  } else if (cfg.provider === "openai-responses") {
+    options.openai = { reasoningEffort: clampEffort(effort, OPENAI_EFFORTS) };
+  } else {
+    // openai-compatible (and anything else speaking the chat-completions shape):
+    // the SDK's option namespace is "openaiCompatible". It types this as a plain
+    // string, so the value goes through as-is and a gateway that does not know
+    // it ignores it — which is the correct failure mode for a vendor knob.
+    options.openaiCompatible = { reasoningEffort: clampEffort(effort, OPENAI_EFFORTS) };
+  }
   return { providerOptions: options };
 }
 

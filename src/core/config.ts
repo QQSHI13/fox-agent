@@ -5,6 +5,7 @@ import { ConfigError } from "./errors.ts";
 import { debugInfo } from "./debuglog.ts";
 import { setConfiguredModels } from "../providers/models.ts";
 import { presetById } from "../providers/modelsdev.ts";
+import { isReasoningEffort, type ReasoningEffort } from "./reasoning.ts";
 
 export interface McpServerConfig {
   command: string;
@@ -173,8 +174,8 @@ export interface Config {
    * are independent of this — they paint on the next tick regardless.
    */
   tuiFrameMs: number;
-  /** reasoning effort: "low" | "medium" | "high" — unset lets the provider default rule */
-  reasoningEffort?: "low" | "medium" | "high";
+  /** reasoning effort: off | minimal | low | medium | high | xhigh — unset lets the provider default rule */
+  reasoningEffort?: ReasoningEffort;
   /** TUI color theme: a preset name or a plugin-registered one (default "default") */
   theme: string;
   /**
@@ -401,7 +402,7 @@ function applyEnv(cfg: Config, env: Record<string, string | undefined>) {
   if (env.FOX_AGENT_DIAGNOSTICS !== undefined) cfg.diagnostics = !/^(0|false|no)$/i.test(env.FOX_AGENT_DIAGNOSTICS.trim());
   if (env.FOX_AGENT_THEME?.trim()) cfg.theme = env.FOX_AGENT_THEME.trim();
   const effort = env.FOX_AGENT_REASONING_EFFORT?.trim();
-  if (effort === "low" || effort === "medium" || effort === "high") cfg.reasoningEffort = effort;
+  if (isReasoningEffort(effort)) cfg.reasoningEffort = effort;
   const outCap = Number(env.FOX_AGENT_TOOL_OUTPUT_CAP);
   if (Number.isFinite(outCap) && outCap >= 1000) cfg.toolOutputCap = Math.floor(outCap);
   const readCap = Number(env.FOX_AGENT_READ_CAP);
@@ -522,7 +523,7 @@ function applyTable(cfg: Config, t: Record<string, unknown> | null, scope: "glob
   if (typeof t.statusBar === "string" && t.statusBar.trim()) cfg.statusBar = t.statusBar.trim().split(/\s+/).join(" ");
   if (typeof t.debug === "boolean") cfg.debug = t.debug;
   if (typeof t.tuiFrameMs === "number" && t.tuiFrameMs >= 8 && t.tuiFrameMs <= 250) cfg.tuiFrameMs = Math.floor(t.tuiFrameMs);
-  if (t.reasoningEffort === "low" || t.reasoningEffort === "medium" || t.reasoningEffort === "high") cfg.reasoningEffort = t.reasoningEffort;
+  if (isReasoningEffort(t.reasoningEffort)) cfg.reasoningEffort = t.reasoningEffort;
   if (typeof t.theme === "string" && t.theme.trim()) cfg.theme = t.theme.trim();
   if (typeof t.contextMarkers === "boolean") cfg.contextMarkers = t.contextMarkers;
   if (t.acpHistory === "full" || t.acpHistory === "last") cfg.acpHistory = t.acpHistory;

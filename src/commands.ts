@@ -13,6 +13,7 @@ import {
 } from "./store/db.ts";
 import { readFileSync } from "node:fs";
 import { debugLogPath } from "./core/debuglog.ts";
+import { REASONING_EFFORTS, isReasoningEffort, type ReasoningEffort } from "./core/reasoning.ts";
 import { projectView } from "./context/view.ts";
 import { formatPruneReport, pruneSession } from "./store/prune.ts";
 import { exportSession, importSession } from "./store/transfer.ts";
@@ -356,7 +357,7 @@ export const COMMANDS: CommandSpec[] = [
   { name: "/usage", desc: "token totals + budget" },
   { name: "/model", desc: "show or switch model — picker lists every configured profile and catalog model", usage: "[profile/][name]", arg: true, mutates: true },
   { name: "/theme", desc: "show or switch the color theme", usage: "[name]", arg: true, mutates: true, help: "bare: searchable chooser in the TUI; with a name, switches and saves to the global config" },
-  { name: "/thinking", desc: "reasoning effort for reasoning models", usage: "[low|medium|high|default]", arg: true, mutates: true, help: "bare: chooser in the TUI; sets provider reasoning options (OpenAI reasoningEffort, Anthropic thinking budget, Google thinkingConfig) and saves to the global config" },
+  { name: "/thinking", desc: "reasoning effort for reasoning models", usage: "[off|minimal|low|medium|high|xhigh|default]", arg: true, mutates: true, help: "bare: chooser in the TUI; sets provider reasoning options (OpenAI reasoningEffort, Anthropic thinking budget, Google thinkingConfig) and saves to the global config. `off` asks for no reasoning at all on a reasoning model (not the same as clearing the setting, which lets the provider default — usually ON — rule)" },
   { name: "/reload", desc: "re-read config files and re-apply model, theme, caps and plugins", mutates: true },
   {
     name: "/plugin",
@@ -2014,12 +2015,15 @@ Verify what you write: run the commands you document (at least the build/test en
     case "/thinking": {
       // reasoning effort rides in provider.sampling — the providers turn it
       // into the format-specific options (openai reasoningEffort, anthropic
-      // thinking budget, google thinkingConfig)
-      const EFFORTS = ["low", "medium", "high"];
+      // thinking budget, google thinkingConfig). The vocabulary comes from
+      // core/reasoning.ts so the command, the config and the provider layer
+      // cannot disagree about which rungs exist.
       const current = () => (state.provider.sampling?.reasoningEffort as string | undefined) ?? state.config?.reasoningEffort ?? "";
       const apply = (effort: string): CommandResult => {
-        if (effort && !EFFORTS.includes(effort))
-          return { handled: true, output: `unknown effort '${effort}' — use low | medium | high, or 'default' to clear` };
+        // empty = clear = let the provider decide; "off" is a real value meaning
+        // "do not reason", which is NOT the same thing on a reasoning model.
+        if (effort && !isReasoningEffort(effort))
+          return { handled: true, output: `unknown effort '${effort}' — use ${REASONING_EFFORTS.join(" | ")}, or 'default' to clear` };
         // clearing drops the live key too — spreading nothing over the old
         // object left the provider receiving the previous effort while the
         // file (and the status readout) already said "provider default"
@@ -2029,11 +2033,12 @@ Verify what you write: run the commands you document (at least the build/test en
           state.provider.sampling = rest;
         }
         if (state.config) {
-          if (effort) state.config.reasoningEffort = effort as "low" | "medium" | "high";
+          if (effort) state.config.reasoningEffort = effort as ReasoningEffort;
           else delete state.config.reasoningEffort;
         }
         const saved = saveGlobalConfig({ reasoningEffort: effort }, state.configPath);
-        return { handled: true, output: `thinking: ${effort || "provider default"} — saved to ${saved}, live now (/reload re-reads it)` };
+        const shown = effort === "off" ? "off (no reasoning)" : effort || "provider default";
+        return { handled: true, output: `thinking: ${shown} — saved to ${saved}, live now (/reload re-reads it)` };
       };
       if (!arg && state.interactive) {
         const cur = current();
@@ -2047,7 +2052,10 @@ Verify what you write: run the commands you document (at least the build/test en
                 label: "effort",
                 kind: "select",
                 options: [
-                  ...EFFORTS.map((e) => ({ value: e, label: e === cur ? `${e} (current)` : e })),
+                  ...REASONING_EFFORTS.map((e) => ({
+                    value: e,
+                    label: e === cur ? `${e} (current)` : e === "off" ? "off (no reasoning)" : e,
+                  })),
                   { value: "", label: "provider default (clear)" },
                 ],
                 initial: cur,
@@ -2057,8 +2065,8 @@ Verify what you write: run the commands you document (at least the build/test en
           },
         };
       }
-      if (!arg) return { handled: true, output: `thinking: ${current() || "provider default"} — /thinking low|medium|high to change` };
-      return apply(arg === "default" || arg === "off" ? "" : arg);
+      if (!arg) return { handled: true, output: `thinking: ${current() || "provider default"} — /thinking ${REASONING_EFFORTS.join("|")} to change, or 'default' to clear` };
+      return apply(arg === "default" || arg === "clear" ? "" : arg);
     }
 
     case "/reload":

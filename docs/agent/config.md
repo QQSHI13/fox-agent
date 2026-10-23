@@ -21,7 +21,10 @@ Quick knobs the user can change without files: `/settings` (list), `/settings ke
 provider = "openai-compatible"        # active provider slot
 model = "..."                          # active model
 baseUrl = "..."  apiKey = "..."        # fallback creds for the flat slot
-reasoningEffort = "low|medium|high"
+reasoningEffort = "off|minimal|low|medium|high|xhigh"   # one scale; each provider maps it
+                                                       # to its own knob. `off` is an
+                                                       # explicit "do not reason"; unset
+                                                       # lets the provider default rule.
 theme = "default"                      # theme name (see themes doc)
 tuiScrollbar = true                    # dedicated scrollbar column
 tuiScrollStep = 3                      # rows per wheel notch
