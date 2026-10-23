@@ -1,0 +1,135 @@
+name: Docs
+
+# Builds the docs site and deploys it to Cloudflare Pages.
+#
+# The build runs HERE, not on Cloudflare: the site comes from docsforge
+# (a PyPI package) and Pages' build image cannot install it. So Actions
+# produces site/, and wrangler uploads the finished directory as a direct
+# upload — Pages never sees the sources.
+#
+# PRs build but do not deploy, so a broken link or a bad nav entry fails the
+# PR instead of the live site.
+#
+# Required repository secrets:
+#   CLOUDFLARE_API_TOKEN   — Pages:Edit on the account (not a Global API Key)
+#   CLOUDFLARE_ACCOUNT_ID  — the account id from the CF dashboard URL
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - "docsforge.yml"
+      - ".github/workflows/docs.yml"
+  pull_request:
+    paths:
+      - "docs/**"
+      - "docsforge.yml"
+      - ".github/workflows/docs.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One deploy at a time, and never cancel one that has started: a cancelled
+# upload can leave Pages serving a partly-uploaded build.
+concurrency:
+  group: docs-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # Pin docsforge: an unpinned `pip install` lets a docsforge release change
+  # the site's output on a morning nobody touched the docs.
+  DOCSFORGE_VERSION: "13.0.2"
+  PYTHON_VERSION: "3.12"
+  # Pin the wrangler major. A major bump changes flags, not just internals.
+  WRANGLER_VERSION: "4"
+  CF_PAGES_PROJECT: fox-agent
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: install docsforge
+        run: pip install --disable-pip-version-check "docsforge==${{ env.DOCSFORGE_VERSION }}"
+
+      - name: validate config
+        run: docsforge check
+
+      - name: build site
+        # NOT --strict: the site legitimately carries warnings (docs/agent is
+        # excluded from the site on purpose and is reported as "not in nav").
+        # A warning here is not a failure; a bad nav path already fails `check`.
+        run: docsforge build
+
+      - name: verify the build is deployable
+        # A silently empty or half-written site would still "deploy" fine and
+        # take the live docs down. Assert the things that must exist.
+        run: |
+          set -eu
+          test -f site/index.html || { echo "missing site/index.html"; exit 1; }
+          test -f site/404.html   || { echo "missing site/404.html"; exit 1; }
+          # the install redirect is the whole reason the domain exists
+          test -f site/_redirects || { echo "missing site/_redirects (docs/_redirects)"; exit 1; }
+          pages=$(find site -name index.html | wc -l)
+          echo "pages: $pages"
+          test "$pages" -ge 20 || { echo "only $pages pages — the nav did not render"; exit 1; }
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: site
+          path: site
+          retention-days: 7
+
+  deploy:
+    needs: build
+    # publish from main only; a PR run stops after the build job
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment:
+      name: cloudflare-pages
+      url: ${{ steps.deploy.outputs.url }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: site
+          path: site
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: lts/*
+
+      - name: ensure the Pages project exists
+        # `wrangler pages deploy` cannot create a project when it is not
+        # interactive — it prompts, gets no stdin in CI, and fails. Create it
+        # once (idempotent: a 409 "already exists" is the success case).
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          npx --yes wrangler@${{ env.WRANGLER_VERSION }} pages project create "$CF_PAGES_PROJECT" \
+            --production-branch=main || echo "project already exists"
+
+      - name: deploy
+        id: deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          # --branch=main marks this as a production deploy rather than a
+          # preview alias. Output is captured so the job's environment URL is
+          # the real deployment URL, not a guess.
+          out=$(npx --yes wrangler@${{ env.WRANGLER_VERSION }} pages deploy site \
+                  --project-name="$CF_PAGES_PROJECT" \
+                  --branch=main \
+                  --commit-dirty=true 2>&1)
+          echo "$out"
+          url=$(printf '%s\n' "$out" | grep -oE 'https://[a-z0-9.-]+\.pages\.dev' | tail -1)
+          test -n "$url" || { echo "could not find the deployment URL in wrangler output"; exit 1; }
+          echo "url=$url" >> "$GITHUB_OUTPUT"
