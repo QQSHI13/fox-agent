@@ -1,18 +1,17 @@
 name: Docs
 
-# Builds the docs site and deploys it to Cloudflare Pages.
+# Builds the docs site and publishes it to GitHub Pages.
 #
-# The build runs HERE, not on Cloudflare: the site comes from docsforge
-# (a PyPI package) and Pages' build image cannot install it. So Actions
-# produces site/, and wrangler uploads the finished directory as a direct
-# upload — Pages never sees the sources.
+# The build runs here rather than on a Pages builder because the site comes
+# from docsforge (a PyPI package) — there is no Jekyll/Markdown pipeline that
+# can produce it. Actions installs docsforge, builds site/, and uploads that
+# directory as a Pages artifact.
 #
-# PRs build but do not deploy, so a broken link or a bad nav entry fails the
+# PRs build but do not deploy, so a broken nav entry or a dead link fails the
 # PR instead of the live site.
 #
-# Required repository secrets:
-#   CLOUDFLARE_API_TOKEN   — Pages:Edit on the account (not a Global API Key)
-#   CLOUDFLARE_ACCOUNT_ID  — the account id from the CF dashboard URL
+# No secrets required: Pages deploys with the workflow's own GITHUB_TOKEN via
+# OIDC (pages: write + id-token: write below).
 
 on:
   push:
@@ -30,11 +29,15 @@ on:
 
 permissions:
   contents: read
+  pages: write
+  id-token: write
 
-# One deploy at a time, and never cancel one that has started: a cancelled
-# upload can leave Pages serving a partly-uploaded build.
+# One Pages deploy at a time, and never cancel one mid-flight: a cancelled
+# publish can leave the environment serving a partial build. Unlike most
+# concurrency groups this one is deliberately not per-ref — every deploy
+# targets the same Pages site.
 concurrency:
-  group: docs-${{ github.ref }}
+  group: pages
   cancel-in-progress: false
 
 env:
@@ -42,9 +45,6 @@ env:
   # the site's output on a morning nobody touched the docs.
   DOCSFORGE_VERSION: "13.0.2"
   PYTHON_VERSION: "3.12"
-  # Pin the wrangler major. A major bump changes flags, not just internals.
-  WRANGLER_VERSION: "4"
-  CF_PAGES_PROJECT: fox-agent
 
 jobs:
   build:
@@ -69,23 +69,30 @@ jobs:
         run: docsforge build
 
       - name: verify the build is deployable
-        # A silently empty or half-written site would still "deploy" fine and
+        # A silently empty or half-written site would still publish fine and
         # take the live docs down. Assert the things that must exist.
         run: |
           set -eu
           test -f site/index.html || { echo "missing site/index.html"; exit 1; }
           test -f site/404.html   || { echo "missing site/404.html"; exit 1; }
-          # the install redirect is the whole reason the domain exists
-          test -f site/_redirects || { echo "missing site/_redirects (docs/_redirects)"; exit 1; }
           pages=$(find site -name index.html | wc -l)
           echo "pages: $pages"
           test "$pages" -ge 20 || { echo "only $pages pages — the nav did not render"; exit 1; }
+          # .nojekyll stops Pages from running the output through Jekyll, which
+          # would drop files and directories whose names begin with an underscore
+          # (docsforge emits site/search/ and hashed asset dirs).
+          touch site/.nojekyll
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/configure-pages@v5
+        # NOT `enablement: true`. Creating the Pages site needs admin rights
+        # that the workflow's GITHUB_TOKEN does not have — that option fails
+        # with "Resource not accessible by integration". The site is created
+        # once, out of band (Settings -> Pages -> Source: GitHub Actions), and
+        # this step only reads its config from then on.
+
+      - uses: actions/upload-pages-artifact@v3
         with:
-          name: site
           path: site
-          retention-days: 7
 
   deploy:
     needs: build
@@ -93,43 +100,8 @@ jobs:
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment:
-      name: cloudflare-pages
-      url: ${{ steps.deploy.outputs.url }}
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
     steps:
-      - uses: actions/download-artifact@v8
-        with:
-          name: site
-          path: site
-
-      - uses: actions/setup-node@v7
-        with:
-          node-version: lts/*
-
-      - name: ensure the Pages project exists
-        # `wrangler pages deploy` cannot create a project when it is not
-        # interactive — it prompts, gets no stdin in CI, and fails. Create it
-        # once (idempotent: a 409 "already exists" is the success case).
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: |
-          npx --yes wrangler@${{ env.WRANGLER_VERSION }} pages project create "$CF_PAGES_PROJECT" \
-            --production-branch=main || echo "project already exists"
-
-      - name: deploy
-        id: deploy
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: |
-          # --branch=main marks this as a production deploy rather than a
-          # preview alias. Output is captured so the job's environment URL is
-          # the real deployment URL, not a guess.
-          out=$(npx --yes wrangler@${{ env.WRANGLER_VERSION }} pages deploy site \
-                  --project-name="$CF_PAGES_PROJECT" \
-                  --branch=main \
-                  --commit-dirty=true 2>&1)
-          echo "$out"
-          url=$(printf '%s\n' "$out" | grep -oE 'https://[a-z0-9.-]+\.pages\.dev' | tail -1)
-          test -n "$url" || { echo "could not find the deployment URL in wrangler output"; exit 1; }
-          echo "url=$url" >> "$GITHUB_OUTPUT"
+      - id: deploy
+        uses: actions/deploy-pages@v4
