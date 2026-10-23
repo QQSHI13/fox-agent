@@ -85,6 +85,13 @@ plugins:
   blog:
     enabled: false
 
+# No service worker. The default mode is `cache-first`, which precaches every
+# page and serves from cache first — great for a docs site whose readers want
+# offline access, wrong for anything that must never show a stale page after a
+# release. `none` also removes sw.js and cache-manifest.json from the build
+# entirely, and drops the template copy under assets/
+offline:
+  mode: none
 
 theme:
   name: material
