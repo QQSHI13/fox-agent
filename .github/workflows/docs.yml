@@ -105,6 +105,23 @@ jobs:
         with:
           node-version: lts/*
 
+      - name: check credentials are configured
+        # Without this, a missing secret surfaces as wrangler's opaque exit 1 and
+        # nobody can tell an unconfigured repo from a real Cloudflare problem.
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          missing=""
+          [ -n "$CLOUDFLARE_API_TOKEN" ]  || missing="$missing CLOUDFLARE_API_TOKEN"
+          [ -n "$CLOUDFLARE_ACCOUNT_ID" ] || missing="$missing CLOUDFLARE_ACCOUNT_ID"
+          if [ -n "$missing" ]; then
+            echo "::error::missing repository secret(s):$missing"
+            echo "Add them in Settings -> Secrets and variables -> Actions."
+            echo "CLOUDFLARE_API_TOKEN needs the 'Cloudflare Pages: Edit' permission (not a Global API Key)."
+            exit 1
+          fi
+
       - name: ensure the Pages project exists
         # `wrangler pages deploy` cannot create a project when it is not
         # interactive — it prompts, gets no stdin in CI, and fails. Create it
@@ -125,11 +142,22 @@ jobs:
           # --branch=main marks this as a production deploy rather than a
           # preview alias. Output is captured so the job's environment URL is
           # the real deployment URL, not a guess.
+          #
+          # `set +e` + an explicit exit: under `bash -e` a failing command inside
+          # a `$(...)` assignment aborts BEFORE the captured output can be
+          # printed, so a real Cloudflare error would surface as a bare "exit
+          # code 1" and nothing else.
+          set +e
           out=$(npx --yes wrangler@${{ env.WRANGLER_VERSION }} pages deploy site \
                   --project-name="$CF_PAGES_PROJECT" \
                   --branch=main \
                   --commit-dirty=true 2>&1)
+          status=$?
           echo "$out"
+          if [ "$status" -ne 0 ]; then
+            echo "::error::wrangler pages deploy failed (exit $status) — see the output above"
+            exit "$status"
+          fi
           url=$(printf '%s\n' "$out" | grep -oE 'https://[a-z0-9.-]+\.pages\.dev' | tail -1)
-          test -n "$url" || { echo "could not find the deployment URL in wrangler output"; exit 1; }
+          test -n "$url" || { echo "::error::could not find the deployment URL in wrangler output"; exit 1; }
           echo "url=$url" >> "$GITHUB_OUTPUT"
