@@ -51,6 +51,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import termios
 import time
 
 DEBUG = "--debug" in sys.argv
@@ -560,28 +561,56 @@ def _await_quiet(fd, budget_s):
             break
 
 
+def _echo_mode(fd):
+    """Whether the terminal's line discipline is echoing for this process.
+
+    This is the one OBJECTIVE way to tell the two kinds of "input latency"
+    apart, and the bench conflated them before:
+
+      ECHO on (cooked mode)  the tty driver mirrors each byte back before the
+                             app wakes. A CLI with no UI at all measures here —
+                             `cat` in a PTY times ~0.1-0.2ms. That number says
+                             nothing about the app.
+      ECHO off (raw mode)    a full-screen TUI disables echo and must redraw a
+                             cell itself. This is real input handling.
+
+    Ranking the two in one column compares "the kernel echoed for me" against
+    "the app repainted" — which is why a pile of tools appeared to beat a
+    hand-tuned TUI by an order of magnitude. Reading the slave's termios through
+    the master is reliable on Linux PTYs.
+    """
+    try:
+        lflag = termios.tcgetattr(fd)[3]
+    except (termios.error, OSError):
+        return None
+    return "kernel-echo" if lflag & termios.ECHO else "render"
+
+
 def _await_echo(fd, t0, deadline, logf, cfg):
-    """Type PROBE_TEXT and wait for the render it causes. Returns ms from t0, or
-    None.
+    """Type PROBE_TEXT and wait until it is actually VISIBLE, not merely until
+    the PTY twitches. Returns (ms from t0, signal) or (None, None).
 
-    Two completion signals, in priority order:
+    The old version returned on the first output chunk after a quiet baseline.
+    That is wrong for a TUI for two reasons:
 
-    - log marker (cfg): a tool that swallows keystrokes (a sign-in screen) logs
-      its own input-ready ack; matching that internal ack is the only honest
-      signal. Unchanged from before.
+      1. The first chunk after a keystroke is often not the render. fox emits a
+         6-byte `\\e[?25l` (cursor hide) BEFORE compositing the frame, so the
+         old metric timed cursor bookkeeping. With the paint timer forced to
+         200ms the old number still read ~3ms — proof it was not the render.
+      2. A periodic status repaint that happens to land after the keystroke was
+         accepted as the answer. Measured on fox: 0 of 6 probes contained the
+         typed text; all 6 were status ticks.
 
-    - first output after a QUIET baseline (no cfg): the terminal was drained to
-      quiet before typing, so the first data after the keystroke IS the app's
-      response — for a cooked-mode tool that is the line-discipline echo (the
-      char on screen, ~instant, which is what the user sees), for a full-screen
-      noecho TUI it is the redraw of its input box. Matching the LITERAL probe
-      text instead returned None for every noecho TUI (they disable echo), which
-      is why 16 of 22 tools reported n/a for the two interactive metrics.
+    So: accumulate everything since t0, strip ANSI, and only stop when the probe
+    text itself is on screen. That is what a person perceives as their input
+    appearing, and it is the same expression for both metrics (t0 = spawn for
+    first_input, t0 = keystroke for latency).
 
     Up to two typing rounds against one deadline: a tool still starting up may
     swallow early keystrokes, and the honest number is "how long until my input
-    renders", not n/a — but a tool that never responds still times out honestly.
+    renders", not n/a. A tool that never renders still times out honestly.
     """
+    probe = PROBE_TEXT.encode()
     for attempt in (1, 2):
         if attempt == 2:
             quiet_end = time.perf_counter() + 1.0
@@ -595,9 +624,13 @@ def _await_echo(fd, t0, deadline, logf, cfg):
                 except OSError:
                     break
         try:
-            os.write(fd, PROBE_TEXT.encode())
+            os.write(fd, probe)
         except OSError:
-            return None if attempt == 2 else None
+            return None, None
+        # everything received since the keystroke; the probe must show up in it
+        # with the control traffic stripped, so a cursor-hide or a spinner tick
+        # can no longer satisfy the wait.
+        seen = b""
         while time.perf_counter() < deadline:
             if logf is not None:
                 try:
@@ -606,7 +639,7 @@ def _await_echo(fd, t0, deadline, logf, cfg):
                     break
                 if chunk:
                     if re.search(cfg["marker"], chunk.decode("utf-8", "replace")):
-                        return time.perf_counter() - t0
+                        return time.perf_counter() - t0, "log-marker"
                 time.sleep(0.2)
                 continue
             r, _, _ = select.select([fd], [], [], max(0, deadline - time.perf_counter()))
@@ -622,15 +655,11 @@ def _await_echo(fd, t0, deadline, logf, cfg):
                 # n/a, just reached in ms instead of waiting out the full
                 # timeout — this is what devin/cline/continue hit every probe.
                 dbg("echo: child closed PTY (exited) — abandoning probe early")
-                return None
-            # first output after a quiet baseline = the render caused by the
-            # keystroke (echo for cooked tools, input-box redraw for noecho
-            # TUIs). from t0: for first_input that is process spawn (the full
-            # time-to-interactive), for latency the caller passes t0 = the
-            # keystroke moment (keystroke→render only), so this one expression
-            # is correct for both.
-            return time.perf_counter() - t0
-    return None
+                return None, None
+            seen += data
+            if probe in ANSI_RE.sub(b"", seen):
+                return time.perf_counter() - t0, "drained"
+    return None, None
 
 
 def tui_first_input(path, label, probes=3, timeout=15):
@@ -644,11 +673,12 @@ def tui_first_input(path, label, probes=3, timeout=15):
     """
     cfg = INPUT_MARKERS.get(label)
     samples = []
+    signal_kind = None
     for _ in range(probes):
         try:
             pid, fd = pty.fork()
         except OSError:
-            return None
+            return None, None
         if pid == 0:
             os.environ["TERM"] = "xterm-256color"
             try:
@@ -667,9 +697,16 @@ def tui_first_input(path, label, probes=3, timeout=15):
                     logf.seek(0, os.SEEK_END)
                 except OSError:
                     logf = None
-            hit = _await_echo(fd, start, start + timeout, logf, cfg)
+            # classify BEFORE typing: the line discipline is already in the mode
+            # the tool will read input with, so this says whether a hit will be
+            # kernel echo (cooked) or the app's own render (raw).
+            if signal_kind is None:
+                signal_kind = _echo_mode(fd)
+            hit, via = _await_echo(fd, start, start + timeout, logf, cfg)
             if hit is not None:
                 samples.append(hit * 1000)
+                if via == "log-marker":
+                    signal_kind = "log-marker"
         finally:
             try:
                 if logf is not None:
@@ -685,7 +722,17 @@ def tui_first_input(path, label, probes=3, timeout=15):
                 os.waitpid(pid, 0)
             except (ProcessLookupError, ChildProcessError, OSError):
                 pass
-    return samples
+    return samples, signal_kind
+
+
+def _alive(pid):
+    """True if the child is still running (used to distinguish a silent tool
+    from a tool that exited during startup)."""
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
 
 
 def tui_input_latency(path, label, settle_s=0.5, probes=3, timeout=15):
@@ -705,11 +752,12 @@ def tui_input_latency(path, label, settle_s=0.5, probes=3, timeout=15):
     """
     cfg = INPUT_MARKERS.get(label)
     samples = []
+    signal_kind = None
     for _ in range(probes):
         try:
             pid, fd = pty.fork()
         except OSError:
-            return None
+            return None, None
         if pid == 0:
             os.environ["TERM"] = "xterm-256color"
             try:
@@ -718,7 +766,13 @@ def tui_input_latency(path, label, settle_s=0.5, probes=3, timeout=15):
                 os._exit(127)
         logf = None
         try:
-            if _wait_output(fd, 15) is None:
+            # A silent cooked-mode CLI (cat, a bare REPL) emits nothing at
+            # startup, so requiring output would skip it entirely and report
+            # n/a. Alive-but-silent is a valid ready state; only a child that
+            # has already exited is unmeasurable. Short first wait: a full-screen
+            # TUI paints within it, and a silent CLI then proves itself alive
+            # instead of costing the whole 15s budget.
+            if _wait_output(fd, 2.0) is None and not _alive(pid):
                 continue
             # Ready == alive AND quiet, the same signal tui_first_input waits on.
             # Nothing is typed during readiness, so the probe cannot be swallowed
@@ -734,9 +788,13 @@ def tui_input_latency(path, label, settle_s=0.5, probes=3, timeout=15):
                 except OSError:
                     logf = None
             t0 = time.perf_counter()
-            hit = _await_echo(fd, t0, t0 + timeout, logf, cfg)
+            if signal_kind is None:
+                signal_kind = _echo_mode(fd)
+            hit, via = _await_echo(fd, t0, t0 + timeout, logf, cfg)
             if hit is not None:
                 samples.append(hit * 1000)
+                if via == "log-marker":
+                    signal_kind = "log-marker"
         finally:
             try:
                 if logf is not None:
@@ -752,7 +810,7 @@ def tui_input_latency(path, label, settle_s=0.5, probes=3, timeout=15):
                 os.waitpid(pid, 0)
             except (ProcessLookupError, ChildProcessError, OSError):
                 pass
-    return samples
+    return samples, signal_kind
 
 
 def start_fake_provider():
@@ -890,7 +948,7 @@ def dashboard_svg(panels, out_path):
         f'<rect x="0" y="{HEADER_H - 2}" width="{W}" height="2" fill="{ACC}"/>',
         f'<text x="{PAD}" y="36" fill="{INK}" font-size="20" font-weight="bold">fox-agent · harness bench</text>',
         f'<text x="{PAD}" y="58" fill="{MUT}" font-size="12">startup · TUI latency · footprint · idle memory — github actions ubuntu-latest, refreshed on every push</text>',
-        f'<text x="{PAD}" y="76" fill="{MUT}" font-size="11">{esc("1st byte = PTY launch, best of 5 · 1st input = spawn→quiet→typed→echo, best of 3 · latency = ready→500ms→typed→echo (keystroke only) · bundle = binary or pkg dir · PSS at rest")}</text>',
+        f'<text x="{PAD}" y="76" fill="{MUT}" font-size="11">{esc("1st byte = PTY launch, best of 5 · 1st input = spawn→quiet→typed→probe text on screen, best of 3 · latency = ready→500ms→typed→probe text on screen (keystroke only), ranked among render-signal tools only · bundle = binary or pkg dir · PSS at rest")}</text>',
     ]
     for pi_, (title, subtitle, rows, unit, fmt) in enumerate(panels):
         col, row = pi_ % NCOL, pi_ // NCOL
@@ -966,9 +1024,9 @@ def measure(label, path, n_start, n_probes, n_input):
     step(label, f"timing TUI first byte (best of {n_probes} PTY launches)")
     ttfb = tui_first_byte(path, n_probes)
     step(label, f"timing time-to-interactive (best of {n_input} PTY launches)")
-    tfin = tui_first_input(path, label, n_input)
+    tfin, fi_signal = tui_first_input(path, label, n_input)
     step(label, f"timing input latency (ready + 500ms settle, best of {n_input})")
-    latency = tui_input_latency(path, label, probes=n_input)
+    latency, la_signal = tui_input_latency(path, label, probes=n_input)
     step(label, "measuring idle memory (PSS)")
     pss = idle_pss(path)
     su_min, su_p50, su_p95 = stat_block(startup)
@@ -993,6 +1051,14 @@ def measure(label, path, n_start, n_probes, n_input):
         "tui_first_byte": {"min": fb_min, "p50": fb_p50, "p95": fb_p95, "n": len(ttfb)},
         "tui_first_input": {"min": fi_min, "p50": fi_p50, "p95": fi_p95, "n": len(tfin)},
         "tui_input_latency": {"min": la_min, "p50": la_p50, "p95": la_p95, "n": len(latency)},
+        # How the number was obtained. "kernel-echo" means the tty line
+        # discipline echoed the byte before the app woke, so the figure says
+        # nothing about the tool's own rendering; "render" means the app was in
+        # raw mode and had to repaint a cell itself; "log-marker" means a tool
+        # that swallows echo logged its own ack. Comparing across these is not
+        # meaningful, which is why the table groups them instead of ranking
+        # every tool in one column.
+        "input_signal": la_signal or fi_signal,
         "idle_pss_mb": pss,
     }
     def _t(a, b, c):
@@ -1174,10 +1240,17 @@ def main():
         "method": (
             "best of 4 `--version` runs; best of 5 PTY launches (no args) to first output byte; "
             "best of 3 PTY launches measuring time-to-interactive since spawn (TUI alive+quiet, then "
-            "probe typed → rendered on screen; log marker where a tool suppresses echo); "
+            "probe typed → the probe TEXT rendered on screen after ANSI stripping; log marker where a "
+            "tool suppresses echo); "
             "best of 3 PTY launches measuring input latency (ready = alive+quiet, then a 500ms "
-            "settle, probe typed → echo timed; the clock starts at the keystroke, so startup "
-            "cost is removed); "
+            "settle, probe typed → probe TEXT rendered; the clock starts at the keystroke, so startup "
+            "cost is removed). Both input metrics wait for the probe text itself, never for the first "
+            "byte: a TUI emits cursor-control bytes before compositing its frame, and a periodic status "
+            "repaint can land after a keystroke, so 'first output' measured neither. Each row carries "
+            "input_signal: termios ECHO is read through the PTY master to say whether the tty echoed for "
+            "the tool (kernel-echo — no UI required, `cat` times ~0.3ms) or the tool disabled echo and "
+            "had to render the cell itself (render). Kernel-echo and render numbers are NOT comparable "
+            "and are ranked separately. "
             "PSS after 1.5s idle from /proc smaps_rollup; bundle = the binary itself, a launcher's "
             "exec target where a wrapper hands off, or the package "
             "dir for script CLIs (entry shims alone would pretend node_modules are free); "
@@ -1196,26 +1269,35 @@ def main():
 
 
 # One entry per metric lane: (key, column label, unit, formatter). Order is the
-# order the README summary lists them in — the headline metric first.
+# order the README summary lists them in — the headline metric first. The
+# optional 5th item restricts the ranking pool to a comparable signal class;
+# input latency needs it because kernel-echo tools are not racing the same
+# event as a raw-mode TUI (see _echo_mode).
 METRICS = [
-    ("tui_first_byte_ms", "TUI 1st byte", "ms", lambda v: f"{v:.0f} ms"),
-    ("tui_first_input_ms", "TUI 1st input", "ms", lambda v: f"{v:.0f} ms"),
-    ("tui_input_latency_ms", "input latency", "ms", lambda v: f"{v:.0f} ms"),
-    ("disk_mb", "bundle", "MB", lambda v: f"{v:.0f} MB"),
-    ("idle_pss_mb", "idle PSS", "MB", lambda v: f"{v:.0f} MB"),
-    ("startup_ms", "`--version`", "ms", lambda v: f"{v:.0f} ms"),
+    ("tui_first_byte_ms", "TUI 1st byte", "ms", lambda v: f"{v:.0f} ms", None),
+    ("tui_first_input_ms", "TUI 1st input", "ms", lambda v: f"{v:.0f} ms", None),
+    ("tui_input_latency_ms", "input latency", "ms", lambda v: f"{v:.0f} ms", "render"),
+    ("disk_mb", "bundle", "MB", lambda v: f"{v:.0f} MB", None),
+    ("idle_pss_mb", "idle PSS", "MB", lambda v: f"{v:.0f} MB", None),
+    ("startup_ms", "`--version`", "ms", lambda v: f"{v:.0f} ms", None),
 ]
 
 
-def rank_of(rows, key, fox_name="fox-agent"):
+def rank_of(rows, key, fox_name="fox-agent", only=None):
     """fox's position for one metric plus how many tools the field has.
 
     Ties count as the same rank (1 + number of strictly better tools), which
     matters for the metrics where several tools report 0 ms. Anything not
     installed or not measured is excluded rather than ranked last — an n/a row
     is not a slow one.
+
+    `only` restricts the field to rows whose `input_signal` matches. Input
+    latency needs it: a tool whose tty echoes for it (kernel-echo) is not
+    racing the same event as a raw-mode TUI, so ranking them together is
+    meaningless — see _echo_mode().
     """
-    vals = [(r["agent"], r[key]) for r in rows if r.get(key) is not None]
+    pool = [r for r in rows if only is None or r.get("input_signal") == only]
+    vals = [(r["agent"], r[key]) for r in pool if r.get(key) is not None]
     fox = next((v for a, v in vals if a == fox_name), None)
     if fox is None:
         return None, len(vals)
@@ -1234,6 +1316,15 @@ def render_outputs(out, rows, fox_extra, payload):
     # per lane so the README can show the headline graphs and tuck the rest
     # behind a click. Full numbers live in table.md regardless.
     is_fox = lambda r: r["agent"] == "fox-agent"  # noqa: E731
+    # Input latency is only comparable between tools that had to RENDER their
+    # echo. A cooked-mode tool has the tty line discipline echo the byte before
+    # it wakes (measured: `cat` in a PTY times ~0.3ms with no UI whatsoever), so
+    # its number describes the kernel, not the tool. Putting both kinds in one
+    # ranked column is what made a pile of CLI wrappers look an order of
+    # magnitude faster than a hand-tuned TUI. Only "render" rows are charted;
+    # the rest stay in the JSON with their signal labelled.
+    render_only = [r for r in rows if r.get("input_signal") == "render"]
+    excluded = len(rows) - len(render_only)
 
     dashboard_svg(
         [
@@ -1252,9 +1343,9 @@ def render_outputs(out, rows, fox_extra, payload):
                 fmt_ms,
             ),
             (
-                "input latency (ready+500ms)",
-                "launch, wait ready (alive+quiet), 500ms, type probe, time the echo · best of 3 · lower is better",
-                [(r["agent"], r.get("tui_input_latency_ms"), is_fox(r)) for r in rows],
+                "input latency (render only)",
+                f"launch, wait ready, 500ms, type probe, time until probe text is on screen · best of 3 · lower is better · {excluded} tool(s) excluded: their tty echoes for them (kernel-echo, not a render)",
+                [(r["agent"], r.get("tui_input_latency_ms"), is_fox(r)) for r in render_only],
                 "ms",
                 fmt_ms,
             ),
@@ -1291,18 +1382,18 @@ def render_outputs(out, rows, fox_extra, payload):
         return f"{v:.{nd}f}{unit}"
 
     T = [
-        "| agent | version | bin | bundle (MB) | bundle kind | `--version` (ms) | TUI 1st byte (ms) | TUI 1st input (ms) | input latency (ms) | idle PSS (MB) |",
-        "|---|---|---|---|---|---|---|---|---|---|",
+        "| agent | version | bin | bundle (MB) | bundle kind | `--version` (ms) | TUI 1st byte (ms) | TUI 1st input (ms) | input latency (ms) | signal | idle PSS (MB) |",
+        "|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for r in rows:
         if not r.get("installed"):
-            T.append(f"| {r['agent']} | n/a (not installed) | — | — | — | — | — | — | — | — |")
+            T.append(f"| {r['agent']} | n/a (not installed) | — | — | — | — | — | — | — | — | — |")
             continue
         name = f"**{r['agent']}**" if r["agent"] == "fox-agent" else r["agent"]
         T.append(
             f"| {name} | {r['version']} | `{r['bin']}` | {cell(r.get('disk_mb'))} | {r.get('disk_kind','—')} | "
             f"{cell(r.get('startup_ms'))} | {cell(r.get('tui_first_byte_ms'))} | {cell(r.get('tui_first_input_ms'))} | "
-            f"{cell(r.get('tui_input_latency_ms'))} | {cell(r.get('idle_pss_mb'))} |"
+            f"{cell(r.get('tui_input_latency_ms'))} | {r.get('input_signal') or '—'} | {cell(r.get('idle_pss_mb'))} |"
         )
     table_md = "\n".join(T) + "\n"
     with open(os.path.join(out, "table.md"), "w") as f:
@@ -1321,10 +1412,10 @@ def render_outputs(out, rows, fox_extra, payload):
         "| metric | fox-agent | rank |",
         "|---|---|---|",
     ]
-    for key, label, unit, fmt in METRICS:
+    for key, label, unit, fmt, only in METRICS:
         fox_row = next((r for r in rows if r["agent"] == "fox-agent"), None)
         val = fox_row.get(key) if fox_row else None
-        rank, field = rank_of(rows, key)
+        rank, field = rank_of(rows, key, only=only)
         if val is None:
             HT.append(f"| {label} | — | — |")
             continue
@@ -1335,12 +1426,12 @@ def render_outputs(out, rows, fox_extra, payload):
     # Rounded per-agent grid, folded: the reference view for "where does tool X
     # land", which nobody needs before they have decided to care.
     GT = [
-        "| agent | bundle | `--version` | TUI 1st byte | TUI 1st input | input latency | idle PSS |",
-        "|---|---|---|---|---|---|---|",
+        "| agent | bundle | `--version` | TUI 1st byte | TUI 1st input | input latency | signal | idle PSS |",
+        "|---|---|---|---|---|---|---|---|",
     ]
     for r in rows:
         if not r.get("installed"):
-            GT.append(f"| {r['agent']} | — | — | — | — | — | — |")
+            GT.append(f"| {r['agent']} | — | — | — | — | — | — | — |")
             continue
         name = f"**{r['agent']}**" if r["agent"] == "fox-agent" else r["agent"]
         disk = f"{r['disk_mb']:.0f} MB" if r.get("disk_mb") is not None else "—"
@@ -1348,8 +1439,12 @@ def render_outputs(out, rows, fox_extra, payload):
         tb = f"{r['tui_first_byte_ms']:.0f} ms" if r.get("tui_first_byte_ms") is not None else "—"
         ti = f"{r['tui_first_input_ms']:.0f} ms" if r.get("tui_first_input_ms") is not None else "—"
         la = f"{r['tui_input_latency_ms']:.0f} ms" if r.get("tui_input_latency_ms") is not None else "—"
+        # kernel-echo rows are marked so nobody compares them to a render number
+        sig = r.get("input_signal") or "—"
+        if sig == "kernel-echo":
+            sig = "kernel-echo (tty)"
         pss = f"{r['idle_pss_mb']:.0f} MB" if r.get("idle_pss_mb") is not None else "—"
-        GT.append(f"| {name} | {disk} | {st} | {tb} | {ti} | {la} | {pss} |")
+        GT.append(f"| {name} | {disk} | {st} | {tb} | {ti} | {la} | {sig} | {pss} |")
     grid_md = "\n".join(GT)
 
     S = [
