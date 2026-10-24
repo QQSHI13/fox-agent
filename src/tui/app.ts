@@ -11,7 +11,7 @@ import { randomUUID } from "node:crypto";
 import { Screen, Plane, type Style } from "./screen.ts";
 import { computeFrame, dockRows, itemEdgeSpan, scrollbarScrollTop, viewportHeight, chipGutter, contentOrigin, contentOriginForChip, contentWidth, type Frame, type FrameInput, type Row } from "./layout.ts";
 import { activePlugins } from "../plugins/load.ts";
-import type { TuiRegionPlane } from "../plugins/types.ts";
+import type { TuiRegionPlane, TuiWrapOptions } from "../plugins/types.ts";
 import { createDecoder, type Key } from "./keys.ts";
 import { graphemeBack, graphemeForward, type Ch } from "./edit.ts";
 import {
@@ -26,12 +26,13 @@ import {
 import { renderMarkdown } from "./markdown.ts";
 import { codeContRow, codeGutterRow, wrapCodeAware } from "./markdown.ts";
 import { createPlainRows, createStreamRows } from "./rows.ts";
-import { wrapSegs, type Seg } from "./wrap.ts";
+import { wrapProse, wrapSegs, wrapText, type Seg } from "./wrap.ts";
 import { charWidth } from "./screen.ts";
 import { Picker, type PickerAction, type PickerRow } from "./picker.ts";
 import { sessionRows, setPickerWheelStep } from "./pickerui.ts";
 import { VERSION } from "../core/version.ts";
-import { steer, peekSteer, withdrawSteer } from "../loop/steer.ts";
+import type { AgentEvent } from "../core/events.ts";
+import { steer, peekSteer, withdrawSteer, attachHost, detachHost, abortTurn } from "../loop/steer.ts";
 import { projectView } from "../context/view.ts";
 import { sessionContextTokens } from "../context/budget.ts";
 import { lookupModel } from "../providers/models.ts";
@@ -408,6 +409,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           restyle: (y: number, x0: number, x1: number, bg: string) => r.plane.restyle(y, x0, x1, bg),
           w: W,
           h: H,
+          // the TUI's own wrapper: a plugin panel must break lines exactly where
+          // the transcript and the input box do, not one column off
+          wrap: (text: string, width: number, opts?: TuiWrapOptions) => wrapText(text, width, opts),
         } satisfies TuiRegionPlane) !== false;
       } catch (e) {
         if (!regionWarned.has(r.key)) {
@@ -653,7 +657,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     width: () => W,
     dockTop: () => dockFloats().top,
     scrollStep: () => SCROLL_STEP,
-    wrapText: (...a) => wrapText(...a),
+    wrapText: (s: string, cols: number) => wrapProse(s, cols),
     flash: (...a) => flash(...a),
     markDirty: (...a) => markDirty(...a),
     run: (answers) => runPromptHandler(answers),
@@ -4191,34 +4195,6 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     const y = top + 1 + bodyH;
     P.overlay.fillRow(y, 0, W, S.barBgRow);
     P.overlay.text(1, y, clipW(p.footer(), W - 2), p.pendingConfirm() ? S.err : S.hintDim);
-  }
-
-  /** Truncate to `cols` display columns (wide chars count as two). */
-  /** Greedy word-wrap of a plain string to `cols` display columns. */
-  function wrapText(s: string, cols: number): string[] {
-    const words = s.split(/\s+/).filter(Boolean);
-    const lines: string[] = [];
-    let cur = "";
-    for (const w of words) {
-      const next = cur ? cur + " " + w : w;
-      if (Bun.stringWidth(next) <= cols) cur = next;
-      else {
-        if (cur) lines.push(cur);
-        // a single word longer than the column: hard-split it so nothing is lost
-        if (Bun.stringWidth(w) > cols) {
-          let chunk = "";
-          for (const ch of w) {
-            if (Bun.stringWidth(chunk + ch) > cols) {
-              lines.push(chunk);
-              chunk = ch;
-            } else chunk += ch;
-          }
-          cur = chunk;
-        } else cur = w;
-      }
-    }
-    if (cur) lines.push(cur);
-    return lines.length ? lines : [""];
   }
 
   function clipW(s: string, cols: number): string {

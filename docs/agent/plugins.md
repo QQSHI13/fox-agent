@@ -42,6 +42,22 @@ Tool shape: `{ def: { name, description, parameters (JSON schema) }, run(args, c
 
 Plugin slash commands and status segments re-resolve when plugins reload (`/reload`, or `statsRev` bumps for status slots).
 
+## TUI regions
+
+A plugin can own a band of the screen: `regions: { name: { z, rect, paint } }`. The plane is clip-rect bounded, so a buggy painter cannot scribble outside `rect`, and `paint` returning `false` hides the region for that frame.
+
+`paint` receives a `TuiRegionPlane` with the primitives the built-in regions use — `text`, `fillRow`, `restyle`, `w`/`h`. It also has **`wrap`**, which is the TUI's own wrapper: use it instead of hand-rolling one, or the panel breaks lines one column off from the transcript and the dock.
+
+```ts
+paint(p) {
+  const lines = p.wrap(this.summary, p.w - 2, { reserve: 2, keepLeadSpaces: true });
+  lines.forEach((line, i) => p.text(2, 1 + i, line, S.text));
+  return true;
+}
+```
+
+`wrap(text, width, opts)` options: `reserve` (columns to leave free on the right), `keepLeadSpaces` (preserve indentation), `lossless` (never drop a space that does not fit) and `exactWidth` (use the final column). Wrapping is the same implementation the transcript, the input box and the question wizard use, so a line that fits in one fits in all of them.
+
 ## Why hooks are patch-based, not array-rewriting
 
 `renderContext` guarantees every assistant `tool_call` is followed by its `tool_result`; a provider hard-400s on an orphan. A hook returning a message array would put that invariant in every plugin author's hands. So `beforeLLMCall` may only append to the system prompt and `afterTool` may only replace one tool's output text. Keep the append **byte-stable across steps** or the cached system-prompt prefix is re-billed every step.

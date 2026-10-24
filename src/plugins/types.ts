@@ -195,6 +195,31 @@ export interface TuiRegionPlane {
   /** screen width/height this frame */
   readonly w: number;
   readonly h: number;
+  /**
+   * Wrap plain text to a column budget — the TUI's own wrapper, so a panel
+   * breaks lines exactly where the transcript, the input box and the wizard do.
+   *
+   * Hand-rolling this is how a plugin panel ends up one column narrower than
+   * everything around it, or loses the leading spaces of an indented block. Pass
+   * the region's own width (usually `p.w`) and the padding you reserve.
+   *
+   * `opts` (all optional): `reserve` columns to leave free on the right,
+   * `keepLeadSpaces` to preserve indentation, `lossless` to never drop a space,
+   * `exactWidth` to use the final column instead of leaving it empty.
+   */
+  wrap(text: string, width: number, opts?: TuiWrapOptions): string[];
+}
+
+/** Options for {@link TuiRegionPlane.wrap} — mirrors the core wrapper's. */
+export interface TuiWrapOptions {
+  /** columns reserved on the right (a border, a gutter, a scrollbar) */
+  reserve?: number;
+  /** keep leading spaces — needed for indented code or YAML */
+  keepLeadSpaces?: boolean;
+  /** never drop a character: a space that does not fit carries to the next line */
+  lossless?: boolean;
+  /** use the last column rather than leaving a ragged right edge */
+  exactWidth?: boolean;
 }
 
 /**
