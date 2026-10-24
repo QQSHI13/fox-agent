@@ -57,9 +57,37 @@ export function orderSel(a: Anchor, b: Anchor): [Anchor, Anchor] {
 }
 
 /**
+ * The highest cell column holding a non-whitespace character, or -1 for a row
+ * that paints only blanks.
+ *
+ * Rows are not always as wide as their text: a code block pads every line of
+ * the block to its widest so the gutter and background line up, and a table
+ * pads each cell to its column width. Those padding cells are real painted
+ * cells, so `width` counts them — which is right for layout and wrong for a
+ * selection.
+ */
+function lastContentCol(cells: RowCells): number {
+  for (let c = cells.start.length - 1; c >= 0; c--) {
+    // slice, not charAt: a wide character owns two columns that both map to
+    // the same string range, so the continuation cell reports the same glyph
+    if (!/\s/.test(cells.text.slice(cells.start[c], cells.end[c]))) return c;
+  }
+  return -1;
+}
+
+/**
  * The cell columns of `row` that fall inside the selection, inclusive — or null
  * when the row is outside it, or inside it but has nothing painted there.
  * Used by the painter to re-style, and by extraction to slice.
+ *
+ * A span stops at the row's last non-whitespace cell, not at its painted width.
+ * The two differ because padded rows (code blocks, table cells) carry trailing
+ * spaces: highlighting them lit a multi-line selection out to the right edge of
+ * the block instead of to the end of the line's text, while `extractSelection`
+ * was already trimming that whitespace off the copied text — so the screen
+ * claimed to select characters the clipboard never received. Clamping here to
+ * the same boundary extraction uses is what makes highlight and copy one fact
+ * instead of two that disagree.
  */
 export function selRangeForRow(row: number, a: Anchor, b: Anchor, cells: RowCells): { from: number; to: number } | null {
   const [s, e] = orderSel(a, b);
@@ -67,7 +95,12 @@ export function selRangeForRow(row: number, a: Anchor, b: Anchor, cells: RowCell
   const width = cells.start.length;
   if (!width) return null;
   const from = row === s.row ? s.col : 0;
-  const to = row === e.row ? e.col : width - 1;
+  // middle rows of the span want "to the end of the text"; the final row wants
+  // the drag endpoint — but neither may run past the content into padding
+  const wanted = row === e.row ? e.col : width - 1;
+  const contentEnd = lastContentCol(cells);
+  if (contentEnd < 0) return null; // nothing but padding: no highlight, no text
+  const to = Math.min(wanted, contentEnd);
   const lo = Math.max(0, from);
   const hi = Math.min(width - 1, to);
   if (lo > hi) return null;
