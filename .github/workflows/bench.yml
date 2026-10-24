@@ -1,10 +1,10 @@
 name: bench
 
-# Measures what `--version` cannot: time to first char of an actual TUI
-# launch, bundle size, time to first token and memory — across fox-agent and
-# every competitor CLI that installs cleanly. Regenerates bench/*.svg +
-# bench/*.md and splices the snapshot into the top of the README, then commits
-# the result so the graphs on main are never stale.
+# Measures what `--version` cannot: time to first byte of an actual launch,
+# idle memory, and install size — across fox-agent and every competitor CLI that
+# installs cleanly. Regenerates bench/*.svg + bench/*.md and splices the
+# snapshot into the top of the README, then commits the result so the graphs on
+# main are never stale.
 #
 # Loop guard: the commit-back step pushes as github-actions[bot], and this job
 # skips for that actor — so a bench commit never triggers another bench run.
@@ -36,11 +36,11 @@ jobs:
         with:
           node-version: lts/*
 
-      # The interactive metrics run each TUI inside tmux and read the rendered
-      # screen back with `capture-pane` — tmux is the terminal model, so the bench
-      # measures what a user sees instead of re-deriving it from escape bytes.
+      # Each tool is launched inside tmux so it gets a real pty, and its output
+      # is read through `pipe-pane` into a FIFO — a forkless, microsecond-
+      # resolution byte stream. That is what first-byte timing is built on.
       # ubuntu-latest ships tmux, but assert it so a runner image change fails
-      # loudly here rather than silently reporting every input metric n/a.
+      # loudly here rather than silently reporting every timing n/a.
       - name: ensure tmux
         run: |
           command -v tmux >/dev/null || sudo apt-get install -y tmux

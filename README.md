@@ -22,19 +22,11 @@ No key? The TUI opens anyway and `/login` walks you through provider setup.
 ## Performance
 
 <!-- bench:start -->
-| metric | fox-agent | rank |
-|---|---|---|
-| TUI 1st byte | **15.5** | **#2** of 22 |
-| TUI 1st paint | **21.3** | **#2** of 20 |
-| TUI 1st input | **191** | **#1** of 9 |
-| input latency | **3.1** | **#3** of 8 |
-| bundle | **117** | **#4** of 22 |
-| idle PSS | **44** | **#2** of 20 |
-| `--version` | **6.9** | **#2** of 22 |
+![fox-agent bench](bench/fox.svg)
 
 fox-agent headless vs scripted local provider: time to first token **48 ms**, peak RSS **57 MB**.
 
-<details><summary>dashboard · every tool, every metric</summary>
+<details><summary>the full field · every tool, every metric</summary>
 
 ![harness bench dashboard](bench/bench.svg)
 
@@ -42,30 +34,30 @@ fox-agent headless vs scripted local provider: time to first token **48 ms**, pe
 
 <details><summary>full precision · min/p50/p95 per metric</summary>
 
-| agent | version | bundle (MB) | kind | `--version` min/p50/p95 | 1st byte min/p50/p95 | 1st paint min/p50/p95 | 1st input min/p50/p95 | latency min/p50/p95 | signal | idle PSS (MB) | n |
-|---|---|---|---|---|---|---|---|---|---|---|---|
-| **fox-agent** | 0.6.0 | 116.6 | bin | 6.7/7.9/11.5 | 14.6/15.5/18.3 | 20.2/21.3/23.7 | 190.3/191.3/194.1 | 3.0/3.1/3.2 | render | 44.5 | 5 |
-| claude code | 2.1.310 (Claude Code) | 291.6 | bin | 9.4/11.4/11.8 | 196.3/199.7/935.0 | 208.5/211.8/946.9 | — | — | render | 173.0 | 5 |
-| codex | codex-cli 0.164.0 | 444.4 | pkg | 36.7/38.1/38.4 | 36.8/37.2/38.4 | 337.9/338.6/431.0 | — | — | render | 233.9 | 5 |
-| jcode | jcode v0.99.1 (7206efd0c) | 171.3 | bin | 8.5/8.8/8.9 | 9.9/10.0/10.4 | 10.1/10.3/10.5 | 240.0/240.2/300.1 | 2.5/2.6/2.7 | render | 34.2 | 5 |
-| pi | 1.4.0 | 111.8 | pkg | 195.3/197.2/199.6 | 252.6/257.2/262.3 | 260.3/264.8/283.1 | 456.9/497.1/500.2 | 3.2/3.3/3.4 | render | 129.2 | 5 |
-| pi-bolt | 1.4.0 (Pi-Bolt 1.0.0, linux-x64, JIT off) | 263.2 | bin | 10.8/12.8/13.2 | 30.9/30.9/37.2 | 33.2/34.1/39.7 | 222.8/224.1/229.9 | 2.7/2.7/2.8 | render | 89.3 | 5 |
-| gemini cli | 0.65.0 | 102.6 | pkg | 1180.4/1184.2/1195.2 | 1256.8/1271.7/1276.9 | 1256.8/1271.7/1276.9 | — | — | — | — | 5 |
-| copilot cli | GitHub Copilot CLI 1.0.103. | 198.5 | pkg | 86.8/88.0/88.9 | 548.3/572.4/747.8 | 767.4/779.9/959.5 | — | — | render | 393.8 | 5 |
-| crush | crush version v0.98.2 | 128.9 | pkg | 116.0/120.0/130.5 | 408.2/532.5/607.4 | 409.3/533.4/608.8 | — | — | render | 163.2 | 5 |
-| aider | aider 0.86.2 | 642.8 | pkg | 647.9/658.3/669.6 | 569.8/572.0/584.3 | 570.2/572.5/584.8 | 762.1/764.2/855.6 | 4.9/5.0/5.8 | render | 67.5 | 5 |
-| amp | 0.0.1792828848-gc7cca4 (released 2026-10-24T08:00:48.000Z, 5 | 161.1 | bin | 164.0/168.0/177.9 | 177.7/185.7/189.8 | 177.7/185.7/189.8 | 346.7/354.5/358.7 | — | — | — | 5 |
-| cursor-agent | 2026.10.22-27dcf5f | 583.2 | pkg | 366.6/381.3/383.2 | 350.7/497.6/530.6 | 350.7/350.7/350.7 | — | — | render | 241.5 | 5 |
-| qwen code | 0.26.0 | 154.7 | pkg | 32.1/32.4/32.6 | 452.3/458.8/670.0 | 799.5/814.1/1096.6 | — | — | render | 205.9 | 5 |
-| codebuff | 1.0.688 | 140.0 | bin | 766.4/771.8/773.3 | 772.4/772.8/778.1 | 1800.2/1802.0/1902.8 | — | — | render | 301.5 | 5 |
-| kilo code | 7.8.17 | 718.6 | pkg | 661.1/666.6/669.4 | 1741.6/1779.5/1877.0 | 1741.6/1779.5/1877.0 | 5630.7/5708.9/7582.4 | 9.2/10.1/25.0 | render | 906.1 | 5 |
-| droid | 0.249.0 | 319.7 | bin | 67.5/70.9/80.2 | 75.6/85.4/89.6 | — | — | — | render | 272.9 | 5 |
-| kimi code | 2.3.1 | 192.3 | bin | 461.4/464.8/478.8 | 585.5/597.5/619.7 | 612.6/624.5/648.5 | — | — | render | 325.0 | 5 |
-| devin | devin 3000.11.205 (6dea39440ae3) | 217.5 | bin | 4.5/5.0/6.9 | 18.4/39.5/45.7 | 20.8/41.7/48.0 | — | — | render | 99.3 | 5 |
-| cline | 3.0.73 | 330.3 | pkg | 745.3/767.4/806.6 | 917.4/933.7/1002.8 | 917.4/933.7/1002.8 | — | — | render | 267.9 | 5 |
-| continue | 1.5.47 | 82.7 | pkg | 892.0/900.5/904.0 | 11079.3/11089.3/11132.7 | 11095.3/11109.7/11151.0 | — | — | render | 322.7 | 5 |
-| iflow cli | 0.5.19 | 180.2 | pkg | 952.4/965.0/968.9 | 1008.8/1025.6/1033.8 | 1040.3/1089.3/1095.6 | 1445.7/1448.0/5203.0 | 46.8/47.2/47.6 | render | 360.5 | 5 |
-| opencode v2 | opencode2 v0.0.0-beta-19271 | 207.4 | bin | 66.0/70.0/70.7 | 117.0/126.0/133.0 | 117.0/126.0/133.0 | 1592.2/1616.4/2220.0 | 15.9/18.5/20.8 | render | 128.7 | 5 |
+| agent | version | 1st byte min/p50/p95 (ms) | idle PSS (MB) | bundle (MB) | kind | `--version` min/p50/p95 (ms) | n |
+|---|---|---|---|---|---|---|---|
+| **fox-agent** | 0.6.0 | 14.6/15.5/18.3 | 44.5 | 116.6 | bin | 6.7/7.9/11.5 | 5 |
+| claude code | 2.1.310 (Claude Code) | 196.3/199.7/935.0 | 173.0 | 291.6 | bin | 9.4/11.4/11.8 | 5 |
+| codex | codex-cli 0.164.0 | 36.8/37.2/38.4 | 233.9 | 444.4 | pkg | 36.7/38.1/38.4 | 5 |
+| jcode | jcode v0.99.1 (7206efd0c) | 9.9/10.0/10.4 | 34.2 | 171.3 | bin | 8.5/8.8/8.9 | 5 |
+| pi | 1.4.0 | 252.6/257.2/262.3 | 129.2 | 111.8 | pkg | 195.3/197.2/199.6 | 5 |
+| pi-bolt | 1.4.0 (Pi-Bolt 1.0.0, linux-x64, JIT off) | 30.9/30.9/37.2 | 89.3 | 263.2 | bin | 10.8/12.8/13.2 | 5 |
+| gemini cli | 0.65.0 | 1256.8/1271.7/1276.9 | — | 102.6 | pkg | 1180.4/1184.2/1195.2 | 5 |
+| copilot cli | GitHub Copilot CLI 1.0.103. | 548.3/572.4/747.8 | 393.8 | 198.5 | pkg | 86.8/88.0/88.9 | 5 |
+| crush | crush version v0.98.2 | 408.2/532.5/607.4 | 163.2 | 128.9 | pkg | 116.0/120.0/130.5 | 5 |
+| aider | aider 0.86.2 | 569.8/572.0/584.3 | 67.5 | 642.8 | pkg | 647.9/658.3/669.6 | 5 |
+| amp | 0.0.1792828848-gc7cca4 (released 2026-10-24T08:00:48.000Z, 5 | 177.7/185.7/189.8 | — | 161.1 | bin | 164.0/168.0/177.9 | 5 |
+| cursor-agent | 2026.10.22-27dcf5f | 350.7/497.6/530.6 | 241.5 | 583.2 | pkg | 366.6/381.3/383.2 | 5 |
+| qwen code | 0.26.0 | 452.3/458.8/670.0 | 205.9 | 154.7 | pkg | 32.1/32.4/32.6 | 5 |
+| codebuff | 1.0.688 | 772.4/772.8/778.1 | 301.5 | 140.0 | bin | 766.4/771.8/773.3 | 5 |
+| kilo code | 7.8.17 | 1741.6/1779.5/1877.0 | 906.1 | 718.6 | pkg | 661.1/666.6/669.4 | 5 |
+| droid | 0.249.0 | 75.6/85.4/89.6 | 272.9 | 319.7 | bin | 67.5/70.9/80.2 | 5 |
+| kimi code | 2.3.1 | 585.5/597.5/619.7 | 325.0 | 192.3 | bin | 461.4/464.8/478.8 | 5 |
+| devin | devin 3000.11.205 (6dea39440ae3) | 18.4/39.5/45.7 | 99.3 | 217.5 | bin | 4.5/5.0/6.9 | 5 |
+| cline | 3.0.73 | 917.4/933.7/1002.8 | 267.9 | 330.3 | pkg | 745.3/767.4/806.6 | 5 |
+| continue | 1.5.47 | 11079.3/11089.3/11132.7 | 322.7 | 82.7 | pkg | 892.0/900.5/904.0 | 5 |
+| iflow cli | 0.5.19 | 1008.8/1025.6/1033.8 | 360.5 | 180.2 | pkg | 952.4/965.0/968.9 | 5 |
+| opencode v2 | opencode2 v0.0.0-beta-19271 | 117.0/126.0/133.0 | 128.7 | 207.4 | bin | 66.0/70.0/70.7 | 5 |
 
 </details>
 
@@ -96,6 +88,8 @@ fox-agent headless vs scripted local provider: time to first token **48 ms**, pe
 - **droid**: ttfi: never became interactive (blank screen)
 - **gemini cli**: latency: never stopped repainting (no quiet window)
 - **gemini cli**: ttfi: never became interactive (blank screen)
+- **jcode**: latency: probe 'zw' did not render
+- **jcode**: ttfi: probe 'zx' did not render
 - **kimi code**: latency: trust prompt
 - **kimi code**: ttfi: trust prompt
 - **qwen code**: latency: waiting for login
@@ -174,38 +168,33 @@ by default; press `a` there to widen to all directories.
 
 The [Performance](#performance) block is generated by the [`bench` workflow](https://github.com/QQSHI13/fox-agent/actions/workflows/bench.yml) (weekly, on every push, and on demand) and committed to [`bench/`](bench/), so what you see is the latest run rather than numbers typed by hand. Raw data: [`bench/results.json`](bench/results.json).
 
-The default view is one row per metric -- fox-agent's score on each and its rank in the field. Below it, two folded blocks: the dashboard (every tool, every metric, as one image) and the full-precision record with min/p50/p95 for each tool. When something could not be measured, a third block lists it explicitly.
+The block at the top is one image: fox-agent's three numbers, each with its rank in the field. Below it, two folded blocks -- the full field as a dashboard, and the full-precision record with min/p50/p95 per tool.
 
 What each metric means:
 
-- **TUI 1st byte**: a real interactive launch -- the binary started in a pty with no args, timed from `exec` to the first byte it writes. Several tools short-circuit `--version` before loading their bundle, so `--version` flatters them; first byte does not.
-- **TUI 1st paint**: same launch, to the first printable glyph *outside an escape sequence*. A TUI's first byte is usually cursor bookkeeping (`fox` writes `\e[?1049h\e[?25l` before compositing anything), which is why byte and paint are reported separately instead of one standing in for the other.
-- **TUI 1st input**: same launch, timed from `exec` until a typed probe is rendered -- the probe is typed as soon as the app owns the tty (termios `ECHO` off) and has stopped writing.
-- **Input latency**: the same measurement once already interactive (ready, settle, type, render) -- the keystroke round-trip alone, with startup cost removed.
-- **`--version`**: the harness floor, kept for reference.
-- **Bundle**: full install footprint -- the binary for native executables (following launcher wrappers to the binary they hand off to, including wrappers that compute their target at runtime from a version file), the package directory for script CLIs (weighing only a 2 KB loader shim would pretend node and node_modules are free).
-- **Idle PSS**: resident cost of the whole process tree at rest, before any model traffic.
-- **Time to first token** (fox-agent only): spawn to first text event of a headless `fox -p … --json` turn against the repo's scripted local provider -- no key, no network. Competitors need real credentials for a turn, so there is no honest cross-tool TTFT.
+- **1st byte**: the binary started in a pty with no arguments, timed from `exec` to the first byte it writes. This is the harness's own cost, not the model's. It is measured because several tools short-circuit `--version` before loading their bundle, so `--version` flatters them while first byte does not.
+- **Idle memory (PSS)**: resident cost of the whole process tree at rest, before any model traffic. It counts children, because a node-based CLI runs its UI in a worker and charging only the launcher understates it by 2-8x. PSS divides shared pages rather than double-counting them. The practical claim is *how many agents you can run in one container*.
+- **Install size**: full on-disk footprint -- the binary for native executables (following launcher wrappers to the binary they hand off to, including wrappers that compute that target at runtime from a version file), the package directory for script CLIs (weighing only a 2 KB loader shim would pretend node and node_modules are free).
+- **Time to first token** (fox-agent only, above): spawn to first text event of a headless `fox -p … --json` turn against the repo's scripted local provider -- no key, no network. Competitors need real credentials for a turn, so there is no honest cross-tool TTFT.
 
 Reading the numbers honestly:
 
 - These measure the *harness*, not the model -- turn latency is dominated by your provider, and every tool here talks to the same APIs.
 - **Published numbers are p50, with min and p95 beside them in `bench/table.md`.** Best-of-N alone is not enough: a single lucky launch is not the typical experience, and the spread is often the story (one release of `opencode` measured 101 ms at its best and 1539 ms at p95).
-- **A timeout is never a measurement.** A probe that never lands is recorded as a failure, excluded from the statistics, and listed under "what could not be measured" -- it is not published as a slow time and it is not ranked.
-- Non-whitespace content on screen is required before typing: a TUI that has taken the tty but painted nothing yet will swallow the keystroke, and typing into it measures the app's boot, not its input handling.
-- A tool not installed on the bench machine is an `n/a` row, never an estimate, and is excluded from rank counts rather than ranked last. A row with fewer than three successful samples is reported but not ranked: one lucky launch is not a comparison.
+- **A timeout is never a measurement.** A run that never produces output is recorded as a failure, excluded from the statistics, and listed under "what could not be measured" -- it is not published as a slow time and it is not ranked.
+- A tool not installed on the bench machine is an `n/a` row, never an estimate, and is excluded from rank counts rather than ranked last. A row with fewer than three successful launches is reported but not ranked: one lucky launch is not a comparison.
 - Ranks are "1 + how many tools were strictly faster", so ties share a rank.
-- **Input latency is only comparable between tools that render their own echo.** A tool in cooked mode has the tty line discipline echo each byte before the app wakes -- measured: `cat` in a pty times ~0.3 ms with no UI at all. That number describes the kernel, not the tool, so each row records an `input_signal` (`render` or `kernel-echo`) and ranks are computed within the `render` class only.
-- Durations come from a forkless byte stream (`tmux pipe-pane` into a FIFO), not from polling. That matters more than it sounds: the earlier version polled `tmux capture-pane` once per sample, which forks tmux at 9-17 ms a go, so its numbers carried a ~22 ms floor and a jitter it never declared.
+- Durations come from a forkless byte stream (`tmux pipe-pane` into a FIFO), timed from `exec`. That matters more than it sounds: an earlier version polled `tmux capture-pane` once per sample, which forks tmux at 9-17 ms a go, so its numbers carried an undeclared ~22 ms floor -- and published a 4.2 ms latency, below the cost of a single observation.
 - Numbers move with machine load -- `bench/results.json` records the load average and CPU count alongside the rows, because the same tool measured 2.9 s and 10.3 s for first byte on the same box under different load.
-- Per-turn behavior -- context handling, tool latency, compaction -- is what actually distinguishes coding agents, and no startup number captures it.
+
+**Why only three.** Earlier versions also measured time-to-interactive and keystroke latency, by typing a probe into the running TUI. Both require the tool to accept a keystroke, so every tool that shows a trust prompt, a login screen or an error modal cannot be measured at all -- in the last full field run that was 14 of 22 tools, an honest column that was mostly `n/a`. A metric two thirds of the field cannot produce is not a comparison, so the metric was dropped rather than the caveat being published. The three that remain every CLI answers the same way, with no login and no keystroke.
 
 Reproduce locally (measures whatever is on your `PATH`):
 
 ```bash
 bun run bench                                                   # build + measure; writes bench/
 python3 scripts/bench/bench.py --quick --out /tmp/bench         # 2 launches, for smoke tests
-python3 scripts/bench/bench.py --only fox-agent,jcode           # a subset of the field
+python3 scripts/bench/bench.py --only fox-agent,jcode --out /tmp/b   # a subset (needs --out)
 python3 scripts/bench/bench.py --self-test                       # verify the rig itself
 ```
 
