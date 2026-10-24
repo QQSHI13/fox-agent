@@ -8,14 +8,14 @@
     0.15
   ],
   "method": {
-    "timings": "Every duration comes from a forkless byte stream: the tool is launched in a detached tmux session behind a gate FIFO, `pipe-pane` is attached before the gate is released, and bytes are timestamped as they are read. t0 is the gate release (the exec), so tmux's own spawn cost is not charged to the tool and no early byte can be missed. The predecessor polled `tmux capture-pane`, which forks tmux: measured 9.2ms p50 / 32.2ms p95 per sample, a ~22ms poll cadence and a floor under every number it published (it reported 4.2ms input latency -- below the cost of one observation).",
-    "metrics": "first_byte = exec to first byte on the wire; first_paint = exec to first printable glyph (a TUI's first byte is often only cursor bookkeeping, e.g. fox's `\\e[?25l`); ttfi = exec to probe rendered, where the probe is typed as soon as the app owns the tty (termios ECHO off) and has stopped writing; key_latency = keystroke to probe rendered after a settle, with startup removed and the settle wait explicitly outside the clock.",
-    "statistics": "p50 of successful launches is published, with min and p95 beside it. The predecessor published min, which hid the spread: the shipped opencode first-byte row was 101ms min against 1539ms p95. Rows with fewer than 3 successful samples are reported but not ranked.",
-    "timeouts": "A timeout is recorded as a failure and excluded from the statistics, never published as a duration. The predecessor's 15s probe timeout appeared in the table as measurement (opencode 15203.1ms, amp 15053.7ms, kilo 16476.3ms) and was RANKED.",
-    "probe": "Two letters not already present on the captured screen are typed; the match is made against joined bytes since the keystroke (so a cell-diffing TUI that emits the probe in pieces is still counted) AND verified against the rendered screen afterwards, so a stream false positive cannot become a number.",
-    "signal": "termios ECHO is read from the pane's own pty. 'kernel-echo' means the line discipline echoed the byte before the app woke (measured: `cat` in a pty times ~0.3ms with no UI), so it describes the kernel; 'render' means the app disabled echo and repainted a cell itself. Latency is ranked within 'render' only.",
-    "bundle": "the binary itself; a launcher's exec target where a wrapper hands off by path; or the package dir for script CLIs, minus any bundled node/bun runtime (weighing a 2KB shim would pretend node_modules are free; counting the interpreter would make every JS tool report the same ~140MB).",
-    "memory": "PSS of the whole process tree (children included: a node CLI's workers hold real memory), floored over launches because extra processes only ever add, read after the app settles and before the latency probe perturbs it.",
+    "metrics": "Three presented metrics, all answerable without a login and without a keystroke: first_byte = exec to the first byte the tool writes; idle_pss_mb = resident memory of the whole process tree at rest; bundle_mb = on-disk footprint. --version and the full min/p50/p95/n distribution are collected into results.json but not presented, because --version flatters tools that short-circuit before loading their bundle.",
+    "why_only_three": "Time-to-interactive and keystroke latency were removed, not tuned. Both require typing into a TUI, so a tool that shows a trust prompt, a login screen or an error modal cannot be measured at all: in the last full field run that was 14 of 22 tools, i.e. a column that was mostly n/a. A metric two thirds of the field cannot produce is not a comparison, so the metric was dropped rather than the caveat being published.",
+    "timings": "Every duration comes from a forkless byte stream: the tool is launched in a detached tmux session behind a gate FIFO, `pipe-pane` is attached before the gate is released, and bytes are timestamped as they are read. t0 is the gate release (the exec), so tmux's own spawn cost is not charged to the tool and no early byte can be missed. An earlier version polled `tmux capture-pane`, which forks tmux: measured 9.2ms p50 / 32.2ms p95 per sample, an undeclared ~22ms floor under every number it published (it reported a 4.2ms input latency -- below the cost of one observation).",
+    "statistics": "p50 of successful launches is published, with min and p95 in the table. Publishing only `min` hid the spread: a shipped opencode first-byte row was 101ms min against 1539ms p95. Rows with fewer than 3 successful samples are reported but not ranked, because one lucky launch is not a comparison.",
+    "timeouts": "A timeout is recorded as a failure and excluded from the statistics, never published as a duration. An earlier version's 15s probe timeout appeared in the table as measurement (opencode 15203.1ms, amp 15053.7ms, kilo 16476.3ms) and was RANKED.",
+    "bundle": "the binary itself; a launcher's exec target where a wrapper hands off by path (including wrappers that compute that target at runtime from a version file, resolved by globbing the literal tail); or the package dir for script CLIs, minus any bundled node/bun runtime -- weighing a 2KB shim would pretend node_modules are free, and counting the interpreter would make every JS tool report the same ~140MB.",
+    "memory": "PSS of the whole process tree (children included: a node CLI's workers hold real memory), so shared pages are divided rather than double-counted. Read after the tree converges, floored over launches because extra processes only ever ADD.",
+    "load": "load_avg and cpu_count are recorded because they change the numbers: the same tool measured 2.9s and 10.3s for first byte on this box 40 minutes apart, at load 4.1 versus idle on 4 cores.",
     "missing": "A tool that is not installed is an n/a row and is excluded from rank counts, never estimated."
   },
   "rows": [
@@ -105,10 +105,7 @@
       "idle_pss_root_mb": 173.0361328125,
       "procs": 1,
       "launches": 5,
-      "failures": [
-        "latency: no input field accepted the keystroke",
-        "ttfi: no input field accepted the keystroke"
-      ]
+      "failures": []
     },
     {
       "agent": "codex",
@@ -152,10 +149,7 @@
       "idle_pss_root_mb": 49.060546875,
       "procs": 2,
       "launches": 5,
-      "failures": [
-        "latency: waiting for login",
-        "ttfi: waiting for login"
-      ]
+      "failures": []
     },
     {
       "agent": "jcode",
@@ -329,12 +323,9 @@
       "input_signal": null,
       "idle_pss_mb": null,
       "idle_pss_root_mb": null,
-      "procs": null,
+      "procs": 1,
       "launches": 5,
-      "failures": [
-        "latency: never stopped repainting (no quiet window)",
-        "ttfi: never became interactive (blank screen)"
-      ]
+      "failures": []
     },
     {
       "agent": "copilot cli",
@@ -378,10 +369,7 @@
       "idle_pss_root_mb": 47.44921875,
       "procs": 3,
       "launches": 5,
-      "failures": [
-        "latency: trust prompt",
-        "ttfi: trust prompt"
-      ]
+      "failures": []
     },
     {
       "agent": "crush",
@@ -425,10 +413,7 @@
       "idle_pss_root_mb": 68.5908203125,
       "procs": 2,
       "launches": 5,
-      "failures": [
-        "latency: no input field accepted the keystroke",
-        "ttfi: no input field accepted the keystroke"
-      ]
+      "failures": []
     },
     {
       "agent": "aider",
@@ -516,9 +501,7 @@
       "idle_pss_root_mb": null,
       "procs": null,
       "launches": 5,
-      "failures": [
-        "latency: never stopped repainting (no quiet window)"
-      ]
+      "failures": []
     },
     {
       "agent": "cursor-agent",
@@ -562,12 +545,7 @@
       "idle_pss_root_mb": 234.2724609375,
       "procs": 1,
       "launches": 5,
-      "failures": [
-        "latency: blank screen",
-        "latency: no input field accepted the keystroke",
-        "ttfi: never became interactive (blank screen)",
-        "ttfi: no input field accepted the keystroke"
-      ]
+      "failures": []
     },
     {
       "agent": "qwen code",
@@ -611,10 +589,7 @@
       "idle_pss_root_mb": 205.857421875,
       "procs": 1,
       "launches": 5,
-      "failures": [
-        "latency: waiting for login",
-        "ttfi: waiting for login"
-      ]
+      "failures": []
     },
     {
       "agent": "codebuff",
@@ -658,10 +633,7 @@
       "idle_pss_root_mb": 57.5205078125,
       "procs": 4,
       "launches": 5,
-      "failures": [
-        "latency: no input field accepted the keystroke",
-        "ttfi: no input field accepted the keystroke"
-      ]
+      "failures": []
     },
     {
       "agent": "kilo code",
@@ -749,10 +721,7 @@
       "idle_pss_root_mb": 272.0810546875,
       "procs": 1,
       "launches": 5,
-      "failures": [
-        "latency: blank screen",
-        "ttfi: never became interactive (blank screen)"
-      ]
+      "failures": []
     },
     {
       "agent": "kimi code",
@@ -796,10 +765,7 @@
       "idle_pss_root_mb": 327.0673828125,
       "procs": 1,
       "launches": 5,
-      "failures": [
-        "latency: trust prompt",
-        "ttfi: trust prompt"
-      ]
+      "failures": []
     },
     {
       "agent": "devin",
@@ -843,10 +809,7 @@
       "idle_pss_root_mb": 100.38671875,
       "procs": 1,
       "launches": 5,
-      "failures": [
-        "latency: waiting for login",
-        "ttfi: waiting for login"
-      ]
+      "failures": []
     },
     {
       "agent": "cline",
@@ -890,10 +853,7 @@
       "idle_pss_root_mb": 55.0234375,
       "procs": 3,
       "launches": 5,
-      "failures": [
-        "latency: waiting for login",
-        "ttfi: waiting for login"
-      ]
+      "failures": []
     },
     {
       "agent": "continue",
@@ -937,10 +897,7 @@
       "idle_pss_root_mb": 320.396484375,
       "procs": 1,
       "launches": 5,
-      "failures": [
-        "latency: no input field accepted the keystroke",
-        "ttfi: no input field accepted the keystroke"
-      ]
+      "failures": []
     },
     {
       "agent": "iflow cli",
@@ -1039,7 +996,7 @@
       "p95": 75.9,
       "n": 4
     },
-    "headless_peak_rss_mb": 57.1,
+    "headless_peak_rss_mb": 56.6,
     "method": "headless `fox -p ... --json` against the repo's scripted local provider (no key, no network); TTFT = spawn to the first parsed {\"type\":\"text\"} event; peak RSS via /usr/bin/time -v"
   }
 }

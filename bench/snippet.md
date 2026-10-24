@@ -10,7 +10,7 @@
 
 fox-agent headless vs scripted local provider: time to first token **54 ms**, peak RSS **57 MB**.
 
-<details><summary>dashboard · every tool, every metric</summary>
+<details><summary>the full field · every tool, every metric</summary>
 
 ![harness bench dashboard](bench/bench.svg)
 

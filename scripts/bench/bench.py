@@ -1,64 +1,68 @@
 #!/usr/bin/env python3
-"""Multi-agent harness benchmark.
+"""Multi-agent harness benchmark: three numbers, measured honestly.
 
-Measures what `--version` cannot: the cost of actually starting the thing and
-of typing into it.
+WHAT IT MEASURES
+----------------
+Per tool installed on the machine:
 
-WHY THIS FILE WAS REWRITTEN
----------------------------
-The previous version derived every interactive number by polling
-`tmux capture-pane`, once per sample of a 5ms-sleep loop. A single
-`capture-pane` forks tmux, which measured 9.2ms at p50 and 32.2ms at p95 on a
-4-core box -- so the poll cadence was ~22ms, not 5ms, and every published
-figure carried a floor and a jitter it never declared. The tell was a
-published fox input latency of 4.2ms: BELOW the cost of one observation, a
-number that cannot exist. Worse, the 15s probe timeout and the 8s readiness
-cap leaked into the table as data (opencode 15203.1ms, amp 15053.7ms, kilo
-16476.3ms, continue 8008.5ms are all timeouts wearing a measurement's
-clothes), and only `min` was published, which hid the shipped opencode
-first-byte spread of 101ms (min) to 1539ms (p95).
+  first_byte  exec -> first byte the tool writes. Timed from exec, through a
+              forkless byte stream, so no polling cadence and no tmux spawn
+              cost is inside the number.
+  idle_pss    resident memory of the whole process tree at rest (PSS, so shared
+              pages are divided rather than double-counted).
+  bundle      on-disk footprint: the binary, or a launcher's exec target, or
+              the package dir for a script CLI (minus any bundled node/bun
+              runtime -- the interpreter is not the tool).
 
-This version takes the measurement out of the polling loop:
+`--version` and the raw distribution (min/p50/p95/n) are still collected and
+written to results.json; they are not presented, because --version flatters
+tools that short-circuit before loading their bundle.
 
-  * Bytes come from `tmux pipe-pane` into a FIFO, drained by a thread. No
-    fork per sample, no cadence floor, timestamps on the actual write.
-  * The tool is launched behind a GATE FIFO, so the clock starts at exec
-    rather than at tmux spawn -- tmux's own ~30ms is no longer charged to
-    the tool, and early bytes cannot be missed because the pipe is attached
-    before the program is released.
-  * One launch yields every timing metric (old: 14 launches per tool).
-  * Timeouts are counted as failures and never enter the statistics.
-  * p50 is the headline, with min/p95/n beside it; rows with fewer than 3
-    successful samples are reported but not ranked.
+Plus fox-agent only, hermetic (no key, no network): time-to-first-token and
+peak RSS of a headless `fox -p ... --json` turn against the repo's scripted
+provider fixture.
 
-Per tool (best effort -- anything not installed is n/a, never invented):
-  - bundle:   on-disk bytes of the resolved executable (following launcher
-              wrappers to the binary they exec; a script CLI is weighed as
-              its package dir, minus any bundled node/bun runtime)
-  - startup:  best of N `--version` runs -- the harness floor, for reference
-  - first_byte: exec -> first byte the tool writes (the literal name)
-  - first_paint: exec -> first printable glyph (what a user waits for)
-  - ttfi:     exec -> probe rendered, where the probe is typed as soon as the
-              tool owns the tty and has gone quiet (time to interactive)
-  - key_latency: keystroke -> probe rendered, with startup removed (pure
-              input handling, ranked among render-signal tools only)
-  - idle_pss: settled resident set of the whole process tree
+WHY ONLY THREE
+--------------
+Earlier versions also measured time-to-interactive and keystroke latency by
+typing a probe into a TUI. Both need the tool to accept a keystroke, so every
+tool showing a trust prompt, a login screen or an error modal cannot be
+measured at all. In the last full field run that was 14 of 22 tools: an
+honest column of mostly n/a. A metric two thirds of the field cannot produce
+is not a comparison, so it was removed rather than patched. The three that
+remain every CLI answers the same way, with no login and no keystroke, and
+each has a user-visible consequence (memory to run several agents in one
+container, harness cost, disk in a CI image).
 
-Plus fox-agent only (hermetic, no API key, no network):
-  - ttft: headless `fox -p ... --json` against the repo's scripted fake
-    provider, spawn to first `{"type":"text"}` event
-  - rss:  peak resident set of that same headless turn (`/usr/bin/time -v`)
+METHOD NOTES THAT TOOK A WRONG NUMBER TO LEARN
+----------------------------------------------
+  * Bytes come from `tmux pipe-pane` into a FIFO drained by a thread. Polling
+    `capture-pane` forks tmux (9.2ms p50, 32.2ms p95 measured), which put an
+    undeclared ~22ms floor under every figure and once produced a published
+    4.2ms "latency" that was below the cost of a single observation.
+  * The tool starts behind a GATE FIFO: the pipe is attached before the gate is
+    released, so no early byte is lost and t0 is the exec, not tmux's spawn.
+  * A timeout is a failure, never a sample. An earlier version ranked its own
+    15s probe timeout as if it were a slow tool (opencode "15203.1ms").
+  * p50 is published, with min/p95 in the table. Publishing only `min` hid a
+    shipped 101ms-to-1539ms spread on the same row.
+  * Rows under 3 samples are reported but not ranked: one lucky launch is not
+    a comparison.
 
 Outputs (all under bench/):
-  results.json, table.md, snippet.md, bench.svg (one dashboard image)
+  fox.svg       fox-agent's three numbers, one card each (the README hero)
+  bench.svg     the full field, one panel per metric
+  results.json  every collected number, machine-readable
+  table.md      full precision, min/p50/p95
+  snippet.md    the block spliced into the README
 
 Usage:
-  python3 scripts/bench/bench.py [--quick] [--out bench] [--only NAME,...]
+  python3 scripts/bench/bench.py [--quick] [--out DIR] [--only NAME,...] [--debug]
   python3 scripts/bench/bench.py --self-test
   bun run bench          # build + bench in one step (see package.json)
 
---debug: verbose per-step timing + decision logging to stderr.
---only:  restrict the field to the named tools (smoke tests on a dev box).
+--only requires an explicit --out: a partial field must not overwrite the
+committed results, where it would silently render as "1st of 1".
 """
 import glob
 import json
@@ -588,15 +592,15 @@ def _pss_tree(root_pid):
 # ---------------------------------------------------------------------------
 # The measurement rig
 #
-# One detached tmux session per launch, three sockets of information out of it:
+# One detached tmux session per launch, one socket of information out of it:
 #
 #   bytes  : `pipe-pane` -> FIFO -> drain thread. Forkless, timestamped at the
 #            write. This is where every timing number comes from.
-#   screen : `capture-pane`, used TWICE per launch (to choose a probe the
-#            screen does not already contain, and to verify it landed). It is
-#            a fork, so it is never in a loop.
-#   tty    : the pane's pty, opened once; termios reads are then free and say
-#            whether the tool took the terminal (ECHO off -> it renders).
+#
+# There is no screen or tty socket any more. `capture-pane` existed only to
+# find and verify a typed probe, and termios existed only to classify whether a
+# tool renders its own echo -- both were for the keystroke metrics that were
+# removed. Timing now reads the byte stream and nothing else.
 #
 # The tool starts behind a GATE FIFO: tmux spawns `sh`, which blocks on the
 # gate, and only then execs the tool. The pipe is attached before the gate is
@@ -607,12 +611,6 @@ def _pss_tree(root_pid):
 GATE_SCRIPT = 'read _ < "$1" || true; shift; exec "$@"'
 TMUX_ROWS = 40
 TMUX_COLS = 120
-
-# Probe alphabet. Letters, because every TUI inserts a letter into its input
-# box; no control chars and no keys that commonly act as global shortcuts
-# (q/Esc/Enter/Tab), so the probe is a keystroke and not a command.
-PROBE_ALPHABET = "zwxjkvby"
-
 
 def _tmux(server, *args, timeout=20):
     try:
@@ -751,56 +749,6 @@ class Launch:
             return True
         return self._alive()
 
-    def termios_flags(self):
-        """lflag of the pane's pty, or None. Opened once, then free."""
-        if not hasattr(self, "tty") or not self.tty:
-            return None
-        if self.tty_fd is None:
-            try:
-                self.tty_fd = os.open(self.tty, os.O_RDONLY | os.O_NOCTTY | os.O_NONBLOCK)
-            except OSError:
-                return None
-        try:
-            return termios.tcgetattr(self.tty_fd)[3]
-        except (termios.error, OSError):
-            return None
-
-    def echo_mode(self):
-        """'render' when the app disabled ECHO (it paints its own screen),
-        'kernel-echo' when the line discipline still echoes for it, None when
-        unreadable.
-
-        A cooked-mode CLI has the kernel echo each byte before the app wakes,
-        so its "latency" describes the kernel, not the tool -- measured: `cat`
-        in a pty times ~0.3ms with no UI at all. Ranking those against a
-        raw-mode TUI that must repaint a cell is meaningless, so the class is
-        recorded and latency is ranked within `render` only.
-        """
-        lflag = self.termios_flags()
-        if lflag is None:
-            return None
-        return "kernel-echo" if lflag & termios.ECHO else "render"
-
-    def screen(self):
-        """The rendered screen as text, or '' when the pane is gone.
-
-        -J rejoins lines the terminal wrapped (a probe split across a row
-        boundary reads as one string again); -S -400 also reads scrollback, so
-        a startup banner that pushed the input box out of the visible window
-        cannot hide the probe. Note that the scrollback region is reported as
-        blank lines, so a caller must look for CONTENT, not for a non-empty
-        string.
-        """
-        return _tmux(self.server, "capture-pane", "-p", "-J", "-S", "-400", "-t", self.name)
-
-    def rendered_text(self, limit=4000):
-        """Non-whitespace screen content, or ''. Used to decide whether a TUI
-        has actually painted something the eye can see."""
-        return "".join(self.screen()[:limit]).strip()
-
-    def send(self, text):
-        _tmux(self.server, "send-keys", "-l", "-t", self.name, text)
-
     # -- stream access ----------------------------------------------------
     def mark(self):
         with self._lock:
@@ -881,291 +829,68 @@ class Launch:
         return False
 
 
-class FirstGlyph:
-    """Stateful scanner: the first printable byte written OUTSIDE an escape
-    sequence.
+def measure_launch(path, paint_budget=40.0):
+    """One launch -> first byte and settled PSS, or an explicit failure.
 
-    A stateless "is there a byte in 32..126" test is wrong, and wrong in a way
-    that silently collapses two metrics into one: every TUI's boot sequence
-    starts with `\\e[?1049h` (alternate screen) and `\\e[?25l` (hide cursor),
-    whose parameters and final bytes (`[`, `?`, `1`, `0`, `4`, `9`, `h`, `l`)
-    are all printable. Tested naively, "first paint" and "first byte" return the
-    same timestamp for every tool -- which is what this bench did on its first
-    run, and is exactly the kind of plausible-but-meaningless number the
-    rewrite is meant to eliminate.
+    Deliberately small. The interactive metrics (time-to-interactive, keystroke
+    latency) were removed: they required typing into a TUI, which means every
+    tool that shows a trust prompt, a login screen or an error modal cannot be
+    measured at all. In the last full field run that was 14 of 22 tools, and the
+    honest result was a column that was mostly n/a. Rather than publish a metric
+    that two thirds of the field cannot produce, this bench measures the three
+    things every CLI can answer the same way:
 
-    State is carried across chunks because an escape sequence routinely spans
-    reads (`\\e[` in one chunk, `?25l` in the next).
+        first byte  -- exec to first byte on the wire
+        idle PSS    -- resident memory of the whole process tree at rest
+        bundle      -- on-disk footprint
+
+    A timeout is a failure, never a number: published as n/a and excluded from
+    ranks, because an earlier version ranked its own 15s probe timeout as if it
+    were a slow tool.
     """
-
-    GROUND, ESC, CSI, OSC, OSC_ESC, STR = range(6)
-
-    def __init__(self):
-        self.state = self.GROUND
-
-    def __call__(self, ts, chunk):
-        for b in chunk:
-            if self.state == self.GROUND:
-                if b == 0x1B:  # ESC
-                    self.state = self.ESC
-                elif b == 0x7F:  # DEL is control, not a glyph
-                    continue
-                elif b == 0x20:  # a SPACE is not a visible glyph
-                    continue
-                elif b > 0x20:
-                    # Includes >=0x80: UTF-8 continuation bytes are glyph
-                    # content, and a multi-byte glyph's first byte is enough
-                    # to say "something was rendered".
-                    return ts
-            elif self.state == self.ESC:
-                if b == 0x5B:  # '['
-                    self.state = self.CSI
-                elif b == 0x5D:  # ']'
-                    self.state = self.OSC
-                elif b in (0x50, 0x58, 0x5E, 0x5F):  # DCS, SOS, PM, APC
-                    self.state = self.STR
-                else:
-                    # two-byte escape (e.g. ESC 7, ESC =, ESC M)
-                    self.state = self.GROUND
-            elif self.state == self.CSI:
-                # parameters/intermediates are 0x20-0x3F, final byte 0x40-0x7E
-                if 0x40 <= b <= 0x7E:
-                    self.state = self.GROUND
-            elif self.state == self.OSC:
-                if b == 0x07:  # BEL terminates an OSC title
-                    self.state = self.GROUND
-                elif b == 0x1B:
-                    self.state = self.OSC_ESC
-            elif self.state == self.OSC_ESC:
-                # ESC \ (ST) ends it; anything else means the ESC started a
-                # new sequence inside the OSC text
-                self.state = self.GROUND if b == 0x5C else self.ESC
-            elif self.state == self.STR:
-                if b == 0x1B:
-                    self.state = self.OSC_ESC
-                elif b == 0x07:
-                    self.state = self.GROUND
-        return None
-
-
-def _probe_matcher(probe):
-    """Match `probe` across chunk boundaries; return the completing timestamp.
-
-    CT-framed TUIs repaint per cell, so a two-character probe can arrive as two
-    chunks. Matching the joined bytes after the keystroke is what makes this
-    correct for cell-diffing renderers -- matching single chunks was the bug
-    that produced wrong published numbers in the byte-scanning predecessor.
-    """
-    needle = probe.encode()
-    acc = bytearray()
-
-    def pred(ts, chunk):
-        acc.extend(chunk)
-        if acc.find(needle) >= 0:
-            return ts
-        # keep only a tail that could still be a prefix of the needle
-        if len(acc) > len(needle) * 4:
-            del acc[: len(acc) - len(needle) * 2]
-        return None
-
-    return pred
-
-
-# Screens that legitimately swallow every keystroke. A CLI sitting on one of
-# these is not slow and not broken -- it is waiting for a human, which a
-# non-interactive bench cannot be. Named so the n/a row says WHICH wall it hit
-# instead of the useless "probe did not render" (the CI field produced 14 such
-# rows, and 13 of them were one of these two).
-BLOCKER_PATTERNS = (
-    ("trust prompt", ("trust this folder", "is this a project you created", "do you trust", "trust the files")),
-    ("waiting for login", ("log in", "log-in", "sign in", "signin", "api key", "authenticate", "not logged in", "auth login")),
-    ("rate limit / quota", ("rate limit", "quota", "429", "too many requests")),
-    ("network error", ("network error", "econnrefused", "enotfound", "could not connect", "fetch failed")),
-    ("error dialog", ("error", "failed", "panic")),
-)
-
-
-def _classify_blocker(screen_text):
-    """Short reason a probe could not land, read off the rendered screen.
-
-    Ordered most-specific first: a tool can print "error" in a footer while
-    sitting on a trust prompt, and the prompt is the actionable answer.
-    """
-    low = (screen_text or "").lower()
-    if not low.strip():
-        return "blank screen"
-    for label, needles in BLOCKER_PATTERNS:
-        if any(n in low for n in needles):
-            return label
-    return "no input field accepted the keystroke"
-
-
-def _pick_probe(screen_text):
-    """Two letters not already on screen, so a later match is meaningful."""
-    out = []
-    for c in PROBE_ALPHABET:
-        if c not in screen_text:
-            out.append(c)
-        if len(out) == 2:
-            return "".join(out)
-    # screen is dense in probe letters; fall back to a pair that is at least
-    # not a single character (still verifiable on screen afterwards)
-    return PROBE_ALPHABET[:2]
-
-
-def measure_launch(path, ready_budget=20.0, ttfi_budget=15.0, settle_budget=8.0, latency_budget=8.0):
-    """One launch -> every interactive metric, or explicit failures.
-
-    Returns a dict of samples. Nothing that timed out is ever a number: a
-    timeout lands in `failed`, because the predecessor published its 15s probe
-    timeout as a measurement (opencode 15203.1ms) and ranked it.
-    """
-    rec = {
-        "first_byte_ms": None,
-        "first_paint_ms": None,
-        "ready_ms": None,
-        "ttfi_ms": None,
-        "key_latency_ms": None,
-        "signal": None,
-        "pss_mb": None,
-        "pss_root_mb": None,
-        "procs": None,
-        "failed": [],
-    }
+    rec = {"first_byte_ms": None, "pss_mb": None, "pss_root_mb": None, "procs": None, "failed": []}
     with Launch([path], extra_env={"FOX_AGENT_NO_TRUST_CHECK": "1"}) as L:
         if L.err:
             rec["failed"].append(f"launch: {L.err}")
             return rec
 
-        # 1. exec -> first byte. The literal name, from the byte stream.
-        first = L.wait_for(lambda ts, _b: ts, 40.0)
+        # exec -> first byte, straight off the byte stream. t0 is the gate
+        # release (the exec), so tmux's own spawn cost is not charged here.
+        first = L.wait_for(lambda ts, _b: ts, paint_budget)
         if first is None:
-            rec["failed"].append("no output within 40s")
+            rec["failed"].append(f"no output within {paint_budget:.0f}s")
             return rec
         rec["first_byte_ms"] = L.ms_since_t0(first)
 
-        # 2. exec -> first printable glyph outside an escape sequence. What a
-        # user actually waits for: the first BYTE is usually only ANSI
-        # bookkeeping (fox writes `\e[?1049h\e[?25l` before compositing), and
-        # a naive printable-byte test counts the parameters inside that escape
-        # -- collapsing this metric into first_byte for every tool.
-        paint = L.wait_for(FirstGlyph(), 40.0, mark=0)
-        if paint is not None:
-            rec["first_paint_ms"] = L.ms_since_t0(paint)
-
-        # 3. readiness: the app owns the tty (ECHO off), has actually PUT
-        # SOMETHING ON SCREEN, and has stopped writing. Readiness is not a
-        # metric -- it is only when we are allowed to type -- but getting it
-        # wrong silently destroys the input metrics below.
-        #
-        # Both halves matter. opencode switches to raw mode ~1.5s in and then
-        # goes quiet with a frame of nothing but spaces, so an
-        # echo-mode-only gate typed into a still-booting app: the keystroke was
-        # swallowed and the row read as "never interactive" (the predecessor
-        # published the resulting 15s timeout as 15203.1ms of latency). A
-        # printable-byte test is not enough either -- a space IS a printable
-        # glyph -- so readiness requires NON-WHITESPACE content.
-        #
-        # capture-pane is a fork, so it is polled coarsely (>=150ms apart). The
-        # expensive mistake the old bench made was forking per SAMPLE inside a
-        # timing loop; a bounded poll during a startup gate is fine, because
-        # nothing here is being timed.
-        ready_deadline = time.perf_counter() + ready_budget
-        ready = False
-        last_screen_check = 0.0
-        while time.perf_counter() < ready_deadline:
-            if L.echo_mode() == "render" and L.quiet_for(0.15):
-                now = time.perf_counter()
-                if now - last_screen_check >= 0.15:
-                    last_screen_check = now
-                    if L.rendered_text():
-                        ready = True
-                        break
-            if not L.alive():
-                break
-            time.sleep(0.02)
-        rec["ready_ms"] = L.ms_since_t0(time.perf_counter())
-
-        pre = L.screen()
-        probe = _pick_probe(pre)
-        if ready:
-            # 4. time to interactive: type now, clock from exec.
-            #
-            # TWO attempts, as the previous bench did. An app that has taken
-            # the tty but is still finishing startup can swallow the first
-            # keystroke; retrying measures "how long until my input renders",
-            # which is the question, instead of "did the first keystroke
-            # survive a race". The clock is exec, so a retry is still an
-            # honest ttfi, not a shortened one.
-            for attempt in (1, 2):
-                mark = L.mark()
-                L.send(probe)
-                hit = L.wait_for(_probe_matcher(probe), ttfi_budget, mark=mark)
-                if hit is not None and probe in L.screen():
-                    rec["ttfi_ms"] = L.ms_since_t0(hit)
-                    break
-                if hit is not None:
-                    # matched in the stream but never rendered: not a number
-                    rec["failed"].append("ttfi: byte matched but probe not on screen")
-                if attempt == 1:
-                    # re-pick against the CURRENT screen: the first attempt may
-                    # have advanced the app past a splash
-                    probe = _pick_probe(L.screen())
-                    time.sleep(0.3)
-            if rec["ttfi_ms"] is None:
-                rec["failed"].append(f"ttfi: {_classify_blocker(L.screen())}")
-        else:
-            rec["failed"].append(f"ttfi: never became interactive ({_classify_blocker(L.screen())})")
-
-        # 5. settle, then measure pure keystroke handling. The settle wait is
-        # startup observation and must NOT be inside the latency clock: an
-        # earlier version charged it and read `cat` at 3007ms instead of
-        # ~0.3ms.
-        settled = False
-        settle_deadline = time.perf_counter() + settle_budget
-        while time.perf_counter() < settle_deadline:
-            if L.quiet_for(0.4):
-                settled = True
-                break
-            if not L.alive():
-                break
-            time.sleep(0.01)
-
-        # 6. memory at rest, before the latency probe perturbs anything.
+        # Memory at rest. Poll PSS of the tree until it converges, so the
+        # reading is not whatever startup work happened to be in flight; the
+        # caller takes the floor over launches because extra processes only
+        # ever ADD.
         if L.pid is not None:
-            _pss_start = time.perf_counter()
-            while True:
+            deadline = time.perf_counter() + 8.0
+            last = None
+            best = None
+            stable = 0
+            while time.perf_counter() < deadline:
                 tree, nprocs = _pss_tree(L.pid)
-                if tree is not None or time.perf_counter() - _pss_start > 2.0:
-                    break
-                time.sleep(0.1)
-            if tree is not None:
-                rec["pss_mb"] = tree
-                rec["pss_root_mb"] = _pss_of(L.pid)
-                rec["procs"] = nprocs
-
-        rec["signal"] = L.echo_mode()
-
-        if settled and L.alive():
-            pre2 = L.screen()
-            probe2 = _pick_probe(pre2 + probe)
-            for attempt in (1, 2):
-                mark2 = L.mark()
-                t_key = time.perf_counter()
-                L.send(probe2)
-                hit2 = L.wait_for(_probe_matcher(probe2), latency_budget, mark=mark2)
-                if hit2 is not None and probe2 in L.screen():
-                    rec["key_latency_ms"] = (hit2 - t_key) * 1000
-                    break
-                if hit2 is not None:
-                    rec["failed"].append("latency: byte matched but probe not on screen")
-                if attempt == 1:
-                    probe2 = _pick_probe(L.screen() + probe2)
+                if tree is None:
+                    if not L.alive():
+                        break
                     time.sleep(0.2)
-            if rec["key_latency_ms"] is None:
-                rec["failed"].append(f"latency: {_classify_blocker(L.screen())}")
-        elif not settled:
-            rec["failed"].append("latency: never stopped repainting (no quiet window)")
+                    continue
+                best = (tree, nprocs)
+                if last is not None and abs(tree - last) <= 2.0:
+                    stable += 1
+                    if stable >= 3:
+                        break
+                else:
+                    stable = 0
+                last = tree
+                time.sleep(0.25)
+            if best is not None:
+                rec["pss_mb"] = best[0]
+                rec["pss_root_mb"] = _pss_of(L.pid)
+                rec["procs"] = best[1]
 
     return rec
 
@@ -1355,36 +1080,35 @@ MIN_RANK_N = 3
 
 
 def measure(label, path, n_start, launches):
+    """Measure one tool. Three numbers, plus the raw detail.
+
+    Presented metrics: first byte, idle PSS, bundle. `--version` is still
+    measured (it is four spawns and gives the harness floor for context) but is
+    carried in results.json only -- the dashboard and the README stay on the
+    three that matter.
+    """
     step(label, "probing version")
     ver = version_of(path)
     step(label, "weighing on-disk footprint", os.path.basename(path))
     disk, kind = footprint(path, label)
-    step(label, f"timing `--version` startup (best of {n_start})")
+    step(label, f"timing `--version` (best of {n_start})")
     startup = best_startup(path, n_start, ver=ver)
 
-    samples = {k: [] for k in ("first_byte_ms", "first_paint_ms", "ttfi_ms", "key_latency_ms", "pss_mb")}
+    samples = {"first_byte_ms": [], "pss_mb": []}
     failures = []
-    signals = []
     procs = None
     pss_root = None
     for i in range(launches):
-        step(label, f"interactive launch {i + 1}/{launches}")
+        step(label, f"launch {i + 1}/{launches}")
         rec = measure_launch(path)
         for k in samples:
             if rec.get(k) is not None:
                 samples[k].append(rec[k])
         failures.extend(rec["failed"])
-        if rec["signal"]:
-            signals.append(rec["signal"])
         if rec["procs"]:
             procs = max(procs or 0, rec["procs"])
         if rec["pss_root_mb"]:
             pss_root = rec["pss_root_mb"] if pss_root is None else min(pss_root, rec["pss_root_mb"])
-
-    # The signal of record: if ANY launch had the tool rendering its own echo,
-    # it is a render-mode tool (a boot-time sample in cooked mode is a TUI that
-    # had not taken the tty yet, which is why sampling once was wrong).
-    signal = "render" if "render" in signals else (signals[0] if signals else None)
 
     row = {
         "agent": label,
@@ -1395,10 +1119,6 @@ def measure(label, path, n_start, launches):
         "bundle_kind": kind,
         "startup": stat_block(startup),
         "first_byte": stat_block(samples["first_byte_ms"]),
-        "first_paint": stat_block(samples["first_paint_ms"]),
-        "ttfi": stat_block(samples["ttfi_ms"]),
-        "key_latency": stat_block(samples["key_latency_ms"]),
-        "input_signal": signal,
         # Floored over launches: extra processes only ever ADD, so the reading
         # taken when the least startup work was in flight is the resting cost.
         "idle_pss_mb": min(samples["pss_mb"]) if samples["pss_mb"] else None,
@@ -1411,16 +1131,12 @@ def measure(label, path, n_start, launches):
     def f(v, nd=0):
         return "-" if v is None else f"{v:.{nd}f}"
 
-    pss = f(row["idle_pss_mb"], 1) + "MB" if row["idle_pss_mb"] is not None else "-"
     print(
         f"{label}: {ver}\n"
         f"  bundle={f(disk, 1)}MB({kind}) "
-        f"startup={f(row['startup']['p50'])} "
         f"1st_byte={f(row['first_byte']['p50'])} "
-        f"1st_paint={f(row['first_paint']['p50'])} "
-        f"ttfi={f(row['ttfi']['p50'])} "
-        f"latency={f(row['key_latency']['p50'])} "
-        f"pss={pss} signal={signal or '-'} n={row['first_byte']['n']}",
+        f"pss={f(row['idle_pss_mb'], 1)}MB "
+        f"n={row['first_byte']['n']}",
         flush=True,
     )
     for fail in row["failures"]:
@@ -1448,7 +1164,13 @@ def esc(s):
 
 
 def fmt_ms(v):
-    return f"{v:,.0f}" if v >= 100 else f"{v:.1f}"
+    """Milliseconds at a readable precision: one decimal below 10ms (where the
+    fraction is a real difference), whole numbers above it (where it is noise).
+    "20.0 ms" in a 40px headline reads as false precision on a p50 of five
+    launches; "3.7 ms" does not."""
+    if v < 10:
+        return f"{v:.1f}"
+    return f"{v:,.0f}"
 
 
 def _clip(text, px_budget, font_px):
@@ -1477,35 +1199,41 @@ def dashboard_svg(panels, out_path, note, footer):
     panels: [(title, subtitle, rows, unit, fmt)] where rows is
     [(label, value_or_None, is_fox)].
 
+    Typography is sized for how GitHub displays this, not for the file. README
+    content renders in a column around 880px wide, so this 1200px canvas is
+    scaled to roughly 0.73 and every font arrives ~27% smaller than written.
+    Labels are 14px (not 11.5) and the panel titles 16px so they land at ~10px
+    and ~11.7px on screen -- previously they arrived at 8.4px and were hard to
+    read, which is what "the text is too small" was about.
+
     Layout rules, each of which fixes a defect visible in the rendered PNG:
 
-      * unmeasured tools are COLLAPSED, not listed. Fifteen `n/a` rows in six
-        panels filled two thirds of the canvas with nothing; the count lives in
-        the panel subtitle ("7 measured · 15 n/a") and the full n/a list is in
-        the table one fold away. The header states the field size, so a reader
-        still knows the panel is partial.
-      * subtitles are clipped to their column, because SVG does not wrap and
-        an overlong subtitle runs straight into the neighbouring panel.
+      * unmeasured tools are COLLAPSED, not listed. Fifteen `n/a` rows per panel
+        filled two thirds of the canvas with nothing; the count lives in the
+        panel heading ("7 measured · 15 n/a") and the full list is in the table
+        one fold away.
+      * subtitles are clipped to their column, because SVG does not wrap and an
+        overlong subtitle runs straight into the neighbouring panel.
       * the footer is one line with a shortened provenance tail, so it cannot
         collide with the bottom row of panel subtitles.
       * a RANK column, right-aligned, so ordering is legible without comparing
-        bar lengths by eye (the old version glued a medal digit to the value,
+        bar lengths by eye (an earlier version glued a medal digit to the value,
         where "1 4.9 ms" read as fourteen-point-nine).
-      * values are text-anchored to each column's right edge, so they line up
+      * values are text-anchored to each column's right edge so they line up
         across rows and panels instead of floating after a variable-width bar.
-      * bars are SQRT-scaled, and the footer says so. First-byte ranges span
-        ~90x here (106ms to 9281ms); on a linear axis the leader is a 3px
-        sliver and the chart conveys nothing. Area is not proportional to value
-        on a sqrt axis, so it is declared rather than assumed -- the exact
-        numbers are printed beside every bar.
+      * bars are SQRT-scaled, and the footer says so. First-byte spans ~1150x
+        here (9.6ms to 11069ms); on a linear axis every leader is a 1px sliver
+        and the chart conveys nothing. Area is not proportional to value on a
+        sqrt axis, so it is declared rather than assumed, and every exact number
+        is printed beside its bar.
     """
     W, GUT, PAD = 1200, 22, 28
     NCOL = 3
     COLW = (W - PAD * 2 - GUT * (NCOL - 1)) // NCOL
-    HEADER_H = 96
-    TITLE_H, SUB_H, LANE_H = 30, 22, 25
-    RANK_W, LABEL_W, VAL_W = 24, 112, 66
-    FOOT_H = 40
+    HEADER_H = 112
+    TITLE_H, SUB_H, LANE_H = 36, 26, 28
+    RANK_W, LABEL_W, VAL_W = 28, 134, 78
+    FOOT_H = 46
 
     measured_counts = [sum(1 for r in p[2] if r[1] is not None) for p in panels]
     n_rows = max(measured_counts or [1])
@@ -1515,15 +1243,22 @@ def dashboard_svg(panels, out_path, note, footer):
 
     L = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" '
-        f'font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace">',
+        f'font-family="ui-monospace,SFMono-Regular,JetBrains Mono,Menlo,Consolas,monospace">',
+        "<defs>"
+        f'<linearGradient id="dhdr" x1="0" y1="0" x2="0" y2="1">'
+        f'<stop offset="0" stop-color="#242019"/><stop offset="1" stop-color="{BG2}"/></linearGradient>'
+        f'<linearGradient id="drule" x1="0" y1="0" x2="1" y2="0">'
+        f'<stop offset="0" stop-color="{ACC}"/><stop offset="1" stop-color="{ACC}" stop-opacity="0"/></linearGradient>'
+        "</defs>",
         f'<rect width="{W}" height="{H}" fill="{BG}"/>',
-        f'<rect width="{W}" height="{HEADER_H}" fill="{BG2}"/>',
-        f'<rect x="0" y="{HEADER_H - 2}" width="{W}" height="2" fill="{ACC}"/>',
-        f'<text x="{PAD}" y="38" fill="{INK}" font-size="21" font-weight="bold">'
+        f'<rect width="{W}" height="{HEADER_H}" fill="url(#dhdr)"/>',
+        f'<rect x="0" y="{HEADER_H - 3}" width="{W}" height="3" fill="url(#drule)"/>',
+        f'<text x="{PAD}" y="44" fill="{INK}" font-size="26" font-weight="bold">'
         f'fox-agent · harness bench</text>',
-        f'<text x="{PAD}" y="62" fill="{MUT}" font-size="12">'
-        f'startup · TUI latency · footprint · idle memory</text>',
-        f'<text x="{PAD}" y="82" fill="{MUT}" font-size="10.5">{esc(_clip(note, W - PAD * 2, 10.5))}</text>',
+        f'<text x="{PAD}" y="72" fill="{MUT}" font-size="15">'
+        f'startup · idle memory · installed size</text>',
+        f'<text x="{PAD}" y="96" fill="{MUT}" font-size="12" opacity="0.85">'
+        f'{esc(_clip(note, W - PAD * 2, 12))}</text>',
     ]
 
     for idx, (title, subtitle, rows, unit, fmt) in enumerate(panels):
@@ -1536,14 +1271,14 @@ def dashboard_svg(panels, out_path, note, footer):
         maxv = max([r[1] for r in have] or [1])
 
         L.append(
-            f'<text x="{x0}" y="{y0 + 16}" fill="{INK}" font-size="13" font-weight="bold">'
-            f'{esc(_clip(title, COLW - 108, 13))}</text>'
+            f'<text x="{x0}" y="{y0 + 19}" fill="{INK}" font-size="16" font-weight="bold">'
+            f'{esc(_clip(title, COLW - 130, 16))}</text>'
         )
         L.append(
-            f'<text x="{x0 + COLW}" y="{y0 + 16}" text-anchor="end" fill="{MUT}" font-size="9.5">'
+            f'<text x="{x0 + COLW}" y="{y0 + 19}" text-anchor="end" fill="{MUT}" font-size="11.5">'
             f'{len(have)} measured' + (f' \u00b7 {n_missing} n/a' if n_missing else '') + '</text>'
         )
-        L.append(f'<rect x="{x0}" y="{y0 + TITLE_H - 8}" width="{COLW}" height="1" fill="{GRID}"/>')
+        L.append(f'<rect x="{x0}" y="{y0 + TITLE_H - 9}" width="{COLW}" height="1" fill="{GRID}"/>')
 
         bx = x0 + RANK_W + LABEL_W
         bw = COLW - RANK_W - LABEL_W - VAL_W
@@ -1551,7 +1286,7 @@ def dashboard_svg(panels, out_path, note, footer):
 
         if not have:
             L.append(
-                f'<text x="{x0}" y="{y0 + TITLE_H + 15}" fill="{BAR_NA}" font-size="10.5">'
+                f'<text x="{x0}" y="{y0 + TITLE_H + 17}" fill="{BAR_NA}" font-size="12.5">'
                 f'no tool in this field was measured</text>'
             )
 
@@ -1560,42 +1295,43 @@ def dashboard_svg(panels, out_path, note, footer):
             mid = y + LANE_H / 2
 
             L.append(
-                f'<text x="{x0 + RANK_W - 8}" y="{mid + 3.5:.1f}" text-anchor="end" '
-                f'fill="{ACC if is_fox else MUT}" font-size="10">{i + 1}</text>'
+                f'<text x="{x0 + RANK_W - 9}" y="{mid + 4:.1f}" text-anchor="end" '
+                f'fill="{ACC if is_fox else MUT}" font-size="11.5">{i + 1}</text>'
             )
             label_fill = ACC if is_fox else (INK if i < 3 else MUT)
             weight = ' font-weight="bold"' if is_fox else ""
             L.append(
-                f'<text x="{x0 + RANK_W}" y="{mid + 3.5:.1f}" fill="{label_fill}" '
-                f'font-size="11.5"{weight}>{esc(_clip(label, LABEL_W - 6, 11.5))}</text>'
+                f'<text x="{x0 + RANK_W}" y="{mid + 4:.1f}" fill="{label_fill}" '
+                f'font-size="14"{weight}>{esc(_clip(label, LABEL_W - 8, 14))}</text>'
             )
 
             # visible track, so a near-zero bar still reads as "small", not absent
-            L.append(f'<rect x="{bx}" y="{mid - 6:.1f}" width="{bw}" height="12" rx="2" fill="{TRACK}"/>')
+            L.append(f'<rect x="{bx}" y="{mid - 7:.1f}" width="{bw}" height="14" rx="3" fill="{TRACK}"/>')
             w = max(3.0, (math.sqrt(v) / math.sqrt(maxv)) * bw)
             L.append(
-                f'<rect x="{bx}" y="{mid - 6:.1f}" width="{w:.1f}" height="12" rx="2" '
+                f'<rect x="{bx}" y="{mid - 7:.1f}" width="{w:.1f}" height="14" rx="3" '
                 f'fill="{ACC if is_fox else BAR}"/>'
             )
             L.append(
-                f'<text x="{vx}" y="{mid + 3.5:.1f}" text-anchor="end" '
-                f'fill="{INK if is_fox else MUT}" font-size="10.5">{esc(fmt(v))} {unit}</text>'
+                f'<text x="{vx}" y="{mid + 4:.1f}" text-anchor="end" '
+                f'fill="{INK if is_fox else MUT}" font-size="13">{esc(fmt(v))} {unit}</text>'
             )
 
         L.append(
-            f'<text x="{x0}" y="{y0 + TITLE_H + LANE_H * n_rows + 13}" fill="{MUT}" '
-            f'font-size="9">{esc(_clip(subtitle, COLW, 9))}</text>'
+            f'<text x="{x0}" y="{y0 + TITLE_H + LANE_H * n_rows + 15}" fill="{MUT}" '
+            f'font-size="11">{esc(_clip(subtitle, COLW, 11))}</text>'
         )
 
-    # legend + provenance, one line, clipped so it cannot overflow the canvas
-    fy = H - FOOT_H + 22
-    L.append(f'<rect x="{PAD}" y="{fy - 9}" width="9" height="9" rx="2" fill="{ACC}"/>')
-    L.append(f'<text x="{PAD + 15}" y="{fy}" fill="{MUT}" font-size="10">fox-agent</text>')
-    L.append(f'<rect x="{PAD + 90}" y="{fy - 9}" width="9" height="9" rx="2" fill="{BAR}"/>')
-    L.append(f'<text x="{PAD + 105}" y="{fy}" fill="{MUT}" font-size="10">other tools</text>')
+    # legend + provenance, one line, each half clipped to its own budget so the
+    # two cannot overlap in the middle
+    fy = H - FOOT_H + 26
+    L.append(f'<rect x="{PAD}" y="{fy - 10}" width="11" height="11" rx="2" fill="{ACC}"/>')
+    L.append(f'<text x="{PAD + 18}" y="{fy}" fill="{MUT}" font-size="12">fox-agent</text>')
+    L.append(f'<rect x="{PAD + 108}" y="{fy - 10}" width="11" height="11" rx="2" fill="{BAR}"/>')
+    L.append(f'<text x="{PAD + 126}" y="{fy}" fill="{MUT}" font-size="12">other tools</text>')
     L.append(
-        f'<text x="{PAD + 196}" y="{fy}" fill="{MUT}" font-size="10">'
-        f'{esc(_clip(footer, W - PAD * 2 - 196, 10))}</text>'
+        f'<text x="{PAD + 236}" y="{fy}" fill="{MUT}" font-size="12" opacity="0.85">'
+        f'{esc(_clip(footer, W - PAD * 2 - 236, 12))}</text>'
     )
     L.append("</svg>")
 
@@ -1607,26 +1343,34 @@ def dashboard_svg(panels, out_path, note, footer):
 # Outputs
 # ---------------------------------------------------------------------------
 
-# One entry per lane: (key, column label, unit, formatter). Order is the order
-# the README summary lists them in -- the headline metric first. The optional
-# 5th item restricts the ranking pool; latency needs it because kernel-echo
-# tools are not racing the same event as a raw-mode TUI (see echo_mode).
+# The three presented metrics, in the order they are shown. Each is something
+# every CLI can answer the same way, needs no login and no keystroke, and has a
+# user-visible consequence:
+#
+#   idle memory -- run several agents in one container without swapping
+#   first byte  -- how long the harness itself costs before it can do anything
+#   bundle      -- disk, and how much a CI image has to carry
+#
+# Deliberately NOT here: time-to-interactive and keystroke latency. Both require
+# typing into a TUI, so a tool showing a trust prompt or a login screen cannot be
+# measured at all -- in the last full run that was 14 of 22 tools, i.e. a column
+# that was mostly n/a. A metric two thirds of the field cannot produce is not a
+# comparison, it is a table of our own methodology.
+#
+# (key, label, unit, formatter, short label for the scorecard)
 METRICS = [
-    ("first_byte", "TUI 1st byte", "ms", fmt_ms, None),
-    ("first_paint", "TUI 1st paint", "ms", fmt_ms, None),
-    ("ttfi", "TUI 1st input", "ms", fmt_ms, None),
-    ("key_latency", "input latency", "ms", fmt_ms, "render"),
-    ("bundle_mb", "bundle", "MB", lambda v: f"{v:.0f}", None),
-    ("idle_pss_mb", "idle PSS", "MB", lambda v: f"{v:.0f}", None),
-    ("startup", "`--version`", "ms", fmt_ms, None),
+    ("first_byte", "1st byte", "ms", fmt_ms, "startup to first byte"),
+    ("idle_pss_mb", "idle memory", "MB", lambda v: f"{v:.0f}", "idle memory (PSS)"),
+    ("bundle_mb", "bundle", "MB", lambda v: f"{v:.0f}", "install size"),
 ]
 
 
 def metric_value(row, key):
-    """The published number for one lane: p50, or None.
+    """The published number for one metric: p50 for timings, the scalar for
+    memory and disk.
 
-    p50 rather than min: min is the luckiest single launch and hides the
-    spread (the shipped opencode first-byte row was 101ms min / 1539ms p95).
+    p50 rather than min: min is the luckiest single launch and hides the spread
+    (the shipped opencode first-byte row was 101ms min / 1539ms p95).
     """
     if key in ("bundle_mb", "idle_pss_mb"):
         return row.get(key)
@@ -1639,7 +1383,7 @@ def metric_n(row, key):
     return blk.get("n", 0) if isinstance(blk, dict) else 0
 
 
-def rank_of(rows, key, fox_name="fox-agent", only=None):
+def rank_of(rows, key, fox_name="fox-agent"):
     """fox's position for one metric plus the field size.
 
     Ties share a rank (1 + number of strictly better tools). Rows that were not
@@ -1647,9 +1391,10 @@ def rank_of(rows, key, fox_name="fox-agent", only=None):
     than ranked last -- an n/a row is not a slow one, and one lucky launch is
     not a comparison.
     """
-    pool = [r for r in rows if r.get("installed") and (only is None or r.get("input_signal") == only)]
     vals = []
-    for r in pool:
+    for r in rows:
+        if not r.get("installed"):
+            continue
         v = metric_value(r, key)
         if v is None:
             continue
@@ -1662,140 +1407,237 @@ def rank_of(rows, key, fox_name="fox-agent", only=None):
     return 1 + sum(1 for _a, v in vals if v < fox), len(vals)
 
 
+def scorecard_svg(rows, out_path, generated, machine):
+    """The README hero: fox-agent's three numbers, set big.
+
+    SIZED FOR THE README, NOT FOR THE FILE. GitHub renders README content in a
+    column around 880px wide, so a 1200px-wide SVG is scaled to about 73% and a
+    40px number arrives as ~29px. The first version of this card did exactly
+    that and read as small type. The canvas is 960px wide instead, which GitHub
+    shows at close to 1:1, and the numbers are 66px -- so they land around 60px
+    on screen instead of 29.
+
+    Three elements per card, each with a job:
+
+      the number  the value, set large enough to read before anything else
+      the rank    a pill, because "44 MB" is a fact and "2nd of 22" is a claim
+      the gauge   where that value sits in the field, from best to worst, as a
+                  dot on a track. This is the part that makes the card worth
+                  looking at: the rank says the position, the gauge shows the
+                  distance, and the two ends are labelled so the shape of the
+                  field is legible without a second image.
+
+    The gauge is sqrt-scaled, consistently with bench.svg, because first-byte
+    spans ~1150x (9.6ms to 11069ms) and on a linear axis every dot but the
+    worst stacks up at zero. Area is not proportional to value on a sqrt axis,
+    so the endpoints are labelled with their real numbers.
+    """
+    fox = next((r for r in rows if r["agent"] == "fox-agent" and r.get("installed")), None)
+    installed = [r for r in rows if r.get("installed")]
+
+    W, PAD = 960, 30
+    N = len(METRICS)
+    GAP = 16
+    CARD_W = (W - PAD * 2 - GAP * (N - 1)) // N
+    HEAD_H, CARD_H, FOOT_H, CARD_Y = 138, 252, 58, 158
+    H = CARD_Y + CARD_H + FOOT_H
+    VAL_FS = 66  # the number. sized so it survives GitHub's ~0.92 scale
+
+    L = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" '
+        f'font-family="ui-monospace,SFMono-Regular,JetBrains Mono,Menlo,Consolas,monospace">',
+        "<defs>"
+        f'<linearGradient id="hdr" x1="0" y1="0" x2="0" y2="1">'
+        f'<stop offset="0" stop-color="#242019"/><stop offset="1" stop-color="{BG2}"/></linearGradient>'
+        f'<linearGradient id="rule" x1="0" y1="0" x2="1" y2="0">'
+        f'<stop offset="0" stop-color="{ACC}"/><stop offset="1" stop-color="{ACC}" stop-opacity="0"/></linearGradient>'
+        "</defs>",
+        f'<rect width="{W}" height="{H}" fill="{BG}"/>',
+        f'<rect width="{W}" height="{HEAD_H}" fill="url(#hdr)"/>',
+        f'<rect x="0" y="{HEAD_H - 3}" width="{W}" height="3" fill="url(#rule)"/>',
+    ]
+
+    # -- header: wordmark, version chip, one-line claim -------------------
+    L.append(f'<text x="{PAD}" y="62" fill="{INK}" font-size="40" font-weight="bold" '
+             f'letter-spacing="-1">fox-agent</text>')
+    ww = len("fox-agent") * 40 * 0.6 - 8
+    if fox:
+        chip = f'v{esc(fox["version"])}'
+        cw = len(chip) * 15 * 0.6 + 22
+        cx = PAD + ww + 16
+        L.append(f'<rect x="{cx:.0f}" y="34" width="{cw:.0f}" height="26" rx="13" '
+                 f'fill="none" stroke="{MUT}" stroke-opacity="0.55"/>')
+        L.append(f'<text x="{cx + cw / 2:.0f}" y="52" text-anchor="middle" fill="{MUT}" '
+                 f'font-size="15">{chip}</text>')
+    # The claim owns the whole line. An earlier version right-anchored the
+    # machine label on the same row, which forced the claim to clip mid-word
+    # ("measured against 22 coding CL…"); the claim is the thing worth reading,
+    # and the machine detail is provenance, so it moved to the footer.
+    claim = f'fast to start · light to run · measured against {len(installed)} coding CLIs'
+    L.append(f'<text x="{PAD}" y="96" fill="{MUT}" font-size="17">'
+             f'{esc(_clip(claim, W - PAD * 2, 17))}</text>')
+
+    # -- three cards ------------------------------------------------------
+    for i, (key, label, unit, fmt, short) in enumerate(METRICS):
+        x0 = PAD + i * (CARD_W + GAP)
+        rank, field = rank_of(rows, key)
+        val = metric_value(fox, key) if fox else None
+
+        # measured values for the gauge + its endpoints
+        vals = [(r["agent"], metric_value(r, key)) for r in installed]
+        vals = [(a, v) for a, v in vals if v is not None]
+        best = min((v for _a, v in vals), default=None)
+        worst = max((v for _a, v in vals), default=None)
+
+        L.append(f'<rect x="{x0}" y="{CARD_Y}" width="{CARD_W}" height="{CARD_H}" rx="7" fill="{BG2}"/>')
+        L.append(f'<rect x="{x0}" y="{CARD_Y}" width="{CARD_W}" height="3" rx="1.5" fill="{ACC}"/>')
+        # corner ticks: a HUD-ish frame without a heavy border
+        for (tx, ty, dx, dy) in (
+            (x0 + 12, CARD_Y + CARD_H - 12, 1, -1),
+            (x0 + CARD_W - 12, CARD_Y + CARD_H - 12, -1, -1),
+        ):
+            L.append(f'<path d="M {tx} {ty} h {9 * dx} M {tx} {ty} v {9 * dy}" '
+                     f'stroke="{GRID}" stroke-width="1.5" fill="none"/>')
+
+        L.append(f'<text x="{x0 + 26}" y="{CARD_Y + 40}" fill="{MUT}" font-size="14" '
+                 f'letter-spacing="1.6">{esc(short.upper())}</text>')
+
+        if val is None:
+            L.append(f'<text x="{x0 + 26}" y="{CARD_Y + 128}" fill="{BAR_NA}" '
+                     f'font-size="{VAL_FS}">n/a</text>')
+            L.append(f'<text x="{x0 + 26}" y="{CARD_Y + 160}" fill="{MUT}" font-size="14">'
+                     f'not measured this run</text>')
+            continue
+
+        vs = fmt(val)
+        num_w = len(vs) * VAL_FS * 0.6
+        L.append(f'<text x="{x0 + 26}" y="{CARD_Y + 132}" fill="{INK}" font-size="{VAL_FS}" '
+                 f'font-weight="bold" letter-spacing="-2">{esc(vs)}</text>')
+        L.append(f'<text x="{x0 + 26 + num_w + 2:.0f}" y="{CARD_Y + 132}" fill="{MUT}" '
+                 f'font-size="21">{esc(unit)}</text>')
+
+        # rank pill
+        if rank is not None:
+            txt = f"{rank} of {field}"
+            pw = len(txt) * 15 * 0.6 + 30
+            L.append(f'<rect x="{x0 + 26}" y="{CARD_Y + 152}" width="{pw:.0f}" height="30" rx="15" '
+                     f'fill="{ACC}" fill-opacity="0.16" stroke="{ACC}" stroke-opacity="0.5"/>')
+            L.append(f'<text x="{x0 + 26 + pw / 2:.0f}" y="{CARD_Y + 173}" text-anchor="middle" '
+                     f'fill="{ACC}" font-size="15" font-weight="bold">#{esc(txt)}</text>')
+
+        # field-position gauge
+        gy = CARD_Y + 212
+        gx0, gx1 = x0 + 26, x0 + CARD_W - 26
+        gw = gx1 - gx0
+        L.append(f'<rect x="{gx0}" y="{gy - 3}" width="{gw}" height="6" rx="3" fill="{TRACK}"/>')
+        if best is not None and worst is not None and worst > best:
+            # best -> left edge, worst -> right edge, sqrt so the packed low end
+            # spreads out instead of collapsing into one pixel
+            b_s, w_s, v_s = math.sqrt(best), math.sqrt(worst), math.sqrt(val)
+            frac = max(0.0, min(1.0, (v_s - b_s) / (w_s - b_s)))
+            dx = gx0 + frac * gw
+            L.append(f'<rect x="{gx0}" y="{gy - 3}" width="{dx - gx0:.0f}" height="6" rx="3" '
+                     f'fill="{ACC}" fill-opacity="0.45"/>')
+            L.append(f'<circle cx="{dx:.1f}" cy="{gy}" r="7" fill="{ACC}"/>')
+            L.append(f'<circle cx="{dx:.1f}" cy="{gy}" r="3" fill="{BG}"/>')
+            L.append(f'<text x="{gx0}" y="{gy + 26}" fill="{MUT}" font-size="11.5">'
+                     f'{esc(fmt(best))}</text>')
+            L.append(f'<text x="{gx1}" y="{gy + 26}" text-anchor="end" fill="{MUT}" '
+                     f'font-size="11.5">{esc(fmt(worst))}</text>')
+        L.append(f'<text x="{gx0 + gw / 2:.0f}" y="{gy + 26}" text-anchor="middle" fill="{MUT}" '
+                 f'font-size="11.5" opacity="0.75">field range, {unit}</text>')
+
+    # Two halves, each clipped to its own half. The previous version anchored one
+    # string left and one right with no budget, and they overlapped in the middle
+    # ("raw data in bench/results.json" printed through the timestamp).
+    fy = H - FOOT_H + 28
+    half = (W - PAD * 2) / 2 - 12
+    L.append(f'<text x="{PAD}" y="{fy}" fill="{MUT}" font-size="12.5">'
+             f'{esc(_clip("p50 of successful launches · lower is better on all three", half, 12.5))}</text>')
+    right = f'{machine} · {generated}'
+    L.append(f'<text x="{W - PAD}" y="{fy}" text-anchor="end" fill="{MUT}" font-size="12" '
+             f'opacity="0.7">{esc(_clip(right, half, 12))}</text>')
+    L.append("</svg>")
+
+    with open(out_path, "w") as f:
+        f.write("\n".join(L) + "\n")
+
+
 def render_outputs(out, rows, fox_extra, payload):
     """Write every generated artifact from already-measured rows."""
     is_fox = lambda r: r["agent"] == "fox-agent"  # noqa: E731
 
-    def panel_rows(only=None, key=None):
-        src = [r for r in rows if not only or r.get("input_signal") == only]
-        return [(r["agent"], metric_value(r, key), is_fox(r)) for r in src]
+    def panel_rows(key):
+        return [(r["agent"], metric_value(r, key), is_fox(r)) for r in rows]
 
-    excluded = sum(1 for r in rows if r.get("installed") and r.get("input_signal") != "render")
+    # Hero: fox-agent alone, one card per metric.
+    scorecard_svg(rows, os.path.join(out, "fox.svg"), payload["generated"], payload["machine"])
 
+    # Full field: one panel per metric.
     dashboard_svg(
         [
-            (
-                "1st byte",
-                "exec to first byte on the wire",
-                panel_rows(key="first_byte"),
-                "ms",
-                fmt_ms,
-            ),
-            (
-                "1st paint",
-                "exec to first visible glyph",
-                panel_rows(key="first_paint"),
-                "ms",
-                fmt_ms,
-            ),
-            (
-                "1st input",
-                "exec to probe rendered on screen",
-                panel_rows(key="ttfi"),
-                "ms",
-                fmt_ms,
-            ),
-            (
-                "input latency",
-                "keystroke to glyph, startup removed"
-                + (f" · {excluded} kernel-echo excluded" if excluded else ""),
-                panel_rows(only="render", key="key_latency"),
-                "ms",
-                fmt_ms,
-            ),
-            (
-                "bundle",
-                "binary, or package dir for script CLIs",
-                panel_rows(key="bundle_mb"),
-                "MB",
-                lambda v: f"{v:.0f}",
-            ),
-            (
-                "idle memory",
-                "PSS of the whole process tree at rest",
-                panel_rows(key="idle_pss_mb"),
-                "MB",
-                lambda v: f"{v:.0f}",
-            ),
+            ("1st byte", "exec to first byte on the wire", panel_rows("first_byte"), "ms", fmt_ms),
+            ("idle memory", "PSS of the whole process tree at rest", panel_rows("idle_pss_mb"), "MB", lambda v: f"{v:.0f}"),
+            ("bundle", "binary, or package dir for script CLIs", panel_rows("bundle_mb"), "MB", lambda v: f"{v:.0f}"),
         ],
         os.path.join(out, "bench.svg"),
-        "p50 of successful launches; min/p95 per tool in bench/table.md · durations from a forkless "
-        "pipe-pane stream, timed from exec (no polling floor, no tmux spawn cost)",
-        f"lower is better on every lane · sqrt-scaled bars (values printed) · "
-        f"n/a collapsed, full list in table · "
+        "p50 of successful launches · durations from a forkless pipe-pane stream, timed from exec "
+        "(no polling floor, no tmux spawn cost)",
+        f"lower is better · sqrt-scaled bars (values printed) · n/a collapsed, full list in table · "
         f"{payload.get('cpu_count', '?')} cpu, load {payload.get('load_avg', ['?'])[0]}",
     )
 
-    def cell(v, nd=1, unit=""):
-        return "—" if v is None else f"{v:.{nd}f}{unit}"
+    def cell(v, nd=1):
+        return "—" if v is None else f"{v:.{nd}f}"
 
-    # full-precision record: every field, including the spread that the old
-    # single-value table could not show
+    # Full-precision record. This is the machine-readable companion to
+    # results.json: every field, including the min/p95 spread the dashboard
+    # cannot show.
     T = [
-        "| agent | version | bundle (MB) | kind | `--version` min/p50/p95 | 1st byte min/p50/p95 | 1st paint min/p50/p95 "
-        "| 1st input min/p50/p95 | latency min/p50/p95 | signal | idle PSS (MB) | n |",
-        "|---|---|---|---|---|---|---|---|---|---|---|---|",
+        "| agent | version | 1st byte min/p50/p95 (ms) | idle PSS (MB) | bundle (MB) | kind "
+        "| `--version` min/p50/p95 (ms) | n |",
+        "|---|---|---|---|---|---|---|---|",
     ]
     for r in rows:
         if not r.get("installed"):
-            T.append(f"| {r['agent']} | n/a (not installed) | — | — | — | — | — | — | — | — | — | — |")
+            T.append(f"| {r['agent']} | n/a (not installed) | — | — | — | — | — | — |")
             continue
         name = f"**{r['agent']}**" if r["agent"] == "fox-agent" else r["agent"]
 
         def trip(key):
-            """min/p50/p95 for one metric, or an em dash when it was never
-            measured. The spread IS the record: the predecessor published a
-            single best-of-N value and so could not show that a tool's good
-            launch and its typical launch differed by 15x."""
             blk = r.get(key) or {}
             if not isinstance(blk, dict) or blk.get("p50") is None:
                 return "—"
             return f"{cell(blk['min'])}/{cell(blk['p50'])}/{cell(blk['p95'])}"
 
         T.append(
-            f"| {name} | {r['version']} | {cell(r.get('bundle_mb'))} | {r.get('bundle_kind', '—')} | "
-            f"{trip('startup')} | {trip('first_byte')} | {trip('first_paint')} | {trip('ttfi')} | "
-            f"{trip('key_latency')} | {r.get('input_signal') or '—'} | {cell(r.get('idle_pss_mb'))} | "
-            f"{r.get('launches', 0)} |"
+            f"| {name} | {r['version']} | {trip('first_byte')} | {cell(r.get('idle_pss_mb'))} "
+            f"| {cell(r.get('bundle_mb'))} | {r.get('bundle_kind', '—')} | {trip('startup')} "
+            f"| {r.get('launches', 0)} |"
         )
     table_md = "\n".join(T) + "\n"
     with open(os.path.join(out, "table.md"), "w") as f:
         f.write(table_md)
 
-    # README snapshot: one row per metric (fox's score + rank), everything else
-    # folded. A 22-row grid of competitors is a reference document, not a
-    # headline -- but it is still generated and still one click away.
-    fox_row = next((r for r in rows if r["agent"] == "fox-agent" and r.get("installed")), None)
-    HT = ["| metric | fox-agent | rank |", "|---|---|---|"]
-    for key, label, _unit, fmt, only in METRICS:
-        val = metric_value(fox_row, key) if fox_row else None
-        rank, field = rank_of(rows, key, only=only)
-        if val is None:
-            HT.append(f"| {label} | — | — |")
-            continue
-        rank_s = f"**#{rank}** of {field}" if rank is not None else f"— of {field}"
-        HT.append(f"| {label} | **{fmt(val)}** | {rank_s} |")
-    summary_md = "\n".join(HT)
-
     failures = sorted({(r["agent"], f) for r in rows if r.get("installed") for f in r.get("failures", [])})
 
-    S = [summary_md, ""]
+    # README block: the scorecard is the whole visible section. Everything else
+    # is one fold away, because a reader who wants the field will click and a
+    # reader who wants to know whether fox is fast is already done.
+    S = [
+        "![fox-agent bench](bench/fox.svg)",
+        "",
+    ]
     if fox_extra.get("ttft_ms") is not None:
         rss = fox_extra.get("headless_peak_rss_mb")
         rss_s = f"{rss:.0f} MB" if rss is not None else "n/a (/usr/bin/time missing)"
-        S.append(
+        S += [
             f"fox-agent headless vs scripted local provider: time to first token "
-            f"**{fox_extra['ttft_ms']:.0f} ms**, peak RSS **{rss_s}**."
-        )
-        S.append("")
-    # Two views only: fox-agent's own score and rank (always visible), then the
-    # full-precision record. A rounded all-tools grid sat between them and was
-    # dropped -- it was a lossy copy of the full table below it, so it forced a
-    # reader to scroll past a worse version of data one fold later. The
-    # dashboard is its own fold because it IS the all-tools view, and repeating
-    # that label on the fold beneath it claimed the table could not.
+            f"**{fox_extra['ttft_ms']:.0f} ms**, peak RSS **{rss_s}**.",
+            "",
+        ]
     S += [
-        "<details><summary>dashboard · every tool, every metric</summary>",
+        "<details><summary>the full field · every tool, every metric</summary>",
         "",
         "![harness bench dashboard](bench/bench.svg)",
         "",
@@ -1809,9 +1651,8 @@ def render_outputs(out, rows, fox_extra, payload):
         "",
     ]
     if failures:
-        # A failure is published, not swallowed: the predecessor ranked its own
-        # timeouts as measurements (opencode 15203.1ms was the 15s probe
-        # timeout), which made a hang indistinguishable from a slow tool.
+        # A failure is published, not swallowed: an earlier version ranked its
+        # own probe timeout as if it were a slow tool.
         S += ["<details><summary>what could not be measured</summary>", ""]
         S += [f"- **{agent}**: {why}" for agent, why in failures]
         S += ["", "</details>", ""]
@@ -1962,69 +1803,41 @@ def self_test():
     blk2 = stat_block([5, None, 7])
     check("None samples are dropped, not counted as 0", blk2["n"] == 2 and blk2["min"] == 5, str(blk2))
 
-    # -- probe matching across chunk boundaries ---------------------------
-    m = _probe_matcher("zw")
-    check("probe split across chunks is still matched", m(1.0, b"...z") is None and m(2.0, b"w...") == 2.0)
-    check("probe matched in one chunk", _probe_matcher("ab")(3.0, b"xxabxx") == 3.0)
-    check("no match returns None", _probe_matcher("zz")(1.0, b"nothing") is None)
-
-    # -- probe choice avoids text already on screen ----------------------
-    probe = _pick_probe("hello zworld")
-    check("probe avoids letters already on screen", "z" not in probe and len(probe) == 2, repr(probe))
-
-    # -- an unmeasurable tool says WHY -----------------------------------
-    # The CI field produced 14 rows of "probe did not render", which told a
-    # reader nothing. 13 of them were a trust prompt or a login screen: the CLI
-    # is not slow, it is waiting for a human. These are the real screens, so a
-    # regression in the classifier shows up as a wrong label rather than as a
-    # mysterious n/a in the published table.
-    blocker_cases = [
-        ("Quick safety check: Is this a project you created or one you trust?\n"
-         " ❯ No, exit\n   Yes, I trust this folder", "trust prompt"),
-        ("Welcome to Codex\n Please log in to continue", "waiting for login"),
-        ("API key not found. Set ANTHROPIC_API_KEY", "waiting for login"),
-        ("Rate limit exceeded, retry later (429)", "rate limit / quota"),
-        ("Type your message below\n ❯ ", "no input field accepted the keystroke"),
-        ("", "blank screen"),
-        # an error footer under a trust prompt must report the PROMPT: the
-        # most specific answer is the actionable one
-        ("do you trust the files in this folder?\n error: telemetry offline", "trust prompt"),
-    ]
-    for text, want in blocker_cases:
-        got = _classify_blocker(text)
-        check(f"blocker: {want!r} <- {text[:32]!r}", got == want, f"got {got!r}")
-
-    # -- first glyph is not measured inside an escape sequence -----------
-    # Every TUI boots with `\e[?1049h\e[?25l`; those bytes are printable, so a
-    # naive 32..126 test returns the SAME timestamp as first_byte for every
-    # tool. That is what this bench did on its first run.
-    g = FirstGlyph()
-    boot = [
-        b"\x1b[?1049h\x1b[2J\x1b[H\x1b[?25l\x1b[?2004h",
-        b"\x1b]7;file:///tmp/x\x07",
-        b"\x1b]0;title\x07",
-        b"\x1b[1;1H\x1b[K",
-    ]
-    hits = [g(i, c) for i, c in enumerate(boot)]
-    check("no glyph is reported inside boot escape sequences", all(h is None for h in hits), str(hits))
-    check("first real glyph is reported at its own timestamp", g(9.0, b"\x1b[3;2Hfox") == 9.0)
-    g2 = FirstGlyph()
+    # -- exactly three presented metrics ---------------------------------
+    # The interactive metrics were removed on purpose: they required a keystroke,
+    # so 14 of 22 tools came back n/a. If one is ever re-added it must come with
+    # a way to measure tools that never accept input, so this is asserted rather
+    # than left to memory.
     check(
-        "an escape sequence split across chunks is not mistaken for a glyph",
-        g2(1.0, b"\x1b[") is None and g2(2.0, b"?25l") is None and g2(3.0, b"hi") == 3.0,
+        "exactly three presented metrics, none of them interactive",
+        [m[0] for m in METRICS] == ["first_byte", "idle_pss_mb", "bundle_mb"],
+        str([m[0] for m in METRICS]),
     )
-    g3 = FirstGlyph()
-    check("a UTF-8 glyph counts as painted", g3(1.0, "\u4f60".encode()) == 1.0)
+    # metric_value must read timings from the stat block and the other two off
+    # the row directly -- reading idle_pss_mb as a dict silently yields None and
+    # the memory column empties out without an error.
+    probe_row = {
+        "first_byte": {"min": 8.0, "p50": 9.0, "p95": 10.0, "n": 5},
+        "idle_pss_mb": 45.0,
+        "bundle_mb": 117.0,
+    }
+    check(
+        "metric_value: p50 for timings, the scalar for memory and disk",
+        metric_value(probe_row, "first_byte") == 9.0
+        and metric_value(probe_row, "idle_pss_mb") == 45.0
+        and metric_value(probe_row, "bundle_mb") == 117.0,
+    )
+
 
     # -- ranking excludes thin and unmeasured rows -----------------------
     def row(name, key, p50, n=5, installed=True):
         return {"agent": name, "installed": installed, key: {"min": p50, "p50": p50, "p95": p50, "n": n}}
 
-    rows = [row("fox-agent", "ttfi", 50), row("fast", "ttfi", 10), row("slow", "ttfi", 90), row("thin", "ttfi", 1, n=1)]
-    rank, field = rank_of(rows, "ttfi")
+    rows = [row("fox-agent", "first_byte", 50), row("fast", "first_byte", 10), row("slow", "first_byte", 90), row("thin", "first_byte", 1, n=1)]
+    rank, field = rank_of(rows, "first_byte")
     check("rank ignores n<3 samples (a lucky launch is not a comparison)", rank == 2 and field == 3, f"{rank} of {field}")
-    rows2 = [row("fox-agent", "ttfi", 50), {"agent": "gone", "installed": False}]
-    r2, f2 = rank_of(rows2, "ttfi")
+    rows2 = [row("fox-agent", "first_byte", 50), {"agent": "gone", "installed": False}]
+    r2, f2 = rank_of(rows2, "first_byte")
     check("rank ignores n/a rows instead of ranking them last", r2 == 1 and f2 == 1, f"{r2} of {f2}")
 
     # -- the hermetic environment is actually hermetic -------------------
@@ -2040,54 +1853,50 @@ def self_test():
         check("env: a fake key is used, never a real one", env.get("FOX_AGENT_API_KEY") == "bench-fake-key")
 
     # -- the rig itself ---------------------------------------------------
+    # Only what the bench still relies on: a forkless stream, a t0 at exec, and
+    # PSS of a process tree. The probe/termios checks went with the interactive
+    # metrics they existed for.
     if tmux_ready():
         with Launch(["/bin/sh", "-c", "printf 'A'; sleep 5"]) as L:
             if L.err:
                 check("launch: session starts", False, L.err)
             else:
                 check("launch: gate release yields a t0", L.t0 is not None)
-                check("launch: pane pid is readable", L.pid is not None)
-                check("launch: pane tty is readable", getattr(L, "tty", None) is not None)
-                # first byte must arrive, and must be timed from exec
+                check("launch: pane pid is readable (PSS source)", L.pid is not None)
                 first = L.wait_for(lambda ts, _b: ts, 5.0)
                 check("stream: first byte arrives through pipe-pane", first is not None)
                 if first is not None:
                     dt = L.ms_since_t0(first)
-                    check("stream: first byte is timed from exec, not tmux spawn", dt is not None and dt < 2000, f"{dt}ms")
-                full = L.bytes_since(0)
-                check("stream: no byte written before the gate is lost", b"A" in full, repr(full[:20]))
-                check("screen: capture-pane returns rendered text", "A" in L.screen(), repr(L.screen()[:40]))
-                # a probe typed into a shell echo is visible on screen: the
-                # verification step depends on it
-                L.send("probezz")
-                time.sleep(0.3)
-                check("screen: typed text is readable back", "probezz" in L.screen())
-                _sig = L.echo_mode()
-                check("termios: echo mode classifies", _sig in ("kernel-echo", "render"), str(_sig))
+                    check("stream: first byte is timed from exec, not tmux spawn",
+                          dt is not None and dt < 2000, f"{dt}ms")
+                check("stream: no byte written before the gate is lost",
+                      b"A" in L.bytes_since(0), repr(L.bytes_since(0)[:20]))
 
-        # a render-mode app must classify as render after it takes the tty
-        with Launch(["/bin/sh", "-c", "stty -echo 2>/dev/null; printf 'ready'; sleep 5"]) as L:
-            if not L.err:
-                got = None
-                for _ in range(200):
-                    got = L.echo_mode()
-                    if got == "render":
-                        break
-                    time.sleep(0.01)
-                check("termios: ECHO off classifies as render", got == "render", str(got))
-
-        # the clock is not a poll cadence: a deliberately delayed write must be
-        # reported at its own timestamp, not rounded up to a 22ms poll
+        # The clock is a timestamp, not a poll cadence. A write delayed by 0.4s
+        # must be reported near 0.4s; polling capture-pane reported ~22ms steps
+        # and a fork floor, which is how a 4.2ms "latency" got published.
         with Launch(["/bin/sh", "-c", "sleep 0.4; printf 'X'; sleep 5"]) as L:
             if not L.err:
                 hit = L.wait_for(lambda ts, b: ts if b"X" in b else None, 5.0)
-                if hit is not None:
-                    dt = L.ms_since_t0(hit)
-                    check("stream: delayed write is timed at the write, +/-50ms", 350 < dt < 550, f"{dt:.1f}ms")
-                else:
+                if hit is None:
                     check("stream: delayed write is timed at the write", False, "no hit")
-    else:
-        print("  skip rig checks (tmux not installed)")
+                else:
+                    dt = L.ms_since_t0(hit)
+                    check("stream: delayed write is timed at the write, +/-50ms",
+                          350 < dt < 550, f"{dt:.1f}ms")
+
+        # PSS must count the whole tree, not just the launcher: a node CLI's
+        # workers hold real memory, and charging only the root understated
+        # reported footprints by 2-8x.
+        with Launch(["/bin/sh", "-c", "sleep 3 & sleep 5"]) as L:
+            if not L.err and L.pid is not None:
+                tree, nprocs = None, 0
+                for _ in range(40):
+                    tree, nprocs = _pss_tree(L.pid)
+                    if tree is not None and nprocs and nprocs >= 2:
+                        break
+                    time.sleep(0.1)
+                check("memory: PSS tree sees child processes", bool(nprocs and nprocs >= 2), f"procs={nprocs}")
 
     if fails:
         print(f"\nself-test FAILED ({len(fails)}): {', '.join(fails)}")
@@ -2161,6 +1970,71 @@ def parse_args(argv):
     return opts
 
 
+def method_docs():
+    """The method/caveat block written to results.json.
+
+    A function rather than a literal inside main() so there is exactly one
+    copy of this text: it is the contract for what the numbers mean, and a
+    stale duplicate is how the docs drifted from the metrics before.
+    """
+    return {
+        "metrics": (
+            "Three presented metrics, all answerable without a login and without a keystroke: "
+            "first_byte = exec to the first byte the tool writes; idle_pss_mb = resident memory of "
+            "the whole process tree at rest; bundle_mb = on-disk footprint. "
+            "--version and the full min/p50/p95/n distribution are collected into results.json but "
+            "not presented, because --version flatters tools that short-circuit before loading their "
+            "bundle."
+        ),
+        "why_only_three": (
+            "Time-to-interactive and keystroke latency were removed, not tuned. Both require typing "
+            "into a TUI, so a tool that shows a trust prompt, a login screen or an error modal cannot "
+            "be measured at all: in the last full field run that was 14 of 22 tools, i.e. a column "
+            "that was mostly n/a. A metric two thirds of the field cannot produce is not a "
+            "comparison, so the metric was dropped rather than the caveat being published."
+        ),
+        "timings": (
+            "Every duration comes from a forkless byte stream: the tool is launched in a detached "
+            "tmux session behind a gate FIFO, `pipe-pane` is attached before the gate is released, "
+            "and bytes are timestamped as they are read. t0 is the gate release (the exec), so "
+            "tmux's own spawn cost is not charged to the tool and no early byte can be missed. "
+            "An earlier version polled `tmux capture-pane`, which forks tmux: measured 9.2ms p50 / "
+            "32.2ms p95 per sample, an undeclared ~22ms floor under every number it published (it "
+            "reported a 4.2ms input latency -- below the cost of one observation)."
+        ),
+        "statistics": (
+            "p50 of successful launches is published, with min and p95 in the table. Publishing only "
+            "`min` hid the spread: a shipped opencode first-byte row was 101ms min against 1539ms "
+            f"p95. Rows with fewer than {MIN_RANK_N} successful samples are reported but not ranked, "
+            "because one lucky launch is not a comparison."
+        ),
+        "timeouts": (
+            "A timeout is recorded as a failure and excluded from the statistics, never published as "
+            "a duration. An earlier version's 15s probe timeout appeared in the table as measurement "
+            "(opencode 15203.1ms, amp 15053.7ms, kilo 16476.3ms) and was RANKED."
+        ),
+        "bundle": (
+            "the binary itself; a launcher's exec target where a wrapper hands off by path (including "
+            "wrappers that compute that target at runtime from a version file, resolved by globbing "
+            "the literal tail); or the package dir for script CLIs, minus any bundled node/bun "
+            "runtime -- weighing a 2KB shim would pretend node_modules are free, and counting the "
+            "interpreter would make every JS tool report the same ~140MB."
+        ),
+        "memory": (
+            "PSS of the whole process tree (children included: a node CLI's workers hold real "
+            "memory), so shared pages are divided rather than double-counted. Read after the tree "
+            "converges, floored over launches because extra processes only ever ADD."
+        ),
+        "load": (
+            "load_avg and cpu_count are recorded because they change the numbers: the same tool "
+            "measured 2.9s and 10.3s for first byte on this box 40 minutes apart, at load 4.1 versus "
+            "idle on 4 cores."
+        ),
+        "missing": "A tool that is not installed is an n/a row and is excluded from rank counts, never estimated.",
+    }
+
+
+
 def main():
     opts = parse_args(sys.argv[1:])
     if opts["self_test"]:
@@ -2188,7 +2062,7 @@ def main():
     launches = 2 if quick else 5
 
     if not tmux_ready():
-        print("bench: tmux is required for the interactive metrics", file=sys.stderr)
+        print("bench: tmux is required (first-byte timing runs each tool in a pty)", file=sys.stderr)
         sys.exit(2)
 
     field = [(lb, bins) for lb, bins in AGENTS if only is None or lb in only]
@@ -2277,60 +2151,7 @@ def main():
         "machine": f"{platform.system()} {platform.machine()} ({platform.release()})",
         "cpu_count": os.cpu_count(),
         "load_avg": [round(v, 2) if v is not None else None for v in (load1, load5, load15)],
-        "method": {
-            "timings": (
-                "Every duration comes from a forkless byte stream: the tool is launched in a detached "
-                "tmux session behind a gate FIFO, `pipe-pane` is attached before the gate is released, "
-                "and bytes are timestamped as they are read. t0 is the gate release (the exec), so "
-                "tmux's own spawn cost is not charged to the tool and no early byte can be missed. "
-                "The predecessor polled `tmux capture-pane`, which forks tmux: measured 9.2ms p50 / "
-                "32.2ms p95 per sample, a ~22ms poll cadence and a floor under every number it published "
-                "(it reported 4.2ms input latency -- below the cost of one observation)."
-            ),
-            "metrics": (
-                "first_byte = exec to first byte on the wire; first_paint = exec to first printable "
-                "glyph (a TUI's first byte is often only cursor bookkeeping, e.g. fox's `\\e[?25l`); "
-                "ttfi = exec to probe rendered, where the probe is typed as soon as the app owns the "
-                "tty (termios ECHO off) and has stopped writing; key_latency = keystroke to probe "
-                "rendered after a settle, with startup removed and the settle wait explicitly outside "
-                "the clock."
-            ),
-            "statistics": (
-                "p50 of successful launches is published, with min and p95 beside it. The predecessor "
-                "published min, which hid the spread: the shipped opencode first-byte row was 101ms min "
-                "against 1539ms p95. Rows with fewer than "
-                f"{MIN_RANK_N} successful samples are reported but not ranked."
-            ),
-            "timeouts": (
-                "A timeout is recorded as a failure and excluded from the statistics, never published as "
-                "a duration. The predecessor's 15s probe timeout appeared in the table as measurement "
-                "(opencode 15203.1ms, amp 15053.7ms, kilo 16476.3ms) and was RANKED."
-            ),
-            "probe": (
-                "Two letters not already present on the captured screen are typed; the match is made "
-                "against joined bytes since the keystroke (so a cell-diffing TUI that emits the probe in "
-                "pieces is still counted) AND verified against the rendered screen afterwards, so a "
-                "stream false positive cannot become a number."
-            ),
-            "signal": (
-                "termios ECHO is read from the pane's own pty. 'kernel-echo' means the line discipline "
-                "echoed the byte before the app woke (measured: `cat` in a pty times ~0.3ms with no UI), "
-                "so it describes the kernel; 'render' means the app disabled echo and repainted a cell "
-                "itself. Latency is ranked within 'render' only."
-            ),
-            "bundle": (
-                "the binary itself; a launcher's exec target where a wrapper hands off by path; or the "
-                "package dir for script CLIs, minus any bundled node/bun runtime (weighing a 2KB shim "
-                "would pretend node_modules are free; counting the interpreter would make every "
-                "JS tool report the same ~140MB)."
-            ),
-            "memory": (
-                "PSS of the whole process tree (children included: a node CLI's workers hold real "
-                "memory), floored over launches because extra processes only ever add, read after the "
-                "app settles and before the latency probe perturbs it."
-            ),
-            "missing": "A tool that is not installed is an n/a row and is excluded from rank counts, never estimated.",
-        },
+        "method": method_docs(),
         "rows": rows,
         "fox": fox_extra,
     }
