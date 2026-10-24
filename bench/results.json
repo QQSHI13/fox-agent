@@ -199,7 +199,10 @@
       "idle_pss_root_mb": 34.1591796875,
       "procs": 2,
       "launches": 5,
-      "failures": []
+      "failures": [
+        "latency: probe 'zw' did not render",
+        "ttfi: probe 'zx' did not render"
+      ]
     },
     {
       "agent": "pi",

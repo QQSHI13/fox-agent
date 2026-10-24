@@ -5,8 +5,8 @@
 | TUI 1st input | **191** | **#1** of 9 |
 | input latency | **3.1** | **#3** of 8 |
 | bundle | **117** | **#4** of 22 |
-| idle PSS | **45** | **#2** of 20 |
-| `--version` | **7.9** | **#2** of 22 |
+| idle PSS | **44** | **#2** of 20 |
+| `--version` | **6.9** | **#2** of 22 |
 
 fox-agent headless vs scripted local provider: time to first token **48 ms**, peak RSS **57 MB**.
 
