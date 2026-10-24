@@ -38,6 +38,7 @@ import type { Config } from "../core/config.ts";
 import type { ProviderConfig, ChatFn } from "../providers/types.ts";
 import { resolveChat } from "../providers/index.ts";
 import { runTurnCore } from "../loop/turn.ts";
+import { attachHost, detachHost, abortTurn, turnRunning, releaseSteer, waitQuiescent, adoptTurnController } from "../loop/steer.ts";
 import { shutdownTools } from "../tools/index.ts";
 import { lookupModel } from "../providers/models.ts";
 import { VERSION } from "../core/version.ts";
@@ -148,11 +149,76 @@ export function buildAgent(opts: AcpServerOptions): acp.AgentApp {
   const chat = opts.chat ?? resolveChat;
   const contextWindow = lookupModel(provider.model).contextWindow;
 
-  /** in-flight prompts, so `session/cancel` can abort the right turn */
-  const running = new Map<string, AbortController>();
   /** per-session model override, set by `session/set_config_option`; a session
    * without an entry uses the process's configured provider.model. */
   const sessionModels = new Map<string, string>();
+
+  /**
+   * Run one turn and stream it to the client.
+   *
+   * Which turn runs, and when, is core's decision (src/loop/steer.ts) — this
+   * function is the protocol skin: map events to `session/update` notifications
+   * and report the stop reason. `session/prompt` and an auto-started steered
+   * turn both come through here, so they cannot diverge on pinning, aborting or
+   * stop-reason mapping.
+   */
+  async function* turnEvents(
+    sessionId: string,
+    text: string,
+    signal: AbortSignal,
+    client: { notify: (method: string, params: unknown) => Promise<unknown> },
+  ): AsyncGenerator<import("../core/events.ts").AgentEvent> {
+    const modelOverride = sessionModels.get(sessionId);
+    const turnProvider = modelOverride ? { ...provider, model: modelOverride } : provider;
+    const turnContextWindow = lookupModel(turnProvider.model).contextWindow;
+    // Pin the handle for the turn's lifetime, exactly as the TUI does: the
+    // client may interleave session/list / session/load / session/fork (each
+    // opens other session dbs), and an unpinned handle is the LRU-oldest —
+    // the picker eviction that closes it mid-append is the RangeError the
+    // pin exists to prevent.
+    pinSession(sessionId);
+    try {
+      for await (const ev of runTurnCore(sessionId, turnProvider, text, signal, {
+        maxSteps: config.maxSteps,
+        retryLimit: config.retryLimit,
+        compactWarnAt: config.compactWarnAt,
+        compactCtxOnlyAt: config.compactCtxOnlyAt,
+        projectInstructions: config.projectInstructions,
+        config,
+        chat,
+      })) {
+        const update = ev.type === "done" ? null : toSessionUpdate(ev, { contextWindow: turnContextWindow });
+        if (update) await client.notify(acp.methods.client.session.update, { sessionId, update });
+        yield ev;
+      }
+    } finally {
+      // release the pin the turn held; the next prompt re-pins
+      unpinSession(sessionId);
+    }
+  }
+
+  /** The client attached to a session — kept from the last prompt, because a
+   *  steered turn may start with no request in flight to carry a client. */
+  const sessionClients = new Map<string, { notify: (method: string, params: unknown) => Promise<unknown> }>();
+
+  /**
+   * Attach this ACP client as the session's host: core starts turns for steered
+   * text (a background job finishing, typically) and this is how their events
+   * reach the editor. Without it, a steer could only be answered by whatever
+   * the user typed next — the original bug.
+   */
+  function attachSteer(sessionId: string, client: { notify: (method: string, params: unknown) => Promise<unknown> }): void {
+    sessionClients.set(sessionId, client);
+    attachHost(sessionId, {
+      provider: () => {
+        const m = sessionModels.get(sessionId);
+        return m ? { ...provider, model: m } : provider;
+      },
+      config: () => config,
+      chat,
+      turn: (text, ctl) => turnEvents(sessionId, text, ctl.signal, sessionClients.get(sessionId) ?? client),
+    });
+  }
 
   return acp
     .agent({ name: "fox-agent" })
@@ -245,9 +311,8 @@ export function buildAgent(opts: AcpServerOptions): acp.AgentApp {
       checkId(params.sessionId);
       // a turn still running for a deleted session must not keep appending to
       // its DB — same teardown close does, before the row disappears
-      const ctl = running.get(params.sessionId);
-      ctl?.abort();
-      if (ctl) running.delete(params.sessionId);
+      abortTurn(params.sessionId, "session deleted");
+      releaseSteer(params.sessionId);
       await shutdownTools(params.sessionId);
       releaseLock(params.sessionId);
       if (!deleteSession(params.sessionId)) throw RequestError.resourceNotFound(params.sessionId);
@@ -255,9 +320,9 @@ export function buildAgent(opts: AcpServerOptions): acp.AgentApp {
     })
     .onRequest(acp.methods.agent.session.close, async ({ params }) => {
       checkId(params.sessionId);
-      const ctl = running.get(params.sessionId);
-      ctl?.abort();
-      if (ctl) running.delete(params.sessionId);
+      abortTurn(params.sessionId, "session closed");
+      detachHost(params.sessionId);
+      releaseSteer(params.sessionId);
       await shutdownTools(params.sessionId);
       releaseLock(params.sessionId);
       return {};
@@ -270,13 +335,14 @@ export function buildAgent(opts: AcpServerOptions): acp.AgentApp {
       } catch {
         return;
       }
-      running.get(params.sessionId)?.abort();
+      // one abort path for every client: the controller lives in the loop layer
+      abortTurn(params.sessionId, "client cancel");
     })
     .onRequest(acp.methods.agent.session.prompt, async ({ params, client, signal }) => {
       checkId(params.sessionId);
       const session = getSession(params.sessionId);
       if (!session) throw RequestError.resourceNotFound(params.sessionId);
-      if (running.has(params.sessionId)) throw RequestError.invalidParams(undefined, "a prompt is already running for this session");
+      if (turnRunning(params.sessionId)) throw RequestError.invalidParams(undefined, "a prompt is already running for this session");
       // #11: a session another live process holds is theirs to write — a second
       // opener prompting here would interleave appends into one transcript. The
       // TUI degrades to a read-only viewer for the same reason; ACP has no
@@ -300,53 +366,43 @@ export function buildAgent(opts: AcpServerOptions): acp.AgentApp {
       // the message is the *second* argument; the first is JSON-RPC `data`, which
       // does not reach a client's error string
       if (!text) throw RequestError.invalidParams(undefined, "prompt has no text content");
-      // A `session/set_config_option` may have routed this session to a different
-      // model than the process default; clone the provider with that override.
-      const modelOverride = sessionModels.get(params.sessionId);
-      const turnProvider = modelOverride ? { ...provider, model: modelOverride } : provider;
-      const turnContextWindow = lookupModel(turnProvider.model).contextWindow;
+      // Attach the client first, so a steer that arrives once this turn is over
+      // can start the next one and still reach the editor's stream.
+      attachSteer(params.sessionId, client);
 
-      // Two ways a turn can be cut short: the client's `session/cancel`, and the
-      // request's own signal (connection dropped, `$/cancel_request`). Both must
-      // reach `runTurnCore`, so they are merged into one controller.
+      // The prompt's own message is NOT queued: it is what the client asked for,
+      // and it must be answered even if a steer is also pending (that one gets
+      // its own turn after).
+      // One controller for both cancellation sources (the protocol's
+      // `session/cancel` and this request's own signal), registered so the
+      // shared `abortTurn` reaches it — ACP must not keep a second map of
+      // in-flight turns.
       const ctl = new AbortController();
       const onAbort = () => ctl.abort();
       signal.addEventListener("abort", onAbort, { once: true });
-      running.set(params.sessionId, ctl);
-      // Pin the handle for the turn's lifetime, exactly as the TUI does: the
-      // client may interleave session/list / session/load / session/fork (each
-      // opens other session dbs), and an unpinned handle is the LRU-oldest —
-      // the picker eviction that closes it mid-append is the RangeError the
-      // pin exists to prevent.
-      pinSession(params.sessionId);
+      adoptTurnController(params.sessionId, ctl);
 
       let stop: acp.StopReason = "end_turn";
+      let failed: unknown = null;
       try {
-        for await (const ev of runTurnCore(params.sessionId, turnProvider, text, ctl.signal, {
-          maxSteps: config.maxSteps,
-          retryLimit: config.retryLimit,
-          compactWarnAt: config.compactWarnAt,
-        compactCtxOnlyAt: config.compactCtxOnlyAt,
-          projectInstructions: config.projectInstructions,
-          config,
-          chat,
-        })) {
+        for await (const ev of turnEvents(params.sessionId, text, ctl.signal, client)) {
           if (ev.type === "done") {
             stop = stopReasonFor(ev.reason);
             break;
           }
-          const update = toSessionUpdate(ev, { contextWindow: turnContextWindow });
-          if (update) await client.notify(acp.methods.client.session.update, { sessionId: params.sessionId, update });
         }
+      } catch (e) {
+        failed = e;
       } finally {
         signal.removeEventListener("abort", onAbort);
-        // release the pin the turn held; the next prompt re-pins
-        unpinSession(params.sessionId);
-        // keyed delete: close may have already removed this entry and a NEW
-        // prompt may hold the slot — deleting unconditionally would drop the
-        // new controller and unguard `running.has` above
-        if (running.get(params.sessionId) === ctl) running.delete(params.sessionId);
       }
+      // A one-shot surface is not finished while work is still outstanding: a
+      // steered message or a live background job will produce more of the
+      // answer. Wait for quiescence before replying, so the editor sees one
+      // prompt resolve once the session is actually done — the same rule `fox
+      // -p` and an A2A `message/send` follow.
+      await waitQuiescent(params.sessionId);
+      if (failed) throw failed;
       return { stopReason: stop };
     });
 }

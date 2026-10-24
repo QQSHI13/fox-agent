@@ -94,12 +94,17 @@ export function toSessionUpdate(ev: AgentEvent, opts: MapOptions): SessionUpdate
         used: ev.prompt_tokens + ev.completion_tokens,
         size: opts.contextWindow,
       };
+    case "steered":
+      // A message that joined the turn mid-flight — a background job finishing,
+      // or a follow-up the agent picked up. It is a real USER message, and ACP
+      // has a vocabulary for exactly that, so the editor can render it. (The
+      // prompt's own `user` event is still skipped below: the client sent it.)
+      return { sessionUpdate: "user_message_chunk", content: { type: "text", text: ev.text } };
     case "step":
     case "retry":
     case "warn":
     case "user": // the client sent the prompt; echoing its seq back adds nothing
     case "assistant": // UI-only marker correction; ACP clients render from their own session load
-    case "steered": // the client sent it; echoing it back would double-render
     case "done":
       return null;
     case "child_tool":

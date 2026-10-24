@@ -25,7 +25,7 @@ import type { ToolDef } from "../providers/types.ts";
 import type { ToolContext, ToolResult } from "./types.ts";
 import { fail, ok, validateArgs } from "./types.ts";
 import { outCap } from "./files.ts";
-import { steer } from "../loop/steer.ts";
+import { steer, backgroundStarted, backgroundEnded } from "../loop/steer.ts";
 
 export const replDef: ToolDef = {
   name: "repl",
@@ -120,6 +120,10 @@ interface ReplJob {
   logCursor: number; // how many of `log` the caller has already seen
   ac: AbortController; // cancelling aborts a job awaiting a fetch/timeout
   killed?: boolean; // suppresses the completion steer for a deliberately-killed job
+  /** The session's background count was already decremented for this job.
+   *  A job can settle on its own, be killed, or be released at session end —
+   *  whichever happens first must decrement, and the rest must not. */
+  bgEnded?: boolean;
   reaped?: boolean;
   readAt?: number; // when a settled job was first polled — starts the reap grace
 }
@@ -138,6 +142,16 @@ function sessionJobs(sessionId: string): Map<string, ReplJob> {
 
 function liveJobCount(sessionId: string): number {
   return [...sessionJobs(sessionId).values()].filter((j) => !j.done).length;
+}
+
+/** Decrement the session's live-background count for this job, at most once.
+ *  vm cannot preempt a running eval, so a killed job's promise may never
+ *  settle — the kill path and session teardown must be able to release the
+ *  count themselves without double-counting a job that later settles. */
+function endBackground(sessionId: string, job: ReplJob): void {
+  if (job.bgEnded) return;
+  job.bgEnded = true;
+  backgroundEnded(sessionId);
 }
 
 function reapJob(sessionId: string, id: string): void {
@@ -178,6 +192,9 @@ export function cleanupRepl(sessionId: string): void {
       if (j.done) continue;
       j.killed = true; // suppress the completion steer — the session is ending
       j.ac.abort();
+      // vm cannot preempt a running eval, so its promise may never settle and
+      // may never release the count itself
+      endBackground(sessionId, j);
     }
     jobs.delete(sessionId);
   }
@@ -281,6 +298,9 @@ export async function replRun(
       job.killed = true;
       job.ac.abort();
       reapJob(sessionId, job.id);
+      // the eval may never settle after an abort (vm has no preemption), so the
+      // outstanding-work count has to be released here, not left to the promise
+      endBackground(sessionId, job);
       return ok(`job ${job.id} (${job.label}) killed`);
     }
     const secs = Math.floor((Date.now() - job.startedAt) / 1000);
@@ -378,6 +398,11 @@ export async function replRun(
     const ac = new AbortController();
     const job: ReplJob = { id, label, startedAt: Date.now(), done: false, ok: false, result: "", log: [], logCursor: 0, ac };
     sessionJobs(sessionId).set(id, job);
+    // A live job is outstanding work: a one-shot client (fox -p, an ACP prompt,
+    // an A2A task) must not report "done" while this can still steer more into
+    // the session. Counted BEFORE the eval starts, so there is no window where
+    // the session looks idle.
+    backgroundStarted(sessionId);
     activeJob = job;
     // The job's lifetime is the SESSION's, not the turn's — it keeps running
     // while the agent moves on, and ends only when the session does
@@ -388,8 +413,12 @@ export async function replRun(
         job.result = capJobResult(fmt(v));
         job.done = true;
         job.ok = true;
+        // ORDER: notify (which queues the steer) before ending the background
+        // count. Ending first would make the session briefly quiescent and let
+        // a waiter finish before the completion notification was even queued.
         notifyDone(sessionId, job);
         scheduleReap(sessionId, job);
+        endBackground(sessionId, job);
       })
       .catch((e) => {
         job.done = true;
@@ -397,6 +426,7 @@ export async function replRun(
         job.result = capJobResult(job.killed ? "killed by request" : `error: ${(e as Error).message ?? e}`);
         notifyDone(sessionId, job);
         scheduleReap(sessionId, job);
+        endBackground(sessionId, job);
       })
       .finally(() => {
         if (activeJob === job) activeJob = null;

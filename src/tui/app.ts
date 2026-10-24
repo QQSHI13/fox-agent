@@ -935,7 +935,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         queued.push({ raw: res.submit, lit: true });
         markDirty();
       } else {
-        void runAgent(res.submit);
+        void sendToAgent(res.submit);
       }
       return; // a submitting command has no other effect to apply
     }
@@ -1164,11 +1164,13 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       void import("../plugins/load.ts").then((m) => m.fireSessionEnd(state.sessionId, "switch")).catch(() => {});
       unpinSession(state.sessionId);
       releaseLock(state.sessionId);
+      detachHost(state.sessionId);
     }
     state.pendingSession = false;
     state.readOnly = false;
     state.sessionId = id;
     pinSession(id);
+    attachTuiHost(id);
     expandedRefs.clear(); // refs are per-session seqs; carrying them over expands unrelated nodes
     expandMode = null; // likewise the ctrl+t fold direction — the new session starts on defaults
     // per-session token state, same reasoning: statusText() prefers the live
@@ -1320,13 +1322,22 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     push("error", `error: ${short}${advice} · log: ${debugLogPath()}`);
   }
 
-  async function runAgent(raw: string) {
+  /**
+   * Render one turn's events into the transcript.
+   *
+   * Both a typed message and a steered one (core starts that turn — see
+   * src/loop/steer.ts) come through here, so they render identically: a steered
+   * message IS a normal user message. This is a generator because core consumes
+   * it: it yields the raw stream and does the painting as a side effect.
+   */
+  async function* turnStream(raw: string, signal: AbortSignal): AsyncGenerator<AgentEvent> {
     // the pending session becomes real exactly here — first message, not before
     if (!state.sessionId) {
       const s = createSession(state.cwd, state.provider.model);
       state.sessionId = s.id;
       state.pendingSession = false;
       pinSession(s.id);
+      attachTuiHost(s.id);
       // Session-info line is now an EPHEMERAL notice (dies on the next keypress,
       // like /todo's) — a quick confirmation of the new id, not a persistent
       // header. Chrome stays welcome-only.
@@ -1334,7 +1345,6 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     }
     setBusy(true);
     const userItem = push("user", `❯ ${raw}`);
-    ac = new AbortController();
     let md = "";
     liveTools.clear();
     // id → one-line label ("exec echo hi"), so in-flight and settled heads both
@@ -1355,7 +1365,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       // (~52ms) but is only needed when a turn actually runs, not to paint or
       // accept input. VERSION comes from core/version.ts (light), not here.
       const { runTurn } = await import("../loop/agent.ts");
-      for await (const ev of runTurn(state.sessionId, state.provider, raw, ac.signal, state.config, uiBridge)) {
+      for await (const ev of runTurn(state.sessionId, state.provider, raw, signal, state.config, uiBridge)) {
         if (ev.type === "user") {
           // the turn persisted the user message — stamp its seq on the in-flight
           // line so the [N] marker appears now, not after the turn settles
@@ -1447,16 +1457,19 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           // would otherwise show nothing at all and the agent looked hung. The
           // head is a NORMAL one — same `» name` label as a settled tool, no
           // "running" suffix and no re-stamping: the status bar's spinner is
-          // where progress is shown. The body is OPEN, so the output streams in
-          // live as tool_output deltas land — a tool that is clearly working,
-          // not a head that appears and then sits silent until it finishes.
+          // where progress is shown. The body is FOLDED by default, exactly like
+          // a settled one: it used to open here, and tool_end then read that open
+          // state back as "the user expanded this" and promoted it into
+          // expandedRefs — so every body the turn ever ran stayed expanded for the
+          // life of the session. Progress is the status bar's spinner's job; the
+          // body is opened deliberately (click / ctrl+t).
           if (!liveTools.has(ev.id)) {
             liveTools.set(ev.id, {
               head: push("toolhead", `» ${callLabels.get(ev.id) ?? ev.name}`, {
                 detail: argsJson(callArgs.get(ev.id) ?? ""),
                 expanded: expandMode === true || undefined,
               }),
-              body: push("toolbody", "", { toolResult: true, expanded: expandMode !== false }),
+              body: push("toolbody", "", { toolResult: true, expanded: expandMode === true }),
               text: "",
             });
           }
@@ -1591,9 +1604,10 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           // transcript gets one line, the debug log gets the whole reason
           if (ev.reason.startsWith("error")) reportError(ev.reason.slice(7));
         }
+        yield ev; // painted; the consumer (typed turn or core's steer dispatch) decides what next
       }
     } catch (e) {
-      if (ac?.signal.aborted) push("error", "[interrupted]");
+      if (signal.aborted) push("error", "[interrupted]");
       else reportError(`fox-agent error: ${(e as Error).message ?? e}`, e);
     } finally {
       if (md) mdFragments.push(push("md", md, {}));
@@ -1604,7 +1618,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       // is never persisted (no tool_end), so the pair would otherwise keep its
       // "running" look forever with an empty body. Mark the head so a partially
       // completed tool reads as interrupted, not hung.
-      if (ac?.signal.aborted) {
+      if (signal.aborted) {
         // Remove the in-flight tool pairs entirely: they were never persisted
         // (no tool_end), so showing them leaves a tool that never happened in
         // the transcript. Delete from items — the '[interrupted]' error line
@@ -1631,17 +1645,54 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       term.setTitle(`fox — ${state.sessionId || "new"}`);
       // reconcile the live user marker with stored seq
       refresh();
-      // A steer still queued here arrived after the turn's last step boundary —
-      // it is no longer a steer (there is no running turn to steer), just a user
-      // message. Move it to the dispatch queue as ordinary text; the next turn
-      // answers it like any message.
-      if (state.sessionId) {
-        const { drainSteer } = await import("../loop/steer.ts");
-        const text = drainSteer(state.sessionId).join("\n");
-        if (text.trim()) queued.push({ raw: text, lit: true });
-      }
+      // A steer still queued at this point is core's to dispatch (it starts a
+      // turn itself — see src/loop/steer.ts). Draining it here too answered the
+      // same message twice, one turn later, which is how a steer could look like
+      // it had been answered by the NEXT thing the user typed.
       drainQueue();
     }
+  }
+
+  /**
+   * Send agent-bound text: the path a typed message takes.
+   *
+   * Core owns the turn loop and the steer queue (src/loop/steer.ts); this just
+   * consumes the renderer for text the USER sent, registering the abort
+   * controller so esc interrupts it. A steered message takes the same renderer
+   * through `attachHost`'s `turn`, so both look identical in the transcript.
+   */
+  async function sendToAgent(text: string) {
+    const ctl = new AbortController();
+    ac = ctl;
+    try {
+      for await (const _ev of turnStream(text, ctl.signal)) {
+        // rendering happens inside turnStream; nothing to do with the events here
+      }
+    } finally {
+      if (ac === ctl) ac = null;
+    }
+  }
+
+  /**
+   * Register this TUI as the session's host, so core can start a turn for
+   * steered text (a background job finishing, typically) and render it here.
+   *
+   * `turn` reuses `turnStream`, the same renderer a typed message goes through:
+   * a steered message is a normal user message, so it must not have a second
+   * code path. Core decides WHEN; this only decides HOW it looks.
+   */
+  function attachTuiHost(id: string) {
+    attachHost(id, {
+      provider: () => state.provider,
+      config: () => state.config,
+      chat: undefined, // let runTurnCore resolve it
+      ui: uiBridge,
+      turn: (text, ctl) => {
+        ac = ctl; // esc interrupts a steered turn exactly like a typed one
+        markDirty(); // the steering float disappears as the text is claimed
+        return turnStream(text, ctl.signal);
+      },
+    });
   }
 
   function drainQueue() {
@@ -1664,7 +1715,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     if (!lit && raw.startsWith("!")) return void runShell(t.slice(1).trim());
     if (!lit && raw.startsWith("/")) return runSlash(t);
     // @path mentions inline the file's text so the model reads it directly
-    await runAgent(expandMentions(raw, state.cwd).text);
+    await sendToAgent(expandMentions(raw, state.cwd).text);
   }
 
   const display = () => buf.map((c) => c.c).join("");
@@ -1743,7 +1794,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     exiting = true;
     exitCode = code;
     try {
-      ac?.abort();
+      if (state.sessionId) abortTurn(state.sessionId, "user interrupt");
     } catch {}
     // Start the tool teardown NOW, so the slow closers (MCP children, the
     // polite LSP exit window, plugin session-end hooks) overlap the terminal
@@ -2043,7 +2094,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         return;
       }
       if (busy) {
-        ac?.abort();
+        if (state.sessionId) abortTurn(state.sessionId, "user interrupt");
         return;
       }
       // `return` matters: without it this fell through to the ctrl+d branch
@@ -2131,7 +2182,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         clearSel();
         return;
       }
-      if (busy) ac?.abort();
+      if (busy) if (state.sessionId) abortTurn(state.sessionId, "user interrupt");
       return;
     }
     // Page/home/end keys are transcript-first: they scroll (pgup/pgdn by a
@@ -4378,7 +4429,10 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       // the TUI can open a picker, and holds the one session whose handle must
       // survive the picker reading every other session's usage
       state.interactive = true;
-      if (state.sessionId) pinSession(state.sessionId);
+      if (state.sessionId) {
+        pinSession(state.sessionId);
+        attachTuiHost(state.sessionId);
+      }
 
       const dec = createDecoder(onKey);
       term.onKey((data) => dec.feed(data));

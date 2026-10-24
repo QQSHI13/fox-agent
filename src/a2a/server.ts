@@ -18,6 +18,7 @@
 import { VERSION } from "../core/version.ts";
 import { createSession } from "../store/db.ts";
 import { runTurnCore } from "../loop/turn.ts";
+import { attachHost, detachHost, releaseSteer, waitQuiescent } from "../loop/steer.ts";
 import { resolveChat } from "../providers/index.ts";
 import { lookupModel } from "../providers/models.ts";
 import type { Config } from "../core/config.ts";
@@ -81,13 +82,20 @@ async function runTurnForTask(
 ): Promise<void> {
   const provider = opts.provider;
   let text = "";
-  try {
-    if (!provider.apiKey) {
-      task.state = "failed";
-      task.statusText = "no API key: set FOX_AGENT_API_KEY / OPENAI_API_KEY / ANTHROPIC_API_KEY";
-      return;
-    }
-    for await (const ev of runTurnCore(task.sessionId, provider, prompt, undefined, {
+  if (!provider.apiKey) {
+    task.state = "failed";
+    task.statusText = "no API key: set FOX_AGENT_API_KEY / OPENAI_API_KEY / ANTHROPIC_API_KEY";
+    task.done = true;
+    return;
+  }
+  /**
+   * One turn's event stream for this task, plus the artifact accumulation that
+   * turns text into the task's result. Shared by the prompt's own turn and by a
+   * steered turn core starts later (see attachHost below) — a steered message
+   * appends to the SAME result, because to the caller it is still one task.
+   */
+  const drive = async function* (turnPrompt: string, signal: AbortSignal): AsyncGenerator<import("../core/events.ts").AgentEvent> {
+    for await (const ev of runTurnCore(task.sessionId, provider, turnPrompt, signal, {
       maxSteps: opts.config.maxSteps,
       retryLimit: opts.config.retryLimit,
       compactWarnAt: opts.config.compactWarnAt,
@@ -101,15 +109,36 @@ async function runTurnForTask(
         onText(ev.delta);
       } else if (ev.type === "done") {
         task.state = ev.reason === "error" ? "failed" : "completed";
-        break;
       }
+      yield ev;
     }
+  };
+  attachHost(task.sessionId, {
+    provider: () => provider,
+    config: () => opts.config,
+    chat: resolveChat,
+    turn: (turnPrompt, ctl) => drive(turnPrompt, ctl.signal),
+  });
+  try {
+    for await (const _ev of drive(prompt, new AbortController().signal)) {
+      // accumulation happens inside drive; we only need the stream to finish
+    }
+    // A task is not finished while work is outstanding: a steer (a background
+    // job finishing, typically) or a live job will add to this same result.
+    // A2A auto-starts those turns like every other surface — the artifacts and
+    // status updates land in this task, which `tasks/get` and the SSE stream
+    // both read, so there is always somewhere for the output to go.
+    await waitQuiescent(task.sessionId);
     if (text) task.artifacts.set("result", text);
     task.statusText = text || task.statusText;
   } catch (e) {
     task.state = "failed";
     task.statusText = `error: ${(e as Error).message ?? e}`;
   } finally {
+    // the task is the lifetime of this host: nothing may start a turn for a
+    // session whose task is gone
+    detachHost(task.sessionId);
+    releaseSteer(task.sessionId);
     task.done = true;
   }
 }

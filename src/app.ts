@@ -16,6 +16,7 @@ import { debugLogPath } from "./core/debuglog.ts";
 import { assertNever } from "./core/events.ts";
 
 import { runTurnCore } from "./loop/turn.ts";
+import { attachHost, detachHost } from "./loop/steer.ts";
 import { resolveChat } from "./providers/index.ts";
 import { setActiveEndpoint } from "./providers/models.ts";
 import {
@@ -577,6 +578,10 @@ function emitHuman(ev: import("./core/events.ts").AgentEvent, color = false) {
       console.error(st.yellow(`\nfox-agent: ${ev.message}`));
       break;
     case "steered":
+    case "user":
+      // A user message, whether typed or steered in mid-turn (a background job
+      // finishing, usually). Headless output shows it so the transcript is
+      // complete: the answer that follows refers to it.
       console.error(`\n❯ ${ev.text.replace(/\n/g, " ").slice(0, 120)}`);
       break;
     case "done":
@@ -589,7 +594,6 @@ function emitHuman(ev: import("./core/events.ts").AgentEvent, color = false) {
     case "tool_start":
     case "tool_output":
     case "usage":
-    case "user":
     case "assistant":
     case "step":
       // in-flight streaming detail and per-step chatter: the headless printer
@@ -618,6 +622,89 @@ async function plainLoop(state: HarnessState) {
   // provider call instead of killing the whole process — non-null only while
   // a turn runs
   let currentAbort: AbortController | null = null;
+
+  /**
+   * Render one turn to the terminal, yielding its events.
+   *
+   * The spinner, the busy flag and the SIGINT wiring live here so a typed
+   * message and a steered one (core starts that turn — src/loop/steer.ts) look
+   * and behave identically. A generator because core consumes it.
+   */
+  async function* miniTurnStream(raw: string, signal: AbortSignal): AsyncGenerator<import("./core/events.ts").AgentEvent> {
+    busy = true;
+    const spinChars = color ? ["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"] : ["-","\\","|","/"];
+    let spinIdx = 0;
+    let gotOutput = false;
+    const spinTimer = setInterval(() => {
+      if (!color || gotOutput) return; // stop once real output starts streaming
+      process.stderr.write(`\r${st.cyan(spinChars[spinIdx++ % spinChars.length])} thinking…   `);
+    }, 80);
+    (spinTimer as { unref?: () => void }).unref?.();
+    try {
+      // state.provider is read live — /model and /login REPLACE it, and a
+      // captured copy would keep calling the old model/endpoint/key forever.
+      // @path mentions inline file text, as in the TUI.
+      const text = expandMentions(raw, state.cwd).text;
+      for await (const ev of runTurnCore(state.sessionId, state.provider, text, signal, {
+        maxSteps: config?.maxSteps,
+        retryLimit: config?.retryLimit,
+        compactWarnAt: config?.compactWarnAt,
+        compactCtxOnlyAt: config?.compactCtxOnlyAt,
+        projectInstructions: config?.projectInstructions,
+        config,
+        chat: resolveChat,
+      })) {
+        if (ev.type === "text" && !gotOutput) {
+          gotOutput = true;
+          clearInterval(spinTimer);
+          if (color) process.stderr.write("\r\x1b[K"); // clear the spinner before the text
+        }
+        emitHuman(ev, color);
+        yield ev;
+      }
+    } catch (e) {
+      console.error(`\nfox-agent error: ${errMsg(e)}`);
+      throw e;
+    } finally {
+      clearInterval(spinTimer);
+      if (color) process.stderr.write("\r\x1b[K"); // clear the spinner line
+      busy = false;
+      currentAbort = null;
+    }
+    console.log();
+  }
+
+  /** Send text the USER typed: consume the renderer, owning the abort. */
+  const sendMini = async (raw: string): Promise<void> => {
+    const ac = new AbortController();
+    currentAbort = ac;
+    try {
+      for await (const _ev of miniTurnStream(raw, ac.signal)) {
+        // rendering happens inside miniTurnStream
+      }
+    } finally {
+      if (currentAbort === ac) currentAbort = null;
+    }
+    const next = queued.shift();
+    if (next !== undefined) await dispatchMini(next);
+  };
+
+  /** Register this CLI as the session's host, so core can start steered turns. */
+  const attachMiniHost = (id: string) =>
+    attachHost(id, {
+      provider: () => state.provider,
+      config: () => config,
+      chat: resolveChat,
+      turn: (text, ctl) => {
+        currentAbort = ctl;
+        return miniTurnStream(text, ctl.signal);
+      },
+    });
+
+  // a resumed session must already have a host, or a steer arriving while idle
+  // (a background job finishing) would have no way to become a turn
+  if (state.sessionId) attachMiniHost(state.sessionId);
+
   // true when the line asked to leave (only /exit /quit)
   const dispatchMini = async (line: string): Promise<boolean> => {
     const prompt = line.trim();
@@ -638,7 +725,9 @@ async function plainLoop(state: HarnessState) {
           // the old session's resources go with it, same as a TUI switch
           const { fireSessionEnd } = await import("./plugins/load.ts");
           await fireSessionEnd(state.sessionId, "switch").catch(() => {});
+          detachHost(state.sessionId);
           state.sessionId = res.newSessionId;
+          attachMiniHost(state.sessionId);
         }
         if (res?.exit) return true;
       }
@@ -662,52 +751,7 @@ async function plainLoop(state: HarnessState) {
       console.log(st.dim(`(queued ${queued.length})`));
       return false;
     }
-    busy = true;
-    // a live spinner so a thinking turn reads as alive, and an AbortController
-    // so ctrl+c during a turn aborts the provider call instead of killing the
-    // whole process (the TUI's esc already does this; mini was missing it)
-    const ac = new AbortController();
-    currentAbort = ac;
-    const spinChars = color ? ["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"] : ["-","\\","|","/"];
-    let spinIdx = 0;
-    let gotOutput = false;
-    const spinTimer = setInterval(() => {
-      if (!color || gotOutput) return; // stop once real output starts streaming
-      process.stderr.write(`\r${st.cyan(spinChars[spinIdx++ % spinChars.length])} thinking…   `);
-    }, 80);
-    (spinTimer as { unref?: () => void }).unref?.();
-    try {
-      // state.provider is read live — /model and /login REPLACE it, and a
-      // captured copy would keep calling the old model/endpoint/key forever.
-      // @path mentions inline file text, as in the TUI.
-      const text = expandMentions(prompt, state.cwd).text;
-      for await (const ev of runTurnCore(state.sessionId, state.provider, text, ac.signal, {
-        maxSteps: config?.maxSteps,
-        retryLimit: config?.retryLimit,
-        compactWarnAt: config?.compactWarnAt,
-        compactCtxOnlyAt: config?.compactCtxOnlyAt,
-        projectInstructions: config?.projectInstructions,
-        config,
-        chat: resolveChat,
-      })) {
-        if (ev.type === "text" && !gotOutput) {
-          gotOutput = true;
-          clearInterval(spinTimer);
-          if (color) process.stderr.write("\r\x1b[K"); // clear the spinner before the text
-        }
-        emitHuman(ev, color);
-      }
-    } catch (e) {
-      console.error(`\nfox-agent error: ${errMsg(e)}`);
-    } finally {
-      clearInterval(spinTimer);
-      if (color) process.stderr.write("\r\x1b[K"); // clear the spinner line
-      busy = false;
-      currentAbort = null;
-    }
-    console.log();
-    const next = queued.shift();
-    if (next !== undefined) return dispatchMini(next);
+    await sendMini(prompt);
     return false;
   };
 

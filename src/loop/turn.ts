@@ -9,7 +9,7 @@ import type { Tool, ToolContext, ToolResult, PtyState } from "../tools/types.ts"
 import { validateArgs } from "../tools/types.ts";
 import { outCap } from "../tools/files.ts";
 import { buildRegistry } from "../tools/index.ts";
-import { drainSteer, peekSteer } from "./steer.ts";
+import { drainSteer, peekSteer, turnEnded, turnStarted } from "./steer.ts";
 import { VERSION } from "../core/version.ts";
 import type { Config } from "../core/config.ts";
 import { defaultConfig } from "../core/config.ts";
@@ -325,7 +325,33 @@ function whenAborted(signal: AbortSignal | undefined): Promise<void> {
   return new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
 }
 
+/**
+ * Run one turn. Brackets the work with the steer layer's turn registry, so a
+ * steer that arrives while nothing is running can be recognised as "needs a
+ * turn of its own" rather than sitting in the queue until the user happens to
+ * type something (see ./steer.ts for the history of that bug).
+ *
+ * The registry call sits INSIDE the generator body on purpose: an async
+ * generator does not run until it is first iterated, and `for await` runs the
+ * `finally` on early exit, so a turn is registered for exactly as long as
+ * someone is consuming it.
+ */
 export async function* runTurnCore(
+  sessionId: string,
+  cfg: ProviderConfig,
+  userText: string,
+  signal?: AbortSignal,
+  opts: TurnOptions = {},
+): AsyncGenerator<AgentEvent> {
+  turnStarted(sessionId);
+  try {
+    yield* turnBody(sessionId, cfg, userText, signal, opts);
+  } finally {
+    turnEnded(sessionId);
+  }
+}
+
+async function* turnBody(
   sessionId: string,
   cfg: ProviderConfig,
   userText: string,
