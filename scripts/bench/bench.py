@@ -41,23 +41,17 @@ measurements, just narrated — use it to see why a tool got n/a or where the
 wall-clock went.
 """
 import json
-import fcntl
 import os
-import pty
 import re
 import select
 import shlex
 import shutil
 import signal
-import struct
 import subprocess
 import sys
 import tempfile
 import termios
 import time
-
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from screen import Screen  # noqa: E402  (terminal grid: what is actually on screen)
 
 
 
@@ -402,48 +396,440 @@ def footprint(path, agent_label=None):
         return None, "entry"
 
 
-def tui_first_byte(path, probes=5):
-    """Time to first output byte of an interactive launch under a PTY.
+# No whitespace: a tool still in cooked mode has the terminal line discipline
+# echo its keys, and that discipline eats spaces — "hello bench" arrived as
+# "hellobench" and never matched, so cooked-mode tools (claude, jcode) timed
+# out as n/a even though they echoed fine. A bare word survives both modes.
+PROBE_TEXT = "hellobench"
 
-    No args, real terminal: this is the actual TUI launch cost, not --version
-    (several of these tools short-circuit --version before loading their
-    bundle). Killed the moment the first byte arrives.
+# Tools whose input readiness cannot be read off the screen: {"log": file to
+# tail, "marker": regex ending the probe}. The motivating case is a sign-in
+# screen that swallows echoed keystrokes while the tool logs its own
+# input-ready marker internally — typing is still sent the same way; only the
+# completion signal differs (internal ack rather than screen echo), which the
+# method strings below say out loud.
+INPUT_MARKERS = {
+    # "antigravity": {"log": "~/.antigravity/input-ready.log", "marker": r"..."},
+}
+
+
+# The probe is matched against tmux's rendered screen (`capture-pane -p -J`),
+# not against the raw byte stream. Matching bytes was wrong four separate times
+# and each time produced wrong published numbers: a cell-diffing TUI never emits
+# the probe as one contiguous run, a wrapped input box splits it across rows,
+# multibyte glyphs decoded per-byte shifted the layout, and escape sequences
+# arrive split across reads. tmux already keeps the screen model, so asking it
+# what is on screen is asking the question the metric actually poses.
+
+
+# ---------------------------------------------------------------------------
+# Interactive measurement runs inside tmux.
+#
+# Why tmux and not a raw PTY: tmux IS the terminal. It already keeps a screen
+# model, applies cursor addressing, handles wrapping, UTF-8 and cell diffs, and
+# hands the result back as text via `capture-pane`. The previous version
+# re-derived all of that by hand from the byte stream and got it wrong in ways
+# that produced WRONG PUBLISHED NUMBERS four separate times (cell-diffing TUIs
+# never emitting the probe contiguously, wrapped input boxes splitting it,
+# multibyte glyphs decoded per-byte, escape sequences split across reads).
+# `capture-pane` is what a user sees, so measuring it is measuring the thing.
+#
+# The three metrics map onto that directly, which is the whole point:
+#
+#   first char : the viewbox stops being empty for the first time
+#   ttfi       : spawn -> probe text appears in the viewbox
+#   latency    : probe typed -> probe text appears in the viewbox
+#
+# tmux is also what fox-agent's own `pty` tool is built on, so this is the same
+# primitive the product uses.
+# ---------------------------------------------------------------------------
+
+TMUX_ROWS = 40
+TMUX_COLS = 120
+_TMUX_SRV = "bench"
+
+
+
+def _tmux(*args, timeout=20):
+    """Run one tmux command against the bench server. Returns stdout text."""
+    try:
+        r = subprocess.run(
+            ["tmux", "-L", _TMUX_SRV, *args],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        return r.stdout
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return ""
+
+
+def _tmux_ready():
+    return bool(shutil.which("tmux"))
+
+
+def _session_run(path, name=None):
+    """Start `path` in a detached tmux session sized like a real terminal.
+
+    Returns the session name, or None when tmux/the binary is unavailable.
+
+    The window size is not cosmetic: a TUI that queries TIOCGWINSZ against a 0x0
+    terminal collapses or skips its input box, so the probe has nowhere to land
+    (measured on jcode: 928 bytes drawn at 0x0 versus 6229 at 120x40).
+
+    FOX_AGENT_NO_TRUST_CHECK is set because fox-agent asks "Do you trust this
+    folder?" on interactive start and waits for a keypress; in a bench temp dir
+    that swallows the probe. src/core/trust.ts documents that variable for
+    exactly this case ("never prompt in scripts/tests").
     """
+    if not _tmux_ready():
+        return None
+    name = name or f"m{next(_counter)}"
+    _tmux("kill-session", "-t", name)  # ignore: usually absent
+    _tmux(
+        "new-session",
+        "-d",
+        "-s",
+        name,
+        "-x",
+        str(TMUX_COLS),
+        "-y",
+        str(TMUX_ROWS),
+        "-e",
+        "TERM=xterm-256color",
+        "-e",
+        "FOX_AGENT_NO_TRUST_CHECK=1",
+        path,
+    )
+    return name
+
+
+class _Counter:
+    def __init__(self):
+        self.n = 0
+
+    def __next__(self):
+        self.n += 1
+        return self.n
+
+
+_counter = _Counter()
+
+
+def _session_kill(name):
+    _tmux("kill-session", "-t", name)
+
+
+def _pane_text(name):
+    """The rendered screen as text.
+
+    -J joins lines the terminal wrapped, so a probe split across a row boundary
+    reads as one string again (that was a real failure of the old matcher).
+    -S -400 also reads back into scrollback, so a startup banner that pushed the
+    input box out of the visible window cannot hide the probe.
+    """
+    return _tmux("capture-pane", "-p", "-J", "-S", "-400", "-t", name)
+
+
+def _pane_alive(name):
+    return bool(_tmux("display-message", "-p", "-t", name, "#{pane_pid}").strip())
+
+
+def _pane_pid(name):
+    out = _tmux("display-message", "-p", "-t", name, "#{pane_pid}").strip()
+    try:
+        return int(out)
+    except ValueError:
+        return None
+
+
+def _pane_tty(name):
+    return _tmux("display-message", "-p", "-t", name, "#{pane_tty}").strip() or None
+
+
+def _send(name, text):
+    """Type literal text into the session (no key-name interpretation)."""
+    _tmux("send-keys", "-l", "-t", name, text)
+
+
+def _wait_viewbox(name, budget_s, t0=None):
+    """Time until the viewbox first has content, in ms from t0.
+
+    "First char" as a user experiences it: the screen stops being blank. This is
+    more honest than timing the first byte on the wire, which for a TUI is
+    cursor bookkeeping (fox writes a bare `\\e[?25l` before compositing).
+    """
+    start = t0 if t0 is not None else time.perf_counter()
+    deadline = start + budget_s
+    while time.perf_counter() < deadline:
+        if _pane_text(name).strip():
+            return (time.perf_counter() - start) * 1000
+        if not _pane_alive(name):
+            return None
+        time.sleep(0.005)
+    return None
+
+
+def _wait_probe(name, probe, budget_s, t0):
+    """Time until `probe` reads out of the rendered viewbox, in ms from t0.
+
+    `budget_s` is a DURATION from now, while `t0` is the moment the figure is
+    measured from. They must be separate: readiness can legitimately consume most
+    of a caller's patience (a cooked CLI never paints, so its readiness wait runs
+    to the cap), and an absolute deadline computed from spawn then expired before
+    we ever typed — which reported n/a for tools that were working fine.
+    """
+    deadline = time.perf_counter() + budget_s
+    while time.perf_counter() < deadline:
+        if probe in _pane_text(name):
+            return (time.perf_counter() - t0) * 1000
+        if not _pane_alive(name):
+            return None
+        time.sleep(0.005)
+    return None
+
+
+def _await_ready(name, budget_s, t0=None):
+    """Wait until the app owns the terminal and can accept a keystroke.
+
+    Readiness is "the app has taken the tty", which is exactly what the mode
+    tells us:
+
+      * ECHO turns OFF  -> the tool is in raw mode and redraws its own screen.
+                           Ready. (It may have painted nothing yet; a raw-mode
+                           app that hasn't drawn is still ours to type into.)
+      * the viewbox has text -> ready regardless of mode.
+      * ECHO stays ON    -> a cooked-mode CLI. Ready ONLY at the very end of the
+                            budget, because "cooked" early on is far more often
+                            a TUI that hasn't booted its UI yet than a tool that
+                            is genuinely cooked.
+
+    That last clause is not cosmetic. An earlier version accepted cooked mode as
+    ready after a 4s grace; measured, that made kimi and cat report ttfi ≈ 4.05s
+    — the grace itself — because we typed into kimi's cooked boot window and the
+    KERNEL echoed the probe. The metric was timing line-discipline echo, which
+    is the one thing this bench exists to exclude.
+    """
+    start = t0 if t0 is not None else time.perf_counter()
+    # Cap the readiness wait below the probe budget. A cooked CLI never paints,
+    # so waiting the full probe budget here would burn it entirely and then give
+    # the probe no time at all (measured: cat reported ttfi=20s — the budget
+    # itself). 8s comfortably covers the slowest real TUI measured (~2.8s to take
+    # the tty, ~5s to first paint) and leaves the rest for the probe.
+    deadline = start + min(budget_s, 8.0)
+    while time.perf_counter() < deadline:
+        if _pane_text(name).strip():
+            return True
+        if _echo_mode(name) == "render":
+            return True
+        if not _pane_alive(name):
+            return False
+        time.sleep(0.02)
+    # Timed out: either a genuinely cooked CLI (cat) or a tool that never takes
+    # the tty. Typing is still worth trying; the row records kernel-echo so it
+    # is excluded from the render ranking.
+    return _pane_alive(name)
+
+
+def _await_settled(name, budget_s=6.0, quiet=3):
+    """Wait until the pane text stops changing (the app has finished painting).
+
+    Typing into a still-starting app proves nothing: the keystroke can be
+    swallowed before it ever reaches the input loop.
+    """
+    deadline = time.perf_counter() + budget_s
+    last = None
+    streak = 0
+    while time.perf_counter() < deadline:
+        cur = _pane_text(name)
+        if cur == last:
+            streak += 1
+            if streak >= quiet:
+                return True
+        else:
+            last = cur
+            streak = 0
+        if not _pane_alive(name):
+            return False
+        time.sleep(0.05)
+    return True
+
+
+def _echo_mode(name):
+    """Whether the tool's tty is echoing (cooked) or the app owns the screen.
+
+    Read from the pane's own pty, which is the terminal the tool actually holds.
+    A cooked-mode CLI has the line discipline echo each byte before it wakes, so
+    its "latency" describes the kernel, not the tool — measured: `cat` in a pty
+    times ~0.3ms with no UI at all. Ranking those against a raw-mode TUI that
+    must repaint a cell is meaningless, so the classification is recorded and
+    ranks are computed within the `render` class only.
+    """
+    tty = _pane_tty(name)
+    if not tty:
+        return None
+    try:
+        fd = os.open(tty, os.O_RDONLY | os.O_NOCTTY | os.O_NONBLOCK)
+    except OSError:
+        return None
+    try:
+        lflag = termios.tcgetattr(fd)[3]
+    except (termios.error, OSError):
+        return None
+    finally:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+    return "kernel-echo" if lflag & termios.ECHO else "render"
+
+
+def _classify_mode(name, budget_s=6.0):
+    """Watch the tty mode until the tool commits to one.
+
+    Sampling once is wrong: several TUIs boot COOKED and switch to raw when
+    their UI takes over (measured: jcode ~2.5s, pi-bolt ~2.5s, kimi ~2.8s). An
+    early sample labelled them kernel-echo, so the metric timed the kernel
+    echoing rather than the app rendering, and the answer depended on timing.
+
+    ECHO turning off at any point means the app took the terminal -> `render`.
+    Staying on for the whole window means a cooked CLI -> `kernel-echo`.
+    """
+    deadline = time.perf_counter() + budget_s
+    last = None
+    while time.perf_counter() < deadline:
+        cur = _echo_mode(name)
+        if cur == "render":
+            return "render"
+        last = cur
+        if not _pane_alive(name):
+            break
+        time.sleep(0.1)
+    return last
+
+
+def tui_first_byte(path, probes=5):
+    """Time from session creation to the first RENDERED character, best of N.
+
+    Replaces "time to first output byte": for a TUI the first byte on the wire is
+    cursor bookkeeping (fox emits a bare 6-byte `\\e[?25l` before compositing),
+    so it measured the wrong event. The first rendered cell is what a user waits
+    for.
+
+    The clock starts BEFORE the tmux session is created, so the figure includes
+    tmux's own spawn cost (~30ms, measured). That cost is identical for every
+    tool, so the ordering between tools is preserved — but the absolute numbers
+    are not comparable to the old raw-PTY ones, which is why the dashboard
+    caption says so.
+    """
+    if not _tmux_ready():
+        return None
     samples = []
     for _ in range(probes):
         start = time.perf_counter()
-        try:
-            pid, fd = _spawn_tui(path)
-        except OSError:
+        name = _session_run(path)
+        if name is None:
             return None
-        first = None
         try:
-            while True:
-                r, _, _ = select.select([fd], [], [], 10)
-                if not r:
-                    break
-                try:
-                    data = os.read(fd, 65536)
-                except OSError:
-                    break
-                if not data:
-                    break
-                if first is None:
-                    first = time.perf_counter() - start
-                    break
+            hit = _wait_viewbox(name, 20, t0=start)
+            if hit is not None:
+                samples.append(hit)
         finally:
-            try:
-                os.close(fd)
-            except OSError:
-                pass
-            try:
-                os.kill(pid, signal.SIGKILL)
-                os.waitpid(pid, 0)
-            except (ProcessLookupError, ChildProcessError, OSError):
-                pass
-        if first is not None:
-            samples.append(first * 1000)
+            _session_kill(name)
     return samples
+
+
+def _probe_once(name, probe, budget, t0=None):
+    """Type the probe and wait for it to render.
+
+    Returns (ms from t0, signal) or (None, None). `t0` is the moment to time
+    from: the keystroke for latency, spawn for ttfi.
+
+    Deliberately does NOT wait for the pane to settle. That wait is startup
+    observation, and when it ran inside a latency measurement it charged the
+    whole settle window to the keystroke round-trip — an earlier version of this
+    had `cat` reading 3007ms instead of ~0.3ms for exactly that reason. Callers
+    settle BEFORE they start their clock; here we only type and watch.
+    """
+    _send(name, probe)
+    hit = _wait_probe(name, probe, budget, t0 if t0 is not None else time.perf_counter())
+    if hit is None:
+        return None, None
+    return hit, "drained"
+
+
+def tui_first_input(path, label, probes=3, timeout=15):
+    """Spawn -> probe rendered in the viewbox, best of N. Time to interactive.
+
+    Two rounds when the first probe never lands: an app still finishing startup
+    can swallow it, and the honest answer is "how long until my input renders",
+    not n/a. An app that never renders it still reports n/a.
+    """
+    if not _tmux_ready():
+        return None, None
+    samples = []
+    signal_kind = None
+    for _ in range(probes):
+        # Clock starts BEFORE the session exists — the same origin
+        # tui_first_byte uses. Starting it after the session was created made
+        # ttfi occasionally read LOWER than first-char for the same tool, which
+        # is impossible and means the two figures were not measuring from the
+        # same point.
+        start = time.perf_counter()
+        name = _session_run(path)
+        if name is None:
+            return None, None
+        try:
+            if not _await_ready(name, 20, t0=start):
+                continue
+            for _attempt in (1, 2):
+                hit, via = _probe_once(name, PROBE_TEXT, timeout, t0=start)
+                if hit is not None:
+                    samples.append(hit)
+                    break
+            # Classify AFTER measuring: the mode watch can take up to 6s on a
+            # tool that boots cooked and switches late, and doing it before the
+            # probe would sit between spawn and keystroke — inflating ttfi by an
+            # amount that has nothing to do with the tool's startup.
+            if signal_kind is None:
+                signal_kind = _classify_mode(name)
+        finally:
+            _session_kill(name)
+    return samples, signal_kind
+
+
+def tui_input_latency(path, label, settle_s=0.5, probes=3, timeout=15):
+    """Keystroke -> probe rendered, with startup removed. Pure input handling.
+
+    Launch, wait for the viewbox to appear and settle, then time ONLY the
+    keystroke round trip. Classification happens before the clock starts: waiting
+    for the tty mode to settle is startup observation, not input latency, and
+    charging it to the measurement is a bug that once made `cat` read 3007ms
+    instead of ~0.3ms.
+    """
+    if not _tmux_ready():
+        return None, None
+    samples = []
+    signal_kind = None
+    for _ in range(probes):
+        name = _session_run(path)
+        if name is None:
+            return None, None
+        try:
+            if _wait_viewbox(name, 20) is None:
+                continue
+            if not _await_settled(name):
+                continue
+            time.sleep(settle_s)
+            if signal_kind is None:
+                signal_kind = _classify_mode(name)
+            t0 = time.perf_counter()
+            hit, _via = _probe_once(name, PROBE_TEXT, timeout, t0=t0)
+            if hit is not None:
+                samples.append(hit)
+        finally:
+            _session_kill(name)
+    return samples, signal_kind
 
 
 def _pss_of(pid):
@@ -464,7 +850,7 @@ def _ppid_of(pid):
             data = f.read()
     except OSError:
         return None
-    # comm may contain spaces/parens and is the only parenthesised field
+    # comm can contain spaces/parens and is the only parenthesised field
     rparen = data.rfind(b")")
     if rparen < 0:
         return None
@@ -480,12 +866,12 @@ def _ppid_of(pid):
 def _pss_tree(root_pid):
     """(total PSS in MB, process count) for a pid and all its descendants.
 
-    Summing is the honest accounting for a CLI's footprint: a node-based tool
-    spawns workers that hold real, user-visible memory, and reporting only the
-    launcher understates it by 2-8x (measured: kilo 46->353MB, copilot 47->303).
+    Summing is the honest accounting for a CLI's footprint: a node-based tool's
+    workers hold real, user-visible memory, and charging only the launcher
+    understates it by 2-8x (measured: kilo 46->353MB, copilot 47->303).
 
-    Summing PSS does NOT double-count shared memory — the kernel divides each
-    shared page's PSS among the processes mapping it, so a fork with inherited
+    This does NOT double-count shared memory — the kernel divides each shared
+    page's PSS among the processes mapping it, so a fork with inherited
     copy-on-write memory reads tree/root = 1.05, not 2.0 (verified with a
     synthetic parent/child pair).
     """
@@ -517,41 +903,23 @@ def _pss_tree(root_pid):
 def idle_pss(path, settle=1.5, budget_s=8.0, quiet_reads=3):
     """Settled PSS of the tool AND its process tree, in MB (Linux only).
 
-    Two things had to be right, and each was wrong in an earlier attempt:
+    Two things matter, and each was wrong in an earlier attempt:
 
-    1. THE TREE, not the root. Node-based CLIs run the real UI in children, so
-       root-only under-reported their footprint by 2-8x. Memory a child holds is
-       memory the user paid for, so it counts.
+    1. THE TREE, not the root: node-based CLIs run the UI in children.
+    2. A SETTLED, REPRODUCIBLE instant. A tree at a fixed t=1.5s contains
+       whatever startup work is in flight. Convergence alone is not enough
+       either — periodic work can hold a stable but INFLATED tree. Measured
+       spreads across launches were 41% (opencode), 46% (kimi), 134% (jcode).
 
-    2. A SETTLED, REPRODUCIBLE instant — not a fixed one and not a single
-       convergence. A CLI's tree at t=1.5s can include short-lived startup work
-       (indexing, version probes, telemetry, MCP boot).
-
-    Why "wait until it stops changing" alone was still not enough: periodic work
-    (a poll, a watch, a spinner-driven child) can hold a stable but INFLATED
-    tree — the total stops moving while the extra processes are still there. And
-    whether a transient child happens to survive the settle window is luck.
-    Measured across three launches of the same binaries, that produced spreads of
-    41% (opencode), 46% (kimi) and 134% (jcode, procs=[3,1,1]).
-
-    The property that makes this measurable: extra processes only ever ADD. Two
-    launches can disagree about whether a transient child existed, but neither
-    can invent memory the tool does not hold. So the resting footprint is the
-    FLOOR over a few launches — the reading taken when the least startup work
-    happened to be in flight. That is stable, and it is the number a user sees
-    once the tool has finished booting.
+    Extra processes only ever ADD, so the resting figure is the FLOOR over a few
+    launches: the reading taken when the least startup work was in flight.
     """
     detail = idle_pss_detail(path, settle=settle, budget_s=budget_s, quiet_reads=quiet_reads)
     return detail["tree_mb"] if detail else None
 
 
 def idle_pss_detail(path, settle=1.5, budget_s=8.0, quiet_reads=3, launches=3):
-    """Resting {root_mb, tree_mb, procs, reads} for one tool, or None.
-
-    Runs up to `launches` fresh processes and keeps the FLOOR of the tree total
-    (see idle_pss for why the floor is the honest resting figure). The winning
-    launch's root/procs are reported alongside so the JSON explains the number.
-    """
+    """Resting {root_mb, tree_mb, procs, reads} for one tool, or None."""
     best = None
     for _ in range(max(1, launches)):
         one = _one_pss_launch(path, settle=settle, budget_s=budget_s, quiet_reads=quiet_reads)
@@ -564,11 +932,9 @@ def idle_pss_detail(path, settle=1.5, budget_s=8.0, quiet_reads=3, launches=3):
 
 def _one_pss_launch(path, settle, budget_s, quiet_reads):
     """One launch: wait out `settle`, then read the tree until it converges."""
-    try:
-        pid, fd = _spawn_tui(path)
-    except OSError:
+    name = _session_run(path)
+    if name is None:
         return None
-
     try:
         time.sleep(settle)
         deadline = time.perf_counter() + budget_s
@@ -576,17 +942,17 @@ def _one_pss_launch(path, settle, budget_s, quiet_reads):
         stable = 0
         reads = 0
         best = None
+        root = _pane_pid(name)
         while time.perf_counter() < deadline:
-            tree, nprocs = _pss_tree(pid)
+            tree, nprocs = _pss_tree(root)
             reads += 1
             if tree is None:
-                if not _alive(pid):
+                if not _pane_alive(name):
                     break
                 time.sleep(0.2)
                 continue
             best = (tree, nprocs)
-            # converged when the tree total stops moving. 2MB of jitter is
-            # allocator noise, not a change in what the tool holds.
+            # converged when the total stops moving; 2MB is allocator jitter
             if last is not None and abs(tree - last) <= 2.0:
                 stable += 1
                 if stable >= quiet_reads:
@@ -597,454 +963,14 @@ def _one_pss_launch(path, settle, budget_s, quiet_reads):
             time.sleep(0.25)
         if best is None:
             return None
-        root = _pss_of(pid)
         return {
-            "root_mb": root,
+            "root_mb": _pss_of(root),
             "tree_mb": best[0],
             "procs": best[1],
             "reads": reads,
         }
     finally:
-        try:
-            os.close(fd)
-        except OSError:
-            pass
-        try:
-            os.kill(pid, signal.SIGKILL)
-            os.waitpid(pid, 0)
-        except (ProcessLookupError, ChildProcessError, OSError):
-            pass
-
-
-# No whitespace: a tool still in cooked mode has the terminal line discipline
-# echo its keys, and that discipline eats spaces — "hello bench" arrived as
-# "hellobench" and never matched, so cooked-mode tools (claude, jcode) timed
-# out as n/a even though they echoed fine. A bare word survives both modes.
-PROBE_TEXT = "hellobench"
-
-# Tools whose input readiness cannot be read off the screen: {"log": file to
-# tail, "marker": regex ending the probe}. The motivating case is a sign-in
-# screen that swallows echoed keystrokes while the tool logs its own
-# input-ready marker internally — typing is still sent the same way; only the
-# completion signal differs (internal ack rather than screen echo), which the
-# method strings below say out loud.
-INPUT_MARKERS = {
-    # "antigravity": {"log": "~/.antigravity/input-ready.log", "marker": r"..."},
-}
-
-
-# `ANSI_RE` used to live here: it stripped control traffic so the probe could
-# be matched against the remaining bytes. That approach is gone — a cell-diffing
-# TUI never emits the probe as one contiguous run, and a wrapped input box
-# splits it across rows. `screen.py` parses the stream into a character grid and
-# the probe is searched there instead, which is the only thing "did my typing
-# appear" ever meant. Kept as a note so the idea is not reintroduced.
-
-
-def _spawn_tui(path, rows=40, cols=120):
-    """Fork a PTY with a REAL window size, and return (pid, fd).
-
-    `pty.fork()` gives the child a 0x0 terminal. Every full-screen TUI queries
-    TIOCGWINSZ before drawing, so a 0x0 window makes it collapse or skip its
-    input box entirely — measured on jcode: 928 bytes of output at 0x0 versus
-    6229 bytes at 40x120. The probe then has nowhere to appear, which is exactly
-    the set of tools that reported n/a.
-
-    The trust prompt is the other half: fox-agent (and the trust-gated flow it
-    models) asks "Do you trust this folder?" on an interactive start and waits
-    for a keypress. In a bench temp dir that swallows the probe, so fox-agent
-    itself scored n/a. `shouldSkipTrustCheck` in src/core/trust.ts exists for
-    exactly this ("never prompt in scripts/tests"), so the bench opts out.
-    """
-    pid, fd = pty.fork()
-    if pid == 0:
-        os.environ["TERM"] = "xterm-256color"
-        os.environ.setdefault("FOX_AGENT_NO_TRUST_CHECK", "1")
-        try:
-            os.execv(path, [path])
-        except Exception:
-            os._exit(127)
-    try:
-        fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
-    except OSError:
-        pass
-    return pid, fd
-
-
-def _wait_output(fd, timeout):
-    """First output chunk within timeout, or None (app never came alive)."""
-    end = time.perf_counter() + timeout
-    while time.perf_counter() < end:
-        r, _, _ = select.select([fd], [], [], max(0, end - time.perf_counter()))
-        if not r:
-            return None
-        try:
-            data = os.read(fd, 65536)
-        except OSError:
-            return None
-        if not data:
-            return None
-        return data
-    return None
-
-
-def _await_quiet(fd, budget_s):
-    """Drain until the TUI goes quiet (ready to read keys) or budget expires.
-
-    Polls in ~120ms slices and stops after a few consecutive slices with nothing
-    to read — a quiet app finishes in well under a second instead of blocking for
-    the whole budget. A spinner that never goes quiet exhausts the budget and is
-    typed into anyway; the retype round in the caller catches swallowed keys, so
-    worst case is a slower number, not a wrong one.
-    """
-    deadline = time.perf_counter() + budget_s
-    quiet_streak = 0
-    while time.perf_counter() < deadline:
-        slice_left = max(0.0, min(0.12, deadline - time.perf_counter()))
-        r, _, _ = select.select([fd], [], [], slice_left)
-        if not r:
-            quiet_streak += 1
-            if quiet_streak >= 3:  # ~3 quiet slices ≈ settled
-                break
-            continue
-        quiet_streak = 0
-        try:
-            if not os.read(fd, 65536):
-                break
-        except OSError:
-            break
-
-
-def _echo_mode(fd):
-    """Whether the terminal's line discipline is echoing for this process.
-
-    This is the one OBJECTIVE way to tell the two kinds of "input latency"
-    apart, and the bench conflated them before:
-
-      ECHO on (cooked mode)  the tty driver mirrors each byte back before the
-                             app wakes. A CLI with no UI at all measures here —
-                             `cat` in a PTY times ~0.1-0.2ms. That number says
-                             nothing about the app.
-      ECHO off (raw mode)    a full-screen TUI disables echo and must redraw a
-                             cell itself. This is real input handling.
-
-    Ranking the two in one column compares "the kernel echoed for me" against
-    "the app repainted" — which is why a pile of tools appeared to beat a
-    hand-tuned TUI by an order of magnitude. Reading the slave's termios through
-    the master is reliable on Linux PTYs.
-    """
-    try:
-        lflag = termios.tcgetattr(fd)[3]
-    except (termios.error, OSError):
-        return None
-    return "kernel-echo" if lflag & termios.ECHO else "render"
-
-
-def _await_echo(fd, t0, budget, logf, cfg):
-    """Type PROBE_TEXT and wait until it is actually VISIBLE, not merely until
-    the PTY twitches. Returns (ms from t0, signal) or (None, None).
-
-    `budget` is a DURATION in seconds, not an absolute deadline, and it starts
-    at the keystroke. That distinction is load-bearing: readiness (first output
-    plus a quiet settle) can legitimately consume most of a caller's patience on
-    a slow runner, and an absolute deadline computed from spawn then expired
-    before the tool had any chance to draw -- which is what silently turned 15
-    working tools into n/a rows.
-
-    The old version returned on the first output chunk after a quiet baseline.
-    That is wrong for a TUI for two reasons:
-
-      1. The first chunk after a keystroke is often not the render. fox emits a
-         6-byte `\\e[?25l` (cursor hide) BEFORE compositing the frame, so the
-         old metric timed cursor bookkeeping. With the paint timer forced to
-         200ms the old number still read ~3ms — proof it was not the render.
-      2. A periodic status repaint that happens to land after the keystroke was
-         accepted as the answer. Measured on fox: 0 of 6 probes contained the
-         typed text; all 6 were status ticks.
-
-    So: feed everything since the keystroke into a terminal grid (see
-    screen.py) and stop only when the probe text reads out of that grid. That is
-    what a person perceives as their input appearing, and it is the same
-    expression for both metrics (t0 = spawn for first_input, t0 = keystroke for
-    latency).
-
-    Up to two typing rounds: a tool still starting up may swallow early
-    keystrokes, and the honest number is "how long until my input renders", not
-    n/a. A tool that never renders still times out honestly.
-    """
-    probe = PROBE_TEXT.encode()
-    for attempt in (1, 2):
-        if attempt == 2:
-            # one flush of late startup output before retyping; its own small
-            # budget, never the (possibly already spent) probe budget
-            quiet_end = time.perf_counter() + 1.0
-            while time.perf_counter() < quiet_end:
-                r, _, _ = select.select([fd], [], [], max(0, quiet_end - time.perf_counter()))
-                if not r:
-                    break
-                try:
-                    if not os.read(fd, 65536):
-                        break
-                except OSError:
-                    break
-        try:
-            os.write(fd, probe)
-        except OSError:
-            return None, None
-        # Everything received since the keystroke is parsed into a character
-        # grid; the probe counts as landed only when it reads out of the GRID.
-        # Matching literal bytes was wrong three ways: a cell-diffing TUI never
-        # emits the probe as one contiguous run (jcode redraws with cursor
-        # moves), a wrapped input box splits it across rows, and escape traffic
-        # can interleave between its characters. The grid resolves all three to
-        # their visible result -- which is what a person judges.
-        screen = Screen()
-        # The wait budget starts when the probe was TYPED, not when the process
-        # was spawned: readiness (output + quiet) can legitimately consume most
-        # of `budget` on a slow runner, and inheriting a spawn-relative deadline
-        # made the loop expire before the tool had a chance to draw anything.
-        probe_deadline = time.perf_counter() + budget
-        while time.perf_counter() < probe_deadline:
-            if logf is not None:
-                try:
-                    chunk = logf.read()
-                except OSError:
-                    break
-                if chunk:
-                    if re.search(cfg["marker"], chunk.decode("utf-8", "replace")):
-                        return time.perf_counter() - t0, "log-marker"
-                time.sleep(0.2)
-                continue
-            r, _, _ = select.select([fd], [], [], max(0, probe_deadline - time.perf_counter()))
-            if not r:
-                continue
-            try:
-                data = os.read(fd, 65536)
-            except OSError:
-                break
-            if not data:
-                # EOF on the PTY master: the child exited (a tool that prints
-                # "not a terminal" and quits does this). The result is the same
-                # n/a, just reached in ms instead of waiting out the full
-                # timeout — this is what devin/cline/continue hit every probe.
-                dbg("echo: child closed PTY (exited) — abandoning probe early")
-                return None, None
-            screen.feed(data)
-            if screen.contains(probe):
-                return time.perf_counter() - t0, "drained"
-    return None, None
-
-
-def tui_first_input(path, label, probes=3, timeout=15):
-    """Time to interactive since startup: launch, wait until the TUI is alive
-    AND quiet (typing into a process still starting up proves nothing), type a
-    probe, and measure from process spawn to the probe text appearing on screen.
-
-    This is the real "how long until I can use it" figure — from launch, not
-    from the first typed byte. Best of N; None when the probe never appears (a
-    tool that never echoes honestly reports n/a rather than a number).
-    """
-    cfg = INPUT_MARKERS.get(label)
-    samples = []
-    signal_kind = None
-    for _ in range(probes):
-        try:
-            pid, fd = _spawn_tui(path)
-        except OSError:
-            return None, None
-        logf = None
-        try:
-            start = time.perf_counter()
-            if _wait_output(fd, 15) is None:
-                continue
-            _await_quiet(fd, budget_s=6.0)
-            if cfg:
-                try:
-                    logf = open(os.path.expanduser(cfg["log"]), "rb")
-                    logf.seek(0, os.SEEK_END)
-                except OSError:
-                    logf = None
-            # Classify BEFORE typing, but only after the mode stops changing: a
-            # TUI that boots cooked and switches to raw would otherwise be
-            # labelled kernel-echo and its number would describe the kernel.
-            # See _await_stable_mode.
-            if signal_kind is None:
-                signal_kind = _await_stable_mode(fd)
-            hit, via = _await_echo(fd, start, timeout, logf, cfg)
-            if hit is not None:
-                samples.append(hit * 1000)
-                if via == "log-marker":
-                    signal_kind = "log-marker"
-        finally:
-            try:
-                if logf is not None:
-                    logf.close()
-            except Exception:
-                pass
-            try:
-                os.close(fd)
-            except OSError:
-                pass
-            try:
-                os.kill(pid, signal.SIGKILL)
-                os.waitpid(pid, 0)
-            except (ProcessLookupError, ChildProcessError, OSError):
-                pass
-    return samples, signal_kind
-
-
-def _alive(pid):
-    """True if the child is still running (used to distinguish a silent tool
-    from a tool that exited during startup)."""
-    try:
-        os.kill(pid, 0)
-    except OSError:
-        return False
-    return True
-
-
-def _await_stable_mode(fd, budget_s=6.0, need_stable=3):
-    """Wait until the line discipline stops changing, then report its mode.
-
-    Sampling ECHO once is not enough. Several TUIs boot in COOKED mode and only
-    switch to raw when their UI takes over — measured, same machine, ECHO bit
-    sampled at 0.5/1.5/3.0/5.0s:
-
-        jcode    ON  ON  off off
-        pi-bolt  ON  ON  off off
-        fox      off off off off
-        cat      ON  ON  ON  ON
-
-    Reading it early therefore labelled a real TUI `kernel-echo`, measured the
-    kernel's own echo instead of the app's render, and produced numbers an order
-    of magnitude too fast.
-
-    NOTE: "stable for a few samples" is NOT sufficient, which is why this keeps
-    the longer-window check below. kimi stays cooked for ~2.8s before switching,
-    so a short stability window reported `kernel-echo` for it and the answer
-    still depended on timing.
-    """
-    return _classify_mode(fd, budget_s=budget_s, need_stable=need_stable)
-
-
-def _classify_mode(fd, budget_s=6.0, need_stable=3):
-    """Decide whether this tool will read raw keys, by watching for the switch.
-
-    The question the metric actually asks is "does the app render my typing, or
-    does the kernel echo it for them?" — and the honest way to answer that is to
-    watch the transition rather than sample a state:
-
-      * ECHO turns OFF at any point during boot  -> the tool took the terminal
-        into raw mode and redraws its own cells: `render`.
-      * ECHO stays ON for the whole boot window  -> a cooked-mode CLI that never
-        takes raw control (`cat`, a plain REPL): `kernel-echo`.
-
-    Boot windows measured on this machine: jcode ~2.5s, pi-bolt ~2.5s,
-    kimi ~2.8s, fox immediate. The window below covers those with margin. The
-    stable-mode short-circuit is kept for the common case (a tool that is
-    already raw when we look), so the full window is only ever paid by tools
-    that genuinely stay cooked.
-    """
-    deadline = time.perf_counter() + budget_s
-    saw_on = False
-    last = None
-    while time.perf_counter() < deadline:
-        # DRAIN while polling. A TUI that keeps painting while we watch will
-        # fill the PTY buffer (~64KB) and block on its next write — and a
-        # process blocked mid-startup never reaches the code that switches the
-        # terminal to raw mode. Then the loop records `kernel-echo` forever
-        # because it starved the very transition it was waiting for. Reading is
-        # what keeps the tool running.
-        r, _, _ = select.select([fd], [], [], 0.1)
-        if r:
-            try:
-                if not os.read(fd, 65536):
-                    break
-            except OSError:
-                break
-        cur = _echo_mode(fd)
-        if cur == "render":
-            return "render"  # took raw mode: the app owns the echo
-        if cur == "kernel-echo":
-            saw_on = True
-        last = cur
-    return "kernel-echo" if saw_on else (last or None)
-
-
-def tui_input_latency(path, label, settle_s=0.5, probes=3, timeout=15):
-    """Input latency once the TUI is interactive: launch, wait until it is alive
-    AND quiet (the same readiness tui_first_input measures, but WITHOUT typing
-    into it), wait `settle_s`, then type a probe and time how fast it renders.
-
-    Why readiness-then-a-beat, rather than a fixed wall-clock settle: a fixed
-    settle starts counting at the wrong moment for a slow tool. Two seconds
-    after the first byte is not "the app is up" — it is an arbitrary instant
-    that may still be mid-startup for a heavy TUI, so the number measured
-    input latency on a not-yet-interactive process. Anchoring on the same
-    quiet signal tui_first_input uses makes "ready" mean the same thing in both
-    figures, and the short settle on top absorbs the last repaint so the
-    keystroke lands on a settled screen. Isolates input handling from startup:
-    the clock starts at the keystroke, never at spawn.
-    """
-    cfg = INPUT_MARKERS.get(label)
-    samples = []
-    signal_kind = None
-    for _ in range(probes):
-        try:
-            pid, fd = _spawn_tui(path)
-        except OSError:
-            return None, None
-        logf = None
-        try:
-            # A silent cooked-mode CLI (cat, a bare REPL) emits nothing at
-            # startup, so requiring output would skip it entirely and report
-            # n/a. Alive-but-silent is a valid ready state; only a child that
-            # has already exited is unmeasurable. Short first wait: a full-screen
-            # TUI paints within it, and a silent CLI then proves itself alive
-            # instead of costing the whole 15s budget.
-            if _wait_output(fd, 2.0) is None and not _alive(pid):
-                continue
-            # Ready == alive AND quiet, the same signal tui_first_input waits on.
-            # Nothing is typed during readiness, so the probe cannot be swallowed
-            # by a still-starting process.
-            _await_quiet(fd, budget_s=6.0)
-            # ...then one short beat, so the keystroke hits a settled screen
-            # rather than the tail of the startup repaint.
-            time.sleep(settle_s)
-            if cfg:
-                try:
-                    logf = open(os.path.expanduser(cfg["log"]), "rb")
-                    logf.seek(0, os.SEEK_END)
-                except OSError:
-                    logf = None
-            # Classify BEFORE the clock starts. Waiting for the mode to settle is
-            # startup observation, not the keystroke round-trip, and running it
-            # inside the timed window charged the whole wait to the measurement
-            # (`cat` read 3007ms instead of ~0.3ms — half the 6s mode budget).
-            if signal_kind is None:
-                signal_kind = _await_stable_mode(fd)
-            t0 = time.perf_counter()
-            hit, via = _await_echo(fd, t0, timeout, logf, cfg)
-            if hit is not None:
-                samples.append(hit * 1000)
-                if via == "log-marker":
-                    signal_kind = "log-marker"
-        finally:
-            try:
-                if logf is not None:
-                    logf.close()
-            except Exception:
-                pass
-            try:
-                os.close(fd)
-            except OSError:
-                pass
-            try:
-                os.kill(pid, signal.SIGKILL)
-                os.waitpid(pid, 0)
-            except (ProcessLookupError, ChildProcessError, OSError):
-                pass
-    return samples, signal_kind
+        _session_kill(name)
 
 
 def start_fake_provider():
@@ -1400,59 +1326,32 @@ def self_test():
         print(f"\nself-test FAILED ({len(fails)})")
         return 1
 
-    # --- terminal grid (screen.py) --------------------------------------
-    # Each of these encodes a defect that produced a WRONG published number, so
-    # they are checks on the metric, not on the parser's aesthetics.
-    from screen import Screen
+    # --- tmux measurement primitives ------------------------------------
+    # These check the metric's wiring, not tmux itself: the properties that
+    # produced wrong published numbers when they were absent.
+    if _tmux_ready():
+        name = _session_run("/bin/sh")
+        if name and _pane_alive(name):
+            check("tmux: session starts and reports a pane pid", _pane_pid(name) is not None)
+            check("tmux: pane tty is readable (echo-mode source)", _pane_tty(name) is not None)
+            _sig = _echo_mode(name)
+            check("tmux: echo mode classifies", _sig in ("kernel-echo", "render"), str(_sig))
+            _session_kill(name)
+        else:
+            check("tmux: session starts", False, "could not create a session")
 
-    probe = b"hellobench"
-
-    # 1. A cell-diffing TUI draws the probe with cursor moves around it and never
-    #    emits it contiguously (jcode). Byte-matching called this "never echoed".
-    s = Screen()
-    s.feed(b"\x1b[?2026h\x1b[2D\x1b[3B\r\x1b[2C\x1b[3Ahellobench\x1b[?2026l")
-    check("grid: probe drawn with cursor moves is found", s.contains(probe))
-
-    # 2. Escape sequences arrive split across PTY reads — fox's first chunk is a
-    #    bare 6-byte cursor-hide. Feeding the tail as text painted the sequence
-    #    literally and shifted everything after it.
-    s = Screen()
-    s.feed(b"\x1b[?25l")
-    s.feed(b"\x1b[23;1H\x1b[38;2;1;2;3m hellobench")
-    check("grid: split escape sequence does not leak as text", s.contains(probe))
-
-    # 3. A CSI cut mid-parameters ("\x1b[3" + "8;2;1m") must not paint its
-    #    parameters onto the screen.
-    s = Screen()
-    s.feed(b"\x1b[3")
-    s.feed(b"8;2;192;202;245mok")
-    check("grid: mid-split CSI params stay invisible", "38;" not in s.snapshot(200),
-          repr(s.snapshot(60)))
-
-    # 4. Multibyte glyphs occupy ONE cell each. Byte-per-cell decoding put 3 junk
-    #    cells per box-drawing char and pushed the probe off its real column.
-    s = Screen()
-    s.feed("▐▛███▜".encode())
-    s.feed(b"X")
-    check("grid: utf8 glyph is one cell", s.snapshot(60).startswith("▐▛███▜X"),
-          repr(s.snapshot(60)))
-
-    # 5. A wrapped input box splits the probe across rows; both halves are still
-    #    the same visible text.
-    s = Screen(width=8, height=4)
-    s.feed(b"hello")
-    s.feed(b"bench")
-    check("grid: probe spanning a wrap is found", s.contains(probe))
-
-    # 6. SGR interleaved between the probe's characters (cell-level styling).
-    s = Screen()
-    s.feed(b"hello\x1b[1m\x1b[0mbench")
-    check("grid: sgr interleaved inside probe is found", s.contains(probe))
-
-    # 7. Absolute cursor addressing still places text.
-    s = Screen()
-    s.feed(b"\x1b[5;10HZ")
-    check("grid: absolute cursor position honoured", "Z" in s.snapshot(200))
+        # A probe split across a wrapped row must still be found: -J joins the
+        # lines the terminal wrapped, which is what the old byte matcher missed.
+        name = _session_run("/bin/sh")
+        if name:
+            _send(name, "printf 'hello")
+            _send(name, "bench\\n'")
+            _tmux("send-keys", "-t", name, "Enter")
+            time.sleep(0.4)
+            check("tmux: wrapped probe is found via capture-pane", PROBE_TEXT in _pane_text(name))
+            _session_kill(name)
+    else:
+        print("  skip tmux checks (tmux not installed)")
 
     if fails:
         print(f"\nself-test FAILED ({len(fails)})")

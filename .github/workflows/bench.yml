@@ -36,6 +36,17 @@ jobs:
         with:
           node-version: lts/*
 
+      # The interactive metrics run each TUI inside tmux and read the rendered
+      # screen back with `capture-pane` — tmux is the terminal model, so the bench
+      # measures what a user sees instead of re-deriving it from escape bytes.
+      # ubuntu-latest ships tmux, but assert it so a runner image change fails
+      # loudly here rather than silently reporting every input metric n/a.
+      - name: ensure tmux
+        run: |
+          command -v tmux >/dev/null || sudo apt-get install -y tmux
+          tmux -V
+
+
       # Global npm installs must land in a directory that is on PATH for every
       # LATER step (each step starts a fresh shell, so plain `export PATH`
       # inside one step is lost). Pin the prefix explicitly rather than relying
