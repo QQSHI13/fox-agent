@@ -971,6 +971,35 @@ def _probe_matcher(probe):
     return pred
 
 
+# Screens that legitimately swallow every keystroke. A CLI sitting on one of
+# these is not slow and not broken -- it is waiting for a human, which a
+# non-interactive bench cannot be. Named so the n/a row says WHICH wall it hit
+# instead of the useless "probe did not render" (the CI field produced 14 such
+# rows, and 13 of them were one of these two).
+BLOCKER_PATTERNS = (
+    ("trust prompt", ("trust this folder", "is this a project you created", "do you trust", "trust the files")),
+    ("waiting for login", ("log in", "log-in", "sign in", "signin", "api key", "authenticate", "not logged in", "auth login")),
+    ("rate limit / quota", ("rate limit", "quota", "429", "too many requests")),
+    ("network error", ("network error", "econnrefused", "enotfound", "could not connect", "fetch failed")),
+    ("error dialog", ("error", "failed", "panic")),
+)
+
+
+def _classify_blocker(screen_text):
+    """Short reason a probe could not land, read off the rendered screen.
+
+    Ordered most-specific first: a tool can print "error" in a footer while
+    sitting on a trust prompt, and the prompt is the actionable answer.
+    """
+    low = (screen_text or "").lower()
+    if not low.strip():
+        return "blank screen"
+    for label, needles in BLOCKER_PATTERNS:
+        if any(n in low for n in needles):
+            return label
+    return "no input field accepted the keystroke"
+
+
 def _pick_probe(screen_text):
     """Two letters not already on screen, so a later match is meaningful."""
     out = []
@@ -1061,19 +1090,32 @@ def measure_launch(path, ready_budget=20.0, ttfi_budget=15.0, settle_budget=8.0,
         probe = _pick_probe(pre)
         if ready:
             # 4. time to interactive: type now, clock from exec.
-            mark = L.mark()
-            L.send(probe)
-            hit = L.wait_for(_probe_matcher(probe), ttfi_budget, mark=mark)
-            if hit is not None:
-                rec["ttfi_ms"] = L.ms_since_t0(hit)
-            else:
-                rec["failed"].append(f"ttfi: probe {probe!r} did not render")
-            # the probe is only a measurement if it is really on screen
-            if rec["ttfi_ms"] is not None and probe not in L.screen():
-                rec["ttfi_ms"] = None
-                rec["failed"].append("ttfi: probe not on screen (stream false positive)")
+            #
+            # TWO attempts, as the previous bench did. An app that has taken
+            # the tty but is still finishing startup can swallow the first
+            # keystroke; retrying measures "how long until my input renders",
+            # which is the question, instead of "did the first keystroke
+            # survive a race". The clock is exec, so a retry is still an
+            # honest ttfi, not a shortened one.
+            for attempt in (1, 2):
+                mark = L.mark()
+                L.send(probe)
+                hit = L.wait_for(_probe_matcher(probe), ttfi_budget, mark=mark)
+                if hit is not None and probe in L.screen():
+                    rec["ttfi_ms"] = L.ms_since_t0(hit)
+                    break
+                if hit is not None:
+                    # matched in the stream but never rendered: not a number
+                    rec["failed"].append("ttfi: byte matched but probe not on screen")
+                if attempt == 1:
+                    # re-pick against the CURRENT screen: the first attempt may
+                    # have advanced the app past a splash
+                    probe = _pick_probe(L.screen())
+                    time.sleep(0.3)
+            if rec["ttfi_ms"] is None:
+                rec["failed"].append(f"ttfi: {_classify_blocker(L.screen())}")
         else:
-            rec["failed"].append("ttfi: never became interactive")
+            rec["failed"].append(f"ttfi: never became interactive ({_classify_blocker(L.screen())})")
 
         # 5. settle, then measure pure keystroke handling. The settle wait is
         # startup observation and must NOT be inside the latency clock: an
@@ -1107,20 +1149,23 @@ def measure_launch(path, ready_budget=20.0, ttfi_budget=15.0, settle_budget=8.0,
         if settled and L.alive():
             pre2 = L.screen()
             probe2 = _pick_probe(pre2 + probe)
-            mark2 = L.mark()
-            t_key = time.perf_counter()
-            L.send(probe2)
-            hit2 = L.wait_for(_probe_matcher(probe2), latency_budget, mark=mark2)
-            if hit2 is not None:
-                on_screen = probe2 in L.screen()
-                if on_screen:
+            for attempt in (1, 2):
+                mark2 = L.mark()
+                t_key = time.perf_counter()
+                L.send(probe2)
+                hit2 = L.wait_for(_probe_matcher(probe2), latency_budget, mark=mark2)
+                if hit2 is not None and probe2 in L.screen():
                     rec["key_latency_ms"] = (hit2 - t_key) * 1000
-                else:
-                    rec["failed"].append("latency: probe not on screen (stream false positive)")
-            else:
-                rec["failed"].append(f"latency: probe {probe2!r} did not render")
+                    break
+                if hit2 is not None:
+                    rec["failed"].append("latency: byte matched but probe not on screen")
+                if attempt == 1:
+                    probe2 = _pick_probe(L.screen() + probe2)
+                    time.sleep(0.2)
+            if rec["key_latency_ms"] is None:
+                rec["failed"].append(f"latency: {_classify_blocker(L.screen())}")
         elif not settled:
-            rec["failed"].append("latency: never settled")
+            rec["failed"].append("latency: never stopped repainting (no quiet window)")
 
     return rec
 
@@ -1926,6 +1971,28 @@ def self_test():
     # -- probe choice avoids text already on screen ----------------------
     probe = _pick_probe("hello zworld")
     check("probe avoids letters already on screen", "z" not in probe and len(probe) == 2, repr(probe))
+
+    # -- an unmeasurable tool says WHY -----------------------------------
+    # The CI field produced 14 rows of "probe did not render", which told a
+    # reader nothing. 13 of them were a trust prompt or a login screen: the CLI
+    # is not slow, it is waiting for a human. These are the real screens, so a
+    # regression in the classifier shows up as a wrong label rather than as a
+    # mysterious n/a in the published table.
+    blocker_cases = [
+        ("Quick safety check: Is this a project you created or one you trust?\n"
+         " ❯ No, exit\n   Yes, I trust this folder", "trust prompt"),
+        ("Welcome to Codex\n Please log in to continue", "waiting for login"),
+        ("API key not found. Set ANTHROPIC_API_KEY", "waiting for login"),
+        ("Rate limit exceeded, retry later (429)", "rate limit / quota"),
+        ("Type your message below\n ❯ ", "no input field accepted the keystroke"),
+        ("", "blank screen"),
+        # an error footer under a trust prompt must report the PROMPT: the
+        # most specific answer is the actionable one
+        ("do you trust the files in this folder?\n error: telemetry offline", "trust prompt"),
+    ]
+    for text, want in blocker_cases:
+        got = _classify_blocker(text)
+        check(f"blocker: {want!r} <- {text[:32]!r}", got == want, f"got {got!r}")
 
     # -- first glyph is not measured inside an escape sequence -----------
     # Every TUI boots with `\e[?1049h\e[?25l`; those bytes are printable, so a
