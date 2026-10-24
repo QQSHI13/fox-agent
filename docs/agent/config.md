@@ -38,8 +38,8 @@ debug = false                          # /debug on|off|tail + slow-frame logging
 maxSteps = 0                           # 0 = unlimited
 retryLimit = 3                         # 429/5xx retries
 requestTimeoutMs = 120000              # time WITHOUT progress, re-armed per chunk
-compactAt = 0.85                       # context fraction that triggers compaction
-compactAtTokens = 0                    # absolute token ceiling (0 = off)
+compactWarnAt = 0.8                    # header tells the agent to compact at this fraction
+compactCtxOnlyAt = 0.9                 # every tool except ctx disabled at this fraction
 toolOutputCap = 30000                  # per-tool-result character cap
 readCap = 50000                        # `read` ceiling before it demands offset/limit
 sessionListLimit = 50                  # rows `fox ls` / the picker list

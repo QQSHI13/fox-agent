@@ -749,10 +749,11 @@ describe("/settings", () => {
     // is walked by a wizard instead (see the test below)
     state.interactive = false;
     const res = tt.runSlashCommand("/settings", state)!;
-    for (const key of ["maxSteps", "retryLimit", "compactAt", "tuiScrollbar", "contextMarkers", "acpHistory"]) {
+    for (const key of ["maxSteps", "retryLimit", "compactWarnAt", "compactCtxOnlyAt", "tuiScrollbar", "contextMarkers", "acpHistory"]) {
       expect(res.output).toContain(key);
     }
-    expect(res.output).toContain("0.85"); // default shown
+    expect(res.output).toContain("0.8"); // default shown
+    expect(res.output).toContain("0.9");
   });
 
   test("bare in the TUI picks a key, then takes a typed value", async () => {
@@ -779,7 +780,7 @@ describe("/settings", () => {
     const valueStep = p.steps[1];
     expect(resolveField(valueStep.initial, { key: "tuiFrameMs" })).toBe("16");
     expect(resolveField(valueStep.initial, { key: "tuiScrollbar" })).toBe("true"); // loader defaults, not blank
-    expect(resolveField(valueStep.hint, { key: "compactAt" })).toContain("default 0.85");
+    expect(resolveField(valueStep.hint, { key: "compactWarnAt" })).toContain("default 0.8");
 
     const out = p.run({ key: "tuiFrameMs", value: "16" }, state);
     expect(out.output).toContain("tuiFrameMs = 16");
@@ -799,25 +800,25 @@ describe("/settings", () => {
     const s = tt.createSession("/w", "m1");
     const state = mkState(cfgPath, s.id, loadConfig({ cwd: "/w", configPath: cfgPath }, {}));
 
-    const set1 = tt.runSlashCommand("/settings compactAt=0.7", state)!;
-    expect(set1.output).toContain("compactAt = 0.7");
-    expect(state.config.compactAt).toBe(0.7); // applied live
-    expect(readFileSync(cfgPath, "utf8")).toContain("compactAt = 0.7"); // persisted
+    const set1 = tt.runSlashCommand("/settings compactWarnAt=0.7", state)!;
+    expect(set1.output).toContain("compactWarnAt = 0.7");
+    expect(state.config.compactWarnAt).toBe(0.7); // applied live
+    expect(readFileSync(cfgPath, "utf8")).toContain("compactWarnAt = 0.7"); // persisted
 
     // a boolean knob, applied live to the running TUI the same way
     const set2 = tt.runSlashCommand("/settings tuiScrollbar=false", state)!;
     expect(state.config.tuiScrollbar).toBe(false);
 
-    const reset = tt.runSlashCommand("/settings compactAt=", state)!;
-    expect(reset.output).toContain("(default 0.85)");
-    expect(state.config.compactAt).toBeUndefined();
-    expect(readFileSync(cfgPath, "utf8")).not.toContain("compactAt");
+    const reset = tt.runSlashCommand("/settings compactWarnAt=", state)!;
+    expect(reset.output).toContain("(default 0.8)");
+    expect(state.config.compactWarnAt).toBeUndefined();
+    expect(readFileSync(cfgPath, "utf8")).not.toContain("compactWarnAt");
 
-    expect(tt.runSlashCommand("/settings compactAt=2", state)!.output).toContain("fraction");
+    expect(tt.runSlashCommand("/settings compactWarnAt=2", state)!.output).toContain("fraction");
     expect(tt.runSlashCommand("/settings tuiScrollbar=maybe", state)!.output).toContain("not a boolean");
     expect(tt.runSlashCommand("/settings frobnicate=1", state)!.output).toContain("unknown setting");
     // rejected writes changed nothing
-    expect(state.config.compactAt).toBeUndefined();
+    expect(state.config.compactWarnAt).toBeUndefined();
   });
 
   test("toolOutputCap reaches the running tools, not just the file", async () => {
@@ -874,7 +875,7 @@ describe("/settings", () => {
     tt.runSlashCommand("/settings tuiScrollStep=", state)!;
     expect(cmds.liveSettingFor(SETTINGS.find((x) => x.key === "tuiScrollStep")!, state)).toBe(d.tuiScrollStep);
     // a key with no live effect reports null rather than a made-up value
-    expect(cmds.liveSettingFor(SETTINGS.find((x) => x.key === "compactAt")!, state)).toBeNull();
+    expect(cmds.liveSettingFor(SETTINGS.find((x) => x.key === "compactWarnAt")!, state)).toBeNull();
   });
 
   test("acpHistory accepts full/last/N and refuses junk", async () => {
@@ -926,7 +927,8 @@ describe("/usage", () => {
     expect(out).toContain("billed: ↑200 ↓20 = 220 tok");
     // cached is a subset of prompt, so the hit rate is a share of the bill
     expect(out).toContain("cache: 70% of input read from the prefix cache (140/200)");
-    expect(out).toContain("compaction triggers at");
+    expect(out).toContain("thresholds: warn at");
+    expect(out).toContain("ctx-only at");
   });
 
   test("with nothing billed the cache line says so rather than dividing by zero", async () => {

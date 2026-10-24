@@ -58,7 +58,7 @@ async function header(
     sessionId?: string;
     cwd?: string;
     provider?: { name?: string; format?: string };
-    budget?: { reported: number; limit: number; ratio: number; over: boolean };
+    budget?: { reported: number; limit: number; ratio: number; stage: "none" | "warn" | "ctxOnly"; thresholds: { warnAt: number; ctxOnlyAt: number } };
   } = {},
 ): Promise<string> {
   const { buildRuntimeHeader } = await import("../src/loop/prompt.ts");
@@ -80,7 +80,7 @@ async function both(
     sessionId?: string;
     cwd?: string;
     provider?: { name?: string; format?: string };
-    budget?: { reported: number; limit: number; ratio: number; over: boolean };
+    budget?: { reported: number; limit: number; ratio: number; stage: "none" | "warn" | "ctxOnly"; thresholds: { warnAt: number; ctxOnlyAt: number } };
   } = {},
 ): Promise<string> {
   return `${await build(opts)}\n\n${await header(opts)}`;
@@ -159,8 +159,8 @@ describe("the system prompt is a stable cache prefix", () => {
   test("a moving budget figure never reaches it", async () => {
     // the figure changed on EVERY step, so when it sat inside the prefix the
     // whole block re-billed 5,157 times running
-    const under = await build({ budget: { reported: 10, limit: 100, ratio: 0.1, over: false } } as any);
-    const over = await build({ budget: { reported: 99, limit: 100, ratio: 0.99, over: true } } as any);
+    const under = await build({ budget: { reported: 10, limit: 100, ratio: 0.1, stage: "none", thresholds: { warnAt: 0.8, ctxOnlyAt: 0.9 } } } as any);
+    const over = await build({ budget: { reported: 99, limit: 100, ratio: 0.99, stage: "ctxOnly", thresholds: { warnAt: 0.8, ctxOnlyAt: 0.9 } } } as any);
     expect(under).toBe(over);
     expect(under).not.toContain("Context used at your last step");
     expect(under).not.toContain("over the compaction threshold");
@@ -327,7 +327,7 @@ describe("live context figure in the prompt", () => {
     const none = await header();
     expect(none).not.toContain("ctx:");
 
-    const under = await header({ budget: { reported: 10_000, limit: 128_000, ratio: 10_000 / 128_000, over: false } });
+    const under = await header({ budget: { reported: 10_000, limit: 128_000, ratio: 10_000 / 128_000, stage: "none", thresholds: { warnAt: 0.8, ctxOnlyAt: 0.9 } } });
     expect(under).toContain("ctx: 10000");
     expect(under).not.toContain("over the compaction threshold");
   });
@@ -335,16 +335,17 @@ describe("live context figure in the prompt", () => {
   test("past the threshold the agent is told to prune before continuing", async () => {
     // the nudge lives in the tail; the two contracts it points back at live in
     // the doctrine section of the prefix — the agent reads both
-    const over = await both({ budget: { reported: 120_000, limit: 128_000, ratio: 120_000 / 128_000, over: true } });
-    expect(over).toContain("over the compaction threshold");
+    const over = await both({ budget: { reported: 120_000, limit: 128_000, ratio: 120_000 / 128_000, stage: "ctxOnly", thresholds: { warnAt: 0.8, ctxOnlyAt: 0.9 } } });
+    expect(over).toContain("context_alert");
+    expect(over).toContain("only ctx stays available");
     expect(over).toContain('"op":"search"');
-    expect(over).toContain("one ctx call");
+    expect(over).toContain("Storage is permanent");
   });
 
   test("without ctx the figure is omitted — nothing to act on it with", async () => {
     const h = await header({
       tools: [{ name: "read", description: "reads", parameters: { type: "object", properties: {} } }],
-      budget: { reported: 120_000, limit: 128_000, ratio: 0.94, over: true },
+      budget: { reported: 120_000, limit: 128_000, ratio: 0.94, stage: "ctxOnly", thresholds: { warnAt: 0.8, ctxOnlyAt: 0.9 } },
     });
     expect(h).not.toContain("ctx:");
   });

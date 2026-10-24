@@ -6,7 +6,7 @@ host-level hacks.
 
 Full machine control, zero permission prompts. A production turn loop with step
 caps, retry/backoff, parallel tool execution, abort-safe partial persistence and
-auto-compaction near the context limit. SQLite event-sourced sessions. An
+agent-driven context management with harness-enforced rails. SQLite event-sourced sessions. An
 OpenAI-compatible gateway first, plus native Anthropic and Google providers. TUI
 and headless modes. ACP in both directions. A plugin system.
 
@@ -20,8 +20,10 @@ and headless modes. ACP in both directions. A plugin system.
 
 **The agent owns its context.** Every message carries a stable `[N]` marker, and
 the `ctx` tool lets the model search, hide and rewrite what it sees — as a view
-over an append-only log, so `/undo` can walk any of it back. No summary-only
-compaction, no "the harness decided what you get to remember".
+over an append-only log, so `/undo` can walk any of it back. There is no
+background summarizer: no "the harness decided what you get to remember". The
+harness only measures the window and, at a threshold you set, tells the agent to
+compact and then takes the other tools away until it does.
 
 **No permission prompts.** `exec`, `pty`, `write`, `edit` and MCP tools run with
 your full user privileges in your cwd. That is a deliberate design choice with a

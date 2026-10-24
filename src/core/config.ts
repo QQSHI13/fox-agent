@@ -115,14 +115,19 @@ export interface Config {
   /** max tool-call steps in one turn; 0 = unlimited (the default) */
   maxSteps: number;
   retryLimit: number;
-  /** fraction of the model context window that triggers auto-compaction */
-  compactAt: number;
   /**
-   * absolute prompt-token ceiling for auto-compaction, applied on top of the
-   * window fraction (0 = window fraction only). Guards a window the registry
-   * overstates, where `compactAt * window` is unreachable and never fires.
+   * Fraction of the model context window at which the runtime header starts
+   * telling the agent to compact its own window with `ctx`.
    */
-  compactAtTokens: number;
+  compactWarnAt: number;
+  /**
+   * Fraction at which every tool except `ctx` is disabled for the step.
+   *
+   * This is a hard rail, not a suggestion: past this point the only useful
+   * action is making the window smaller, and anything else either fails or
+   * makes it worse. `ctx` stays callable because it is the tool that fixes it.
+   */
+  compactCtxOnlyAt: number;
   /** abort a provider request after this long with no streamed progress (0 = never) */
   requestTimeoutMs: number;
   mcpServers: Record<string, McpServerConfig>;
@@ -236,8 +241,8 @@ const DEFAULTS: Omit<Config, "projectInstructions"> = {
   provider: "openai-compatible",
   maxSteps: 0, // 0 = no step cap; a turn ends when the model stops calling tools
   retryLimit: 3,
-  compactAt: 0.85,
-  compactAtTokens: 0, // 0 = window fraction only; set a ceiling in config for an overstated window
+  compactWarnAt: 0.8,
+  compactCtxOnlyAt: 0.9,
   requestTimeoutMs: 120_000,
   mcpServers: {},
   agents: {},
@@ -387,11 +392,10 @@ function applyEnv(cfg: Config, env: Record<string, string | undefined>) {
   else if (/^gemini/i.test(env.FOX_AGENT_MODEL ?? "")) cfg.provider = "google";
   const steps = Number(env.FOX_AGENT_MAX_STEPS);
   if (Number.isFinite(steps) && steps >= 0) cfg.maxSteps = Math.floor(steps);
-  const at = Number(env.FOX_AGENT_COMPACT_AT);
-  if (Number.isFinite(at) && at > 0 && at <= 1) cfg.compactAt = at;
-  const atTokens = Number(env.FOX_AGENT_COMPACT_AT_TOKENS);
-  // 0 is meaningful here (window fraction only), so the guard is >= 0
-  if (Number.isFinite(atTokens) && atTokens >= 0) cfg.compactAtTokens = Math.floor(atTokens);
+  const warnAt = Number(env.FOX_AGENT_COMPACT_WARN_AT);
+  if (Number.isFinite(warnAt) && warnAt > 0 && warnAt <= 1) cfg.compactWarnAt = warnAt;
+  const ctxOnlyAt = Number(env.FOX_AGENT_COMPACT_CTX_ONLY_AT);
+  if (Number.isFinite(ctxOnlyAt) && ctxOnlyAt > 0 && ctxOnlyAt <= 1) cfg.compactCtxOnlyAt = ctxOnlyAt;
   const retries = Number(env.FOX_AGENT_RETRY_LIMIT);
   if (Number.isFinite(retries) && retries >= 0) cfg.retryLimit = Math.floor(retries);
   // 0 is meaningful here (disable the timeout), so the guard is >= 0
@@ -428,7 +432,7 @@ const REMOVED_KEYS: Record<string, string> = {
 };
 
 const KNOWN_KEYS = new Set([
-  "model", "baseUrl", "apiKey", "provider", "maxSteps", "retryLimit", "compactAt", "compactAtTokens",
+  "model", "baseUrl", "apiKey", "provider", "maxSteps", "retryLimit", "compactWarnAt", "compactCtxOnlyAt",
   "requestTimeoutMs", "diagnostics", "mcpServers", "agents", "lsp", "plugins",
   "providers", "disabledPlugins", "toolOutputCap", "readCap", "sessionListLimit",
   "tuiCollapsedChars", "tuiKeptChars", "tuiScrollbar", "tuiScrollStep", "statusBar", "debug", "tuiFrameMs", "theme", "contextMarkers", "acpHistory",
@@ -508,8 +512,8 @@ function applyTable(cfg: Config, t: Record<string, unknown> | null, scope: "glob
   if (typeof t.provider === "string" && t.provider.trim()) cfg.provider = t.provider.trim();
   if (typeof t.maxSteps === "number" && t.maxSteps >= 0) cfg.maxSteps = Math.floor(t.maxSteps);
   if (typeof t.retryLimit === "number" && t.retryLimit >= 0) cfg.retryLimit = Math.floor(t.retryLimit);
-  if (typeof t.compactAt === "number" && t.compactAt > 0 && t.compactAt <= 1) cfg.compactAt = t.compactAt;
-  if (typeof t.compactAtTokens === "number" && t.compactAtTokens >= 0) cfg.compactAtTokens = Math.floor(t.compactAtTokens);
+  if (typeof t.compactWarnAt === "number" && t.compactWarnAt > 0 && t.compactWarnAt <= 1) cfg.compactWarnAt = t.compactWarnAt;
+  if (typeof t.compactCtxOnlyAt === "number" && t.compactCtxOnlyAt > 0 && t.compactCtxOnlyAt <= 1) cfg.compactCtxOnlyAt = t.compactCtxOnlyAt;
   if (typeof t.requestTimeoutMs === "number" && t.requestTimeoutMs >= 0) cfg.requestTimeoutMs = Math.floor(t.requestTimeoutMs);
   if (typeof t.diagnostics === "boolean") cfg.diagnostics = t.diagnostics;
   if (typeof t.toolOutputCap === "number" && t.toolOutputCap >= 1000) cfg.toolOutputCap = Math.floor(t.toolOutputCap);
@@ -836,22 +840,26 @@ export const SETTINGS: SettingSpec[] = [
     fmt: (v) => (v === undefined ? "3" : String(v)),
   },
   {
-    key: "compactAt",
-    desc: "auto-compact at this fraction of the context window",
-    def: "0.85",
+    key: "compactWarnAt",
+    desc: "tell the agent to compact its own window at this fraction of the context window",
+    def: "0.8",
     validate: (raw) => {
       const n = Number(raw);
-      if (!Number.isFinite(n) || n <= 0 || n > 1) throw new Error("must be a fraction in (0, 1], e.g. 0.85");
+      if (!Number.isFinite(n) || n <= 0 || n > 1) throw new Error("must be a fraction in (0, 1], e.g. 0.8");
       return n;
     },
-    fmt: (v) => (v === undefined ? "0.85" : String(v)),
+    fmt: (v) => (v === undefined ? "0.8" : String(v)),
   },
   {
-    key: "compactAtTokens",
-    desc: "absolute prompt-token ceiling for auto-compact (0 = window fraction only)",
-    def: "0",
-    validate: num(0),
-    fmt: (v) => (v === undefined ? "0" : v === 0 ? "0 (window fraction only)" : String(v)),
+    key: "compactCtxOnlyAt",
+    desc: "disable every tool except ctx at this fraction of the context window",
+    def: "0.9",
+    validate: (raw) => {
+      const n = Number(raw);
+      if (!Number.isFinite(n) || n <= 0 || n > 1) throw new Error("must be a fraction in (0, 1], e.g. 0.9");
+      return n;
+    },
+    fmt: (v) => (v === undefined ? "0.9" : String(v)),
   },
   {
     key: "requestTimeoutMs",
@@ -1002,8 +1010,8 @@ export function loadConfig(
   if (overrides.provider) merged.provider = overrides.provider;
   if (overrides.maxSteps !== undefined) merged.maxSteps = overrides.maxSteps;
   if (overrides.retryLimit !== undefined) merged.retryLimit = overrides.retryLimit;
-  if (overrides.compactAt !== undefined) merged.compactAt = overrides.compactAt;
-  if (overrides.compactAtTokens !== undefined) merged.compactAtTokens = overrides.compactAtTokens;
+  if (overrides.compactWarnAt !== undefined) merged.compactWarnAt = overrides.compactWarnAt;
+  if (overrides.compactCtxOnlyAt !== undefined) merged.compactCtxOnlyAt = overrides.compactCtxOnlyAt;
   if (overrides.requestTimeoutMs !== undefined) merged.requestTimeoutMs = overrides.requestTimeoutMs;
 
   merged.maxSteps = Math.max(0, Math.floor(merged.maxSteps));

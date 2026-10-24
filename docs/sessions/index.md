@@ -76,9 +76,11 @@ Every message carries a stable `[N]` marker.
 
 ## Compaction and pruning
 
-Auto-compaction triggers at `compactAt` (default 0.85 of the window) or
-`compactAtTokens` (absolute ceiling). It only **hides** messages, keeping their
-text in the log so `/undo` works.
+There is no automatic compaction. The agent compacts its own view with `ctx`,
+and it only **hides** messages, keeping their text in the log so `/undo` works.
+Two configurable rails keep that honest: `compactWarnAt` (default 0.8 of the
+window) puts a warning in the runtime header, and `compactCtxOnlyAt`
+(default 0.9) disables every tool except `ctx` until the window comes down.
 
 `/prune` reclaims the disk that leaves behind:
 

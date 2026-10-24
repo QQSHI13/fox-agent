@@ -22,11 +22,11 @@ against the file that named them, not against your cwd.
 
 ```
 /settings                     # list everything
-/settings compactAt=0.9       # validated, saved to the global config, applied live
-/settings compactAt=          # reset to the default
+/settings compactWarnAt=0.7   # validated, saved to the global config, applied live
+/settings compactWarnAt=      # reset to the default
 ```
 
-Covers `maxSteps`, `retryLimit`, `compactAt`, `compactAtTokens`,
+Covers `maxSteps`, `retryLimit`, `compactWarnAt`, `compactCtxOnlyAt`,
 `requestTimeoutMs`, `toolOutputCap`, `readCap`, `sessionListLimit`,
 `tuiCollapsedChars`, `tuiKeptChars`, `tuiScrollStep`, `statusBar`, `debug`,
 `tuiFrameMs`, `contextMarkers` and `acpHistory`.
@@ -53,8 +53,8 @@ Model, theme and reasoning effort have their own commands (`/model`, `/theme`,
 | `maxSteps` | `0` | Tool-call steps per turn; `0` = unlimited |
 | `retryLimit` | `3` | Retries on 429/5xx, with backoff |
 | `requestTimeoutMs` | `120000` | Bound on **time without progress**, not total duration (see below) |
-| `compactAt` | `0.85` | Context fraction that triggers auto-compaction |
-| `compactAtTokens` | `0` | Absolute prompt-token ceiling on top of `compactAt`; `0` = window fraction only |
+| `compactWarnAt` | `0.8` | Context fraction at which the runtime header tells the agent to compact |
+| `compactCtxOnlyAt` | `0.9` | Context fraction at which every tool except `ctx` is disabled |
 | `toolOutputCap` | `30000` | Per-tool-result character cap |
 | `readCap` | `50000` | `read` ceiling before it refuses and asks for `offset`/`limit` |
 
@@ -136,8 +136,8 @@ restricted instead. `FOX_AGENT_NO_TRUST_CHECK=1` skips the check for scripts.
 model = "kimi-k2"
 provider = "openrouter"      # a [providers.*] profile name, or a bare wire format
 maxSteps = 0                 # 0 = unlimited
-compactAt = 0.85
-compactAtTokens = 131072     # absolute ceiling on top of compactAt
+compactWarnAt = 0.8          # header says: compact now
+compactCtxOnlyAt = 0.9       # only ctx stays callable past this
 retryLimit = 3
 requestTimeoutMs = 120000
 diagnostics = true

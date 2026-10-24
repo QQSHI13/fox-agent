@@ -52,72 +52,79 @@ export function sessionContextTokens(sessionId: string): number {
 }
 
 /**
- * Absolute prompt-token ceiling for auto-compaction (0 = window fraction only).
+ * When the harness intervenes, as a fraction of the model's context window.
  *
- * The window fraction alone is exactly as trustworthy as `lookupModel`'s idea of
- * the window, and that number is best-effort: the endpoint's own `/models`
- * listing often omits a context field, and the models.dev catalog then answers
- * with a size the endpoint does not actually serve — 100,000,000 for one local
- * proxy. Against such a window `0.85 * window` is unreachable, so compaction
- * never fired and the context grew monotonically to the provider's real limit,
- * re-billed in full on every step.
- *
- * This default is therefore 0 (window fraction only): for a model whose window
- * is known-correct — user config, or the endpoint's own /models listing, which
- * outranks the catalog — the fraction is the right trigger and an absolute cap
- * only throws away usable context (131072 on a real 1M window is 12.5%). Set
- * `compactAtTokens` in config to re-enable the ceiling for a window the
- * registry overstates.
+ * There is no automatic compaction any more: the agent owns its own window via
+ * `ctx`, and a host that silently summarizes behind its back both destroys
+ * information the agent was still using and spends an LLM call it never asked
+ * for. What the harness keeps is the two things only it can do — TELL the agent
+ * (it cannot see the provider's own numbers) and, at the limit, TAKE AWAY the
+ * tools that would make the window worse.
  */
-export const DEFAULT_COMPACT_AT_TOKENS = 0;
+export interface BudgetThresholds {
+  /** at/above this fraction the runtime header tells the agent to compact */
+  warnAt: number;
+  /** at/above this fraction only `ctx` may be called */
+  ctxOnlyAt: number;
+}
 
 /**
- * Prompt tokens at which compaction fires: the smaller of the window fraction
- * and the absolute ceiling. Shared by `checkBudget` (what tells the agent to
- * prune) and `compactIfNeeded` (what actually fires) so the nudge and the thing
- * it describes cannot drift apart.
+ * Which intervention the window calls for.
+ *
+ * `none` — nothing; `warn` — say so, agent still has every tool; `ctxOnly` —
+ * the window is nearly full, so only `ctx` is callable: it is the one tool that
+ * makes the problem smaller, and leaving the others reachable is how a session
+ * digs past the limit while "looking for" something to trim.
+ *
+ * Ordered from the strictest down: `ctxOnlyAt` is checked first so a config
+ * that sets it below `warnAt` still degrades to the safe state rather than
+ * reporting a warning that implies tools are available.
  */
-export function triggerTokens(model: string, compactAt = 0.85, compactAtTokens = DEFAULT_COMPACT_AT_TOKENS): number {
-  const windowAt = Math.floor(modelBudget(model).contextWindow * compactAt);
-  return compactAtTokens > 0 ? Math.min(windowAt, compactAtTokens) : windowAt;
+export type BudgetStage = "none" | "warn" | "ctxOnly";
+
+export function budgetStage(ratio: number, t: BudgetThresholds): BudgetStage {
+  if (ratio >= t.ctxOnlyAt) return "ctxOnly";
+  if (ratio >= t.warnAt) return "warn";
+  return "none";
 }
 
 export interface BudgetCheck {
-  /** provider-reported size of the last request's prompt; 0 before the first call */
+  /** prompt size from the provider's own report, or the estimate before the first call */
   reported: number;
+  /** the window this is measured against */
   limit: number;
-  over: boolean;
+  /** reported / limit */
   ratio: number;
+  stage: BudgetStage;
+  thresholds: BudgetThresholds;
 }
 
 /**
- * How full the context window is, per the provider's own accounting.
+ * How full the context window is.
  *
- * This deliberately does not estimate: `lastPromptTokens` is the number the
- * API billed us for the previous call, which includes the system prompt, tool
- * schemas and message framing — everything a chars/4 estimate had to fudge
- * (PROMPT_OVERHEAD_TOKENS, RIP). Before the first call there is no report and
- * the window is definitionally near-empty, so `reported` is 0 and `over` false.
+ * `reported` comes from `lastPromptTokens` — the number the API actually billed
+ * for the previous call, which includes the system prompt, tool schemas and
+ * message framing that a chars/4 estimate had to fudge. Before the first call
+ * there is no report and the window is definitionally empty.
  *
- * `over` is measured against `triggerTokens`, not the raw fraction — the agent
- * must be told when the *compaction* threshold is near, which on an overstated
- * window is far below the fraction of the window the same report is divided by.
+ * Prefer passing `reportedPrecomputed`: the turn loop already measures this
+ * once per step, and re-walking the view here would compute the same number
+ * twice.
  */
 export function checkBudget(
   sessionId: string,
   model: string,
-  compactAt = 0.85,
-  compactAtTokens = DEFAULT_COMPACT_AT_TOKENS,
+  thresholds: BudgetThresholds,
   reportedPrecomputed?: number,
 ): BudgetCheck {
   const info = modelBudget(model);
-  // The turn loop measures this once per step and hands it in, so compaction and
-  // the budget header read the SAME number instead of each re-walking the view.
   const reported = reportedPrecomputed ?? sessionContextTokens(sessionId);
+  const ratio = info.contextWindow > 0 ? reported / info.contextWindow : 0;
   return {
     reported,
     limit: info.contextWindow,
-    over: reported >= triggerTokens(model, compactAt, compactAtTokens),
-    ratio: reported / info.contextWindow,
+    ratio,
+    stage: budgetStage(ratio, thresholds),
+    thresholds,
   };
 }

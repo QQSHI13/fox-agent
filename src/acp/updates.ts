@@ -94,18 +94,6 @@ export function toSessionUpdate(ev: AgentEvent, opts: MapOptions): SessionUpdate
         used: ev.prompt_tokens + ev.completion_tokens,
         size: opts.contextWindow,
       };
-    case "compacted":
-      return {
-        sessionUpdate: "compaction_update",
-        compactionId: `c-${ev.removed[0] ?? 0}-${ev.removed.length}`,
-        status: "completed",
-        summary: [
-          {
-            type: "text",
-            text: `compacted ${ev.removed.length} messages: ${ev.tokens_before} -> ${ev.tokens_after} tokens`,
-          },
-        ],
-      };
     case "step":
     case "retry":
     case "warn":

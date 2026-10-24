@@ -169,7 +169,8 @@ async function serveGateway(port: number, ctx: GatewayCtx): Promise<void> {
               for await (const ev of runTurnCore(sessionId, ctx.provider, prompt, undefined, {
                 maxSteps: ctx.config.maxSteps,
                 retryLimit: ctx.config.retryLimit,
-                compactAt: ctx.config.compactAt,
+                compactWarnAt: ctx.config.compactWarnAt,
+                compactCtxOnlyAt: ctx.config.compactCtxOnlyAt,
                 projectInstructions: ctx.config.projectInstructions,
                 config: ctx.config,
                 chat: resolveChat,
