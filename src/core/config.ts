@@ -250,7 +250,7 @@ const DEFAULTS: Omit<Config, "projectInstructions"> = {
   diagnostics: true,
   toolOutputCap: 30_000,
   readCap: 50_000,
-  sessionListLimit: 50,
+  sessionListLimit: 0,
   tuiCollapsedChars: 240,
   tuiKeptChars: 4_000,
   tuiScrollbar: true,
@@ -518,7 +518,8 @@ function applyTable(cfg: Config, t: Record<string, unknown> | null, scope: "glob
   if (typeof t.diagnostics === "boolean") cfg.diagnostics = t.diagnostics;
   if (typeof t.toolOutputCap === "number" && t.toolOutputCap >= 1000) cfg.toolOutputCap = Math.floor(t.toolOutputCap);
   if (typeof t.readCap === "number" && t.readCap >= 1000) cfg.readCap = Math.floor(t.readCap);
-  if (typeof t.sessionListLimit === "number" && t.sessionListLimit >= 1) cfg.sessionListLimit = Math.floor(t.sessionListLimit);
+  // 0 = unlimited (every session on disk); a positive value caps the page
+  if (typeof t.sessionListLimit === "number" && t.sessionListLimit >= 0) cfg.sessionListLimit = Math.floor(t.sessionListLimit);
   if (typeof t.tuiCollapsedChars === "number" && t.tuiCollapsedChars >= 40) cfg.tuiCollapsedChars = Math.floor(t.tuiCollapsedChars);
   if (typeof t.tuiKeptChars === "number" && t.tuiKeptChars >= 200) cfg.tuiKeptChars = Math.floor(t.tuiKeptChars);
 
@@ -884,10 +885,10 @@ export const SETTINGS: SettingSpec[] = [
   },
   {
     key: "sessionListLimit",
-    desc: "how many sessions /sessions and fox ls list",
-    def: "50",
-    validate: num(1, 500),
-    fmt: (v) => (v === undefined ? "50" : String(v)),
+    desc: "max sessions /sessions, fox ls and fox -c list (0 = all)",
+    def: "0",
+    validate: num(0),
+    fmt: (v) => (v === undefined ? "0" : String(v)),
   },
   {
     key: "tuiCollapsedChars",

@@ -58,6 +58,12 @@ Model, theme and reasoning effort have their own commands (`/model`, `/theme`,
 | `toolOutputCap` | `30000` | Per-tool-result character cap |
 | `readCap` | `50000` | `read` ceiling before it refuses and asks for `offset`/`limit` |
 
+### Sessions
+
+| Key | Default | Meaning |
+|---|---|---|
+| `sessionListLimit` | `0` | Rows `fox ls`, `/sessions` and the `fox -c` picker list; `0` = every session on disk. A positive value caps the page, and the same number defines what `fox -c <n>` means |
+
 ### TUI
 
 | Key | Default | Meaning |
@@ -136,6 +142,7 @@ restricted instead. `FOX_AGENT_NO_TRUST_CHECK=1` skips the check for scripts.
 model = "kimi-k2"
 provider = "openrouter"      # a [providers.*] profile name, or a bare wire format
 maxSteps = 0                 # 0 = unlimited
+sessionListLimit = 0         # 0 = list every session
 compactWarnAt = 0.8          # header says: compact now
 compactCtxOnlyAt = 0.9       # only ctx stays callable past this
 retryLimit = 3

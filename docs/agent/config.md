@@ -42,7 +42,7 @@ compactWarnAt = 0.8                    # header tells the agent to compact at th
 compactCtxOnlyAt = 0.9                 # every tool except ctx disabled at this fraction
 toolOutputCap = 30000                  # per-tool-result character cap
 readCap = 50000                        # `read` ceiling before it demands offset/limit
-sessionListLimit = 50                  # rows `fox ls` / the picker list
+sessionListLimit = 0                   # rows `fox ls` / the picker list (0 = all)
 acpHistory = "full"                    # session/load replay: "full" | "last" | <trailing node count>
 diagnostics = true                     # post-edit LSP diagnostics
 

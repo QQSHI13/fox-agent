@@ -187,6 +187,23 @@ describe("session recency", () => {
     expect(new Set(once)).toEqual(new Set(ids));
   });
 
+  test("an unlimited listing reaches every session; a positive limit still caps", async () => {
+    const { createSession, listSessions } = await import("../src/store/db.ts");
+    // the old default was a hard SQL LIMIT 50, so a session past row 50 looked
+    // deleted rather than merely off the page — `fox ls` and the picker agreed
+    // with the lie because they shared the same limit
+    const ids = Array.from({ length: 60 }, () => createSession("/w", "m1").id);
+    expect(listSessions().map((s) => s.id)).toEqual(listSessions(0).map((s) => s.id));
+    expect(listSessions().length).toBe(60);
+    // 0 (and anything non-positive) means "no limit", never "no rows"
+    expect(listSessions(-1).length).toBe(60);
+    // an explicit positive limit is still honored, and is a page of the same order
+    expect(listSessions(50).map((s) => s.id)).toEqual(listSessions().slice(0, 50).map((s) => s.id));
+    // every id is reachable by index through the unlimited default
+    const resolved = new Set(ids.map((_, i) => listSessions()[i].id));
+    expect(resolved.size).toBe(60);
+  });
+
   test("a fork enters the list at the top, not at its parent's age", async () => {
     const { createSession, appendMessage, forkSession, getSession, listSessions } = await import("../src/store/db.ts");
     const src = createSession("/w", "m1");

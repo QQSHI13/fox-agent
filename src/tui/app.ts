@@ -1787,7 +1787,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         // not a list index — `fox -c 2` breaks the moment any session in the
         // list is touched, a prefix survives that. Full id stays as the
         // forever-valid fallback.
-        const short = shortResumeArg(state.sessionId, state.config?.sessionListLimit ?? 50);
+        const short = shortResumeArg(state.sessionId, state.config?.sessionListLimit ?? 0);
         console.error(`\x1b[90mto resume: fox -c ${short}\x1b[0m (or fox -c ${state.sessionId})`);
       }
     } catch {}

@@ -507,18 +507,27 @@ export function latestSessionFor(cwd: string): SessionRow | null {
  * Sessions, most recently worked in first. `cwd` narrows to one directory —
  * the interactive picker offers that as a filter, and passing it here lets
  * SQLite answer from `idx_sessions_cwd_recent` instead of sorting every row.
+ *
+ * A limit of 0 (or less) means NO limit: `fox ls`, the picker and `fox -c`
+ * list every session that is still on disk. That is the default
+ * (`sessionListLimit = 0`), because a list you cannot see the end of is what
+ * made a session look "gone" — it had merely fallen past row 50.
  */
-export function listSessions(limit = 20, cwd?: string): SessionRow[] {
-  // over-fetch past the ghosts so reaping can't shrink a full page to nothing
-  for (let fetch = limit; ; fetch *= 2) {
+export function listSessions(limit = 0, cwd?: string): SessionRow[] {
+  const unlimited = limit <= 0;
+  // over-fetch past the ghosts so reaping can't shrink a full page to nothing.
+  // There is nothing to over-fetch for an unlimited list: one query, then reap.
+  for (let fetch = unlimited ? 0 : limit; ; fetch *= 2) {
     const rows = prep(indexDb(), 
       
         cwd
           ? `SELECT ${SESSION_COLS} FROM sessions WHERE cwd = ? ORDER BY updated_at DESC, id DESC LIMIT ?`
           : `SELECT ${SESSION_COLS} FROM sessions ORDER BY updated_at DESC, id DESC LIMIT ?`,
       )
-      .all(...(cwd ? [cwd, fetch] : [fetch])) as SessionRow[];
+      // LIMIT -1 is SQLite's "no limit"; a literal 0 would return nothing
+      .all(...(cwd ? [cwd, unlimited ? -1 : fetch] : [unlimited ? -1 : fetch])) as SessionRow[];
     const live = reapMissing(rows);
+    if (unlimited) return live;
     if (live.length === rows.length || rows.length < fetch || fetch > 10_000) return live.slice(0, limit);
   }
 }

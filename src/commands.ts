@@ -513,7 +513,8 @@ export interface SessionListItem {
  * once, then never again.
  */
 export function sessionList(opts: { currentId?: string; cwd?: string; limit?: number } = {}): SessionListItem[] {
-  return listSessions(opts.limit ?? 50, opts.cwd).map((s, i) => {
+  // 0 (the config default) means unlimited, matching listSessions
+  return listSessions(opts.limit ?? 0, opts.cwd).map((s, i) => {
     const u =
       s.prompt_tokens === null || s.completion_tokens === null
         ? backfillUsage(s.id)
@@ -1635,13 +1636,13 @@ Verify what you write: run the commands you document (at least the build/test en
       // Without one, an interactive host gets a picker and everyone else gets
       // the list they always got.
       if (arg) {
-        const id = resolveSessionArg(arg, state.config?.sessionListLimit ?? 50);
+        const id = resolveSessionArg(arg, state.config?.sessionListLimit ?? 0);
         if (!id) {
           const n = Number(arg);
           if (Number.isInteger(n) && n >= 1)
             return { handled: true, output: `no session at index ${n}` };
           // a search term: ambiguous (or no hit) — show what it COULD be
-          const hits = resolveSessionArgMatches(arg, state.config?.sessionListLimit ?? 50);
+          const hits = resolveSessionArgMatches(arg, state.config?.sessionListLimit ?? 0);
           return {
             handled: true,
             output: hits.length
@@ -1691,7 +1692,7 @@ Verify what you write: run the commands you document (at least the build/test en
           upto = Number(m[1]);
           if (!getMessage(state.sessionId, upto)) return { handled: true, output: `no message [${upto}]` };
         } else {
-          const id = resolveSessionArg(arg, state.config?.sessionListLimit ?? 50);
+          const id = resolveSessionArg(arg, state.config?.sessionListLimit ?? 0);
           if (!id) return { handled: true, output: `usage: /fork [[N]|id|list-index]` };
           source = id;
         }
@@ -1710,7 +1711,7 @@ Verify what you write: run the commands you document (at least the build/test en
       // and /undo cannot reach it.
       const [target, confirm] = rest;
       if (!target) return { handled: true, output: "usage: /delete <id|list-index> yes" };
-      const id = resolveSessionArg(target, state.config?.sessionListLimit ?? 50);
+      const id = resolveSessionArg(target, state.config?.sessionListLimit ?? 0);
       if (!id) return { handled: true, output: `unknown session ${target}` };
       // The live session's database handle is open and the turn loop keeps
       // appending to it; deleting the file underneath would leave a TUI writing
