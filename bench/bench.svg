@@ -89,7 +89,7 @@
 <rect x="164" y="507.5" width="39.7" height="12" rx="2" fill="#5b7fa6"/>
 <text x="394" y="517.0" text-anchor="end" fill="#8a8578" font-size="10.5">648 ms</text>
 <text x="44" y="542.0" text-anchor="end" fill="#8a8578" font-size="10">17</text>
-<text x="52" y="542.0" fill="#8a8578" font-size="11.5">codebuff</text>
+<text x="52" y="542.0" fill="#8a8578" font-size="11.5">crush</text>
 <rect x="164" y="532.5" width="164" height="12" rx="2" fill="#221f1a"/>
 <rect x="164" y="532.5" width="42.4" height="12" rx="2" fill="#5b7fa6"/>
 <text x="394" y="542.0" text-anchor="end" fill="#8a8578" font-size="10.5">741 ms</text>

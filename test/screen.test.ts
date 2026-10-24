@@ -79,6 +79,34 @@ describe("Screen.flush sparse-cell correctness", () => {
     expect(kPos).toBeGreaterThan(-1);
     expect(cupThumb).toBeGreaterThan(kPos); // gap cleared BEFORE jumping to thumb
   });
+
+  test("a gap erase never paints the previous run's background to end-of-line", async () => {
+    // `\x1b[K` is an ERASE, and terminals implement background-color-erase: the
+    // cleared cells take whatever background is active. Erasing the gap while a
+    // selection highlight was the active run flooded the rest of the line with
+    // it — a multi-line selection lit every earlier row to the right edge, and a
+    // line that WRAPPED to full width looked fine (no gap => no erase). So the
+    // erase must be preceded by a reset.
+    const { Screen } = await import("../src/tui/screen.ts");
+    const term = new FakeTerm();
+    const scr = new Screen(term as any);
+    scr.resize(20, 1);
+    const sel = scr.sgr({ bg: "#364a82" });
+    const plain = scr.sgr({});
+
+    // a short, highlighted run, then a gap, then one plain cell (the scrollbar)
+    scr.text(0, 0, "short", sel);
+    scr.text(19, 0, "x", plain);
+    scr.flush();
+
+    const row = term.buf.split("\x1b[1;1H")[1] ?? "";
+    const kPos = row.indexOf("\x1b[K");
+    expect(kPos).toBeGreaterThan(-1); // the gap IS erased
+    // ...and the highlight is not the active background when it happens
+    const beforeK = row.slice(0, kPos);
+    const lastSgr = beforeK.match(/\x1b\[[0-9;]*m/g)?.at(-1) ?? "";
+    expect(lastSgr).toBe("\x1b[0m");
+  });
 });
 
 describe("Screen.restyle: selection highlight over painted cells", () => {
