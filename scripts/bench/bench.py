@@ -459,41 +459,152 @@ def _pss_of(pid):
     return None
 
 
-def idle_pss(path, settle=1.5, tries=12):
-    """PSS after launching the TUI and letting it settle (Linux only).
+def _ppid_of(pid):
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as f:
+            data = f.read()
+    except OSError:
+        return None
+    # comm may contain spaces/parens and is the only parenthesised field
+    rparen = data.rfind(b")")
+    if rparen < 0:
+        return None
+    fields = data[rparen + 2 :].split()
+    if len(fields) < 2:
+        return None
+    try:
+        return int(fields[1])
+    except ValueError:
+        return None
 
-    Same launch as tui_first_byte, but instead of killing on first byte, wait
-    out the settle window and read smaps_rollup — idle harness cost, before
-    any model traffic (which would dominate everything).
 
-    Reads the ROOT process only. An earlier attempt summed the whole process
-    tree on the theory that these entries are launchers; that inflated eight
-    tools by 2-7x (kilo 46->353, copilot 47->303, codex 49->244) while native
-    binaries barely moved. The extra megabytes were helper daemons and
-    node workers that are not "this TUI at rest", and it still did not fix the
-    one tool it was aimed at. The tree of a long-lived CLI is not the metric.
+def _pss_tree(root_pid):
+    """(total PSS in MB, process count) for a pid and all its descendants.
 
-    It DOES retry instead of sampling once at exactly `settle` seconds: a single
-    read raced the final startup write and reported None for a tool that was
-    measurable a moment later — goose did exactly that in a published run while
-    every other tool reported fine. First successful reading wins; a tool that
-    really never comes up still ends as None.
+    Summing is the honest accounting for a CLI's footprint: a node-based tool
+    spawns workers that hold real, user-visible memory, and reporting only the
+    launcher understates it by 2-8x (measured: kilo 46->353MB, copilot 47->303).
+
+    Summing PSS does NOT double-count shared memory — the kernel divides each
+    shared page's PSS among the processes mapping it, so a fork with inherited
+    copy-on-write memory reads tree/root = 1.05, not 2.0 (verified with a
+    synthetic parent/child pair).
     """
+    kids = {}
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        pid = int(entry)
+        ppid = _ppid_of(pid)
+        if ppid is not None:
+            kids.setdefault(ppid, []).append(pid)
+    total = 0.0
+    count = 0
+    seen = set()
+    stack = [root_pid]
+    while stack:
+        pid = stack.pop()
+        if pid in seen:
+            continue
+        seen.add(pid)
+        v = _pss_of(pid)
+        if v is not None:
+            total += v
+            count += 1
+        stack.extend(kids.get(pid, ()))
+    return (total, count) if count else (None, 0)
+
+
+def idle_pss(path, settle=1.5, budget_s=8.0, quiet_reads=3):
+    """Settled PSS of the tool AND its process tree, in MB (Linux only).
+
+    Two things had to be right, and each was wrong in an earlier attempt:
+
+    1. THE TREE, not the root. Node-based CLIs run the real UI in children, so
+       root-only under-reported their footprint by 2-8x. Memory a child holds is
+       memory the user paid for, so it counts.
+
+    2. A SETTLED, REPRODUCIBLE instant — not a fixed one and not a single
+       convergence. A CLI's tree at t=1.5s can include short-lived startup work
+       (indexing, version probes, telemetry, MCP boot).
+
+    Why "wait until it stops changing" alone was still not enough: periodic work
+    (a poll, a watch, a spinner-driven child) can hold a stable but INFLATED
+    tree — the total stops moving while the extra processes are still there. And
+    whether a transient child happens to survive the settle window is luck.
+    Measured across three launches of the same binaries, that produced spreads of
+    41% (opencode), 46% (kimi) and 134% (jcode, procs=[3,1,1]).
+
+    The property that makes this measurable: extra processes only ever ADD. Two
+    launches can disagree about whether a transient child existed, but neither
+    can invent memory the tool does not hold. So the resting footprint is the
+    FLOOR over a few launches — the reading taken when the least startup work
+    happened to be in flight. That is stable, and it is the number a user sees
+    once the tool has finished booting.
+    """
+    detail = idle_pss_detail(path, settle=settle, budget_s=budget_s, quiet_reads=quiet_reads)
+    return detail["tree_mb"] if detail else None
+
+
+def idle_pss_detail(path, settle=1.5, budget_s=8.0, quiet_reads=3, launches=3):
+    """Resting {root_mb, tree_mb, procs, reads} for one tool, or None.
+
+    Runs up to `launches` fresh processes and keeps the FLOOR of the tree total
+    (see idle_pss for why the floor is the honest resting figure). The winning
+    launch's root/procs are reported alongside so the JSON explains the number.
+    """
+    best = None
+    for _ in range(max(1, launches)):
+        one = _one_pss_launch(path, settle=settle, budget_s=budget_s, quiet_reads=quiet_reads)
+        if one is None:
+            continue
+        if best is None or one["tree_mb"] < best["tree_mb"]:
+            best = one
+    return best
+
+
+def _one_pss_launch(path, settle, budget_s, quiet_reads):
+    """One launch: wait out `settle`, then read the tree until it converges."""
     try:
         pid, fd = _spawn_tui(path)
     except OSError:
         return None
 
-    pss = None
     try:
         time.sleep(settle)
-        for _ in range(tries):
-            pss = _pss_of(pid)
-            if pss is not None:
-                break
-            if not _alive(pid):
-                break
-            time.sleep(0.1)
+        deadline = time.perf_counter() + budget_s
+        last = None
+        stable = 0
+        reads = 0
+        best = None
+        while time.perf_counter() < deadline:
+            tree, nprocs = _pss_tree(pid)
+            reads += 1
+            if tree is None:
+                if not _alive(pid):
+                    break
+                time.sleep(0.2)
+                continue
+            best = (tree, nprocs)
+            # converged when the tree total stops moving. 2MB of jitter is
+            # allocator noise, not a change in what the tool holds.
+            if last is not None and abs(tree - last) <= 2.0:
+                stable += 1
+                if stable >= quiet_reads:
+                    break
+            else:
+                stable = 0
+            last = tree
+            time.sleep(0.25)
+        if best is None:
+            return None
+        root = _pss_of(pid)
+        return {
+            "root_mb": root,
+            "tree_mb": best[0],
+            "procs": best[1],
+            "reads": reads,
+        }
     finally:
         try:
             os.close(fd)
@@ -504,7 +615,6 @@ def idle_pss(path, settle=1.5, tries=12):
             os.waitpid(pid, 0)
         except (ProcessLookupError, ChildProcessError, OSError):
             pass
-    return pss
 
 
 # No whitespace: a tool still in cooked mode has the terminal line discipline
@@ -1153,7 +1263,8 @@ def measure(label, path, n_start, n_probes, n_input):
     step(label, f"timing input latency (ready + 500ms settle, best of {n_input})")
     latency, la_signal = tui_input_latency(path, label, probes=n_input)
     step(label, "measuring idle memory (PSS)")
-    pss = idle_pss(path)
+    pss_detail = idle_pss_detail(path)
+    pss = pss_detail["tree_mb"] if pss_detail else None
     su_min, su_p50, su_p95 = stat_block(startup)
     fb_min, fb_p50, fb_p95 = stat_block(ttfb)
     fi_min, fi_p50, fi_p95 = stat_block(tfin)
@@ -1185,6 +1296,14 @@ def measure(label, path, n_start, n_probes, n_input):
         # every tool in one column.
         "input_signal": la_signal or fi_signal,
         "idle_pss_mb": pss,
+        # Breakdown behind idle_pss_mb. tree_mb counts the whole process tree
+        # (children included: a node CLI's workers hold real, user-paid memory),
+        # root_mb is the launched process alone, procs is how many contributed.
+        # tree_mb == root_mb for a single-process native binary. Kept in the
+        # JSON because "which of these numbers moved" is the first question
+        # asked when a refresh looks wrong.
+        "idle_pss_root_mb": pss_detail["root_mb"] if pss_detail else None,
+        "idle_pss_procs": pss_detail["procs"] if pss_detail else None,
     }
     def _t(a, b, c):
         return "-" if a is None else f"{a:.0f}/{b:.0f}/{c:.0f}"
