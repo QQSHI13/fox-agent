@@ -57,9 +57,45 @@ export function orderSel(a: Anchor, b: Anchor): [Anchor, Anchor] {
 }
 
 /**
+ * The highest cell column holding a glyph inside the row's non-whitespace
+ * prefix, or -1 when the row paints only blanks.
+ *
+ * Rows are not always as wide as their text: padding cells are real painted
+ * cells, so `width` counts them — right for layout, wrong for a selection.
+ *
+ * This asks "is this cell inside the trimmed text", NOT "is this cell's slice
+ * whitespace". The difference is not stylistic: `/[\s]/.test("")` is FALSE, so
+ * any cell whose slice came back empty (`start[c] === end[c]`, which a renderer
+ * can produce for a zero-width glyph or the continuation cell of a wide one)
+ * was reported as content and pinned the boundary to the row's full width —
+ * which is exactly how a multi-line selection lit every earlier line out to
+ * the right edge instead of stopping at the end of its own text.
+ */
+function lastContentCol(cells: RowCells): number {
+  // the length of the text with trailing whitespace removed; a cell belongs to
+  // the content iff it STARTS before that offset. Comparing offsets rather than
+  // re-testing each slice cannot be fooled by an empty or split range.
+  const contentLen = cells.text.replace(/\s+$/, "").length;
+  if (!contentLen) return -1;
+  for (let c = cells.start.length - 1; c >= 0; c--) {
+    if (cells.start[c] < contentLen) return c;
+  }
+  return -1;
+}
+
+/**
  * The cell columns of `row` that fall inside the selection, inclusive — or null
  * when the row is outside it, or inside it but has nothing painted there.
  * Used by the painter to re-style, and by extraction to slice.
+ *
+ * A span stops at the row's last non-whitespace cell, not at its painted width.
+ * The two differ because padded rows (code blocks, table cells) carry trailing
+ * spaces: highlighting them lit a multi-line selection out to the right edge of
+ * the block instead of to the end of the line's text, while `extractSelection`
+ * was already trimming that whitespace off the copied text — so the screen
+ * claimed to select characters the clipboard never received. Clamping here to
+ * the same boundary extraction uses is what makes highlight and copy one fact
+ * instead of two that disagree.
  */
 export function selRangeForRow(row: number, a: Anchor, b: Anchor, cells: RowCells): { from: number; to: number } | null {
   const [s, e] = orderSel(a, b);
@@ -67,7 +103,12 @@ export function selRangeForRow(row: number, a: Anchor, b: Anchor, cells: RowCell
   const width = cells.start.length;
   if (!width) return null;
   const from = row === s.row ? s.col : 0;
-  const to = row === e.row ? e.col : width - 1;
+  // middle rows of the span want "to the end of the text"; the final row wants
+  // the drag endpoint — but neither may run past the content into padding
+  const wanted = row === e.row ? e.col : width - 1;
+  const contentEnd = lastContentCol(cells);
+  if (contentEnd < 0) return null; // nothing but padding: no highlight, no text
+  const to = Math.min(wanted, contentEnd);
   const lo = Math.max(0, from);
   const hi = Math.min(width - 1, to);
   if (lo > hi) return null;

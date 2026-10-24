@@ -83,6 +83,7 @@ fox-agent headless vs scripted local provider: time to first token **42 ms**, pe
 - **codex**: ttfi: probe 'jb' did not render
 - **continue**: latency: probe 'jk' did not render
 - **continue**: latency: probe 'xj' did not render
+- **continue**: ttfi: probe 'zj' did not render
 - **continue**: ttfi: probe 'zw' did not render
 - **continue**: ttfi: probe 'zx' did not render
 - **copilot cli**: latency: probe 'zw' did not render

@@ -54,22 +54,22 @@
 <rect x="164" y="332.5" width="20.9" height="12" rx="2" fill="#5b7fa6"/>
 <text x="394" y="342.0" text-anchor="end" fill="#8a8578" font-size="10.5">179 ms</text>
 <text x="44" y="367.0" text-anchor="end" fill="#8a8578" font-size="10">10</text>
-<text x="52" y="367.0" fill="#8a8578" font-size="11.5">pi</text>
+<text x="52" y="367.0" fill="#8a8578" font-size="11.5">crush</text>
 <rect x="164" y="357.5" width="164" height="12" rx="2" fill="#221f1a"/>
 <rect x="164" y="357.5" width="23.2" height="12" rx="2" fill="#5b7fa6"/>
 <text x="394" y="367.0" text-anchor="end" fill="#8a8578" font-size="10.5">219 ms</text>
 <text x="44" y="392.0" text-anchor="end" fill="#8a8578" font-size="10">11</text>
-<text x="52" y="392.0" fill="#8a8578" font-size="11.5">qwen code</text>
+<text x="52" y="392.0" fill="#8a8578" font-size="11.5">pi</text>
 <rect x="164" y="382.5" width="164" height="12" rx="2" fill="#221f1a"/>
 <rect x="164" y="382.5" width="29.4" height="12" rx="2" fill="#5b7fa6"/>
 <text x="394" y="392.0" text-anchor="end" fill="#8a8578" font-size="10.5">352 ms</text>
 <text x="44" y="417.0" text-anchor="end" fill="#8a8578" font-size="10">12</text>
-<text x="52" y="417.0" fill="#8a8578" font-size="11.5">cursor-agent</text>
+<text x="52" y="417.0" fill="#8a8578" font-size="11.5">qwen code</text>
 <rect x="164" y="407.5" width="164" height="12" rx="2" fill="#221f1a"/>
 <rect x="164" y="407.5" width="30.9" height="12" rx="2" fill="#5b7fa6"/>
 <text x="394" y="417.0" text-anchor="end" fill="#8a8578" font-size="10.5">389 ms</text>
 <text x="44" y="442.0" text-anchor="end" fill="#8a8578" font-size="10">13</text>
-<text x="52" y="442.0" fill="#8a8578" font-size="11.5">aider</text>
+<text x="52" y="442.0" fill="#8a8578" font-size="11.5">cursor-agent</text>
 <rect x="164" y="432.5" width="164" height="12" rx="2" fill="#221f1a"/>
 <rect x="164" y="432.5" width="33.1" height="12" rx="2" fill="#5b7fa6"/>
 <text x="394" y="442.0" text-anchor="end" fill="#8a8578" font-size="10.5">447 ms</text>
@@ -158,12 +158,12 @@
 <rect x="552" y="282.5" width="21.7" height="12" rx="2" fill="#5b7fa6"/>
 <text x="782" y="292.0" text-anchor="end" fill="#8a8578" font-size="10.5">192 ms</text>
 <text x="432" y="317.0" text-anchor="end" fill="#8a8578" font-size="10">8</text>
-<text x="440" y="317.0" fill="#8a8578" font-size="11.5">pi</text>
+<text x="440" y="317.0" fill="#8a8578" font-size="11.5">crush</text>
 <rect x="552" y="307.5" width="164" height="12" rx="2" fill="#221f1a"/>
 <rect x="552" y="307.5" width="23.7" height="12" rx="2" fill="#5b7fa6"/>
 <text x="782" y="317.0" text-anchor="end" fill="#8a8578" font-size="10.5">229 ms</text>
 <text x="432" y="342.0" text-anchor="end" fill="#8a8578" font-size="10">9</text>
-<text x="440" y="342.0" fill="#8a8578" font-size="11.5">cursor-agent</text>
+<text x="440" y="342.0" fill="#8a8578" font-size="11.5">pi</text>
 <rect x="552" y="332.5" width="164" height="12" rx="2" fill="#221f1a"/>
 <rect x="552" y="332.5" width="26.6" height="12" rx="2" fill="#5b7fa6"/>
 <text x="782" y="342.0" text-anchor="end" fill="#8a8578" font-size="10.5">288 ms</text>
@@ -173,17 +173,17 @@
 <rect x="552" y="357.5" width="28.7" height="12" rx="2" fill="#5b7fa6"/>
 <text x="782" y="367.0" text-anchor="end" fill="#8a8578" font-size="10.5">336 ms</text>
 <text x="432" y="392.0" text-anchor="end" fill="#8a8578" font-size="10">11</text>
-<text x="440" y="392.0" fill="#8a8578" font-size="11.5">aider</text>
+<text x="440" y="392.0" fill="#8a8578" font-size="11.5">cursor-agent</text>
 <rect x="552" y="382.5" width="164" height="12" rx="2" fill="#221f1a"/>
 <rect x="552" y="382.5" width="33.1" height="12" rx="2" fill="#5b7fa6"/>
 <text x="782" y="392.0" text-anchor="end" fill="#8a8578" font-size="10.5">447 ms</text>
 <text x="432" y="417.0" text-anchor="end" fill="#8a8578" font-size="10">12</text>
-<text x="440" y="417.0" fill="#8a8578" font-size="11.5">kimi code</text>
+<text x="440" y="417.0" fill="#8a8578" font-size="11.5">aider</text>
 <rect x="552" y="407.5" width="164" height="12" rx="2" fill="#221f1a"/>
 <rect x="552" y="407.5" width="35.5" height="12" rx="2" fill="#5b7fa6"/>
 <text x="782" y="417.0" text-anchor="end" fill="#8a8578" font-size="10.5">513 ms</text>
 <text x="432" y="442.0" text-anchor="end" fill="#8a8578" font-size="10">13</text>
-<text x="440" y="442.0" fill="#8a8578" font-size="11.5">crush</text>
+<text x="440" y="442.0" fill="#8a8578" font-size="11.5">kimi code</text>
 <rect x="552" y="432.5" width="164" height="12" rx="2" fill="#221f1a"/>
 <rect x="552" y="432.5" width="39.8" height="12" rx="2" fill="#5b7fa6"/>
 <text x="782" y="442.0" text-anchor="end" fill="#8a8578" font-size="10.5">646 ms</text>
@@ -213,12 +213,12 @@
 <rect x="552" y="557.5" width="52.1" height="12" rx="2" fill="#5b7fa6"/>
 <text x="782" y="567.0" text-anchor="end" fill="#8a8578" font-size="10.5">1,109 ms</text>
 <text x="432" y="592.0" text-anchor="end" fill="#8a8578" font-size="10">19</text>
-<text x="440" y="592.0" fill="#8a8578" font-size="11.5">kilo code</text>
+<text x="440" y="592.0" fill="#8a8578" font-size="11.5">codebuff</text>
 <rect x="552" y="582.5" width="164" height="12" rx="2" fill="#221f1a"/>
 <rect x="552" y="582.5" width="59.9" height="12" rx="2" fill="#5b7fa6"/>
 <text x="782" y="592.0" text-anchor="end" fill="#8a8578" font-size="10.5">1,463 ms</text>
 <text x="432" y="617.0" text-anchor="end" fill="#8a8578" font-size="10">20</text>
-<text x="440" y="617.0" fill="#8a8578" font-size="11.5">codebuff</text>
+<text x="440" y="617.0" fill="#8a8578" font-size="11.5">kilo code</text>
 <rect x="552" y="607.5" width="164" height="12" rx="2" fill="#221f1a"/>
 <rect x="552" y="607.5" width="64.2" height="12" rx="2" fill="#5b7fa6"/>
 <text x="782" y="617.0" text-anchor="end" fill="#8a8578" font-size="10.5">1,682 ms</text>
@@ -262,12 +262,12 @@
 <rect x="940" y="257.5" width="58.7" height="12" rx="2" fill="#5b7fa6"/>
 <text x="1170" y="267.0" text-anchor="end" fill="#8a8578" font-size="10.5">649 ms</text>
 <text x="820" y="292.0" text-anchor="end" fill="#8a8578" font-size="10">7</text>
-<text x="828" y="292.0" fill="#8a8578" font-size="11.5">iflow cli</text>
+<text x="828" y="292.0" fill="#8a8578" font-size="11.5">opencode v2</text>
 <rect x="940" y="282.5" width="164" height="12" rx="2" fill="#221f1a"/>
 <rect x="940" y="282.5" width="80.4" height="12" rx="2" fill="#5b7fa6"/>
 <text x="1170" y="292.0" text-anchor="end" fill="#8a8578" font-size="10.5">1,220 ms</text>
 <text x="820" y="317.0" text-anchor="end" fill="#8a8578" font-size="10">8</text>
-<text x="828" y="317.0" fill="#8a8578" font-size="11.5">opencode v2</text>
+<text x="828" y="317.0" fill="#8a8578" font-size="11.5">iflow cli</text>
 <rect x="940" y="307.5" width="164" height="12" rx="2" fill="#221f1a"/>
 <rect x="940" y="307.5" width="91.2" height="12" rx="2" fill="#5b7fa6"/>
 <text x="1170" y="317.0" text-anchor="end" fill="#8a8578" font-size="10.5">1,568 ms</text>
@@ -519,17 +519,17 @@
 <rect x="940" y="1131.5" width="95.6" height="12" rx="2" fill="#5b7fa6"/>
 <text x="1170" y="1141.0" text-anchor="end" fill="#8a8578" font-size="10.5">320 MB</text>
 <text x="820" y="1166.0" text-anchor="end" fill="#8a8578" font-size="10">17</text>
-<text x="828" y="1166.0" fill="#8a8578" font-size="11.5">iflow cli</text>
+<text x="828" y="1166.0" fill="#8a8578" font-size="11.5">kimi code</text>
 <rect x="940" y="1156.5" width="164" height="12" rx="2" fill="#221f1a"/>
 <rect x="940" y="1156.5" width="101.2" height="12" rx="2" fill="#5b7fa6"/>
 <text x="1170" y="1166.0" text-anchor="end" fill="#8a8578" font-size="10.5">359 MB</text>
 <text x="820" y="1191.0" text-anchor="end" fill="#8a8578" font-size="10">18</text>
-<text x="828" y="1191.0" fill="#8a8578" font-size="11.5">kimi code</text>
+<text x="828" y="1191.0" fill="#8a8578" font-size="11.5">copilot cli</text>
 <rect x="940" y="1181.5" width="164" height="12" rx="2" fill="#221f1a"/>
 <rect x="940" y="1181.5" width="101.5" height="12" rx="2" fill="#5b7fa6"/>
 <text x="1170" y="1191.0" text-anchor="end" fill="#8a8578" font-size="10.5">361 MB</text>
 <text x="820" y="1216.0" text-anchor="end" fill="#8a8578" font-size="10">19</text>
-<text x="828" y="1216.0" fill="#8a8578" font-size="11.5">copilot cli</text>
+<text x="828" y="1216.0" fill="#8a8578" font-size="11.5">iflow cli</text>
 <rect x="940" y="1206.5" width="164" height="12" rx="2" fill="#221f1a"/>
 <rect x="940" y="1206.5" width="103.2" height="12" rx="2" fill="#5b7fa6"/>
 <text x="1170" y="1216.0" text-anchor="end" fill="#8a8578" font-size="10.5">373 MB</text>

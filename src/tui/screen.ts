@@ -285,7 +285,26 @@ export class Screen {
         // (e.g. the scrollbar thumb at W-2) and erases nothing. Clear the gap
         // now, while the cursor sits at the end of the previous content run.
         if (x !== physX) {
-          if (painted < this.w) line += "\x1b[K";
+          // Clear the gap with DEFAULT colors, never the run's. `\x1b[K` is an
+          // ERASE, and terminals implement background-color-erase: it paints the
+          // cleared cells with the background that is currently active. Clearing
+          // here while the selection highlight was the active run therefore
+          // flooded every remaining cell on the line with the highlight — which
+          // is why a multi-line selection lit each earlier row out to the right
+          // edge, and why a line that WRAPS to the full width looked correct (no
+          // gap, so no erase). Reset first, and track the reset so the next run
+          // re-emits its own SGR.
+          if (painted < this.w) {
+            if (runSgr) {
+              if (this.lastHref) {
+                line += "\x1b]8;;\x1b\\";
+                this.lastHref = "";
+              }
+              line += "\x1b[0m";
+              runSgr = "";
+            }
+            line += "\x1b[K";
+          }
           line += `\x1b[${y + 1};${x + 1}H`;
           physX = x;
         }
