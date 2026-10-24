@@ -248,7 +248,7 @@ describe("nothing describes a tool the registry lacks", () => {
     // ability" section, describing a tool excluded from their registry
     const p = await build({ tools: [def("read"), def("write")] });
     expect(p).not.toContain("ctx");
-    expect(p).not.toContain("Context window management");
+    expect(p).not.toContain("<context_window>");
     expect(p).not.toContain("[mN]");
   });
 
@@ -267,7 +267,7 @@ describe("nothing describes a tool the registry lacks", () => {
 
   test("the full registry does get all of it", async () => {
     const p = await build();
-    expect(p).toContain("Context window management");
+    expect(p).toContain("<context_window>");
     expect(p).toContain("Delegate self-contained subtasks");
   });
 });
@@ -359,7 +359,7 @@ describe("path, type-check and junk-output doctrine", () => {
 
   test("relative paths inside the project are taught where the cwd is known", async () => {
     const p = await build({ tools: [fileTool("read")] });
-    expect(p).toContain("## Paths");
+    expect(p).toContain("<paths>");
     expect(p).toContain("RELATIVE");
     // and the escape hatch is explicit, not implied
     expect(p).toMatch(/outside the project/i);
@@ -380,21 +380,25 @@ describe("path, type-check and junk-output doctrine", () => {
     expect(p).not.toContain("## Paths");
   });
 
-  test("every section heading stands alone on its line", async () => {
-    // `## Style` was joined with " ", so it shipped as one run-on line —
-    // "## Style Short, direct answers — markdown renders in the UI. Verify..."
-    // — reading as a heading with a sentence glued to it rather than a heading
-    // plus a rule.
+  test("every section is XML-tagged, with the tag alone on its line", async () => {
+    // Sections used to be `##` headings joined with " ", which shipped `##
+    // Style` as one run-on line — a heading with a sentence glued to it. They
+    // are tagged now: an unambiguous start and end per section, so one section
+    // can be replaced without re-emitting the whole prompt.
     const p = await build();
-    for (const heading of p.split("\n").filter((l) => l.startsWith("## "))) {
-      expect(heading).not.toMatch(/^## \S+ [A-Z]/);
-    }
-    expect(p).toMatch(/^## Style\nShort, direct answers/m);
+    const tags = [...p.matchAll(/^<([a-z_]+)>$/gm)].map((m) => m[1]);
+    expect(tags.length).toBeGreaterThan(3);
+    // no `##` headings survived the migration
+    expect(p).not.toMatch(/^## /m);
+    // every open tag is closed
+    for (const t of tags) expect(p).toContain(`</${t}>`);
+    // and a rule never rides on the tag line
+    expect(p).toMatch(/^<style>\nShort, direct answers/m);
   });
 
   test("the type-check doctrine lives in the prompt, not in the write/edit descriptions", async () => {
     const p = await build({ tools: [fileTool("write"), fileTool("edit")] });
-    expect(p).toContain("## Type checking after every write");
+    expect(p).toContain("<type_checking>");
     expect(p).toContain("do NOT run a type-checker");
 
     // the schemas themselves no longer carry it — one statement, applied once,
