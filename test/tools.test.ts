@@ -59,6 +59,20 @@ describe("read", () => {
     expect(r.output).toContain("line10");
     expect(r.output).toContain("line12");
     expect(r.output).not.toContain("line13");
+    // a cut listing must say how to continue, not read as the whole file
+    expect(r.output).toContain("offset: 13");
+  });
+
+  test("a limit above the internal 2000-line guard says what was withheld", async () => {
+    // limit used to be re-capped at 2000 with no notice: `limit: 5000` returned
+    // 2000 lines and looked like the complete file
+    write("big.txt", Array.from({ length: 2500 }, (_, i) => `row${i + 1}`).join("\n"));
+    const r = await F.readRun({ path: "big.txt", limit: 5000 }, ctx);
+    expect(r.ok).toBe(true);
+    expect(r.output).toContain("row2000");
+    expect(r.output).not.toContain("2001:");
+    expect(r.output).toContain("500 more line(s)");
+    expect(r.output).toContain("offset/limit");
   });
 
   test("missing file is a failure, not a throw", async () => {
@@ -219,6 +233,34 @@ describe("exec", () => {
     expect(r.output).toMatch(/timeout \d+ms/);
   }, 10_000);
 
+  test("a budget above the old 10-minute cap is honoured, not clamped", async () => {
+    // used to be Math.min(600_000, …): asking for an hour silently got 10 min
+    const r = await execRun({ cmd: "echo ok", timeout_ms: 3_600_000 }, ctx);
+    expect(r.ok).toBe(true);
+    expect(r.output).toContain("ok");
+  });
+
+  test("a budget past the 32-bit timer wall does not kill the command instantly", async () => {
+    // setTimeout(3e9) fires after 1ms — before the fix this reported a timeout
+    // kill and a SIGTERM for a command that had barely started
+    const r = await execRun({ cmd: "sleep 0.3; echo survived", timeout_ms: 3_000_000_000 }, ctx);
+    expect(r.ok).toBe(true);
+    expect(r.output).toContain("survived");
+    expect(r.output).not.toMatch(/timeout/);
+  });
+
+  test("timeout_ms: 0 disables the timeout", async () => {
+    const r = await execRun({ cmd: "sleep 0.3; echo no-timeout", timeout_ms: 0 }, ctx);
+    expect(r.ok).toBe(true);
+    expect(r.output).toContain("no-timeout");
+  });
+
+  test("a negative timeout_ms is rejected, not clamped", async () => {
+    const r = await execRun({ cmd: "echo hi", timeout_ms: -1 }, ctx);
+    expect(r.ok).toBe(false);
+    expect(r.output).toContain("timeout_ms");
+  });
+
   test("runs in ctx.cwd", async () => {
     write("marker.txt", "");
     const r = await execRun({ cmd: "ls" }, ctx);
@@ -277,6 +319,40 @@ describe("ctx search, stats and query ops", () => {
     const r = await run([{ op: "search", pattern: ".", role: "tool", limit: 1 }]);
     expect(r.output).toContain("1 match");
     expect(r.output).toContain("tool Error");
+  });
+
+  test("a truncated search says how many it withheld", async () => {
+    // the count used to be the number RETURNED, so a capped listing read as
+    // "that is all of them"
+    const { run } = await seeded();
+    const r = await run([{ op: "search", pattern: ".", limit: 2 }]);
+    expect(r.ok).toBe(true);
+    expect(r.output).toContain("3 match(es)");
+    expect(r.output).toContain("showing 2, 1 withheld");
+  });
+
+  test("delete_by_query sees every match, not the first 100", async () => {
+    // the all:true guard compares matches against visible nodes. A fixed cap of
+    // 100 matches meant a pattern hitting 150 of 150 nodes deleted 100 of them
+    // and skipped the confirmation entirely.
+    const { createSession, appendMessage } = await import("../src/store/db.ts");
+    const { ctxRun } = await import("../src/tools/ctx.ts");
+    const s = createSession(dir, "m1");
+    const mine = { ...ctx, sessionId: s.id };
+    for (let i = 0; i < 150; i++) {
+      appendMessage(s.id, { parent_id: null, role: "user", content: `alpha ${i}`, tokens: 2 });
+    }
+    const unconfirmed = await ctxRun({ ops: [{ op: "delete_by_query", pattern: "alpha" }] }, mine);
+    expect(unconfirmed.ok).toBe(false);
+    expect(unconfirmed.output).toContain("all:true");
+    // and nothing was hidden by the refusal
+    const stats = await ctxRun({ ops: [{ op: "stats" }] }, mine);
+    expect(stats.output).toContain("150 visible of 150 stored (0 hidden)");
+    // with confirmation, ALL 150 go — not the first 100
+    const confirmed = await ctxRun({ ops: [{ op: "delete_by_query", pattern: "alpha", all: true }] }, mine);
+    expect(confirmed.ok).toBe(true);
+    const after = await ctxRun({ ops: [{ op: "stats" }] }, mine);
+    expect(after.output).toContain("0 visible of 150 stored (150 hidden)");
   });
 
   test("stats reports visible/stored and the biggest nodes", async () => {

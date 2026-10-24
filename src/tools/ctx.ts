@@ -64,22 +64,32 @@ interface Hit {
 }
 
 /** Visible nodes matching pattern — snippets, never bodies (query, don't read). */
-function searchNodes(ctx: ToolContext, pattern: string, role?: string, limit = SEARCH_DEFAULT_LIMIT): { hits: Hit[] } | { error: string } {
+function searchNodes(
+  ctx: ToolContext,
+  pattern: string,
+  role?: string,
+  limit = SEARCH_DEFAULT_LIMIT,
+): { hits: Hit[]; total: number } | { error: string } {
   const compiled = compilePattern(pattern);
   if ("error" in compiled) return compiled;
-  const cap = Math.max(1, Math.min(SEARCH_MAX_LIMIT, limit || SEARCH_DEFAULT_LIMIT));
+  // Infinity is a deliberate "no cap" (delete_by_query must see every match to
+  // decide whether all:true is needed); anything else is bounded so a stray
+  // huge limit cannot build an unbounded result
+  const cap = limit === Number.POSITIVE_INFINITY ? Number.POSITIVE_INFINITY : Math.max(1, Math.min(SEARCH_MAX_LIMIT, limit || SEARCH_DEFAULT_LIMIT));
   const hits: Hit[] = [];
+  let total = 0; // every match, not just the ones returned — callers must know
   for (const n of projectView(ctx.sessionId).filter((x) => !x.deleted)) {
-    if (hits.length >= cap) break;
     if (role && n.msg.role !== role) continue;
     const line = n.content.replace(/\s+/g, " ").trim();
     const at = line.search(compiled.re);
     if (at < 0) continue;
+    total++;
+    if (hits.length >= cap) continue; // count it, keep scanning
     const from = Math.max(0, at - 60);
     const slice = line.slice(from, from + 120);
     hits.push({ seq: n.msg.seq, role: n.msg.role, snippet: `${from > 0 ? "…" : ""}${slice}${from + 120 < line.length ? "…" : ""}` });
   }
-  return { hits };
+  return { hits, total };
 }
 
 export async function ctxRun(args: { ops?: any[]; reason?: string }, ctx: ToolContext): Promise<ToolResult> {
@@ -122,17 +132,23 @@ export async function ctxRun(args: { ops?: any[]; reason?: string }, ctx: ToolCo
       if (o.role !== undefined && typeof o.role !== "string") return fail("error: role must be a string");
       const found = searchNodes(ctx, o.pattern, o.role, o.limit);
       if ("error" in found) return fail(found.error);
+      // the count used to be the number RETURNED, so a truncated listing read as
+      // "that is all of them" — say how many were withheld instead
+      const withheld = found.total - found.hits.length;
       out.push(
         found.hits.length
-          ? `search ${JSON.stringify(o.pattern)}: ${found.hits.length} match(es)\n${found.hits.map((h) => `[${h.seq}] ${h.role} ${h.snippet}`).join("\n")}`
+          ? `search ${JSON.stringify(o.pattern)}: ${found.total} match(es)${withheld > 0 ? ` (showing ${found.hits.length}, ${withheld} withheld — raise limit)` : ""}\n${found.hits.map((h) => `[${h.seq}] ${h.role} ${h.snippet}`).join("\n")}`
           : `search ${JSON.stringify(o.pattern)}: no matches`,
       );
     } else if (o.op === "delete_by_query") {
       if (o.role !== undefined && typeof o.role !== "string") return fail("error: role must be a string");
-      const found = searchNodes(ctx, o.pattern, o.role, SEARCH_MAX_LIMIT);
+      const found = searchNodes(ctx, o.pattern, o.role, Number.POSITIVE_INFINITY);
       if ("error" in found) return fail(found.error);
       if (!found.hits.length) return fail(`error: delete_by_query matched nothing for ${JSON.stringify(o.pattern)}`);
       const visible = projectView(ctx.sessionId).filter((x) => !x.deleted).length;
+      // the all:true guard is about matches vs visible nodes, so it must see
+      // EVERY match: the old fixed cap of 100 meant a pattern hitting 150 of
+      // 200 nodes deleted 100 and skipped the confirmation it should have asked for
       if (found.hits.length >= visible && !o.all) {
         return fail(`error: delete_by_query matches everything visible (${visible} nodes) — pass all:true to confirm`);
       }

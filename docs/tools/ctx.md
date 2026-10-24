@@ -13,10 +13,10 @@ fear.
 
 | Op | Arguments | Effect |
 |---|---|---|
-| `search` | `pattern` (regex), `role`, `limit` | Find nodes by pattern; returns **snippets**, not whole bodies |
+| `search` | `pattern` (regex), `role`, `limit` | Find nodes by pattern; returns **snippets**, not whole bodies. When `limit` cuts the listing, the result says how many were withheld |
 | `stats` | `top` | Sizes and the biggest nodes — where the window is going |
 | `delete` | `ids`, `summary` | Hide nodes from the view; a `summary` leaves a one-line note in their place |
-| `delete_by_query` | `pattern`, `role`, `all` | Hide every node matching a pattern. Requires `all: true` when the pattern matches everything visible |
+| `delete_by_query` | `pattern`, `role`, `all` | Hide every node matching a pattern. Matches **all** visible nodes (never a truncated first-N), and requires `all: true` when the pattern matches everything visible |
 | `replace` | `id`, `content` | Rewrite one node's text |
 | `restore` | `ids` | Un-hide nodes |
 

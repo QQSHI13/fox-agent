@@ -164,8 +164,17 @@ export async function readRun(args: { path: string; offset?: number; limit?: num
   const total = lines.length;
   const off = Math.max(1, args.offset ?? 1);
   lines = lines.slice(off - 1);
-  if (args.limit) lines = lines.slice(0, args.limit);
-  lines = lines.slice(0, 2000);
+  // The caller's limit is the budget; it used to be silently re-capped at 2000
+  // lines, so `limit: 5000` returned 2000 and looked complete. Keep a guard
+  // against a pathological ask, but SAY when it bites instead of hiding it.
+  const asked = args.limit && args.limit > 0 ? Math.floor(args.limit) : undefined;
+  const HARD_LINE_GUARD = 2000;
+  let withheldFromGuard = 0;
+  if (asked !== undefined) lines = lines.slice(0, asked);
+  if (lines.length > HARD_LINE_GUARD) {
+    withheldFromGuard = lines.length - HARD_LINE_GUARD;
+    lines = lines.slice(0, HARD_LINE_GUARD);
+  }
 
   let out = "";
   for (let i = 0; i < lines.length; i++) {
@@ -174,7 +183,16 @@ export async function readRun(args: { path: string; offset?: number; limit?: num
     out += l;
   }
   const body = out.trimEnd() || "(empty file)";
-  return ok(off > 1 || body.length < raw.length ? `${body}\n(${total} lines total)` : body);
+  const lastShown = off + lines.length - 1;
+  const more = total > lastShown;
+  // name what was held back and how to get it — a bare "(N lines total)" after
+  // a cut listing reads as the whole file to a model that is skimming
+  const notes = [
+    withheldFromGuard > 0 ? `${withheldFromGuard} more line(s) beyond the ${HARD_LINE_GUARD}-line guard — use offset/limit to page` : "",
+    more && withheldFromGuard === 0 ? `${total} lines total; showed through line ${lastShown} — continue with offset: ${lastShown + 1}` : "",
+    more && withheldFromGuard > 0 ? `${total} lines total` : "",
+  ].filter(Boolean);
+  return ok(notes.length ? `${body}\n(${notes.join("; ")})` : body);
 }
 
 // ---------- write ----------

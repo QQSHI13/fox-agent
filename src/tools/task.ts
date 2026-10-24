@@ -36,6 +36,18 @@ const MAX_DEPTH = 3;
 const DEPTH_ENV = "FOX_AGENT_DELEGATION_DEPTH";
 const MAX_TASK_RESULT = 50_000;
 
+/**
+ * Bound a subagent's report before it enters the parent's context.
+ *
+ * MAX_TASK_RESULT existed but was never applied, so a chatty subagent's whole
+ * transcript came back and cost the parent its context window. Keep the tail
+ * (a report usually ends with its conclusion) and say it was cut.
+ */
+function capTaskResult(text: string): string {
+  if (text.length <= MAX_TASK_RESULT) return text;
+  return `… (report truncated: showing the last ${MAX_TASK_RESULT} of ${text.length} chars)\n${text.slice(-MAX_TASK_RESULT)}`;
+}
+
 export const taskDef: ToolDef = {
   name: "task",
   description:
@@ -120,7 +132,7 @@ export async function executeTask(
             : undefined,
         })
       ).trim();
-      return ok(text ? `${text}\n\n[a2a task on ${args.agent ?? spec.url}]` : `[a2a agent ${args.agent ?? spec.url} finished without a final message]`);
+      return ok(text ? `${capTaskResult(text)}\n\n[a2a task on ${args.agent ?? spec.url}]` : `[a2a agent ${args.agent ?? spec.url} finished without a final message]`);
     }
 
     // ACP: spawn a child process and stream its tool activity into the parent's
@@ -164,7 +176,7 @@ export async function executeTask(
 
     if (res.stopReason === "cancelled") return fail(`error: subagent cancelled${res.text ? `\n\n${res.text}` : ""}`);
     const text = res.text.trim();
-    return ok(text ? `${text}\n\n[subagent session ${res.sessionId}]` : `[subagent ${res.sessionId} finished without a final message]`);
+    return ok(text ? `${capTaskResult(text)}\n\n[subagent session ${res.sessionId}]` : `[subagent ${res.sessionId} finished without a final message]`);
   } catch (e) {
     return fail(`error: subagent failed: ${(e as Error).message}`);
   }

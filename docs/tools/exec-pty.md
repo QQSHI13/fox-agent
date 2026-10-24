@@ -12,7 +12,9 @@ from the same place.
 - Prefer `workdir` over `cd x && cmd` when you can; both work, but `workdir`
   keeps the command readable.
 - `timeout_ms` kills the **process group** (TERM, then KILL after 1.5s), so a
-  wedged `make` cannot leave grandchildren running.
+  wedged `make` cannot leave grandchildren running. You set the budget: default
+  120000, no upper bound, and `0` disables the timeout entirely. A value past
+  ~24 days is honoured rather than overflowing the timer.
 - Output is merged (stdout + stderr) with an exit code, tail-capped by
   `toolOutputCap`. `full: true` lifts the cap for that call — the hard memory
   guards still apply.

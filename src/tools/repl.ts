@@ -20,6 +20,7 @@
  * whose code shells out via `tools.call("exec", …)` or `spawnShell`.
  */
 import vm from "node:vm";
+import { safeDelay, setLongTimeout, type LongTimeout } from "../core/timers.ts";
 import type { ToolDef } from "../providers/types.ts";
 import type { ToolContext, ToolResult } from "./types.ts";
 import { fail, ok, validateArgs } from "./types.ts";
@@ -195,9 +196,12 @@ function readJobLogTail(job: ReplJob): string {
 function evalInContext(state: ReplSession, code: string, timeout: number): Promise<unknown> {
   // timeout 0 = no bound at all: vm's sync `timeout` is omitted (it means
   // "infinite" when 0, but leaving it out is explicit) and the hang timer is
-  // never armed.
+  // never armed. vm's own `timeout` is a plain setTimeout value, so it shares
+  // the 32-bit limit: a budget past ~24 days would overflow there and abort the
+  // eval instantly. Clamp THAT to the ceiling — the promise race below carries
+  // the real deadline with setLongTimeout.
   const runOptions: Record<string, unknown> = {
-    ...(timeout > 0 ? { timeout } : {}),
+    ...(timeout > 0 ? { timeout: safeDelay(timeout) } : {}),
     importModuleDynamically: async (specifier: string) => import(specifier),
   };
   // expression-first: a bare expression completes to its value; anything that is
@@ -211,18 +215,20 @@ function evalInContext(state: ReplSession, code: string, timeout: number): Promi
     // rejection that blames the next tool call). vm's `timeout` only bounds
     // SYNCHRONOUS execution; these evals are async IIFEs, so a hung `await`
     // would otherwise ignore it forever.
-    let timer: ReturnType<typeof setTimeout> | undefined;
+    let timer: LongTimeout | undefined;
     const hang = new Promise<never>((_, rej) => {
       if (timeout <= 0) return; // timeout_ms: 0 — never race, never reject
-      timer = setTimeout(() => rej(new Error(`eval exceeded timeout_ms (${timeout}ms) — likely a hung await; the eval keeps running detached and cannot be killed`)), timeout);
-      (timer as { unref?: () => void }).unref?.();
+      // setLongTimeout, not setTimeout: the agent may legitimately pass a budget
+      // above the 32-bit wall, and a plain setTimeout would fire it after 1ms
+      timer = setLongTimeout(() => rej(new Error(`eval exceeded timeout_ms (${timeout}ms) — likely a hung await; the eval keeps running detached and cannot be killed`)), timeout);
+      timer.unref();
     });
     try {
       // a SYNCHRONOUS infinite loop throws straight out of runInContext — clear
       // the timer there too, or it fires later into a promise nobody is awaiting
-      return Promise.race([vm.runInContext(`(async () => ${body})()`, state.context, runOptions), hang]).finally(() => clearTimeout(timer));
+      return Promise.race([vm.runInContext(`(async () => ${body})()`, state.context, runOptions), hang]).finally(() => timer?.clear());
     } catch (e) {
-      clearTimeout(timer);
+      timer?.clear();
       throw e;
     }
   };
@@ -245,6 +251,18 @@ function fmt(value: unknown): string {
   } catch {
     return String(value);
   }
+}
+
+/**
+ * Bound a background job's stored result.
+ *
+ * MAX_JOB_RESULT existed but was never applied, so a job returning a huge
+ * value kept it all in memory for the whole reap grace window (10 minutes).
+ * Keep the head (where the answer usually starts) and say it was cut.
+ */
+function capJobResult(s: string): string {
+  if (s.length <= MAX_JOB_RESULT) return s;
+  return `${s.slice(0, MAX_JOB_RESULT)}\n… (job result truncated at ${MAX_JOB_RESULT} chars of ${s.length})`;
 }
 
 export async function replRun(
@@ -367,7 +385,7 @@ export async function replRun(
     // eval, so abort reaches a job only when it awaits.
     void evalInContext(state, args.code, timeout)
       .then((v) => {
-        job.result = fmt(v);
+        job.result = capJobResult(fmt(v));
         job.done = true;
         job.ok = true;
         notifyDone(sessionId, job);
@@ -376,7 +394,7 @@ export async function replRun(
       .catch((e) => {
         job.done = true;
         job.ok = false;
-        job.result = job.killed ? "killed by request" : `error: ${(e as Error).message ?? e}`;
+        job.result = capJobResult(job.killed ? "killed by request" : `error: ${(e as Error).message ?? e}`);
         notifyDone(sessionId, job);
         scheduleReap(sessionId, job);
       })

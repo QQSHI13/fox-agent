@@ -2,6 +2,7 @@ import { resolve } from "node:path";
 import type { ToolDef } from "../providers/types.ts";
 import type { ToolContext, ToolResult } from "./types.ts";
 import { fail, ok } from "./types.ts";
+import { setLongTimeout } from "../core/timers.ts";
 import { childEnv } from "../core/childenv.ts";
 import { shellName, shellPath } from "../core/shell.ts";
 import { outCap } from "./files.ts";
@@ -15,7 +16,7 @@ export const execDef: ToolDef = {
     properties: {
       cmd: { type: "string", description: "Command to run." },
       workdir: { type: "string", description: "Directory to run in, relative to the session directory. Applies to this call only." },
-      timeout_ms: { type: "number", description: "Kill the process tree after this long, default 120000" },
+      timeout_ms: { type: "number", description: "Kill the process tree after this many milliseconds; default 120000, no upper bound, 0 = no timeout (runs until it exits or is interrupted)" },
       full: { type: "boolean", description: "Return the full uncapped output for this call instead of the tail-capped default" },
     },
     required: [],
@@ -81,15 +82,25 @@ export async function execRun(
   // can move where the *next* exec starts. `pty` is the tool for a shell that
   // keeps its place.
   const cwd = args.workdir ? resolve(ctx.cwd, args.workdir) : ctx.cwd;
-  const timeout = Math.min(600_000, Math.max(1_000, args.timeout_ms ?? 120_000));
+  // The caller owns the budget: any positive value is honoured (no 10-minute
+  // ceiling nobody can see), and 0 means "no timeout" — the command runs until
+  // it exits or is interrupted. Same contract as repl's timeout_ms.
+  const rawTimeout = args.timeout_ms ?? 120_000;
+  if (!Number.isFinite(rawTimeout) || rawTimeout < 0) return fail("error: timeout_ms must be a non-negative number (0 = no timeout)");
+  const timeout = rawTimeout === 0 ? 0 : Math.max(1, Math.floor(rawTimeout));
   const proc = spawnShell(args.cmd, cwd);
 
   let killedBy = "";
   const kill: { cancel: (() => void) | null } = { cancel: null };
-  const timer = setTimeout(() => {
-    killedBy = `timeout ${timeout}ms`;
-    kill.cancel = killTree(proc.pid);
-  }, timeout);
+  // setLongTimeout, not setTimeout: a budget past the 32-bit wall would fire
+  // after 1ms and kill the command instantly
+  const timer = timeout > 0
+    ? setLongTimeout(() => {
+        killedBy = `timeout ${timeout}ms`;
+        kill.cancel = killTree(proc.pid);
+      }, timeout)
+    : null;
+  timer?.unref();
   const onAbort = () => {
     if (!killedBy) killedBy = "interrupted";
     kill.cancel = killTree(proc.pid);
@@ -141,7 +152,7 @@ export async function execRun(
     read(proc.stderr as ReadableStream, (s) => (stderr = capAppend(stderr, s))),
   ]);
   flushStream();
-  clearTimeout(timer);
+  timer?.clear();
   ctx.signal?.removeEventListener("abort", onAbort);
   const code = await proc.exited;
   kill.cancel?.(); // child is gone; don't leave a SIGKILL timer pending

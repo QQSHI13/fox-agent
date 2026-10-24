@@ -5,7 +5,9 @@
 Returns line-numbered text (`n: line`), which is what makes `edit`'s exact-match
 anchors reliable.
 
-- `offset` / `limit` page through a large file.
+- `offset` / `limit` page through a large file. A listing cut short by
+  `limit` (or by the internal 2000-line guard) says so and names the `offset`
+  to continue from, rather than reading as the complete file.
 - Files above `readCap` (default 50 000 chars) are refused with a pointer to
   `offset`/`limit` rather than truncated silently.
 - Images, audio and video are attached as **media** when the active model accepts
