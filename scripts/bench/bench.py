@@ -1199,35 +1199,41 @@ def dashboard_svg(panels, out_path, note, footer):
     panels: [(title, subtitle, rows, unit, fmt)] where rows is
     [(label, value_or_None, is_fox)].
 
+    Typography is sized for how GitHub displays this, not for the file. README
+    content renders in a column around 880px wide, so this 1200px canvas is
+    scaled to roughly 0.73 and every font arrives ~27% smaller than written.
+    Labels are 14px (not 11.5) and the panel titles 16px so they land at ~10px
+    and ~11.7px on screen -- previously they arrived at 8.4px and were hard to
+    read, which is what "the text is too small" was about.
+
     Layout rules, each of which fixes a defect visible in the rendered PNG:
 
-      * unmeasured tools are COLLAPSED, not listed. Fifteen `n/a` rows in six
-        panels filled two thirds of the canvas with nothing; the count lives in
-        the panel subtitle ("7 measured · 15 n/a") and the full n/a list is in
-        the table one fold away. The header states the field size, so a reader
-        still knows the panel is partial.
-      * subtitles are clipped to their column, because SVG does not wrap and
-        an overlong subtitle runs straight into the neighbouring panel.
+      * unmeasured tools are COLLAPSED, not listed. Fifteen `n/a` rows per panel
+        filled two thirds of the canvas with nothing; the count lives in the
+        panel heading ("7 measured · 15 n/a") and the full list is in the table
+        one fold away.
+      * subtitles are clipped to their column, because SVG does not wrap and an
+        overlong subtitle runs straight into the neighbouring panel.
       * the footer is one line with a shortened provenance tail, so it cannot
         collide with the bottom row of panel subtitles.
       * a RANK column, right-aligned, so ordering is legible without comparing
-        bar lengths by eye (the old version glued a medal digit to the value,
+        bar lengths by eye (an earlier version glued a medal digit to the value,
         where "1 4.9 ms" read as fourteen-point-nine).
-      * values are text-anchored to each column's right edge, so they line up
+      * values are text-anchored to each column's right edge so they line up
         across rows and panels instead of floating after a variable-width bar.
-      * bars are SQRT-scaled, and the footer says so. First-byte ranges span
-        ~90x here (106ms to 9281ms); on a linear axis the leader is a 3px
-        sliver and the chart conveys nothing. Area is not proportional to value
-        on a sqrt axis, so it is declared rather than assumed -- the exact
-        numbers are printed beside every bar.
+      * bars are SQRT-scaled, and the footer says so. First-byte spans ~1150x
+        here (9.6ms to 11069ms); on a linear axis every leader is a 1px sliver
+        and the chart conveys nothing. Area is not proportional to value on a
+        sqrt axis, so it is declared rather than assumed, and every exact number
+        is printed beside its bar.
     """
     W, GUT, PAD = 1200, 22, 28
     NCOL = 3
     COLW = (W - PAD * 2 - GUT * (NCOL - 1)) // NCOL
-    HEADER_H = 96
-    TITLE_H, SUB_H, LANE_H = 30, 22, 25
-    RANK_W, LABEL_W, VAL_W = 24, 112, 66
-    FOOT_H = 40
+    HEADER_H = 112
+    TITLE_H, SUB_H, LANE_H = 36, 26, 28
+    RANK_W, LABEL_W, VAL_W = 28, 134, 78
+    FOOT_H = 46
 
     measured_counts = [sum(1 for r in p[2] if r[1] is not None) for p in panels]
     n_rows = max(measured_counts or [1])
@@ -1237,15 +1243,22 @@ def dashboard_svg(panels, out_path, note, footer):
 
     L = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" '
-        f'font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace">',
+        f'font-family="ui-monospace,SFMono-Regular,JetBrains Mono,Menlo,Consolas,monospace">',
+        "<defs>"
+        f'<linearGradient id="dhdr" x1="0" y1="0" x2="0" y2="1">'
+        f'<stop offset="0" stop-color="#242019"/><stop offset="1" stop-color="{BG2}"/></linearGradient>'
+        f'<linearGradient id="drule" x1="0" y1="0" x2="1" y2="0">'
+        f'<stop offset="0" stop-color="{ACC}"/><stop offset="1" stop-color="{ACC}" stop-opacity="0"/></linearGradient>'
+        "</defs>",
         f'<rect width="{W}" height="{H}" fill="{BG}"/>',
-        f'<rect width="{W}" height="{HEADER_H}" fill="{BG2}"/>',
-        f'<rect x="0" y="{HEADER_H - 2}" width="{W}" height="2" fill="{ACC}"/>',
-        f'<text x="{PAD}" y="38" fill="{INK}" font-size="21" font-weight="bold">'
+        f'<rect width="{W}" height="{HEADER_H}" fill="url(#dhdr)"/>',
+        f'<rect x="0" y="{HEADER_H - 3}" width="{W}" height="3" fill="url(#drule)"/>',
+        f'<text x="{PAD}" y="44" fill="{INK}" font-size="26" font-weight="bold">'
         f'fox-agent · harness bench</text>',
-        f'<text x="{PAD}" y="62" fill="{MUT}" font-size="12">'
+        f'<text x="{PAD}" y="72" fill="{MUT}" font-size="15">'
         f'startup · idle memory · installed size</text>',
-        f'<text x="{PAD}" y="82" fill="{MUT}" font-size="10.5">{esc(_clip(note, W - PAD * 2, 10.5))}</text>',
+        f'<text x="{PAD}" y="96" fill="{MUT}" font-size="12" opacity="0.85">'
+        f'{esc(_clip(note, W - PAD * 2, 12))}</text>',
     ]
 
     for idx, (title, subtitle, rows, unit, fmt) in enumerate(panels):
@@ -1258,14 +1271,14 @@ def dashboard_svg(panels, out_path, note, footer):
         maxv = max([r[1] for r in have] or [1])
 
         L.append(
-            f'<text x="{x0}" y="{y0 + 16}" fill="{INK}" font-size="13" font-weight="bold">'
-            f'{esc(_clip(title, COLW - 108, 13))}</text>'
+            f'<text x="{x0}" y="{y0 + 19}" fill="{INK}" font-size="16" font-weight="bold">'
+            f'{esc(_clip(title, COLW - 130, 16))}</text>'
         )
         L.append(
-            f'<text x="{x0 + COLW}" y="{y0 + 16}" text-anchor="end" fill="{MUT}" font-size="9.5">'
+            f'<text x="{x0 + COLW}" y="{y0 + 19}" text-anchor="end" fill="{MUT}" font-size="11.5">'
             f'{len(have)} measured' + (f' \u00b7 {n_missing} n/a' if n_missing else '') + '</text>'
         )
-        L.append(f'<rect x="{x0}" y="{y0 + TITLE_H - 8}" width="{COLW}" height="1" fill="{GRID}"/>')
+        L.append(f'<rect x="{x0}" y="{y0 + TITLE_H - 9}" width="{COLW}" height="1" fill="{GRID}"/>')
 
         bx = x0 + RANK_W + LABEL_W
         bw = COLW - RANK_W - LABEL_W - VAL_W
@@ -1273,7 +1286,7 @@ def dashboard_svg(panels, out_path, note, footer):
 
         if not have:
             L.append(
-                f'<text x="{x0}" y="{y0 + TITLE_H + 15}" fill="{BAR_NA}" font-size="10.5">'
+                f'<text x="{x0}" y="{y0 + TITLE_H + 17}" fill="{BAR_NA}" font-size="12.5">'
                 f'no tool in this field was measured</text>'
             )
 
@@ -1282,42 +1295,43 @@ def dashboard_svg(panels, out_path, note, footer):
             mid = y + LANE_H / 2
 
             L.append(
-                f'<text x="{x0 + RANK_W - 8}" y="{mid + 3.5:.1f}" text-anchor="end" '
-                f'fill="{ACC if is_fox else MUT}" font-size="10">{i + 1}</text>'
+                f'<text x="{x0 + RANK_W - 9}" y="{mid + 4:.1f}" text-anchor="end" '
+                f'fill="{ACC if is_fox else MUT}" font-size="11.5">{i + 1}</text>'
             )
             label_fill = ACC if is_fox else (INK if i < 3 else MUT)
             weight = ' font-weight="bold"' if is_fox else ""
             L.append(
-                f'<text x="{x0 + RANK_W}" y="{mid + 3.5:.1f}" fill="{label_fill}" '
-                f'font-size="11.5"{weight}>{esc(_clip(label, LABEL_W - 6, 11.5))}</text>'
+                f'<text x="{x0 + RANK_W}" y="{mid + 4:.1f}" fill="{label_fill}" '
+                f'font-size="14"{weight}>{esc(_clip(label, LABEL_W - 8, 14))}</text>'
             )
 
             # visible track, so a near-zero bar still reads as "small", not absent
-            L.append(f'<rect x="{bx}" y="{mid - 6:.1f}" width="{bw}" height="12" rx="2" fill="{TRACK}"/>')
+            L.append(f'<rect x="{bx}" y="{mid - 7:.1f}" width="{bw}" height="14" rx="3" fill="{TRACK}"/>')
             w = max(3.0, (math.sqrt(v) / math.sqrt(maxv)) * bw)
             L.append(
-                f'<rect x="{bx}" y="{mid - 6:.1f}" width="{w:.1f}" height="12" rx="2" '
+                f'<rect x="{bx}" y="{mid - 7:.1f}" width="{w:.1f}" height="14" rx="3" '
                 f'fill="{ACC if is_fox else BAR}"/>'
             )
             L.append(
-                f'<text x="{vx}" y="{mid + 3.5:.1f}" text-anchor="end" '
-                f'fill="{INK if is_fox else MUT}" font-size="10.5">{esc(fmt(v))} {unit}</text>'
+                f'<text x="{vx}" y="{mid + 4:.1f}" text-anchor="end" '
+                f'fill="{INK if is_fox else MUT}" font-size="13">{esc(fmt(v))} {unit}</text>'
             )
 
         L.append(
-            f'<text x="{x0}" y="{y0 + TITLE_H + LANE_H * n_rows + 13}" fill="{MUT}" '
-            f'font-size="9">{esc(_clip(subtitle, COLW, 9))}</text>'
+            f'<text x="{x0}" y="{y0 + TITLE_H + LANE_H * n_rows + 15}" fill="{MUT}" '
+            f'font-size="11">{esc(_clip(subtitle, COLW, 11))}</text>'
         )
 
-    # legend + provenance, one line, clipped so it cannot overflow the canvas
-    fy = H - FOOT_H + 22
-    L.append(f'<rect x="{PAD}" y="{fy - 9}" width="9" height="9" rx="2" fill="{ACC}"/>')
-    L.append(f'<text x="{PAD + 15}" y="{fy}" fill="{MUT}" font-size="10">fox-agent</text>')
-    L.append(f'<rect x="{PAD + 90}" y="{fy - 9}" width="9" height="9" rx="2" fill="{BAR}"/>')
-    L.append(f'<text x="{PAD + 105}" y="{fy}" fill="{MUT}" font-size="10">other tools</text>')
+    # legend + provenance, one line, each half clipped to its own budget so the
+    # two cannot overlap in the middle
+    fy = H - FOOT_H + 26
+    L.append(f'<rect x="{PAD}" y="{fy - 10}" width="11" height="11" rx="2" fill="{ACC}"/>')
+    L.append(f'<text x="{PAD + 18}" y="{fy}" fill="{MUT}" font-size="12">fox-agent</text>')
+    L.append(f'<rect x="{PAD + 108}" y="{fy - 10}" width="11" height="11" rx="2" fill="{BAR}"/>')
+    L.append(f'<text x="{PAD + 126}" y="{fy}" fill="{MUT}" font-size="12">other tools</text>')
     L.append(
-        f'<text x="{PAD + 196}" y="{fy}" fill="{MUT}" font-size="10">'
-        f'{esc(_clip(footer, W - PAD * 2 - 196, 10))}</text>'
+        f'<text x="{PAD + 236}" y="{fy}" fill="{MUT}" font-size="12" opacity="0.85">'
+        f'{esc(_clip(footer, W - PAD * 2 - 236, 12))}</text>'
     )
     L.append("</svg>")
 
@@ -1394,79 +1408,155 @@ def rank_of(rows, key, fox_name="fox-agent"):
 
 
 def scorecard_svg(rows, out_path, generated, machine):
-    """The README hero: fox-agent's three numbers, one card each.
+    """The README hero: fox-agent's three numbers, set big.
 
-    An SVG rather than a markdown table because this is the block a reader
-    actually looks at, and three numbers set large read in a second, while a
-    table of them reads in five. The rank is stated as "#2 of 20" beside each
-    value so the number has a field to be good in -- a bare "45 MB" is not a
-    claim, "45 MB, #2 of 20" is.
+    SIZED FOR THE README, NOT FOR THE FILE. GitHub renders README content in a
+    column around 880px wide, so a 1200px-wide SVG is scaled to about 73% and a
+    40px number arrives as ~29px. The first version of this card did exactly
+    that and read as small type. The canvas is 960px wide instead, which GitHub
+    shows at close to 1:1, and the numbers are 66px -- so they land around 60px
+    on screen instead of 29.
 
-    Deliberately not a bar chart: with three values from three different units
-    there is nothing to compare within a single axis, so bars would be
-    decoration. Size is used for emphasis instead.
+    Three elements per card, each with a job:
+
+      the number  the value, set large enough to read before anything else
+      the rank    a pill, because "44 MB" is a fact and "2nd of 22" is a claim
+      the gauge   where that value sits in the field, from best to worst, as a
+                  dot on a track. This is the part that makes the card worth
+                  looking at: the rank says the position, the gauge shows the
+                  distance, and the two ends are labelled so the shape of the
+                  field is legible without a second image.
+
+    The gauge is sqrt-scaled, consistently with bench.svg, because first-byte
+    spans ~1150x (9.6ms to 11069ms) and on a linear axis every dot but the
+    worst stacks up at zero. Area is not proportional to value on a sqrt axis,
+    so the endpoints are labelled with their real numbers.
     """
     fox = next((r for r in rows if r["agent"] == "fox-agent" and r.get("installed")), None)
-    W, PAD = 1200, 34
-    CARD_H, HEAD_H, FOOT_H = 132, 96, 44
+    installed = [r for r in rows if r.get("installed")]
+
+    W, PAD = 960, 30
     N = len(METRICS)
-    GAP = 20
+    GAP = 16
     CARD_W = (W - PAD * 2 - GAP * (N - 1)) // N
-    H = HEAD_H + CARD_H + FOOT_H
+    HEAD_H, CARD_H, FOOT_H, CARD_Y = 138, 252, 58, 158
+    H = CARD_Y + CARD_H + FOOT_H
+    VAL_FS = 66  # the number. sized so it survives GitHub's ~0.92 scale
 
     L = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" '
-        f'font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace">',
+        f'font-family="ui-monospace,SFMono-Regular,JetBrains Mono,Menlo,Consolas,monospace">',
+        "<defs>"
+        f'<linearGradient id="hdr" x1="0" y1="0" x2="0" y2="1">'
+        f'<stop offset="0" stop-color="#242019"/><stop offset="1" stop-color="{BG2}"/></linearGradient>'
+        f'<linearGradient id="rule" x1="0" y1="0" x2="1" y2="0">'
+        f'<stop offset="0" stop-color="{ACC}"/><stop offset="1" stop-color="{ACC}" stop-opacity="0"/></linearGradient>'
+        "</defs>",
         f'<rect width="{W}" height="{H}" fill="{BG}"/>',
-        f'<rect width="{W}" height="{HEAD_H}" fill="{BG2}"/>',
-        f'<rect x="0" y="{HEAD_H - 2}" width="{W}" height="2" fill="{ACC}"/>',
-        f'<text x="{PAD}" y="42" fill="{INK}" font-size="24" font-weight="bold">fox-agent</text>',
+        f'<rect width="{W}" height="{HEAD_H}" fill="url(#hdr)"/>',
+        f'<rect x="0" y="{HEAD_H - 3}" width="{W}" height="3" fill="url(#rule)"/>',
     ]
-    if fox:
-        L.append(
-            f'<text x="{PAD + 150}" y="42" fill="{MUT}" font-size="14">v{esc(fox["version"])}</text>'
-        )
-    L.append(
-        f'<text x="{PAD}" y="70" fill="{MUT}" font-size="12.5">'
-        f'the harness cost, measured against {len([r for r in rows if r.get("installed")])} '
-        f'coding CLIs · lower is better on all three</text>'
-    )
-    L.append(f'<text x="{W - PAD}" y="70" text-anchor="end" fill="{MUT}" font-size="11">'
-             f'{esc(_clip(machine, 380, 11))}</text>')
 
+    # -- header: wordmark, version chip, one-line claim -------------------
+    L.append(f'<text x="{PAD}" y="62" fill="{INK}" font-size="40" font-weight="bold" '
+             f'letter-spacing="-1">fox-agent</text>')
+    ww = len("fox-agent") * 40 * 0.6 - 8
+    if fox:
+        chip = f'v{esc(fox["version"])}'
+        cw = len(chip) * 15 * 0.6 + 22
+        cx = PAD + ww + 16
+        L.append(f'<rect x="{cx:.0f}" y="34" width="{cw:.0f}" height="26" rx="13" '
+                 f'fill="none" stroke="{MUT}" stroke-opacity="0.55"/>')
+        L.append(f'<text x="{cx + cw / 2:.0f}" y="52" text-anchor="middle" fill="{MUT}" '
+                 f'font-size="15">{chip}</text>')
+    # The claim owns the whole line. An earlier version right-anchored the
+    # machine label on the same row, which forced the claim to clip mid-word
+    # ("measured against 22 coding CL…"); the claim is the thing worth reading,
+    # and the machine detail is provenance, so it moved to the footer.
+    claim = f'fast to start · light to run · measured against {len(installed)} coding CLIs'
+    L.append(f'<text x="{PAD}" y="96" fill="{MUT}" font-size="17">'
+             f'{esc(_clip(claim, W - PAD * 2, 17))}</text>')
+
+    # -- three cards ------------------------------------------------------
     for i, (key, label, unit, fmt, short) in enumerate(METRICS):
         x0 = PAD + i * (CARD_W + GAP)
-        y0 = HEAD_H + 16
         rank, field = rank_of(rows, key)
         val = metric_value(fox, key) if fox else None
 
-        L.append(f'<rect x="{x0}" y="{y0}" width="{CARD_W}" height="{CARD_H}" rx="5" fill="{BG2}"/>')
-        L.append(f'<rect x="{x0}" y="{y0}" width="3" height="{CARD_H}" rx="1.5" fill="{ACC}"/>')
-        L.append(f'<text x="{x0 + 22}" y="{y0 + 30}" fill="{MUT}" font-size="12">{esc(short)}</text>')
+        # measured values for the gauge + its endpoints
+        vals = [(r["agent"], metric_value(r, key)) for r in installed]
+        vals = [(a, v) for a, v in vals if v is not None]
+        best = min((v for _a, v in vals), default=None)
+        worst = max((v for _a, v in vals), default=None)
+
+        L.append(f'<rect x="{x0}" y="{CARD_Y}" width="{CARD_W}" height="{CARD_H}" rx="7" fill="{BG2}"/>')
+        L.append(f'<rect x="{x0}" y="{CARD_Y}" width="{CARD_W}" height="3" rx="1.5" fill="{ACC}"/>')
+        # corner ticks: a HUD-ish frame without a heavy border
+        for (tx, ty, dx, dy) in (
+            (x0 + 12, CARD_Y + CARD_H - 12, 1, -1),
+            (x0 + CARD_W - 12, CARD_Y + CARD_H - 12, -1, -1),
+        ):
+            L.append(f'<path d="M {tx} {ty} h {9 * dx} M {tx} {ty} v {9 * dy}" '
+                     f'stroke="{GRID}" stroke-width="1.5" fill="none"/>')
+
+        L.append(f'<text x="{x0 + 26}" y="{CARD_Y + 40}" fill="{MUT}" font-size="14" '
+                 f'letter-spacing="1.6">{esc(short.upper())}</text>')
 
         if val is None:
-            L.append(f'<text x="{x0 + 22}" y="{y0 + 78}" fill="{BAR_NA}" font-size="34">n/a</text>')
-            L.append(f'<text x="{x0 + 22}" y="{y0 + 106}" fill="{MUT}" font-size="11">'
+            L.append(f'<text x="{x0 + 26}" y="{CARD_Y + 128}" fill="{BAR_NA}" '
+                     f'font-size="{VAL_FS}">n/a</text>')
+            L.append(f'<text x="{x0 + 26}" y="{CARD_Y + 160}" fill="{MUT}" font-size="14">'
                      f'not measured this run</text>')
             continue
 
         vs = fmt(val)
-        # The number is the point, so it gets the size. The unit sits beside it
-        # at text size rather than inside the big string, so "45 MB" does not
-        # read as one large blob.
-        L.append(f'<text x="{x0 + 22}" y="{y0 + 82}" fill="{INK}" font-size="40" '
-                 f'font-weight="bold">{esc(vs)}</text>')
-        num_w = len(vs) * 40 * 0.6
-        L.append(f'<text x="{x0 + 22 + num_w + 6:.0f}" y="{y0 + 82}" fill="{MUT}" '
-                 f'font-size="15">{esc(unit)}</text>')
-        if rank is not None:
-            L.append(f'<text x="{x0 + 22}" y="{y0 + 110}" fill="{ACC}" font-size="12">'
-                     f'#{rank} of {field}</text>')
+        num_w = len(vs) * VAL_FS * 0.6
+        L.append(f'<text x="{x0 + 26}" y="{CARD_Y + 132}" fill="{INK}" font-size="{VAL_FS}" '
+                 f'font-weight="bold" letter-spacing="-2">{esc(vs)}</text>')
+        L.append(f'<text x="{x0 + 26 + num_w + 2:.0f}" y="{CARD_Y + 132}" fill="{MUT}" '
+                 f'font-size="21">{esc(unit)}</text>')
 
-    fy = H - FOOT_H + 26
-    L.append(f'<text x="{PAD}" y="{fy}" fill="{MUT}" font-size="10.5">'
-             f'p50 of successful launches · full field in bench/bench.svg · raw data in '
-             f'bench/results.json · generated {esc(generated)}</text>')
+        # rank pill
+        if rank is not None:
+            txt = f"{rank} of {field}"
+            pw = len(txt) * 15 * 0.6 + 30
+            L.append(f'<rect x="{x0 + 26}" y="{CARD_Y + 152}" width="{pw:.0f}" height="30" rx="15" '
+                     f'fill="{ACC}" fill-opacity="0.16" stroke="{ACC}" stroke-opacity="0.5"/>')
+            L.append(f'<text x="{x0 + 26 + pw / 2:.0f}" y="{CARD_Y + 173}" text-anchor="middle" '
+                     f'fill="{ACC}" font-size="15" font-weight="bold">#{esc(txt)}</text>')
+
+        # field-position gauge
+        gy = CARD_Y + 212
+        gx0, gx1 = x0 + 26, x0 + CARD_W - 26
+        gw = gx1 - gx0
+        L.append(f'<rect x="{gx0}" y="{gy - 3}" width="{gw}" height="6" rx="3" fill="{TRACK}"/>')
+        if best is not None and worst is not None and worst > best:
+            # best -> left edge, worst -> right edge, sqrt so the packed low end
+            # spreads out instead of collapsing into one pixel
+            b_s, w_s, v_s = math.sqrt(best), math.sqrt(worst), math.sqrt(val)
+            frac = max(0.0, min(1.0, (v_s - b_s) / (w_s - b_s)))
+            dx = gx0 + frac * gw
+            L.append(f'<rect x="{gx0}" y="{gy - 3}" width="{dx - gx0:.0f}" height="6" rx="3" '
+                     f'fill="{ACC}" fill-opacity="0.45"/>')
+            L.append(f'<circle cx="{dx:.1f}" cy="{gy}" r="7" fill="{ACC}"/>')
+            L.append(f'<circle cx="{dx:.1f}" cy="{gy}" r="3" fill="{BG}"/>')
+            L.append(f'<text x="{gx0}" y="{gy + 26}" fill="{MUT}" font-size="11.5">'
+                     f'{esc(fmt(best))}</text>')
+            L.append(f'<text x="{gx1}" y="{gy + 26}" text-anchor="end" fill="{MUT}" '
+                     f'font-size="11.5">{esc(fmt(worst))}</text>')
+        L.append(f'<text x="{gx0 + gw / 2:.0f}" y="{gy + 26}" text-anchor="middle" fill="{MUT}" '
+                 f'font-size="11.5" opacity="0.75">field range, {unit}</text>')
+
+    # Two halves, each clipped to its own half. The previous version anchored one
+    # string left and one right with no budget, and they overlapped in the middle
+    # ("raw data in bench/results.json" printed through the timestamp).
+    fy = H - FOOT_H + 28
+    half = (W - PAD * 2) / 2 - 12
+    L.append(f'<text x="{PAD}" y="{fy}" fill="{MUT}" font-size="12.5">'
+             f'{esc(_clip("p50 of successful launches · lower is better on all three", half, 12.5))}</text>')
+    right = f'{machine} · {generated}'
+    L.append(f'<text x="{W - PAD}" y="{fy}" text-anchor="end" fill="{MUT}" font-size="12" '
+             f'opacity="0.7">{esc(_clip(right, half, 12))}</text>')
     L.append("</svg>")
 
     with open(out_path, "w") as f:
