@@ -128,6 +128,71 @@ function clampEffort(e: ReasoningEffort, accepted: ReadonlySet<string>): string 
 }
 
 /**
+ * Every providerOptions the request needs, merged into ONE object.
+ *
+ * Each helper returns `{ providerOptions: {<namespace>: {...}} }`, and spreading
+ * two of those into `streamText` would let the second replace the first (same
+ * top-level key). Merging by namespace keeps reasoning effort and the cache key
+ * on a request that wants both.
+ */
+export function providerOptionsFor(cfg: ProviderConfig): { providerOptions?: Record<string, import("@ai-sdk/provider").JSONObject> } {
+  const parts = [reasoningProviderOptions(cfg), cacheAffinityOptions(cfg)];
+  const merged: Record<string, import("@ai-sdk/provider").JSONObject> = {};
+  for (const p of parts) {
+    if (!p) continue;
+    for (const [ns, opts] of Object.entries(p.providerOptions)) {
+      // two helpers touching the same namespace merge field-by-field
+      merged[ns] = { ...(merged[ns] ?? {}), ...opts };
+    }
+  }
+  return Object.keys(merged).length ? { providerOptions: merged } : {};
+}
+
+/**
+ * The prompt-cache affinity key for this request, or undefined.
+ *
+ * OpenAI-shaped endpoints take a `prompt_cache_key`, and a STABLE value per
+ * conversation is what keeps consecutive steps on the same cache shard: without
+ * it the backend is free to route each request independently, so a prompt that
+ * was fully cached on step N can be a total miss on step N+1. The session id is
+ * exactly the right granularity — one conversation, many steps — and it must not
+ * be shared across unrelated sessions, which would only pollute a shard nothing
+ * asks for again.
+ *
+ * Only the OpenAI families get it: Anthropic's Messages API has no such field
+ * (it uses explicit `cache_control` breakpoints, which we already send) and
+ * Google's caching is configured out-of-band. An unknown body field there is at
+ * best ignored and at worst a 400.
+ */
+export function cacheKeyFor(cfg: ProviderConfig): string | undefined {
+  const key = cfg.sessionId?.trim();
+  if (!key) return undefined;
+  const name = cfg.provider ?? "openai-compatible";
+  if (name === "openai-responses" || name === "openai-compatible" || name === "openai") return key;
+  return undefined;
+}
+
+/**
+ * Provider options carrying the cache key, for endpoints that take it as a
+ * proper request option rather than a bare body field.
+ *
+ * The compat SDK's providerOptions pass-through is NOT used here: its namespace
+ * is `config.provider.split('.')[0]`, and fox registers its provider as
+ * `fox-agent`, so `{openaiCompatible: {...}}` silently matches nothing. The
+ * compatible endpoint gets the key through `transformRequestBody` instead (see
+ * openai-compatible.ts); only the native Responses API takes an option.
+ */
+export function cacheAffinityOptions(cfg: ProviderConfig): { providerOptions: Record<string, import("@ai-sdk/provider").JSONObject> } | undefined {
+  const key = cacheKeyFor(cfg);
+  if (!key) return undefined;
+  if (cfg.provider === "openai-responses") {
+    // a real field on this endpoint, not a pass-through body key
+    return { providerOptions: { openai: { promptCacheKey: key } } };
+  }
+  return undefined;
+}
+
+/**
  * Provider options for reasoning effort, keyed the way each AI SDK expects
  * them (`reasoningEffort` travels in `sampling` like any sampling override).
  *

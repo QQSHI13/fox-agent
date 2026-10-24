@@ -112,7 +112,9 @@ export function buildSystemPrompt(
           `- after using a big result, hide it: {"op":"delete","ids":[3,5],"summary":"ran build; fixed 2 errors"}\n` +
           `- rewrite stale/wrong nodes: {"op":"replace","id":7,"content":"…"}\n` +
           `Batch multiple ops in one ctx call. Any node is editable, including ones from the current turn. Edits apply from your NEXT step; storage is permanent — nothing is ever lost, ops are revertible (/undo).\n` +
-          `Delete junk the moment you see it: when a tool result is gibberish, a runaway stack trace, binary noise, a listing of 400 files, or something you know you will never need, hide it RIGHT AWAY with ctx rather than carrying it for the rest of the session. Every junk node you leave behind is re-read and re-billed on every later step.`,
+          `Delete junk the moment you see it: when a tool result is gibberish, a runaway stack trace, binary noise, a listing of 400 files, or something you know you will never need, hide it RIGHT AWAY with ctx rather than carrying it for the rest of the session. Every junk node you leave behind is re-read and re-billed on every later step.
+` +
+          `The same rule applies to a large result you DID need: once you have the answer out of it, replace it with that answer — {"op":"replace","id":12,"content":"src/auth.ts:88 renews at 80% of ttl; the 401 was a clock skew case"} — rather than leaving 3000 lines of file in the view for every later step to re-read. Keep the conclusion, drop the bulk. Do not ask for a full output again to re-check it; search the node instead.`,
       ].join("\n"),
     );
   }

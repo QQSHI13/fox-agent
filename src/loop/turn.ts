@@ -398,6 +398,9 @@ export async function* runTurnCore(
   // user's own [providers.*] headers win over all of these.
   const reqCfg: ProviderConfig = {
     ...cfg,
+    // carried explicitly (not just as a header) because OpenAI-shaped providers
+    // take it as a BODY field, `prompt_cache_key`, for prompt-cache affinity
+    sessionId,
     headers: {
       "user-agent": `fox-agent/${VERSION}`,
       "x-opencode-session": sessionId,

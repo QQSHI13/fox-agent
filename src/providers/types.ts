@@ -75,6 +75,16 @@ export interface ProviderConfig {
    * never cut off. Omitted or 0 disables it.
    */
   requestTimeoutMs?: number;
+  /**
+   * The session this request belongs to.
+   *
+   * Used for provider-side prompt-cache affinity: OpenAI-shaped endpoints take
+   * a `prompt_cache_key`, and sending a STABLE per-session value is what keeps
+   * consecutive steps of one conversation on the same cache shard. Without it
+   * every step is a fresh prefix to the cache and re-bills the whole prompt.
+   * Absent for one-off calls (no affinity to maintain).
+   */
+  sessionId?: string;
 }
 
 /**

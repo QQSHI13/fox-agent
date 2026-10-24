@@ -8,7 +8,7 @@ import type { ChatMessage, ProviderConfig, StreamEvent, ToolDef } from "./types.
 import { classifyProviderError, TruncatedStreamError } from "../core/errors.ts";
 import { debugInfo, debugError } from "../core/debuglog.ts";
 import { startWatchdog } from "./watchdog.ts";
-import { reasoningProviderOptions, samplingOptions, outputTokenOptions } from "./index.ts";
+import { providerOptionsFor, samplingOptions, outputTokenOptions, cacheKeyFor } from "./index.ts";
 import { toModelMessages } from "./convert.ts";
 
 export * from "./types.ts";
@@ -23,12 +23,22 @@ export async function* streamChat(
   // OpenAI-compatible gateways never send a usage chunk, and every downstream
   // figure (status bar ctx%, the agent's own context meter, /usage) silently
   // stays at "no report yet" forever
+  const cacheKey = cacheKeyFor(cfg);
   const provider = createOpenAICompatible({
     name: "fox-agent",
     baseURL: cfg.baseUrl,
     apiKey: cfg.apiKey,
     includeUsage: true,
     ...(cfg.headers && Object.keys(cfg.headers).length ? { headers: cfg.headers } : {}),
+    // `prompt_cache_key` is a body field, and this SDK's providerOptions
+    // pass-through keys off the provider NAME (split('.')[0] of "fox-agent"),
+    // so providerOptions would silently match nothing. transformRequestBody is
+    // the supported insertion point for a body field. Only added when there IS
+    // a session: a one-off call has no affinity worth claiming, and a key it
+    // never revisits would just occupy a shard.
+    ...(cacheKey
+      ? { transformRequestBody: (body: Record<string, any>) => ({ ...body, prompt_cache_key: cacheKey }) }
+      : {}),
   });
   const model = provider.chatModel(cfg.model);
 
@@ -56,7 +66,7 @@ export async function* streamChat(
       // and logs a warning; we know the real one (config, /models, models.dev)
       ...outputTokenOptions(cfg),
       ...samplingOptions(cfg.sampling),
-      ...reasoningProviderOptions(cfg),
+      ...providerOptionsFor(cfg),
       abortSignal: wd.signal,
     });
 

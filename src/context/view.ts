@@ -13,6 +13,19 @@ export interface ParsedCall {
  * written, so the raw string is the cache key's version stamp.
  */
 const callCache = new Map<string, { raw: string; parsed: ParsedCall[] }>();
+
+/**
+ * Drop memoized parses belonging to one projection.
+ *
+ * `callCache` is keyed by message id with no size bound, so a process that has
+ * visited many sessions accumulates an entry for every assistant node it ever
+ * rendered, long after the session is closed. Tying it to the projection's
+ * lifetime is the natural bound: the ids are exactly the ones that projection
+ * owned, and a re-read after eviction simply re-parses.
+ */
+function dropCallCacheFor(c: ViewCache): void {
+  for (const n of c.nodes) if (n.msg.tool_calls) callCache.delete(n.msg.id);
+}
 export function parseToolCalls(msg: MessageRow): ParsedCall[] {
   if (!msg.tool_calls) return [];
   const hit = callCache.get(msg.id);
@@ -146,10 +159,49 @@ interface ViewCache {
 }
 const views = new Map<string, ViewCache>();
 
+/**
+ * How many sessions keep a resident projection.
+ *
+ * Each entry holds every message body of that session plus four index maps, so
+ * an unvisited-since-forever map is a leak that scales with how many sessions
+ * the process has ever touched. Eviction is CORRECTNESS-SAFE by construction:
+ * a missing entry makes `projectView` rebuild from SQLite (see the
+ * `lastMsgSeq === 0` branch), so the cost of a miss is a re-read, never a wrong
+ * view. The cap matches `MAX_OPEN_SESSIONS` in store/db.ts — the same number of
+ * sessions that may hold an open database handle.
+ */
+const MAX_VIEWS = 8;
+
+/**
+ * Sessions that must not be evicted.
+ *
+ * Deliberately EMPTY and unused by the harness: recency alone already protects
+ * the active session, because the turn loop and the TUI projection touch it
+ * continuously, so it is never the coldest entry. A pins set would add a
+ * failure mode with no upside here — a pin that is never released (an early
+ * return, a thrown turn) makes that session resident forever, which is exactly
+ * the leak the LRU exists to prevent.
+ */
+
+/** Drop the least-recently-used projections past the cap. */
+function evictViews(keep: string): void {
+  for (const id of [...views.keys()]) {
+    if (views.size <= MAX_VIEWS) return;
+    if (id === keep) continue;
+    dropViewCache(id);
+  }
+}
+
 /** Test hook: drop cached projections (a fresh FOX_AGENT_HOME reuses no ids, but be explicit). */
 export function dropViewCache(sessionId?: string): void {
-  if (sessionId) views.delete(sessionId);
-  else views.clear();
+  if (sessionId) {
+    const c = views.get(sessionId);
+    if (c) dropCallCacheFor(c);
+    views.delete(sessionId);
+  } else {
+    for (const c of views.values()) dropCallCacheFor(c);
+    views.clear();
+  }
 }
 
 /**
@@ -162,9 +214,17 @@ export function dropViewCache(sessionId?: string): void {
  */
 export function projectView(sessionId: string): ViewNode[] {
   let c = views.get(sessionId);
-  if (!c) {
+  if (c) {
+    // refresh recency: delete+set moves the key to the end of iteration order,
+    // which is what `evictViews` walks oldest-first
+    views.delete(sessionId);
+    views.set(sessionId, c);
+  } else {
     c = { lastMsgSeq: 0, lastOpSeq: 0, nodes: [], bySeq: new Map(), visibleCalls: new Set(), toolByCall: new Map(), callsOf: new Map() };
     views.set(sessionId, c);
+    // a miss past the cap evicts the coldest OTHER session; the entry just
+    // created is `keep` so it can never be the one dropped
+    evictViews(sessionId);
   }
 
   // first touch of a session reads everything; later touches read only the tail

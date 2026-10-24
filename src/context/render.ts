@@ -46,6 +46,32 @@ interface RenderedNode {
 }
 const renderedNodes = new Map<string, RenderedNode>();
 const RENDER_CACHE_MAX = 50_000;
+/**
+ * Bound the render memo by dropping the COLDEST entries.
+ *
+ * This used to `clear()` the whole map once it passed the cap, which has two
+ * bad properties: peak memory is the full cap (nothing is freed until it is
+ * entirely blown away), and the very next node re-renders into an empty map, so
+ * a long session alternates between "all warm" and "all cold" — paying a full
+ * re-render of the transcript right after every eviction. Evicting oldest-first
+ * keeps the recent tail (the part a session actually re-renders) warm and holds
+ * memory flat instead of sawtoothing.
+ *
+ * Map iteration order is insertion order, and every hit moves its entry to the
+ * end, so the first key is the least recently used. Ids are never reused.
+ */
+function evictRendered(): void {
+  // drop a batch rather than one-per-insert: deleting from the front is O(1)
+  // amortized per entry, but doing it on every single insert turns a long
+  // replay into a per-node bookkeeping cost
+  if (renderedNodes.size <= RENDER_CACHE_MAX) return;
+  const drop = renderedNodes.size - RENDER_CACHE_MAX + Math.floor(RENDER_CACHE_MAX * 0.1);
+  let n = 0;
+  for (const k of renderedNodes.keys()) {
+    if (n++ >= drop) break;
+    renderedNodes.delete(k);
+  }
+}
 
 /**
  * Assembled-history cache: the walk below is O(view) even with every node a
@@ -174,11 +200,14 @@ export function renderContext(
             .join(",")
         : "";
     let r = renderedNodes.get(m.id);
-    if (!r || r.content !== n.content || r.deleted !== n.deleted || r.summary !== n.summary || r.callsKey !== callsKey || r.markers !== markers) {
+    if (r && r.content === n.content && r.deleted === n.deleted && r.summary === n.summary && r.callsKey === callsKey && r.markers === markers) {
+      // refresh recency so eviction walks genuinely-cold entries first
+      renderedNodes.delete(m.id);
+      renderedNodes.set(m.id, r);
+    } else {
       r = renderNode(n, callsKey, visibleToolIds, markers);
       renderedNodes.set(m.id, r);
-      // ids are never reused, so this only bounds memory across long sessions
-      if (renderedNodes.size > RENDER_CACHE_MAX) renderedNodes.clear();
+      evictRendered();
     }
     if (r.note) {
       pending.push(r.note);
