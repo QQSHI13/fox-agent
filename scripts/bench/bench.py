@@ -102,7 +102,6 @@ AGENTS = [
     ("gemini cli", ["gemini"]),
     ("copilot cli", ["copilot"]),
     ("crush", ["crush"]),
-    ("goose", ["goose"]),
     ("aider", ["aider"]),
     ("amp", ["amp"]),
     # cursor renamed the primary binary to `agent`; cursor-agent stays as the

@@ -10,7 +10,6 @@
 | gemini cli | 0.65.0 | `/home/runner/.npm-global/bin/gemini` | 102.6 | pkg | 1359.7 | 1451.0 | 1468.0 | 0.7 | — | — |
 | copilot cli | GitHub Copilot CLI 1.0.103. | `/home/runner/.npm-global/bin/copilot` | 198.5 | pkg | 103.3 | 776.7 | — | — | render | 381.1 |
 | crush | crush version v0.98.2 | `/home/runner/.npm-global/bin/crush` | 128.9 | pkg | 132.2 | 430.0 | 17139.3 | 16303.2 | render | 157.7 |
-| goose | 1.56.0 | `/home/runner/.local/bin/goose` | 209.2 | bin | 6.7 | 6.5 | 203.9 | 0.8 | render | — |
 | aider | aider 0.86.2 | `/home/runner/work/fox-agent/fox-agent/.venv-bench/bin/aider` | 642.8 | pkg | 718.3 | 633.0 | 1022.2 | 9.3 | render | 66.8 |
 | amp | 0.0.1792800065-ga5b55b (released 2026-10-24T00:01:05.000Z, 1 | `/home/runner/.local/bin/amp` | 161.1 | bin | 202.3 | 208.0 | 579.6 | 3.0 | render | 138.1 |
 | cursor-agent | 2026.10.22-27dcf5f | `/home/runner/.local/bin/cursor-agent` | 583.2 | pkg | 432.8 | 415.4 | — | — | render | 251.0 |

@@ -404,46 +404,6 @@
       "idle_pss_procs": 2
     },
     {
-      "agent": "goose",
-      "installed": true,
-      "bin": "/home/runner/.local/bin/goose",
-      "version": "1.56.0",
-      "disk_mb": 209.24168,
-      "disk_kind": "bin",
-      "startup_ms": 6.654830000115908,
-      "tui_first_byte_ms": 6.503079000140133,
-      "tui_first_input_ms": 203.88658499996382,
-      "tui_input_latency_ms": 0.764470999911282,
-      "startup": {
-        "min": 6.654830000115908,
-        "p50": 6.974064999894836,
-        "p95": 7.0267829999011155,
-        "n": 4
-      },
-      "tui_first_byte": {
-        "min": 6.503079000140133,
-        "p50": 6.6233949999059405,
-        "p95": 6.918166000104975,
-        "n": 5
-      },
-      "tui_first_input": {
-        "min": 203.88658499996382,
-        "p50": 203.88658499996382,
-        "p95": 208.78344899983858,
-        "n": 2
-      },
-      "tui_input_latency": {
-        "min": 0.764470999911282,
-        "p50": 0.7702639998115046,
-        "p95": 0.8073080000485788,
-        "n": 3
-      },
-      "input_signal": "render",
-      "idle_pss_mb": null,
-      "idle_pss_root_mb": null,
-      "idle_pss_procs": null
-    },
-    {
       "agent": "aider",
       "installed": true,
       "bin": "/home/runner/work/fox-agent/fox-agent/.venv-bench/bin/aider",
