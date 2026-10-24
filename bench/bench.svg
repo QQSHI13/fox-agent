@@ -11,8 +11,8 @@
 <text x="44" y="142.0" text-anchor="end" fill="#8a8578" font-size="10">1</text>
 <text x="52" y="142.0" fill="#e6e1d8" font-size="11.5">jcode</text>
 <rect x="164" y="132.5" width="164" height="12" rx="2" fill="#221f1a"/>
-<rect x="164" y="132.5" width="4.9" height="12" rx="2" fill="#5b7fa6"/>
-<text x="394" y="142.0" text-anchor="end" fill="#8a8578" font-size="10.5">10 ms</text>
+<rect x="164" y="132.5" width="4.8" height="12" rx="2" fill="#5b7fa6"/>
+<text x="394" y="142.0" text-anchor="end" fill="#8a8578" font-size="10.5">9.6 ms</text>
 <text x="44" y="167.0" text-anchor="end" fill="#e0803c" font-size="10">2</text>
 <text x="52" y="167.0" fill="#e0803c" font-size="11.5" font-weight="bold">fox-agent</text>
 <rect x="164" y="157.5" width="164" height="12" rx="2" fill="#221f1a"/>
@@ -21,207 +21,217 @@
 <text x="44" y="192.0" text-anchor="end" fill="#8a8578" font-size="10">3</text>
 <text x="52" y="192.0" fill="#e6e1d8" font-size="11.5">pi-bolt</text>
 <rect x="164" y="182.5" width="164" height="12" rx="2" fill="#221f1a"/>
-<rect x="164" y="182.5" width="8.7" height="12" rx="2" fill="#5b7fa6"/>
-<text x="394" y="192.0" text-anchor="end" fill="#8a8578" font-size="10.5">31 ms</text>
+<rect x="164" y="182.5" width="8.5" height="12" rx="2" fill="#5b7fa6"/>
+<text x="394" y="192.0" text-anchor="end" fill="#8a8578" font-size="10.5">30 ms</text>
 <text x="44" y="217.0" text-anchor="end" fill="#8a8578" font-size="10">4</text>
 <text x="52" y="217.0" fill="#8a8578" font-size="11.5">codex</text>
 <rect x="164" y="207.5" width="164" height="12" rx="2" fill="#221f1a"/>
-<rect x="164" y="207.5" width="9.5" height="12" rx="2" fill="#5b7fa6"/>
-<text x="394" y="217.0" text-anchor="end" fill="#8a8578" font-size="10.5">37 ms</text>
+<rect x="164" y="207.5" width="9.4" height="12" rx="2" fill="#5b7fa6"/>
+<text x="394" y="217.0" text-anchor="end" fill="#8a8578" font-size="10.5">36 ms</text>
 <text x="44" y="242.0" text-anchor="end" fill="#8a8578" font-size="10">5</text>
 <text x="52" y="242.0" fill="#8a8578" font-size="11.5">devin</text>
 <rect x="164" y="232.5" width="164" height="12" rx="2" fill="#221f1a"/>
-<rect x="164" y="232.5" width="9.8" height="12" rx="2" fill="#5b7fa6"/>
-<text x="394" y="242.0" text-anchor="end" fill="#8a8578" font-size="10.5">40 ms</text>
+<rect x="164" y="232.5" width="10.0" height="12" rx="2" fill="#5b7fa6"/>
+<text x="394" y="242.0" text-anchor="end" fill="#8a8578" font-size="10.5">41 ms</text>
 <text x="44" y="267.0" text-anchor="end" fill="#8a8578" font-size="10">6</text>
 <text x="52" y="267.0" fill="#8a8578" font-size="11.5">droid</text>
 <rect x="164" y="257.5" width="164" height="12" rx="2" fill="#221f1a"/>
-<rect x="164" y="257.5" width="14.4" height="12" rx="2" fill="#5b7fa6"/>
-<text x="394" y="267.0" text-anchor="end" fill="#8a8578" font-size="10.5">85 ms</text>
+<rect x="164" y="257.5" width="13.9" height="12" rx="2" fill="#5b7fa6"/>
+<text x="394" y="267.0" text-anchor="end" fill="#8a8578" font-size="10.5">80 ms</text>
 <text x="44" y="292.0" text-anchor="end" fill="#8a8578" font-size="10">7</text>
 <text x="52" y="292.0" fill="#8a8578" font-size="11.5">opencode v2</text>
 <rect x="164" y="282.5" width="164" height="12" rx="2" fill="#221f1a"/>
-<rect x="164" y="282.5" width="17.5" height="12" rx="2" fill="#5b7fa6"/>
-<text x="394" y="292.0" text-anchor="end" fill="#8a8578" font-size="10.5">126 ms</text>
+<rect x="164" y="282.5" width="16.8" height="12" rx="2" fill="#5b7fa6"/>
+<text x="394" y="292.0" text-anchor="end" fill="#8a8578" font-size="10.5">116 ms</text>
 <text x="44" y="317.0" text-anchor="end" fill="#8a8578" font-size="10">8</text>
 <text x="52" y="317.0" fill="#8a8578" font-size="11.5">amp</text>
 <rect x="164" y="307.5" width="164" height="12" rx="2" fill="#221f1a"/>
-<rect x="164" y="307.5" width="21.2" height="12" rx="2" fill="#5b7fa6"/>
-<text x="394" y="317.0" text-anchor="end" fill="#8a8578" font-size="10.5">186 ms</text>
+<rect x="164" y="307.5" width="21.0" height="12" rx="2" fill="#5b7fa6"/>
+<text x="394" y="317.0" text-anchor="end" fill="#8a8578" font-size="10.5">181 ms</text>
 <text x="44" y="342.0" text-anchor="end" fill="#8a8578" font-size="10">9</text>
 <text x="52" y="342.0" fill="#8a8578" font-size="11.5">claude code</text>
 <rect x="164" y="332.5" width="164" height="12" rx="2" fill="#221f1a"/>
-<rect x="164" y="332.5" width="22.0" height="12" rx="2" fill="#5b7fa6"/>
-<text x="394" y="342.0" text-anchor="end" fill="#8a8578" font-size="10.5">200 ms</text>
+<rect x="164" y="332.5" width="21.2" height="12" rx="2" fill="#5b7fa6"/>
+<text x="394" y="342.0" text-anchor="end" fill="#8a8578" font-size="10.5">186 ms</text>
 <text x="44" y="367.0" text-anchor="end" fill="#8a8578" font-size="10">10</text>
 <text x="52" y="367.0" fill="#8a8578" font-size="11.5">pi</text>
 <rect x="164" y="357.5" width="164" height="12" rx="2" fill="#221f1a"/>
-<rect x="164" y="357.5" width="25.0" height="12" rx="2" fill="#5b7fa6"/>
-<text x="394" y="367.0" text-anchor="end" fill="#8a8578" font-size="10.5">257 ms</text>
+<rect x="164" y="357.5" width="24.4" height="12" rx="2" fill="#5b7fa6"/>
+<text x="394" y="367.0" text-anchor="end" fill="#8a8578" font-size="10.5">244 ms</text>
 <text x="44" y="392.0" text-anchor="end" fill="#8a8578" font-size="10">11</text>
 <text x="52" y="392.0" fill="#8a8578" font-size="11.5">qwen code</text>
 <rect x="164" y="382.5" width="164" height="12" rx="2" fill="#221f1a"/>
-<rect x="164" y="382.5" width="33.4" height="12" rx="2" fill="#5b7fa6"/>
-<text x="394" y="392.0" text-anchor="end" fill="#8a8578" font-size="10.5">459 ms</text>
+<rect x="164" y="382.5" width="32.5" height="12" rx="2" fill="#5b7fa6"/>
+<text x="394" y="392.0" text-anchor="end" fill="#8a8578" font-size="10.5">435 ms</text>
 <text x="44" y="417.0" text-anchor="end" fill="#8a8578" font-size="10">12</text>
 <text x="52" y="417.0" fill="#8a8578" font-size="11.5">cursor-agent</text>
 <rect x="164" y="407.5" width="164" height="12" rx="2" fill="#221f1a"/>
-<rect x="164" y="407.5" width="34.7" height="12" rx="2" fill="#5b7fa6"/>
-<text x="394" y="417.0" text-anchor="end" fill="#8a8578" font-size="10.5">498 ms</text>
+<rect x="164" y="407.5" width="34.2" height="12" rx="2" fill="#5b7fa6"/>
+<text x="394" y="417.0" text-anchor="end" fill="#8a8578" font-size="10.5">482 ms</text>
 <text x="44" y="442.0" text-anchor="end" fill="#8a8578" font-size="10">13</text>
-<text x="52" y="442.0" fill="#8a8578" font-size="11.5">crush</text>
+<text x="52" y="442.0" fill="#8a8578" font-size="11.5">copilot cli</text>
 <rect x="164" y="432.5" width="164" height="12" rx="2" fill="#221f1a"/>
-<rect x="164" y="432.5" width="35.9" height="12" rx="2" fill="#5b7fa6"/>
-<text x="394" y="442.0" text-anchor="end" fill="#8a8578" font-size="10.5">532 ms</text>
+<rect x="164" y="432.5" width="36.4" height="12" rx="2" fill="#5b7fa6"/>
+<text x="394" y="442.0" text-anchor="end" fill="#8a8578" font-size="10.5">546 ms</text>
 <text x="44" y="467.0" text-anchor="end" fill="#8a8578" font-size="10">14</text>
-<text x="52" y="467.0" fill="#8a8578" font-size="11.5">aider</text>
+<text x="52" y="467.0" fill="#8a8578" font-size="11.5">kimi code</text>
 <rect x="164" y="457.5" width="164" height="12" rx="2" fill="#221f1a"/>
-<rect x="164" y="457.5" width="37.2" height="12" rx="2" fill="#5b7fa6"/>
-<text x="394" y="467.0" text-anchor="end" fill="#8a8578" font-size="10.5">572 ms</text>
+<rect x="164" y="457.5" width="37.1" height="12" rx="2" fill="#5b7fa6"/>
+<text x="394" y="467.0" text-anchor="end" fill="#8a8578" font-size="10.5">567 ms</text>
 <text x="44" y="492.0" text-anchor="end" fill="#8a8578" font-size="10">15</text>
-<text x="52" y="492.0" fill="#8a8578" font-size="11.5">copilot cli</text>
+<text x="52" y="492.0" fill="#8a8578" font-size="11.5">aider</text>
 <rect x="164" y="482.5" width="164" height="12" rx="2" fill="#221f1a"/>
-<rect x="164" y="482.5" width="37.3" height="12" rx="2" fill="#5b7fa6"/>
-<text x="394" y="492.0" text-anchor="end" fill="#8a8578" font-size="10.5">572 ms</text>
+<rect x="164" y="482.5" width="37.2" height="12" rx="2" fill="#5b7fa6"/>
+<text x="394" y="492.0" text-anchor="end" fill="#8a8578" font-size="10.5">568 ms</text>
 <text x="44" y="517.0" text-anchor="end" fill="#8a8578" font-size="10">16</text>
-<text x="52" y="517.0" fill="#8a8578" font-size="11.5">kimi code</text>
+<text x="52" y="517.0" fill="#8a8578" font-size="11.5">crush</text>
 <rect x="164" y="507.5" width="164" height="12" rx="2" fill="#221f1a"/>
-<rect x="164" y="507.5" width="38.1" height="12" rx="2" fill="#5b7fa6"/>
-<text x="394" y="517.0" text-anchor="end" fill="#8a8578" font-size="10.5">597 ms</text>
+<rect x="164" y="507.5" width="38.4" height="12" rx="2" fill="#5b7fa6"/>
+<text x="394" y="517.0" text-anchor="end" fill="#8a8578" font-size="10.5">607 ms</text>
 <text x="44" y="542.0" text-anchor="end" fill="#8a8578" font-size="10">17</text>
 <text x="52" y="542.0" fill="#8a8578" font-size="11.5">codebuff</text>
 <rect x="164" y="532.5" width="164" height="12" rx="2" fill="#221f1a"/>
-<rect x="164" y="532.5" width="43.3" height="12" rx="2" fill="#5b7fa6"/>
-<text x="394" y="542.0" text-anchor="end" fill="#8a8578" font-size="10.5">773 ms</text>
+<rect x="164" y="532.5" width="41.3" height="12" rx="2" fill="#5b7fa6"/>
+<text x="394" y="542.0" text-anchor="end" fill="#8a8578" font-size="10.5">701 ms</text>
 <text x="44" y="567.0" text-anchor="end" fill="#8a8578" font-size="10">18</text>
 <text x="52" y="567.0" fill="#8a8578" font-size="11.5">cline</text>
 <rect x="164" y="557.5" width="164" height="12" rx="2" fill="#221f1a"/>
-<rect x="164" y="557.5" width="47.6" height="12" rx="2" fill="#5b7fa6"/>
-<text x="394" y="567.0" text-anchor="end" fill="#8a8578" font-size="10.5">934 ms</text>
+<rect x="164" y="557.5" width="46.9" height="12" rx="2" fill="#5b7fa6"/>
+<text x="394" y="567.0" text-anchor="end" fill="#8a8578" font-size="10.5">905 ms</text>
 <text x="44" y="592.0" text-anchor="end" fill="#8a8578" font-size="10">19</text>
 <text x="52" y="592.0" fill="#8a8578" font-size="11.5">iflow cli</text>
 <rect x="164" y="582.5" width="164" height="12" rx="2" fill="#221f1a"/>
-<rect x="164" y="582.5" width="49.9" height="12" rx="2" fill="#5b7fa6"/>
-<text x="394" y="592.0" text-anchor="end" fill="#8a8578" font-size="10.5">1,026 ms</text>
+<rect x="164" y="582.5" width="48.9" height="12" rx="2" fill="#5b7fa6"/>
+<text x="394" y="592.0" text-anchor="end" fill="#8a8578" font-size="10.5">986 ms</text>
 <text x="44" y="617.0" text-anchor="end" fill="#8a8578" font-size="10">20</text>
 <text x="52" y="617.0" fill="#8a8578" font-size="11.5">gemini cli</text>
 <rect x="164" y="607.5" width="164" height="12" rx="2" fill="#221f1a"/>
-<rect x="164" y="607.5" width="55.5" height="12" rx="2" fill="#5b7fa6"/>
-<text x="394" y="617.0" text-anchor="end" fill="#8a8578" font-size="10.5">1,272 ms</text>
+<rect x="164" y="607.5" width="54.3" height="12" rx="2" fill="#5b7fa6"/>
+<text x="394" y="617.0" text-anchor="end" fill="#8a8578" font-size="10.5">1,215 ms</text>
 <text x="44" y="642.0" text-anchor="end" fill="#8a8578" font-size="10">21</text>
 <text x="52" y="642.0" fill="#8a8578" font-size="11.5">kilo code</text>
 <rect x="164" y="632.5" width="164" height="12" rx="2" fill="#221f1a"/>
-<rect x="164" y="632.5" width="65.7" height="12" rx="2" fill="#5b7fa6"/>
-<text x="394" y="642.0" text-anchor="end" fill="#8a8578" font-size="10.5">1,780 ms</text>
+<rect x="164" y="632.5" width="63.8" height="12" rx="2" fill="#5b7fa6"/>
+<text x="394" y="642.0" text-anchor="end" fill="#8a8578" font-size="10.5">1,673 ms</text>
 <text x="44" y="667.0" text-anchor="end" fill="#8a8578" font-size="10">22</text>
 <text x="52" y="667.0" fill="#8a8578" font-size="11.5">continue</text>
 <rect x="164" y="657.5" width="164" height="12" rx="2" fill="#221f1a"/>
 <rect x="164" y="657.5" width="164.0" height="12" rx="2" fill="#5b7fa6"/>
-<text x="394" y="667.0" text-anchor="end" fill="#8a8578" font-size="10.5">11,089 ms</text>
+<text x="394" y="667.0" text-anchor="end" fill="#8a8578" font-size="10.5">11,069 ms</text>
 <text x="28" y="689" fill="#8a8578" font-size="9">exec to first byte on the wire</text>
 <text x="416" y="112" fill="#e6e1d8" font-size="13" font-weight="bold">idle memory</text>
-<text x="782" y="112" text-anchor="end" fill="#8a8578" font-size="9.5">20 measured · 2 n/a</text>
+<text x="782" y="112" text-anchor="end" fill="#8a8578" font-size="9.5">22 measured</text>
 <rect x="416" y="118" width="366" height="1" fill="#2e2b25"/>
 <text x="432" y="142.0" text-anchor="end" fill="#8a8578" font-size="10">1</text>
 <text x="440" y="142.0" fill="#e6e1d8" font-size="11.5">jcode</text>
 <rect x="552" y="132.5" width="164" height="12" rx="2" fill="#221f1a"/>
-<rect x="552" y="132.5" width="31.8" height="12" rx="2" fill="#5b7fa6"/>
+<rect x="552" y="132.5" width="32.0" height="12" rx="2" fill="#5b7fa6"/>
 <text x="782" y="142.0" text-anchor="end" fill="#8a8578" font-size="10.5">34 MB</text>
 <text x="432" y="167.0" text-anchor="end" fill="#e0803c" font-size="10">2</text>
 <text x="440" y="167.0" fill="#e0803c" font-size="11.5" font-weight="bold">fox-agent</text>
 <rect x="552" y="157.5" width="164" height="12" rx="2" fill="#221f1a"/>
 <rect x="552" y="157.5" width="36.4" height="12" rx="2" fill="#e0803c"/>
-<text x="782" y="167.0" text-anchor="end" fill="#e6e1d8" font-size="10.5">45 MB</text>
+<text x="782" y="167.0" text-anchor="end" fill="#e6e1d8" font-size="10.5">44 MB</text>
 <text x="432" y="192.0" text-anchor="end" fill="#8a8578" font-size="10">3</text>
 <text x="440" y="192.0" fill="#e6e1d8" font-size="11.5">aider</text>
 <rect x="552" y="182.5" width="164" height="12" rx="2" fill="#221f1a"/>
-<rect x="552" y="182.5" width="44.8" height="12" rx="2" fill="#5b7fa6"/>
-<text x="782" y="192.0" text-anchor="end" fill="#8a8578" font-size="10.5">68 MB</text>
+<rect x="552" y="182.5" width="45.0" height="12" rx="2" fill="#5b7fa6"/>
+<text x="782" y="192.0" text-anchor="end" fill="#8a8578" font-size="10.5">67 MB</text>
 <text x="432" y="217.0" text-anchor="end" fill="#8a8578" font-size="10">4</text>
 <text x="440" y="217.0" fill="#8a8578" font-size="11.5">pi-bolt</text>
 <rect x="552" y="207.5" width="164" height="12" rx="2" fill="#221f1a"/>
-<rect x="552" y="207.5" width="51.5" height="12" rx="2" fill="#5b7fa6"/>
+<rect x="552" y="207.5" width="51.6" height="12" rx="2" fill="#5b7fa6"/>
 <text x="782" y="217.0" text-anchor="end" fill="#8a8578" font-size="10.5">89 MB</text>
 <text x="432" y="242.0" text-anchor="end" fill="#8a8578" font-size="10">5</text>
-<text x="440" y="242.0" fill="#8a8578" font-size="11.5">devin</text>
+<text x="440" y="242.0" fill="#8a8578" font-size="11.5">opencode v2</text>
 <rect x="552" y="232.5" width="164" height="12" rx="2" fill="#221f1a"/>
-<rect x="552" y="232.5" width="54.3" height="12" rx="2" fill="#5b7fa6"/>
+<rect x="552" y="232.5" width="54.5" height="12" rx="2" fill="#5b7fa6"/>
 <text x="782" y="242.0" text-anchor="end" fill="#8a8578" font-size="10.5">99 MB</text>
 <text x="432" y="267.0" text-anchor="end" fill="#8a8578" font-size="10">6</text>
-<text x="440" y="267.0" fill="#8a8578" font-size="11.5">opencode v2</text>
+<text x="440" y="267.0" fill="#8a8578" font-size="11.5">devin</text>
 <rect x="552" y="257.5" width="164" height="12" rx="2" fill="#221f1a"/>
-<rect x="552" y="257.5" width="61.8" height="12" rx="2" fill="#5b7fa6"/>
-<text x="782" y="267.0" text-anchor="end" fill="#8a8578" font-size="10.5">129 MB</text>
+<rect x="552" y="257.5" width="55.6" height="12" rx="2" fill="#5b7fa6"/>
+<text x="782" y="267.0" text-anchor="end" fill="#8a8578" font-size="10.5">103 MB</text>
 <text x="432" y="292.0" text-anchor="end" fill="#8a8578" font-size="10">7</text>
 <text x="440" y="292.0" fill="#8a8578" font-size="11.5">pi</text>
 <rect x="552" y="282.5" width="164" height="12" rx="2" fill="#221f1a"/>
-<rect x="552" y="282.5" width="61.9" height="12" rx="2" fill="#5b7fa6"/>
-<text x="782" y="292.0" text-anchor="end" fill="#8a8578" font-size="10.5">129 MB</text>
+<rect x="552" y="282.5" width="62.1" height="12" rx="2" fill="#5b7fa6"/>
+<text x="782" y="292.0" text-anchor="end" fill="#8a8578" font-size="10.5">128 MB</text>
 <text x="432" y="317.0" text-anchor="end" fill="#8a8578" font-size="10">8</text>
-<text x="440" y="317.0" fill="#8a8578" font-size="11.5">crush</text>
+<text x="440" y="317.0" fill="#8a8578" font-size="11.5">amp</text>
 <rect x="552" y="307.5" width="164" height="12" rx="2" fill="#221f1a"/>
-<rect x="552" y="307.5" width="69.6" height="12" rx="2" fill="#5b7fa6"/>
-<text x="782" y="317.0" text-anchor="end" fill="#8a8578" font-size="10.5">163 MB</text>
+<rect x="552" y="307.5" width="64.6" height="12" rx="2" fill="#5b7fa6"/>
+<text x="782" y="317.0" text-anchor="end" fill="#8a8578" font-size="10.5">139 MB</text>
 <text x="432" y="342.0" text-anchor="end" fill="#8a8578" font-size="10">9</text>
-<text x="440" y="342.0" fill="#8a8578" font-size="11.5">claude code</text>
+<text x="440" y="342.0" fill="#8a8578" font-size="11.5">crush</text>
 <rect x="552" y="332.5" width="164" height="12" rx="2" fill="#221f1a"/>
-<rect x="552" y="332.5" width="71.7" height="12" rx="2" fill="#5b7fa6"/>
-<text x="782" y="342.0" text-anchor="end" fill="#8a8578" font-size="10.5">173 MB</text>
+<rect x="552" y="332.5" width="68.9" height="12" rx="2" fill="#5b7fa6"/>
+<text x="782" y="342.0" text-anchor="end" fill="#8a8578" font-size="10.5">158 MB</text>
 <text x="432" y="367.0" text-anchor="end" fill="#8a8578" font-size="10">10</text>
-<text x="440" y="367.0" fill="#8a8578" font-size="11.5">qwen code</text>
+<text x="440" y="367.0" fill="#8a8578" font-size="11.5">gemini cli</text>
 <rect x="552" y="357.5" width="164" height="12" rx="2" fill="#221f1a"/>
-<rect x="552" y="357.5" width="78.2" height="12" rx="2" fill="#5b7fa6"/>
-<text x="782" y="367.0" text-anchor="end" fill="#8a8578" font-size="10.5">206 MB</text>
+<rect x="552" y="357.5" width="69.7" height="12" rx="2" fill="#5b7fa6"/>
+<text x="782" y="367.0" text-anchor="end" fill="#8a8578" font-size="10.5">162 MB</text>
 <text x="432" y="392.0" text-anchor="end" fill="#8a8578" font-size="10">11</text>
-<text x="440" y="392.0" fill="#8a8578" font-size="11.5">codex</text>
+<text x="440" y="392.0" fill="#8a8578" font-size="11.5">claude code</text>
 <rect x="552" y="382.5" width="164" height="12" rx="2" fill="#221f1a"/>
-<rect x="552" y="382.5" width="83.3" height="12" rx="2" fill="#5b7fa6"/>
-<text x="782" y="392.0" text-anchor="end" fill="#8a8578" font-size="10.5">234 MB</text>
+<rect x="552" y="382.5" width="70.9" height="12" rx="2" fill="#5b7fa6"/>
+<text x="782" y="392.0" text-anchor="end" fill="#8a8578" font-size="10.5">168 MB</text>
 <text x="432" y="417.0" text-anchor="end" fill="#8a8578" font-size="10">12</text>
 <text x="440" y="417.0" fill="#8a8578" font-size="11.5">cursor-agent</text>
 <rect x="552" y="407.5" width="164" height="12" rx="2" fill="#221f1a"/>
-<rect x="552" y="407.5" width="84.7" height="12" rx="2" fill="#5b7fa6"/>
-<text x="782" y="417.0" text-anchor="end" fill="#8a8578" font-size="10.5">242 MB</text>
+<rect x="552" y="407.5" width="85.1" height="12" rx="2" fill="#5b7fa6"/>
+<text x="782" y="417.0" text-anchor="end" fill="#8a8578" font-size="10.5">241 MB</text>
 <text x="432" y="442.0" text-anchor="end" fill="#8a8578" font-size="10">13</text>
-<text x="440" y="442.0" fill="#8a8578" font-size="11.5">cline</text>
+<text x="440" y="442.0" fill="#8a8578" font-size="11.5">codex</text>
 <rect x="552" y="432.5" width="164" height="12" rx="2" fill="#221f1a"/>
-<rect x="552" y="432.5" width="89.2" height="12" rx="2" fill="#5b7fa6"/>
-<text x="782" y="442.0" text-anchor="end" fill="#8a8578" font-size="10.5">268 MB</text>
+<rect x="552" y="432.5" width="88.1" height="12" rx="2" fill="#5b7fa6"/>
+<text x="782" y="442.0" text-anchor="end" fill="#8a8578" font-size="10.5">258 MB</text>
 <text x="432" y="467.0" text-anchor="end" fill="#8a8578" font-size="10">14</text>
-<text x="440" y="467.0" fill="#8a8578" font-size="11.5">droid</text>
+<text x="440" y="467.0" fill="#8a8578" font-size="11.5">cline</text>
 <rect x="552" y="457.5" width="164" height="12" rx="2" fill="#221f1a"/>
 <rect x="552" y="457.5" width="90.0" height="12" rx="2" fill="#5b7fa6"/>
-<text x="782" y="467.0" text-anchor="end" fill="#8a8578" font-size="10.5">273 MB</text>
+<text x="782" y="467.0" text-anchor="end" fill="#8a8578" font-size="10.5">269 MB</text>
 <text x="432" y="492.0" text-anchor="end" fill="#8a8578" font-size="10">15</text>
-<text x="440" y="492.0" fill="#8a8578" font-size="11.5">codebuff</text>
+<text x="440" y="492.0" fill="#8a8578" font-size="11.5">droid</text>
 <rect x="552" y="482.5" width="164" height="12" rx="2" fill="#221f1a"/>
-<rect x="552" y="482.5" width="94.6" height="12" rx="2" fill="#5b7fa6"/>
-<text x="782" y="492.0" text-anchor="end" fill="#8a8578" font-size="10.5">301 MB</text>
+<rect x="552" y="482.5" width="90.4" height="12" rx="2" fill="#5b7fa6"/>
+<text x="782" y="492.0" text-anchor="end" fill="#8a8578" font-size="10.5">272 MB</text>
 <text x="432" y="517.0" text-anchor="end" fill="#8a8578" font-size="10">16</text>
-<text x="440" y="517.0" fill="#8a8578" font-size="11.5">continue</text>
+<text x="440" y="517.0" fill="#8a8578" font-size="11.5">codebuff</text>
 <rect x="552" y="507.5" width="164" height="12" rx="2" fill="#221f1a"/>
-<rect x="552" y="507.5" width="97.9" height="12" rx="2" fill="#5b7fa6"/>
-<text x="782" y="517.0" text-anchor="end" fill="#8a8578" font-size="10.5">323 MB</text>
+<rect x="552" y="507.5" width="91.3" height="12" rx="2" fill="#5b7fa6"/>
+<text x="782" y="517.0" text-anchor="end" fill="#8a8578" font-size="10.5">277 MB</text>
 <text x="432" y="542.0" text-anchor="end" fill="#8a8578" font-size="10">17</text>
-<text x="440" y="542.0" fill="#8a8578" font-size="11.5">kimi code</text>
+<text x="440" y="542.0" fill="#8a8578" font-size="11.5">qwen code</text>
 <rect x="552" y="532.5" width="164" height="12" rx="2" fill="#221f1a"/>
-<rect x="552" y="532.5" width="98.2" height="12" rx="2" fill="#5b7fa6"/>
-<text x="782" y="542.0" text-anchor="end" fill="#8a8578" font-size="10.5">325 MB</text>
+<rect x="552" y="532.5" width="98.0" height="12" rx="2" fill="#5b7fa6"/>
+<text x="782" y="542.0" text-anchor="end" fill="#8a8578" font-size="10.5">319 MB</text>
 <text x="432" y="567.0" text-anchor="end" fill="#8a8578" font-size="10">18</text>
-<text x="440" y="567.0" fill="#8a8578" font-size="11.5">iflow cli</text>
+<text x="440" y="567.0" fill="#8a8578" font-size="11.5">continue</text>
 <rect x="552" y="557.5" width="164" height="12" rx="2" fill="#221f1a"/>
-<rect x="552" y="557.5" width="103.4" height="12" rx="2" fill="#5b7fa6"/>
-<text x="782" y="567.0" text-anchor="end" fill="#8a8578" font-size="10.5">360 MB</text>
+<rect x="552" y="557.5" width="98.0" height="12" rx="2" fill="#5b7fa6"/>
+<text x="782" y="567.0" text-anchor="end" fill="#8a8578" font-size="10.5">320 MB</text>
 <text x="432" y="592.0" text-anchor="end" fill="#8a8578" font-size="10">19</text>
-<text x="440" y="592.0" fill="#8a8578" font-size="11.5">copilot cli</text>
+<text x="440" y="592.0" fill="#8a8578" font-size="11.5">kimi code</text>
 <rect x="552" y="582.5" width="164" height="12" rx="2" fill="#221f1a"/>
-<rect x="552" y="582.5" width="108.1" height="12" rx="2" fill="#5b7fa6"/>
-<text x="782" y="592.0" text-anchor="end" fill="#8a8578" font-size="10.5">394 MB</text>
+<rect x="552" y="582.5" width="99.6" height="12" rx="2" fill="#5b7fa6"/>
+<text x="782" y="592.0" text-anchor="end" fill="#8a8578" font-size="10.5">330 MB</text>
 <text x="432" y="617.0" text-anchor="end" fill="#8a8578" font-size="10">20</text>
-<text x="440" y="617.0" fill="#8a8578" font-size="11.5">kilo code</text>
+<text x="440" y="617.0" fill="#8a8578" font-size="11.5">copilot cli</text>
 <rect x="552" y="607.5" width="164" height="12" rx="2" fill="#221f1a"/>
-<rect x="552" y="607.5" width="164.0" height="12" rx="2" fill="#5b7fa6"/>
-<text x="782" y="617.0" text-anchor="end" fill="#8a8578" font-size="10.5">906 MB</text>
+<rect x="552" y="607.5" width="103.2" height="12" rx="2" fill="#5b7fa6"/>
+<text x="782" y="617.0" text-anchor="end" fill="#8a8578" font-size="10.5">355 MB</text>
+<text x="432" y="642.0" text-anchor="end" fill="#8a8578" font-size="10">21</text>
+<text x="440" y="642.0" fill="#8a8578" font-size="11.5">iflow cli</text>
+<rect x="552" y="632.5" width="164" height="12" rx="2" fill="#221f1a"/>
+<rect x="552" y="632.5" width="104.4" height="12" rx="2" fill="#5b7fa6"/>
+<text x="782" y="642.0" text-anchor="end" fill="#8a8578" font-size="10.5">363 MB</text>
+<text x="432" y="667.0" text-anchor="end" fill="#8a8578" font-size="10">22</text>
+<text x="440" y="667.0" fill="#8a8578" font-size="11.5">kilo code</text>
+<rect x="552" y="657.5" width="164" height="12" rx="2" fill="#221f1a"/>
+<rect x="552" y="657.5" width="164.0" height="12" rx="2" fill="#5b7fa6"/>
+<text x="782" y="667.0" text-anchor="end" fill="#8a8578" font-size="10.5">895 MB</text>
 <text x="416" y="689" fill="#8a8578" font-size="9">PSS of the whole process tree at rest</text>
 <text x="804" y="112" fill="#e6e1d8" font-size="13" font-weight="bold">bundle</text>
 <text x="1170" y="112" text-anchor="end" fill="#8a8578" font-size="9.5">22 measured</text>
@@ -299,7 +309,7 @@
 <text x="820" y="492.0" text-anchor="end" fill="#8a8578" font-size="10">15</text>
 <text x="828" y="492.0" fill="#8a8578" font-size="11.5">pi-bolt</text>
 <rect x="940" y="482.5" width="164" height="12" rx="2" fill="#221f1a"/>
-<rect x="940" y="482.5" width="99.2" height="12" rx="2" fill="#5b7fa6"/>
+<rect x="940" y="482.5" width="99.3" height="12" rx="2" fill="#5b7fa6"/>
 <text x="1170" y="492.0" text-anchor="end" fill="#8a8578" font-size="10.5">263 MB</text>
 <text x="820" y="517.0" text-anchor="end" fill="#8a8578" font-size="10">16</text>
 <text x="828" y="517.0" fill="#8a8578" font-size="11.5">claude code</text>
@@ -341,5 +351,5 @@
 <text x="43" y="720" fill="#8a8578" font-size="10">fox-agent</text>
 <rect x="118" y="711" width="9" height="9" rx="2" fill="#5b7fa6"/>
 <text x="133" y="720" fill="#8a8578" font-size="10">other tools</text>
-<text x="224" y="720" fill="#8a8578" font-size="10">lower is better · sqrt-scaled bars (values printed) · n/a collapsed, full list in table · 4 cpu, load 0.33</text>
+<text x="224" y="720" fill="#8a8578" font-size="10">lower is better · sqrt-scaled bars (values printed) · n/a collapsed, full list in table · 4 cpu, load 0.57</text>
 </svg>

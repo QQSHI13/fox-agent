@@ -15,14 +15,14 @@
 <rect x="418" y="112" width="364" height="132" rx="5" fill="#1b1916"/>
 <rect x="418" y="112" width="3" height="132" rx="1.5" fill="#e0803c"/>
 <text x="440" y="142" fill="#8a8578" font-size="12">idle memory (PSS)</text>
-<text x="440" y="194" fill="#e6e1d8" font-size="40" font-weight="bold">45</text>
+<text x="440" y="194" fill="#e6e1d8" font-size="40" font-weight="bold">44</text>
 <text x="494" y="194" fill="#8a8578" font-size="15">MB</text>
-<text x="440" y="222" fill="#e0803c" font-size="12">#2 of 20</text>
+<text x="440" y="222" fill="#e0803c" font-size="12">#2 of 22</text>
 <rect x="802" y="112" width="364" height="132" rx="5" fill="#1b1916"/>
 <rect x="802" y="112" width="3" height="132" rx="1.5" fill="#e0803c"/>
 <text x="824" y="142" fill="#8a8578" font-size="12">install size</text>
 <text x="824" y="194" fill="#e6e1d8" font-size="40" font-weight="bold">117</text>
 <text x="902" y="194" fill="#8a8578" font-size="15">MB</text>
 <text x="824" y="222" fill="#e0803c" font-size="12">#4 of 22</text>
-<text x="34" y="254" fill="#8a8578" font-size="10.5">p50 of successful launches · full field in bench/bench.svg · raw data in bench/results.json · generated 2026-10-24T09:36:04Z</text>
+<text x="34" y="254" fill="#8a8578" font-size="10.5">p50 of successful launches · full field in bench/bench.svg · raw data in bench/results.json · generated 2026-10-24T11:26:47Z</text>
 </svg>
