@@ -41,8 +41,24 @@ export interface RuntimeBudget {
  * live budget figure used to live here — the last one moves on *every* step —
  * which is why a 1.6k system prompt cost a fresh 1.6k re-read 5,157 times in a
  * row. Those all travel in buildRuntimeHeader() at the message tail instead.
+ *
+ * Sections are XML-tagged rather than `##` headings. Two reasons, neither of
+ * them cosmetic: a tag gives every section an unambiguous start and end, so a
+ * later update can replace ONE section without re-emitting the whole prompt
+ * (see diffSystemPromptSections' counterpart here — the `section()` helper keeps
+ * the tag name next to the content it wraps, so that becomes a mechanical change
+ * rather than a re-parse); and a model that cites its own rules can name
+ * `<context>` instead of "the paragraph about hiding things", which matters
+ * when a doctrine line is what it needs to act on. The preamble stays untagged —
+ * it is the identity sentence, not a rule set, and tagging it would only add
+ * tokens before the first tag.
  */
 import { agentDocsDir, ensureAgentDocs } from "../core/selfdocs.ts";
+
+/** Wrap one prompt section in a tag of the same name. */
+function section(name: string, ...lines: string[]): string {
+  return `<${name}>\n${lines.join("\n")}\n</${name}>`;
+}
 
 export function buildSystemPrompt(
   opts: {
@@ -58,7 +74,7 @@ export function buildSystemPrompt(
       `Act on the user's intent directly, and verify what you change.`,
   );
 
-  if (opts.projectInstructions) sections.push(`## Project instructions\n${opts.projectInstructions}`);
+  if (opts.projectInstructions) sections.push(section("project_instructions", opts.projectInstructions));
 
   // Names only, no per-tool restatement: every behavioral contract lives in the
   // tool's own description (exec's "working directory never carries over", pty's
@@ -68,9 +84,11 @@ export function buildSystemPrompt(
   // once silently dropped those clauses, which is why they were hoisted here in
   // the first place. That formatter is gone, so the contracts went back to the
   // tool defs where they belong; the prompt only names what is available.
-  const roster = [`## Tools`, `Full descriptions and JSON schemas arrive with the API tool definitions — read them there.`];
-  roster.push(`Available now: ${opts.tools.map((t) => t.name).join(", ")}`);
-  sections.push(roster.join("\n"));
+  const roster = [
+    `Full descriptions and JSON schemas arrive with the API tool definitions — read them there.`,
+    `Available now: ${opts.tools.map((t) => t.name).join(", ")}`,
+  ];
+  sections.push(section("tools", ...roster));
 
   if (["read", "write", "edit", "glob", "grep", "exec", "lsp"].some((n) => have.has(n))) {
     // Verified, not assumed: every path-taking tool resolves against ctx.cwd
@@ -82,10 +100,10 @@ export function buildSystemPrompt(
     // cwd instead of the session's, and then reported zero diagnostics with no
     // error. It is listed here because that is what makes the rule true.
     sections.push(
-      [
-        `## Paths`,
+      section(
+        "paths",
         `Your cwd is in the runtime header. Every tool that takes a path accepts a RELATIVE one and resolves it against that cwd — read/write/edit \`path\`, glob/grep \`path\`, exec \`workdir\`, lsp \`file\` all behave the same way — so prefer relative (src/tools/x.ts, not /home/me/proj/src/tools/x.ts). Absolute paths only for paths genuinely outside the project (a dotfile in $HOME, /etc/hosts).`,
-      ].join("\n"),
+      ),
     );
   }
 
@@ -96,31 +114,29 @@ export function buildSystemPrompt(
     // repeating "the result reports..." in two schemas that both ship on every
     // request.
     sections.push(
-      [
-        `## Type checking after every write`,
+      section(
+        "type_checking",
         `After you \`write\` or \`edit\` a source file, the result already reports any type errors your change caused — so do NOT run a type-checker separately just to see them; that is a second full-project pass for information you already have. Read the diagnostics in the tool result and fix them before your next step.`,
-      ].join("\n"),
+      ),
     );
   }
 
   if (have.has("ctx")) {
     sections.push(
-      [
-        `## Context window management (your core ability)\n` +
-          `Every message in your view carries a stable marker [N]. Large old tool outputs are dead weight — query, don't re-read:\n` +
-          `- find nodes first: {"op":"search","pattern":"error"} shows snippets, never bodies\n` +
-          `- after using a big result, hide it: {"op":"delete","ids":[3,5],"summary":"ran build; fixed 2 errors"}\n` +
-          `- rewrite stale/wrong nodes: {"op":"replace","id":7,"content":"…"}\n` +
-          `Batch multiple ops in one ctx call. Any node is editable, including ones from the current turn. Edits apply from your NEXT step; storage is permanent — nothing is ever lost, ops are revertible (/undo).\n` +
-          `Delete junk the moment you see it: when a tool result is gibberish, a runaway stack trace, binary noise, a listing of 400 files, or something you know you will never need, hide it RIGHT AWAY with ctx rather than carrying it for the rest of the session. Every junk node you leave behind is re-read and re-billed on every later step.
-` +
-          `The same rule applies to a large result you DID need: once you have the answer out of it, replace it with that answer — {"op":"replace","id":12,"content":"src/auth.ts:88 renews at 80% of ttl; the 401 was a clock skew case"} — rather than leaving 3000 lines of file in the view for every later step to re-read. Keep the conclusion, drop the bulk. Do not ask for a full output again to re-check it; search the node instead.`,
-      ].join("\n"),
+      section(
+        "context_window",
+        `This is your core ability. Every message in your view carries a stable marker [N]. Large old tool outputs are dead weight — query, don't re-read:`,
+        `- find nodes first: {"op":"search","pattern":"error"} shows snippets, never bodies`,
+        `- after using a big result, hide it: {"op":"delete","ids":[3,5],"summary":"ran build; fixed 2 errors"}`,
+        `- rewrite stale/wrong nodes: {"op":"replace","id":7,"content":"…"}`,
+        `Batch multiple ops in one ctx call. Any node is editable, including ones from the current turn. Edits apply from your NEXT step; storage is permanent — nothing is ever lost, ops are revertible (/undo).`,
+        `Delete junk the moment you see it: when a tool result is gibberish, a runaway stack trace, binary noise, a listing of 400 files, or something you know you will never need, hide it RIGHT AWAY with ctx rather than carrying it for the rest of the session. Every junk node you leave behind is re-read and re-billed on every later step.`,
+        `The same rule applies to a large result you DID need: once you have the answer out of it, replace it with that answer — {"op":"replace","id":12,"content":"src/auth.ts:88 renews at 80% of ttl; the 401 was a clock skew case"} — rather than leaving 3000 lines of file in the view for every later step to re-read. Keep the conclusion, drop the bulk. Do not ask for a full output again to re-check it; search the node instead.`,
+      ),
     );
   }
 
   const style = [
-    `## Style`,
     `Short, direct answers — markdown renders in the UI.`,
     ...(have.has("exec") ? [`Verify code changes by running tests/builds via exec.`] : []),
     ...(have.has("task") ? [`Delegate self-contained subtasks to task to protect this context window.`] : []),
@@ -129,28 +145,28 @@ export function buildSystemPrompt(
   // swallowed its own first sentence — `## Style Short, direct answers — ...` —
   // and the model read a run-on heading instead of a heading plus a rule. Every
   // other section here joins with newlines, so this was the odd one out.
-  sections.push(style.join("\n"));
+  sections.push(section("style", ...style));
 
   // pi's self-documentation mechanism: ship docs, route to them, and let the
   // ordinary read tool do the rest. Routing lives in the prompt; the content
   // never does — a doc file read on demand costs nothing per turn.
   ensureAgentDocs();
   sections.push(
-    [
-      `## Self documentation`,
+    section(
+      "self_documentation",
       `fox-agent's own docs are materialized at ${agentDocsDir()}/ — read them with your read tool when the user asks about fox-agent itself (its config, plugins, tools, sessions, themes, protocols) or asks how to use or extend it. Do not read them otherwise, and do not list the individual doc files unless asked.`,
       `Read a file completely before acting on it; follow cross-references between the files.`,
-    ].join("\n"),
+    ),
   );
 
   // The runtime header rides as a trailing user message, not part of the system
   // prompt — but the model still needs to know what it is and how to treat it.
   sections.push(
-    [
-      `## Runtime header`,
+    section(
+      "runtime_header",
       `A trailing block rides on every user message, delimited by a runtime open-tag and close-tag. It is harness-injected state (working directory, host, model, operating system, date, context-window usage, your todo list) — it is NOT from the user.`,
       `Never mention, quote, or restate the runtime header in your reply unless the user explicitly asks about it. When the user asks what time it is, what the working directory is, etc., answer from the header's values without referencing the header itself.`,
-    ].join("\n"),
+    ),
   );
 
   return sections.join("\n\n");

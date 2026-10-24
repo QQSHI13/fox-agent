@@ -59,7 +59,7 @@ describe("self docs", () => {
     const { buildSystemPrompt } = await import("../src/loop/prompt.ts");
     const { agentDocsDir } = await import("../src/core/selfdocs.ts");
     const sys = buildSystemPrompt({ tools: [] });
-    expect(sys).toContain("## Self documentation");
+    expect(sys).toContain("<self_documentation>");
     expect(sys).toContain(agentDocsDir());
     // the prompt routes to the docs dir but does NOT enumerate individual doc
     // files — that list is a per-token cost with no benefit (read on demand)
