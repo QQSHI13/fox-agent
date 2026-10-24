@@ -94,6 +94,74 @@ describe("orderSel + selRangeForRow", () => {
   test("an empty row inside a selection yields no range", () => {
     expect(selRangeForRow(2, { row: 1, col: 0 }, { row: 3, col: 0 }, rowCells([]))).toBeNull();
   });
+
+  test("a middle row stops at its text, not at the padding that aligns it", () => {
+    // THE BUG: a code block pads every line to the block's widest so the gutter
+    // and background line up. Selecting across several lines lit those padding
+    // cells, so each earlier line highlighted to the right edge of the block
+    // instead of to the end of its own text — while the copied text had the
+    // padding trimmed off, so the screen claimed characters the clipboard
+    // never got.
+    const bar = row("│ const x = 1    │"); // padded to column width
+    const cells = rowCells(bar);
+    const r = selRangeForRow(3, { row: 2, col: 0 }, { row: 9, col: 0 }, cells)!;
+    // the last painted cell is the closing '│' at the end of the padding, but
+    // the range must end on it — that is content, not padding
+    expect(cells.text.slice(cells.start[r.to], cells.end[r.to])).toBe("│");
+    // and it must NOT run past it into nothing
+    expect(r.to).toBe(cells.start.length - 1);
+  });
+
+  test("a padded middle row excludes trailing blanks", () => {
+    // a plain padded line with no closing glyph: the highlight must stop at
+    // the last real character, not at the padded width
+    const cells = rowCells(row("hello        ")); // 5 chars, padded to 13
+    const r = selRangeForRow(2, { row: 1, col: 0 }, { row: 3, col: 0 }, cells)!;
+    expect(r.to).toBe(4); // 'o' — not 12
+    expect(cells.text.slice(cells.start[r.from], cells.end[r.to])).toBe("hello");
+  });
+
+  test("the highlight range and the copied text agree on every row", () => {
+    // the invariant behind the fix: what the painter lights and what the
+    // clipboard receives must be the same characters. Selecting the whole span
+    // (col 0 to a column past every line's end) is the case that broke.
+    const rows = [row("first line   "), row("  padded middle     "), row("last   ")];
+    const a = { row: 0, col: 0 };
+    const b = { row: 2, col: 999 };
+    const copiedLines = extractSelection(rows, a, b).split("\n");
+    rows.forEach((segs, r) => {
+      const cells = rowCells(segs);
+      const range = selRangeForRow(r, a, b, cells);
+      expect(range).not.toBeNull();
+      // the painted span, with the same trailing trim extraction applies
+      const painted = cells.text.slice(cells.start[range!.from], cells.end[range!.to]).replace(/[ \t]+$/, "");
+      // extraction also trims leading blanks on the FIRST line it emits
+      expect(copiedLines[r].trimStart()).toBe(painted.trimStart());
+    });
+  });
+
+  test("the drag endpoint on the final row is still respected", () => {
+    // clamping to content must not also clamp a deliberate mid-line endpoint
+    const cells = rowCells(row("hello world    "));
+    expect(selRangeForRow(0, { row: 0, col: 0 }, { row: 0, col: 4 }, cells)).toEqual({ from: 0, to: 4 });
+    // and dragging past the content on the final row stops at the content
+    expect(selRangeForRow(0, { row: 0, col: 0 }, { row: 0, col: 40 }, cells)).toEqual({ from: 0, to: 10 });
+  });
+
+  test("a row of only whitespace inside a span highlights nothing", () => {
+    // padding-only rows used to light up as a full-width bar
+    const cells = rowCells(row("        "));
+    expect(selRangeForRow(2, { row: 1, col: 0 }, { row: 3, col: 0 }, cells)).toBeNull();
+    // ...and it still contributes a blank line to the copy, which is correct
+    expect(extractSelection([row("a"), row("        "), row("b")], { row: 0, col: 0 }, { row: 2, col: 0 })).toBe("a\n\nb");
+  });
+
+  test("wide characters are not mistaken for whitespace at the clamp", () => {
+    const cells = rowCells(row("日本語    ")); // 3 chars, 6 cells, then padding
+    const r = selRangeForRow(2, { row: 1, col: 0 }, { row: 3, col: 0 }, cells)!;
+    expect(r.to).toBe(5); // second cell of the final wide char
+    expect(cells.text.slice(cells.start[r.to], cells.end[r.to])).toBe("語");
+  });
 });
 
 describe("extractSelection", () => {
