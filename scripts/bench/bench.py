@@ -62,6 +62,7 @@ Usage:
 """
 import glob
 import json
+import math
 import os
 import re
 import select
@@ -1394,8 +1395,7 @@ BAR_NA = "#3a382f"
 BG = "#141310"
 BG2 = "#1b1916"
 GRID = "#2e2b25"
-
-MEDALS = {0: "1", 1: "2", 2: "3"}
+TRACK = "#221f1a"
 
 
 def esc(s):
@@ -1406,67 +1406,154 @@ def fmt_ms(v):
     return f"{v:,.0f}" if v >= 100 else f"{v:.1f}"
 
 
-def dashboard_svg(panels, out_path, note):
-    """panels: [(title, subtitle, rows, unit, fmt)] as one 3x2 image.
+def _clip(text, px_budget, font_px):
+    """Truncate `text` to roughly `px_budget` at `font_px`, with an ellipsis.
 
-    One image rather than six files: GitHub renders a single row height
-    regardless of how separate charts would wrap, and the shared header is the
-    only place the method note can live once without repeating it per chart.
-    fox-agent is orange everywhere; medals mark the top three.
+    SVG has no text wrapping, so a subtitle longer than its column runs into
+    the next panel -- which is what the first version of this dashboard did
+    ("lower is better" collided with "first printable char on the wire" across
+    all three columns). Monospace advance is ~0.6em, so the budget is a
+    character count derived from the pixel width rather than a hardcoded
+    slice, which silently truncates at the wrong place when the font size
+    changes.
     """
-    W, GUT, PAD, LANE_LABEL = 1180, 20, 24, 148
+    s = str(text)
+    if font_px <= 0:
+        return s
+    max_chars = max(8, int(px_budget / (font_px * 0.6)))
+    if len(s) <= max_chars:
+        return s
+    return s[: max_chars - 1].rstrip() + "\u2026"
+
+
+def dashboard_svg(panels, out_path, note, footer):
+    """Render every metric lane as one image.
+
+    panels: [(title, subtitle, rows, unit, fmt)] where rows is
+    [(label, value_or_None, is_fox)].
+
+    Layout rules, each of which fixes a defect visible in the rendered PNG:
+
+      * unmeasured tools are COLLAPSED, not listed. Fifteen `n/a` rows in six
+        panels filled two thirds of the canvas with nothing; the count lives in
+        the panel subtitle ("7 measured · 15 n/a") and the full n/a list is in
+        the table one fold away. The header states the field size, so a reader
+        still knows the panel is partial.
+      * subtitles are clipped to their column, because SVG does not wrap and
+        an overlong subtitle runs straight into the neighbouring panel.
+      * the footer is one line with a shortened provenance tail, so it cannot
+        collide with the bottom row of panel subtitles.
+      * a RANK column, right-aligned, so ordering is legible without comparing
+        bar lengths by eye (the old version glued a medal digit to the value,
+        where "1 4.9 ms" read as fourteen-point-nine).
+      * values are text-anchored to each column's right edge, so they line up
+        across rows and panels instead of floating after a variable-width bar.
+      * bars are SQRT-scaled, and the footer says so. First-byte ranges span
+        ~90x here (106ms to 9281ms); on a linear axis the leader is a 3px
+        sliver and the chart conveys nothing. Area is not proportional to value
+        on a sqrt axis, so it is declared rather than assumed -- the exact
+        numbers are printed beside every bar.
+    """
+    W, GUT, PAD = 1200, 22, 28
     NCOL = 3
     COLW = (W - PAD * 2 - GUT * (NCOL - 1)) // NCOL
-    HEADER_H, LANE_H, SUB_H, FOOT_H = 84, 30, 18, 34
+    HEADER_H = 96
+    TITLE_H, SUB_H, LANE_H = 30, 22, 25
+    RANK_W, LABEL_W, VAL_W = 24, 112, 66
+    FOOT_H = 40
+
+    measured_counts = [sum(1 for r in p[2] if r[1] is not None) for p in panels]
+    n_rows = max(measured_counts or [1])
     NROW = -(-len(panels) // NCOL)
-    n_rows = max(len(p[2]) for p in panels)
-    H = HEADER_H + SUB_H + NROW * (LANE_H * n_rows + SUB_H + SUB_H) + FOOT_H
+    PANEL_H = TITLE_H + LANE_H * n_rows + SUB_H
+    H = HEADER_H + NROW * PANEL_H + GUT * (NROW - 1) + FOOT_H
+
     L = [
-        f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" font-family="ui-monospace,Menlo,Consolas,monospace">',
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" '
+        f'font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace">',
         f'<rect width="{W}" height="{H}" fill="{BG}"/>',
         f'<rect width="{W}" height="{HEADER_H}" fill="{BG2}"/>',
         f'<rect x="0" y="{HEADER_H - 2}" width="{W}" height="2" fill="{ACC}"/>',
-        f'<text x="{PAD}" y="36" fill="{INK}" font-size="20" font-weight="bold">fox-agent · harness bench</text>',
-        f'<text x="{PAD}" y="58" fill="{MUT}" font-size="12">startup · TUI latency · footprint · idle memory — github actions ubuntu-latest, refreshed weekly</text>',
-        f'<text x="{PAD}" y="76" fill="{MUT}" font-size="11">{esc(note)}</text>',
+        f'<text x="{PAD}" y="38" fill="{INK}" font-size="21" font-weight="bold">'
+        f'fox-agent · harness bench</text>',
+        f'<text x="{PAD}" y="62" fill="{MUT}" font-size="12">'
+        f'startup · TUI latency · footprint · idle memory</text>',
+        f'<text x="{PAD}" y="82" fill="{MUT}" font-size="10.5">{esc(_clip(note, W - PAD * 2, 10.5))}</text>',
     ]
-    for pi_, (title, subtitle, rows, unit, fmt) in enumerate(panels):
-        col, row_i = pi_ % NCOL, pi_ // NCOL
+
+    for idx, (title, subtitle, rows, unit, fmt) in enumerate(panels):
+        col, row_i = idx % NCOL, idx // NCOL
         x0 = PAD + col * (COLW + GUT)
-        y0 = HEADER_H + row_i * (LANE_H * n_rows + SUB_H + SUB_H) + SUB_H
-        L.append(f'<text x="{x0}" y="{y0 - 6}" fill="{INK}" font-size="14">{esc(title)}</text>')
-        L.append(f'<rect x="{x0}" y="{y0 - 2}" width="{COLW}" height="1" fill="{GRID}"/>')
+        y0 = HEADER_H + row_i * (PANEL_H + GUT)
+
         have = sorted([r for r in rows if r[1] is not None], key=lambda r: r[1])
-        missing = [r for r in rows if r[1] is None]
+        n_missing = len(rows) - len(have)
         maxv = max([r[1] for r in have] or [1])
-        bx = x0 + LANE_LABEL
-        bw = COLW - LANE_LABEL - 78
-        for i, (label, v, is_fox) in enumerate(have + missing):
-            y = y0 + i * LANE_H
-            ranked = v is not None
-            medal = MEDALS.get(i, "") if ranked else ""
-            label_col = ACC if is_fox else (INK if ranked and i < 3 else MUT)
-            L.append(f'<text x="{x0}" y="{y + 14}" fill="{label_col}" font-size="12">{esc(label[:19])}</text>')
-            if v is None:
-                L.append(f'<rect x="{bx}" y="{y + 2}" width="{bw}" height="14" rx="3" fill="{BAR_NA}"/>')
-                L.append(f'<text x="{bx + 8}" y="{y + 13}" fill="{MUT}" font-size="10">n/a</text>')
-            else:
-                w = max(4, (v / maxv) * bw)
-                fill = ACC if is_fox else BAR
-                L.append(f'<rect x="{bx}" y="{y + 2}" width="{w:.0f}" height="14" rx="3" fill="{fill}"/>')
-                vt = f"{fmt(v)} {unit}"
-                L.append(
-                    f'<text x="{bx + bw + 6}" y="{y + 13}" fill="{INK if is_fox else MUT}" font-size="11">'
-                    f"{medal}{esc(vt)}</text>"
-                )
-        if subtitle:
-            L.append(f'<text x="{x0}" y="{y0 + LANE_H * n_rows + 12}" fill="{MUT}" font-size="10">{esc(subtitle)}</text>')
+
+        L.append(
+            f'<text x="{x0}" y="{y0 + 16}" fill="{INK}" font-size="13" font-weight="bold">'
+            f'{esc(_clip(title, COLW - 108, 13))}</text>'
+        )
+        L.append(
+            f'<text x="{x0 + COLW}" y="{y0 + 16}" text-anchor="end" fill="{MUT}" font-size="9.5">'
+            f'{len(have)} measured' + (f' \u00b7 {n_missing} n/a' if n_missing else '') + '</text>'
+        )
+        L.append(f'<rect x="{x0}" y="{y0 + TITLE_H - 8}" width="{COLW}" height="1" fill="{GRID}"/>')
+
+        bx = x0 + RANK_W + LABEL_W
+        bw = COLW - RANK_W - LABEL_W - VAL_W
+        vx = x0 + COLW
+
+        if not have:
+            L.append(
+                f'<text x="{x0}" y="{y0 + TITLE_H + 15}" fill="{BAR_NA}" font-size="10.5">'
+                f'no tool in this field was measured</text>'
+            )
+
+        for i, (label, v, is_fox) in enumerate(have):
+            y = y0 + TITLE_H + i * LANE_H
+            mid = y + LANE_H / 2
+
+            L.append(
+                f'<text x="{x0 + RANK_W - 8}" y="{mid + 3.5:.1f}" text-anchor="end" '
+                f'fill="{ACC if is_fox else MUT}" font-size="10">{i + 1}</text>'
+            )
+            label_fill = ACC if is_fox else (INK if i < 3 else MUT)
+            weight = ' font-weight="bold"' if is_fox else ""
+            L.append(
+                f'<text x="{x0 + RANK_W}" y="{mid + 3.5:.1f}" fill="{label_fill}" '
+                f'font-size="11.5"{weight}>{esc(_clip(label, LABEL_W - 6, 11.5))}</text>'
+            )
+
+            # visible track, so a near-zero bar still reads as "small", not absent
+            L.append(f'<rect x="{bx}" y="{mid - 6:.1f}" width="{bw}" height="12" rx="2" fill="{TRACK}"/>')
+            w = max(3.0, (math.sqrt(v) / math.sqrt(maxv)) * bw)
+            L.append(
+                f'<rect x="{bx}" y="{mid - 6:.1f}" width="{w:.1f}" height="12" rx="2" '
+                f'fill="{ACC if is_fox else BAR}"/>'
+            )
+            L.append(
+                f'<text x="{vx}" y="{mid + 3.5:.1f}" text-anchor="end" '
+                f'fill="{INK if is_fox else MUT}" font-size="10.5">{esc(fmt(v))} {unit}</text>'
+            )
+
+        L.append(
+            f'<text x="{x0}" y="{y0 + TITLE_H + LANE_H * n_rows + 13}" fill="{MUT}" '
+            f'font-size="9">{esc(_clip(subtitle, COLW, 9))}</text>'
+        )
+
+    # legend + provenance, one line, clipped so it cannot overflow the canvas
+    fy = H - FOOT_H + 22
+    L.append(f'<rect x="{PAD}" y="{fy - 9}" width="9" height="9" rx="2" fill="{ACC}"/>')
+    L.append(f'<text x="{PAD + 15}" y="{fy}" fill="{MUT}" font-size="10">fox-agent</text>')
+    L.append(f'<rect x="{PAD + 90}" y="{fy - 9}" width="9" height="9" rx="2" fill="{BAR}"/>')
+    L.append(f'<text x="{PAD + 105}" y="{fy}" fill="{MUT}" font-size="10">other tools</text>')
     L.append(
-        f'<text x="{PAD}" y="{H - 12}" fill="{MUT}" font-size="10">'
-        "lower is better on every lane · numbers are p50 of successful launches · n/a = not installed or never measured · "
-        "full method + per-launch spread in bench/table.md</text>"
+        f'<text x="{PAD + 196}" y="{fy}" fill="{MUT}" font-size="10">'
+        f'{esc(_clip(footer, W - PAD * 2 - 196, 10))}</text>'
     )
     L.append("</svg>")
+
     with open(out_path, "w") as f:
         f.write("\n".join(L) + "\n")
 
@@ -1538,57 +1625,60 @@ def render_outputs(out, rows, fox_extra, payload):
         src = [r for r in rows if not only or r.get("input_signal") == only]
         return [(r["agent"], metric_value(r, key), is_fox(r)) for r in src]
 
-    render_only = [r for r in rows if r.get("input_signal") == "render"]
     excluded = sum(1 for r in rows if r.get("installed") and r.get("input_signal") != "render")
-    p50_note = "p50 of successful launches"
 
     dashboard_svg(
         [
             (
-                "1st byte — exec to first byte",
-                f"literal stream position · {p50_note} · lower is better",
+                "1st byte",
+                "exec to first byte on the wire",
                 panel_rows(key="first_byte"),
                 "ms",
                 fmt_ms,
             ),
             (
-                "1st paint — exec to first glyph",
-                f"first printable char on the wire · {p50_note} · lower is better",
+                "1st paint",
+                "exec to first visible glyph",
                 panel_rows(key="first_paint"),
                 "ms",
                 fmt_ms,
             ),
             (
-                "1st input — spawn to interactive",
-                f"typed once the app owns the tty · {p50_note} · lower is better",
+                "1st input",
+                "exec to probe rendered on screen",
                 panel_rows(key="ttfi"),
                 "ms",
                 fmt_ms,
             ),
             (
-                "input latency (render only)",
-                f"keystroke to glyph, startup removed · {excluded} tool(s) excluded (kernel-echo)",
+                "input latency",
+                "keystroke to glyph, startup removed"
+                + (f" · {excluded} kernel-echo excluded" if excluded else ""),
                 panel_rows(only="render", key="key_latency"),
                 "ms",
                 fmt_ms,
             ),
             (
-                "bundle size",
-                "binary, or package dir for script CLIs · lower is better",
+                "bundle",
+                "binary, or package dir for script CLIs",
                 panel_rows(key="bundle_mb"),
                 "MB",
                 lambda v: f"{v:.0f}",
             ),
             (
                 "idle memory",
-                "PSS of the whole process tree at rest · lower is better",
+                "PSS of the whole process tree at rest",
                 panel_rows(key="idle_pss_mb"),
                 "MB",
                 lambda v: f"{v:.0f}",
             ),
         ],
         os.path.join(out, "bench.svg"),
-        "numbers are p50 with min/p95 in the table · durations from a forkless pipe-pane stream (no polling floor)",
+        "p50 of successful launches; min/p95 per tool in bench/table.md · durations from a forkless "
+        "pipe-pane stream, timed from exec (no polling floor, no tmux spawn cost)",
+        f"lower is better on every lane · sqrt-scaled bars (values printed) · "
+        f"n/a collapsed, full list in table · "
+        f"{payload.get('cpu_count', '?')} cpu, load {payload.get('load_avg', ['?'])[0]}",
     )
 
     def cell(v, nd=1, unit=""):
@@ -1642,30 +1732,6 @@ def render_outputs(out, rows, fox_extra, payload):
         HT.append(f"| {label} | **{fmt(val)}** | {rank_s} |")
     summary_md = "\n".join(HT)
 
-    # rounded per-agent grid, folded
-    GT = [
-        "| agent | bundle | 1st byte | 1st paint | 1st input | input latency | signal | idle PSS |",
-        "|---|---|---|---|---|---|---|---|",
-    ]
-    for r in rows:
-        if not r.get("installed"):
-            GT.append(f"| {r['agent']} | — | — | — | — | — | — | — |")
-            continue
-        name = f"**{r['agent']}**" if r["agent"] == "fox-agent" else r["agent"]
-
-        def p50(key, unit="", nd=0):
-            v = metric_value(r, key)
-            return "—" if v is None else f"{v:.{nd}f} {unit}".strip()
-
-        sig = r.get("input_signal") or "—"
-        if sig == "kernel-echo":
-            sig = "kernel-echo (tty)"
-        GT.append(
-            f"| {name} | {p50('bundle_mb', 'MB')} | {p50('first_byte', 'ms')} | {p50('first_paint', 'ms')} | "
-            f"{p50('ttfi', 'ms')} | {p50('key_latency', 'ms')} | {sig} | {p50('idle_pss_mb', 'MB')} |"
-        )
-    grid_md = "\n".join(GT)
-
     failures = sorted({(r["agent"], f) for r in rows if r.get("installed") for f in r.get("failures", [])})
 
     S = [summary_md, ""]
@@ -1677,12 +1743,16 @@ def render_outputs(out, rows, fox_extra, payload):
             f"**{fox_extra['ttft_ms']:.0f} ms**, peak RSS **{rss_s}**."
         )
         S.append("")
+    # Two views only: fox-agent's own score and rank (always visible), then the
+    # full-precision record. A rounded all-tools grid sat between them and was
+    # dropped -- it was a lossy copy of the full table below it, so it forced a
+    # reader to scroll past a worse version of data one fold later. The
+    # dashboard is its own fold because it IS the all-tools view, and repeating
+    # that label on the fold beneath it claimed the table could not.
     S += [
-        "<details><summary>every tool, every metric</summary>",
+        "<details><summary>dashboard · every tool, every metric</summary>",
         "",
         "![harness bench dashboard](bench/bench.svg)",
-        "",
-        grid_md,
         "",
         "</details>",
         "",
@@ -1969,37 +2039,82 @@ USAGE = """usage: bench.py [--quick] [--out DIR] [--only NAME,...] [--debug]
 
   --quick           2 launches per tool instead of 5 (smoke tests)
   --out DIR         output directory (default: <repo>/bench)
-  --only NAME,...   measure only these tools, by label
+  --only NAME,...   measure only these tools, by label (requires --out)
   --debug           verbose narration to stderr
   --self-test       verify the measurement rig itself, then exit
   --help            this text
 """
 
 
+# Options that consume the next argv entry. Kept in one place because the
+# validation and the parsing below must agree: the first version of this
+# whitelist listed only valueless flags, so `--out bench` (which every CI run
+# and `bun run bench` passes) was rejected as "unknown option --out".
+VALUED_FLAGS = ("--out", "--only")
+
+
+def parse_args(argv):
+    """Strict argv parse -> dict. Raises SystemExit(2) on anything unexpected.
+
+    Written by hand rather than with argparse because argparse accepts
+    abbreviations, and a mistyped `--on` silently becoming `--only` would
+    change which tools are measured. Strict here means a CI typo fails loudly
+    in two seconds instead of after a 40-minute run.
+    """
+    opts = {"quick": False, "debug": False, "self_test": False, "out": None, "only": None}
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a in ("--help", "-h"):
+            print(USAGE, end="")
+            raise SystemExit(0)
+        if a == "--quick":
+            opts["quick"] = True
+        elif a == "--debug":
+            opts["debug"] = True
+        elif a == "--self-test":
+            opts["self_test"] = True
+        elif a in VALUED_FLAGS:
+            # A following flag is not a value: `--out --help` must print usage,
+            # not create a directory called "--help" (which is exactly what the
+            # first version did, and it then measured the whole field).
+            if i + 1 >= len(argv) or argv[i + 1].startswith("-"):
+                print(f"bench: {a} needs a value\n\n{USAGE}", file=sys.stderr)
+                raise SystemExit(2)
+            key = a[2:]
+            opts[key] = argv[i + 1]
+            i += 1
+        elif a.startswith("-"):
+            print(f"bench: unknown option {a}\n\n{USAGE}", file=sys.stderr)
+            raise SystemExit(2)
+        else:
+            print(f"bench: unexpected argument {a}\n\n{USAGE}", file=sys.stderr)
+            raise SystemExit(2)
+        i += 1
+    return opts
+
+
 def main():
-    # Checked first, and deliberately NOT by falling through: an unrecognised
-    # flag must not start a 20-minute measurement run, which is what happened
-    # before this existed (`bench.py --help` measured the whole field).
-    if "--help" in sys.argv or "-h" in sys.argv:
-        print(USAGE, end="")
-        sys.exit(0)
-    unknown = [a for a in sys.argv[1:] if a.startswith("-") and a not in ("--quick", "--debug", "--self-test")]
-    if "--out" in sys.argv and sys.argv.index("--out") + 1 >= len(sys.argv):
-        print("bench: --out needs a directory", file=sys.stderr)
-        sys.exit(2)
-    if "--only" in sys.argv and sys.argv.index("--only") + 1 >= len(sys.argv):
-        print("bench: --only needs a comma-separated list", file=sys.stderr)
-        sys.exit(2)
-    if unknown:
-        print(f"bench: unknown option(s) {', '.join(unknown)}\n\n{USAGE}", file=sys.stderr)
-        sys.exit(2)
-    if "--self-test" in sys.argv:
+    opts = parse_args(sys.argv[1:])
+    if opts["self_test"]:
         sys.exit(self_test())
-    quick = "--quick" in sys.argv
-    out = sys.argv[sys.argv.index("--out") + 1] if "--out" in sys.argv else os.path.join(ROOT, "bench")
+    quick = opts["quick"]
+    # A partial field must not silently replace the committed full one. This
+    # actually happened during development: `--only fox-agent` wrote a 1-row
+    # results.json over the 22-row file in bench/, and nothing failed -- the
+    # table just quietly became "fox-agent is 1st of 1" for every metric.
+    if opts["only"] and not opts["out"]:
+        print(
+            "bench: --only requires an explicit --out DIR\n"
+            "       (writing a partial field over bench/ would replace the committed results "
+            "with a 1-row table that still renders as if it were the whole story)",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    out = opts["out"] or os.path.join(ROOT, "bench")
     only = None
-    if "--only" in sys.argv:
-        only = {s.strip().lower() for s in sys.argv[sys.argv.index("--only") + 1].split(",") if s.strip()}
+    if opts["only"]:
+        only = {s.strip().lower() for s in opts["only"].split(",") if s.strip()}
     os.makedirs(out, exist_ok=True)
 
     n_start = 2 if quick else 4

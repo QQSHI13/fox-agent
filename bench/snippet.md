@@ -10,34 +10,9 @@
 
 fox-agent headless vs scripted local provider: time to first token **427 ms**, peak RSS **53 MB**.
 
-<details><summary>every tool, every metric</summary>
+<details><summary>dashboard · every tool, every metric</summary>
 
 ![harness bench dashboard](bench/bench.svg)
-
-| agent | bundle | 1st byte | 1st paint | 1st input | input latency | signal | idle PSS |
-|---|---|---|---|---|---|---|---|
-| **fox-agent** | 117 MB | 106 ms | 162 ms | 480 ms | 29 ms | render | 21 MB |
-| claude code | 242 MB | 1820 ms | 2559 ms | 4285 ms | 61 ms | render | 247 MB |
-| codex | — | — | — | — | — | — | — |
-| jcode | 135 MB | 3699 ms | 3700 ms | 4501 ms | 15 ms | render | 32 MB |
-| pi | 23 MB | 1739 ms | 1815 ms | 2159 ms | 24 ms | render | 78 MB |
-| pi-bolt | 260 MB | 467 ms | 488 ms | 705 ms | 10 ms | render | 119 MB |
-| gemini cli | — | — | — | — | — | — | — |
-| copilot cli | — | — | — | — | — | — | — |
-| crush | — | — | — | — | — | — | — |
-| aider | — | — | — | — | — | — | — |
-| amp | — | — | — | — | — | — | — |
-| cursor-agent | — | — | — | — | — | — | — |
-| qwen code | — | — | — | — | — | — | — |
-| codebuff | — | — | — | — | — | — | — |
-| kilo code | — | — | — | — | — | — | — |
-| droid | — | — | — | — | — | — | — |
-| kimi code | 192 MB | 9281 ms | 9777 ms | 10279 ms | 142 ms | render | 412 MB |
-| devin | — | — | — | — | — | — | — |
-| cline | — | — | — | — | — | — | — |
-| continue | — | — | — | — | — | — | — |
-| iflow cli | — | — | — | — | — | — | — |
-| opencode v2 | 240 MB | 908 ms | 2737 ms | 3288 ms | 88 ms | render | 107 MB |
 
 </details>
 
