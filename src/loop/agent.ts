@@ -18,7 +18,8 @@ export async function* runTurn(
   yield* runTurnCore(sessionId, cfg, userText, signal, {
     maxSteps: config?.maxSteps,
     retryLimit: config?.retryLimit,
-    compactAt: config?.compactAt,
+    compactWarnAt: config?.compactWarnAt,
+    compactCtxOnlyAt: config?.compactCtxOnlyAt,
     projectInstructions: config?.projectInstructions,
     ui,
     // pass the whole config so MCP servers merge into the registry

@@ -23,7 +23,7 @@ import type { FoxPlugin } from "../plugins/types.ts";
 import type { Config } from "../core/config.ts";
 import type { ProviderConfig } from "../providers/types.ts";
 import type { AgentEvent } from "../core/events.ts";
-import { modelBudget, triggerTokens } from "../context/budget.ts";
+import { modelBudget } from "../context/budget.ts";
 
 export interface FoxHostApi {
   version: string;
@@ -154,7 +154,7 @@ export function installHostApi(config: Config, provider: ProviderConfig): FoxHos
           ...u,
           last: lastPromptTokens(id),
           window: modelBudget(provider.model).contextWindow,
-          trigger: triggerTokens(provider.model, config.compactAt),
+          trigger: Math.floor(modelBudget(provider.model).contextWindow * config.compactWarnAt),
         };
       },
     },
@@ -162,7 +162,8 @@ export function installHostApi(config: Config, provider: ProviderConfig): FoxHos
       runTurnCore(sessionId, provider, prompt, signal, {
         maxSteps: config.maxSteps,
         retryLimit: config.retryLimit,
-        compactAt: config.compactAt,
+        compactWarnAt: config.compactWarnAt,
+        compactCtxOnlyAt: config.compactCtxOnlyAt,
         projectInstructions: config.projectInstructions,
         config,
         chat: resolveChat,

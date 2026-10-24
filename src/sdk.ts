@@ -89,7 +89,8 @@ export async function createAgent(opts: {
         for await (const ev of runTurnCore(sessionId, provider, prompt, runOpts.signal, {
           maxSteps: runOpts.turn?.maxSteps ?? config.maxSteps,
           retryLimit: runOpts.turn?.retryLimit ?? config.retryLimit,
-          compactAt: runOpts.turn?.compactAt ?? config.compactAt,
+          compactWarnAt: runOpts.turn?.compactWarnAt ?? config.compactWarnAt,
+          compactCtxOnlyAt: runOpts.turn?.compactCtxOnlyAt ?? config.compactCtxOnlyAt,
           projectInstructions: config.projectInstructions,
           config,
           chat: resolveChat,

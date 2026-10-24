@@ -242,7 +242,8 @@ export async function run(parsed: Parsed): Promise<void> {
     provider: (parsed.flags.get("provider") as Config["provider"]) || undefined,
     maxSteps: parsed.flags.has("max-steps") ? Number(parsed.flags.get("max-steps")) : undefined,
     retryLimit: parsed.flags.has("retry-limit") ? Number(parsed.flags.get("retry-limit")) : undefined,
-    compactAt: parsed.flags.has("compact-at") ? Number(parsed.flags.get("compact-at")) : undefined,
+    compactWarnAt: parsed.flags.has("compact-warn-at") ? Number(parsed.flags.get("compact-warn-at")) : undefined,
+    compactCtxOnlyAt: parsed.flags.has("compact-ctx-only-at") ? Number(parsed.flags.get("compact-ctx-only-at")) : undefined,
     requestTimeoutMs: parsed.flags.has("request-timeout-ms") ? Number(parsed.flags.get("request-timeout-ms")) : undefined,
   };
   let config: Config | undefined;
@@ -463,7 +464,8 @@ export async function run(parsed: Parsed): Promise<void> {
       // headless reached here only via the eager-load path, so config is set
       maxSteps: config!.maxSteps,
       retryLimit: config!.retryLimit,
-      compactAt: config!.compactAt,
+      compactWarnAt: config!.compactWarnAt,
+      compactCtxOnlyAt: config!.compactCtxOnlyAt,
       projectInstructions: config!.projectInstructions,
       config,
       chat: resolveChat,
@@ -570,9 +572,6 @@ function emitHuman(ev: import("./core/events.ts").AgentEvent, color = false) {
       break;
     case "child_tool":
       if (ev.done) console.error(st.dim(`  ${ev.session} · ${ev.name}${ev.ok ? "" : " — failed"}`));
-      break;
-    case "compacted":
-      console.error(st.dim(`\nfox-agent: auto-compacted ${ev.removed.length} messages (${ev.tokens_before} → ${ev.tokens_after} est tok)`));
       break;
     case "warn":
       console.error(st.yellow(`\nfox-agent: ${ev.message}`));
@@ -685,7 +684,8 @@ async function plainLoop(state: HarnessState) {
       for await (const ev of runTurnCore(state.sessionId, state.provider, text, ac.signal, {
         maxSteps: config?.maxSteps,
         retryLimit: config?.retryLimit,
-        compactAt: config?.compactAt,
+        compactWarnAt: config?.compactWarnAt,
+        compactCtxOnlyAt: config?.compactCtxOnlyAt,
         projectInstructions: config?.projectInstructions,
         config,
         chat: resolveChat,

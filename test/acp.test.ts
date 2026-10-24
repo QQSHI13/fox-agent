@@ -48,8 +48,8 @@ const cfg = (): Config => ({
   provider: "openai-compatible",
   maxSteps: 10,
   retryLimit: 0,
-  compactAt: 0.85,
-  compactAtTokens: 131_072,
+  compactWarnAt: 0.8,
+  compactCtxOnlyAt: 0.9,
   requestTimeoutMs: 0,
   mcpServers: {},
   agents: {},
@@ -664,10 +664,6 @@ describe("event mapping", () => {
       sessionUpdate: "usage_update",
       used: 120,
       size: 128_000,
-    });
-    expect(map({ type: "compacted", removed: [1, 2], tokens_before: 900, tokens_after: 200 })).toMatchObject({
-      sessionUpdate: "compaction_update",
-      status: "completed",
     });
 
     // the five that must produce nothing at all

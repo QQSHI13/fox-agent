@@ -20,7 +20,7 @@ import { exportSession, importSession } from "./store/transfer.ts";
 import { shareSession } from "./store/share.ts";
 import { VERSION } from "./core/version.ts";
 import { viewTokenEstimate } from "./context/render.ts";
-import { checkBudget, triggerTokens } from "./context/budget.ts";
+import { checkBudget } from "./context/budget.ts";
 import type { ProviderConfig } from "./providers/types.ts";
 import { getTodos, renderTodosMd } from "./tools/todo.ts";
 import { resolveProfile, resolveValue, saveGlobalConfig, saveProviderProfile, type Config, type ModelConfig } from "./core/config.ts";
@@ -1868,11 +1868,15 @@ Verify what you write: run the commands you document (at least the build/test en
           : row
             ? backfillUsage(state.sessionId) // pre-index-totals session: fill once
             : { prompt: 0, completion: 0, cached: 0 };
-      const b = checkBudget(state.sessionId, state.provider.model, state.config?.compactAt, state.config?.compactAtTokens);
+      const b = checkBudget(state.sessionId, state.provider.model, {
+        warnAt: state.config?.compactWarnAt ?? 0.8,
+        ctxOnlyAt: state.config?.compactCtxOnlyAt ?? 0.9,
+      });
       const pct = Math.round(b.ratio * 100);
       // the percentage is of the window, which the registry may overstate — so
       // the number it is racing toward is shown too, not just the fraction
-      const trig = triggerTokens(state.provider.model, state.config?.compactAt, state.config?.compactAtTokens);
+      const warnTok = Math.floor(b.limit * b.thresholds.warnAt);
+      const stopTok = Math.floor(b.limit * b.thresholds.ctxOnlyAt);
       // hit rate over everything billed as input, cumulative for this session:
       // prompt_tokens already contains the cached part, so this is a share and
       // not a ratio of two disjoint buckets
@@ -1884,8 +1888,8 @@ Verify what you write: run the commands you document (at least the build/test en
         output:
           `billed: ↑${t.prompt} ↓${t.completion} = ${t.prompt + t.completion} tok (provider-reported)\n` +
           `cache: ${hit}\n` +
-          `context: ${b.reported ? `${b.reported}/${b.limit} tok (${pct}%)` : "no provider report yet"}${b.over ? " — over compaction threshold" : ""}\n` +
-          `compaction triggers at ${trig} tok`,
+          `context: ${b.reported ? `${b.reported}/${b.limit} tok (${pct}%)` : "no provider report yet"}${b.stage === "ctxOnly" ? " — CONTEXT-ONLY: every tool but ctx is disabled" : b.stage === "warn" ? " — over the warn threshold, compact now" : ""}\n` +
+          `thresholds: warn at ${warnTok} tok (${Math.round(b.thresholds.warnAt * 100)}%), ctx-only at ${stopTok} tok (${Math.round(b.thresholds.ctxOnlyAt * 100)}%)`,
       };
     }
 

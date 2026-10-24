@@ -325,7 +325,8 @@ export function buildAgent(opts: AcpServerOptions): acp.AgentApp {
         for await (const ev of runTurnCore(params.sessionId, turnProvider, text, ctl.signal, {
           maxSteps: config.maxSteps,
           retryLimit: config.retryLimit,
-          compactAt: config.compactAt,
+          compactWarnAt: config.compactWarnAt,
+        compactCtxOnlyAt: config.compactCtxOnlyAt,
           projectInstructions: config.projectInstructions,
           config,
           chat,

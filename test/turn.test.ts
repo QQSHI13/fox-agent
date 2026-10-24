@@ -794,3 +794,101 @@ describe("prompt cache prefix", () => {
     expect(stored.some((m: any) => typeof m.content === "string" && m.content.includes("<runtime>"))).toBe(false);
   });
 });
+
+describe("the ctx-only rail is enforced, not just advertised", () => {
+  /** A registry whose ctx tool is distinguishable from a normal one. */
+  function ctxTool(): [string, any] {
+    return [
+      "ctx",
+      {
+        def: { name: "ctx", description: "context surgery", parameters: { type: "object", properties: {} } },
+        run: async () => "ctx ok: 3 hidden",
+      },
+    ];
+  }
+
+  /** A tool call then a final answer. */
+  const script = (name: string): Script[] => [
+    [{ type: "tool_call", call: { id: "t1", name, arguments: name === "echo" ? '{"say":"yo"}' : "{}" } }, { type: "done", reason: "tool_calls" }],
+    textDone("done"),
+  ];
+
+  test("past the ctxOnly threshold a non-ctx tool is vetoed with a reason", async () => {
+    const t = await setup();
+    const s = t.createSession("/w", "m1");
+    const registry = new Map([echoTool(), ctxTool()]);
+    const mock = mockChat(script("echo"));
+    const events = await collect(
+      t.runTurnCore(s.id, cfg(), "go", undefined, {
+        chat: mock.fn as any,
+        registryOverride: registry as any,
+        // any non-zero report trips the rail: ratio >= ~0 is always true
+        compactWarnAt: 0.0,
+        compactCtxOnlyAt: 0,
+        quiet: true,
+      }),
+    );
+    const end = events.find((e) => e.type === "tool_end") as any;
+    expect(end).toBeTruthy();
+    // the call happened but did not run the tool: the veto answers for it
+    expect(end.ok).toBe(false);
+    expect(end.output).toContain("every tool except ctx");
+    expect(end.output).not.toContain("echo:");
+  });
+
+  test("ctx itself still runs while every other tool is vetoed", async () => {
+    const t = await setup();
+    const s = t.createSession("/w", "m1");
+    const registry = new Map([echoTool(), ctxTool()]);
+    const mock = mockChat(script("ctx"));
+    const events = await collect(
+      t.runTurnCore(s.id, cfg(), "go", undefined, {
+        chat: mock.fn as any,
+        registryOverride: registry as any,
+        compactWarnAt: 0.0,
+        compactCtxOnlyAt: 0,
+        quiet: true,
+      }),
+    );
+    const end = events.find((e) => e.type === "tool_end") as any;
+    expect(end.ok).toBe(true);
+    expect(end.output).toContain("ctx ok");
+  });
+
+  test("below the thresholds tools run normally", async () => {
+    const t = await setup();
+    const s = t.createSession("/w", "m1");
+    const registry = new Map([echoTool(), ctxTool()]);
+    const mock = mockChat(script("echo"));
+    const events = await collect(
+      t.runTurnCore(s.id, cfg(), "go", undefined, {
+        chat: mock.fn as any,
+        registryOverride: registry as any,
+        compactWarnAt: 0.999,
+        compactCtxOnlyAt: 0.9999,
+        quiet: true,
+      }),
+    );
+    const end = events.find((e) => e.type === "tool_end") as any;
+    expect(end.ok).toBe(true);
+    expect(end.output).toContain("echo:");
+  });
+
+  test("the request itself only declares ctx, so the model is not offered a dead tool", async () => {
+    const t = await setup();
+    const s = t.createSession("/w", "m1");
+    const registry = new Map([echoTool(), ctxTool()]);
+    const mock = mockChat([textDone("hi")]);
+    await collect(
+      t.runTurnCore(s.id, cfg(), "go", undefined, {
+        chat: mock.fn as any,
+        registryOverride: registry as any,
+        compactWarnAt: 0.0,
+        compactCtxOnlyAt: 0,
+        quiet: true,
+      }),
+    );
+    const declared = (mock.calls[0].tools as any[]).map((x) => x.name);
+    expect(declared).toEqual(["ctx"]);
+  });
+});

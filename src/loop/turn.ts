@@ -18,16 +18,16 @@ import { loadPlugins } from "../plugins/load.ts";
 import type { UiBridge } from "../core/ui.ts";
 import { buildSystemPrompt, buildRuntimeHeader } from "./prompt.ts";
 import { renderContext, stripEchoedMarkers } from "../context/render.ts";
-import { compactIfNeeded } from "../context/compact.ts";
-import { checkBudget, sessionContextTokens } from "../context/budget.ts";
+import { checkBudget, sessionContextTokens, type BudgetThresholds } from "../context/budget.ts";
 
 export interface TurnOptions {
   maxSteps?: number;
   retryLimit?: number;
-  compactAt?: number;
-  /** absolute prompt-token compaction ceiling; absent = the config's value (0 = window fraction only) */
-  compactAtTokens?: number;
-  /** suppress step/retry/compaction chatter (subagents) */
+  /** fraction at which the header tells the agent to compact (absent = the config's value) */
+  compactWarnAt?: number;
+  /** fraction at which only `ctx` stays callable (absent = the config's value) */
+  compactCtxOnlyAt?: number;
+  /** suppress step/retry chatter (subagents) */
   quiet?: boolean;
   /** dependency injection — tests mock the provider here */
   chat?: ChatFn;
@@ -280,7 +280,8 @@ function fallbackConfig(cfg: ProviderConfig, opts: TurnOptions): Config {
     provider: cfg.provider ?? "openai-compatible",
     maxSteps: opts.maxSteps ?? 0, // 0 = no cap
     retryLimit: opts.retryLimit ?? 3,
-    compactAt: opts.compactAt ?? 0.85,
+    compactWarnAt: opts.compactWarnAt ?? 0.8,
+    compactCtxOnlyAt: opts.compactCtxOnlyAt ?? 0.9,
     requestTimeoutMs: cfg.requestTimeoutMs ?? 120_000,
     projectInstructions: "",
   });
@@ -386,10 +387,12 @@ export async function* runTurnCore(
   const maxSteps = opts.maxSteps ?? 0;
   const quiet = opts.quiet ?? false;
   // Compaction policy resolves config-first, option-second, so a host that
-  // passes `config` (every host does) cannot silently lose the ceiling by
-  // forgetting to forward one field alongside `compactAt`.
-  const compactAt = opts.compactAt ?? effCfg.compactAt;
-  const compactAtTokens = opts.compactAtTokens ?? effCfg.compactAtTokens;
+  // passes `config` (every host does) cannot silently lose a threshold by
+  // forgetting to forward one field.
+  const thresholds: BudgetThresholds = {
+    warnAt: opts.compactWarnAt ?? effCfg.compactWarnAt,
+    ctxOnlyAt: opts.compactCtxOnlyAt ?? effCfg.compactCtxOnlyAt,
+  };
 
   // Every provider request identifies itself and its conversation: gateways
   // (opencode's among them) route and cache on these. OpenRouter's token
@@ -503,27 +506,28 @@ export async function* runTurnCore(
       if (!quiet) yield { type: "steered", text };
     }
 
-    // Measure context size ONCE this step and share it between compaction and
-    // the budget header — they were each re-walking the whole view per step for
-    // the same number. A compaction does not refresh the provider report, so
-    // the step that just pruned still reads `over` from this same measurement
-    // and is suppressed for exactly that step (the next step reads a fresh one).
+    // Measure context size ONCE this step and share it with the header —
+    // re-walking the view here would compute the same number twice.
     const ctxTokens = sessionContextTokens(sessionId);
+    if (!quiet) yield { type: "step", n: step };
 
-    // compaction is not chatter — subagents need it too or they hard-fail on
-    // a full window. Only the *event* is suppressed when quiet.
-    const cEv = await compactIfNeeded(sessionId, reqCfg, chat, { compactAt, compactAtTokens, signal, reportedPrecomputed: ctxTokens }).catch(() => null);
-    if (!quiet) {
-      if (cEv && cEv.type === "compacted" && cEv.removed.length) yield cEv;
-      yield { type: "step", n: step };
-    }
-
-    const budget = checkBudget(sessionId, cfg.model, compactAt, compactAtTokens, ctxTokens);
+    // The harness does not compact. It measures and it reports: past the warn
+    // threshold the header says so, and past the ctx-only threshold the tool
+    // list is cut to `ctx` alone, because the agent's one useful move is to
+    // shrink the window itself.
+    const budget = checkBudget(sessionId, cfg.model, thresholds, ctxTokens);
+    const ctxOnly = budget.stage === "ctxOnly";
+    // `ctx` is the way out, so it is the one tool that survives the gate. A
+    // registry without ctx (a reduced subagent) keeps everything instead of
+    // being left with no callable tool at all — a locked door with no key is
+    // worse than a full window.
+    const callableTools: ToolDef[] =
+      ctxOnly && tools.has("ctx") ? [tools.get("ctx")!.def] : toolDefs;
     // Step-stable by construction: identity, project instructions, tool roster
     // and doctrine. Nothing in here moves between steps, which is what lets the
     // provider cache it (loop/prompt.ts buildSystemPrompt).
     const sysPrompt = buildSystemPrompt({
-      tools: toolDefs,
+      tools: callableTools,
       projectInstructions: opts.projectInstructions ?? "",
     });
     const messages = renderContext(sessionId, sysPrompt, {
@@ -535,10 +539,10 @@ export async function* runTurnCore(
         cwd: session.cwd,
         model: cfg.model,
         provider: { name: cfg.label, format: cfg.provider },
-        tools: toolDefs,
+        tools: callableTools,
         // the agent manages its own window, so it gets the same number the status
         // bar shows: the provider's own report, never an estimate
-        budget: cEv?.type === "compacted" ? { ...budget, over: false } : budget,
+        budget,
       }),
     });
 
@@ -551,7 +555,7 @@ export async function* runTurnCore(
       const patch = await runHook(
         p,
         "beforeLLMCall",
-        () => p.hooks!.beforeLLMCall!({ sessionId, step, messages, tools: toolDefs }),
+        () => p.hooks!.beforeLLMCall!({ sessionId, step, messages, tools: callableTools }),
         hookWarn,
       );
       const extra = patch?.appendSystem;
@@ -565,7 +569,7 @@ export async function* runTurnCore(
 
     let outcome: StepOutcome;
     try {
-      outcome = yield* drainStep(chat, reqCfg, messages, toolDefs, signal, opts.retryLimit ?? 3);
+      outcome = yield* drainStep(chat, reqCfg, messages, callableTools, signal, opts.retryLimit ?? 3);
     } catch (e) {
       const pe = classifyProviderError(e);
       // the transcript gets the short line PLUS the diagnosis (what went wrong
@@ -621,6 +625,21 @@ export async function* runTurnCore(
     for (const call of outcome.calls) {
       let c = call;
       let veto: ToolResult | undefined;
+      // The ctx-only rail is enforced HERE, not just advertised in the prompt and
+      // the tool list. A model that ignores its instructions (or answers from a
+      // cached step whose tool list predated the threshold) would otherwise call
+      // whatever it liked at exactly the moment the window cannot take it. The
+      // veto keeps tool_call/tool_result pairing intact, so the transcript stays
+      // well-formed and the model reads a plain reason instead of a dead call.
+      if (ctxOnly && c.name !== "ctx") {
+        veto = {
+          ok: false,
+          output:
+            `error: context window is ${Math.round(budget.ratio * 100)}% full (limit ${Math.round(thresholds.ctxOnlyAt * 100)}%) — ` +
+            `every tool except ctx is disabled. Compact your view now: hide used tool output and replace large results ` +
+            `with their conclusions via ctx, then continue.`,
+        };
+      }
       for (const p of hooked) {
         if (!p.hooks?.beforeTool) continue;
         const patch = await runHook(

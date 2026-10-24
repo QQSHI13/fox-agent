@@ -90,7 +90,8 @@ async function runTurnForTask(
     for await (const ev of runTurnCore(task.sessionId, provider, prompt, undefined, {
       maxSteps: opts.config.maxSteps,
       retryLimit: opts.config.retryLimit,
-      compactAt: opts.config.compactAt,
+      compactWarnAt: opts.config.compactWarnAt,
+      compactCtxOnlyAt: opts.config.compactCtxOnlyAt,
       projectInstructions: opts.config.projectInstructions,
       config: opts.config,
       chat: resolveChat,

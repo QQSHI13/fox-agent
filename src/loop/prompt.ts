@@ -20,12 +20,13 @@ function toolNames(tools: ToolDef[]): Set<string> {
   return new Set(tools.map((t) => t.name));
 }
 
-/** Provider-reported context size, see checkBudget. */
+/** Provider-reported context size and the stage it puts the session in. */
 export interface RuntimeBudget {
   reported: number;
   limit: number;
   ratio: number;
-  over: boolean;
+  stage: "none" | "warn" | "ctxOnly";
+  thresholds: { warnAt: number; ctxOnlyAt: number };
 }
 
 /**
@@ -275,10 +276,31 @@ export function buildRuntimeHeader(opts: {
   // gated on ctx exactly like the doctrine above: a figure the agent has no
   // tool to act on is noise, and this one costs real tokens every step
   if (have.has("ctx") && opts.budget && opts.budget.reported > 0) {
-    lines.splice(lines.indexOf(`</runtime>`), 0, `ctx: ${opts.budget.reported}`);
-    if (opts.budget.over) {
+    const b = opts.budget;
+    const pct = Math.round(b.ratio * 100);
+    lines.splice(lines.indexOf(`</runtime>`), 0, `ctx: ${b.reported} (${pct}% of ${b.limit})`);
+    // The harness no longer compacts on its own: it says how full the window is
+    // and, past a threshold, says what to do about it. Both messages name the
+    // actual percentage so the agent can see how far past the line it is rather
+    // than guessing from a bare instruction.
+    if (b.stage === "ctxOnly") {
       lines.push(
-        `You are over the compaction threshold. Before doing anything else, use ctx to hide or rewrite the stale nodes you no longer need — that is cheaper and lossless compared to the automatic compaction that otherwise fires.`,
+        `<context_alert>`,
+        `The window is ${pct}% full — past the ${Math.round(b.thresholds.ctxOnlyAt * 100)}% limit where only ctx stays available. Every other tool is disabled until you bring it down.`,
+        `Compact now, in this order:`,
+        `1. Hide tool output you have already used: {"op":"delete","ids":[…],"summary":"one line saying what you learned"}.`,
+        `2. Replace a large result you still need with its conclusion: {"op":"replace","id":N,"content":"the answer, the path, the error — not the 3000 lines"}.`,
+        `3. Keep goals, decisions, exact file paths, commands run and loose ends. Drop raw output and dead ends.`,
+        `Storage is permanent and /undo reverts any op, so nothing is lost by hiding it. Do this in one or two ctx calls, then continue the task.`,
+        `</context_alert>`,
+      );
+    } else if (b.stage === "warn") {
+      lines.push(
+        `<context_alert>`,
+        `The window is ${pct}% full; tools are disabled at ${Math.round(b.thresholds.ctxOnlyAt * 100)}%. Start compacting deliberately now, before you are forced to:`,
+        `hide tool output you have already used, and replace large results you still need with a short conclusion via ctx. ` +
+          `Do it as you go rather than in one panic pass at the limit.`,
+        `</context_alert>`,
       );
     }
   }

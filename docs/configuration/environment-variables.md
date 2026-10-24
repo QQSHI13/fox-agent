@@ -23,8 +23,8 @@ These are also honored as **fallbacks** when the `FOX_AGENT_*` form is unset:
 |---|---|
 | `FOX_AGENT_MAX_STEPS` | Turn step cap (`0` = unlimited) |
 | `FOX_AGENT_RETRY_LIMIT` | Retry count on 429/5xx |
-| `FOX_AGENT_COMPACT_AT` | Context compaction threshold (fraction of the window) |
-| `FOX_AGENT_COMPACT_AT_TOKENS` | Absolute prompt-token compaction ceiling (`0` = window fraction only) |
+| `FOX_AGENT_COMPACT_WARN_AT` | Fraction of the window at which the header tells the agent to compact (default `0.8`) |
+| `FOX_AGENT_COMPACT_CTX_ONLY_AT` | Fraction at which every tool except `ctx` is disabled (default `0.9`) |
 | `FOX_AGENT_REQUEST_TIMEOUT_MS` | Time without progress before a request is aborted (default `120000`, `0` disables) |
 | `FOX_AGENT_DELEGATION_DEPTH` | Carried across the process boundary so nesting stops at 3. Set by the harness, not by you |
 
