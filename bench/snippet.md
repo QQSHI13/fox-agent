@@ -1,14 +1,14 @@
 | metric | fox-agent | rank |
 |---|---|---|
-| TUI 1st byte | **106** | **#1** of 7 |
-| TUI 1st paint | **162** | **#1** of 7 |
-| TUI 1st input | **480** | **#1** of 7 |
-| input latency | **28.8** | **#4** of 7 |
-| bundle | **117** | **#2** of 7 |
-| idle PSS | **21** | **#1** of 7 |
-| `--version` | **53.0** | **#3** of 7 |
+| TUI 1st byte | **20.1** | **#2** of 22 |
+| TUI 1st paint | **25.9** | **#2** of 20 |
+| TUI 1st input | **197** | **#1** of 9 |
+| input latency | **3.5** | **#3** of 8 |
+| bundle | **117** | **#4** of 22 |
+| idle PSS | **45** | **#2** of 20 |
+| `--version` | **7.9** | **#2** of 22 |
 
-fox-agent headless vs scripted local provider: time to first token **427 ms**, peak RSS **53 MB**.
+fox-agent headless vs scripted local provider: time to first token **54 ms**, peak RSS **57 MB**.
 
 <details><summary>dashboard · every tool, every metric</summary>
 
@@ -20,29 +20,67 @@ fox-agent headless vs scripted local provider: time to first token **427 ms**, p
 
 | agent | version | bundle (MB) | kind | `--version` min/p50/p95 | 1st byte min/p50/p95 | 1st paint min/p50/p95 | 1st input min/p50/p95 | latency min/p50/p95 | signal | idle PSS (MB) | n |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| **fox-agent** | 0.6.0 | 116.6 | bin | 31.5/53.0/57.2 | 72.9/106.1/192.5 | 133.4/162.1/242.9 | 402.6/480.4/535.6 | 21.2/28.8/53.8 | render | 21.4 | 5 |
-| claude code | 2.1.286 (Claude Code) | 241.7 | bin | 29.1/33.0/37.5 | 1478.6/1819.9/4073.9 | 2188.5/2559.1/5148.6 | 3795.7/4285.2/7152.9 | 43.3/61.0/90.7 | render | 247.3 | 5 |
-| codex | n/a (not installed) | — | — | — | — | — | — | — | — | — | — |
-| jcode | jcode v0.91.0 (439a243bb) | 135.1 | bin | 54.8/67.7/70.4 | 3353.2/3699.2/4249.2 | 3353.2/3699.7/4249.6 | 4166.4/4500.8/4889.9 | 10.7/14.8/22.3 | render | 31.9 | 5 |
-| pi | 1.0.4 | 22.8 | pkg | 869.8/1282.2/1921.2 | 1353.7/1738.7/2078.6 | 1407.9/1815.4/2131.0 | 1694.2/2158.7/2478.8 | 11.5/23.7/33.7 | render | 77.7 | 5 |
-| pi-bolt | 1.3.0 (Pi-Bolt 0.9.5, linux-x64, JIT off) | 260.4 | bin | 32.7/35.5/37.1 | 359.2/466.7/1362.4 | 374.3/488.0/1424.6 | 586.6/705.1/1715.6 | 8.2/9.8/14.1 | render | 118.7 | 5 |
-| gemini cli | n/a (not installed) | — | — | — | — | — | — | — | — | — | — |
-| copilot cli | n/a (not installed) | — | — | — | — | — | — | — | — | — | — |
-| crush | n/a (not installed) | — | — | — | — | — | — | — | — | — | — |
-| aider | n/a (not installed) | — | — | — | — | — | — | — | — | — | — |
-| amp | n/a (not installed) | — | — | — | — | — | — | — | — | — | — |
-| cursor-agent | n/a (not installed) | — | — | — | — | — | — | — | — | — | — |
-| qwen code | n/a (not installed) | — | — | — | — | — | — | — | — | — | — |
-| codebuff | n/a (not installed) | — | — | — | — | — | — | — | — | — | — |
-| kilo code | n/a (not installed) | — | — | — | — | — | — | — | — | — | — |
-| droid | n/a (not installed) | — | — | — | — | — | — | — | — | — | — |
-| kimi code | 2.3.1 | 192.3 | bin | 2843.8/7958.5/8677.1 | 5345.8/9281.3/14170.6 | 5635.5/9776.9/14780.1 | 6056.5/10279.2/17084.3 | 74.5/142.2/763.1 | render | 412.4 | 5 |
-| devin | n/a (not installed) | — | — | — | — | — | — | — | — | — | — |
-| cline | n/a (not installed) | — | — | — | — | — | — | — | — | — | — |
-| continue | n/a (not installed) | — | — | — | — | — | — | — | — | — | — |
-| iflow cli | n/a (not installed) | — | — | — | — | — | — | — | — | — | — |
-| opencode v2 | opencode v2.1.4 | 240.4 | bin | 328.0/368.1/405.0 | 630.2/907.9/952.5 | 2493.2/2737.0/3314.6 | 2859.5/3288.4/3763.7 | 64.3/87.8/140.7 | render | 107.0 | 5 |
+| **fox-agent** | 0.6.0 | 116.6 | bin | 6.9/7.9/8.9 | 16.4/20.1/20.8 | 25.1/25.9/28.4 | 195.9/196.8/199.4 | 3.4/3.5/3.7 | render | 44.9 | 5 |
+| claude code | 2.1.310 (Claude Code) | 291.6 | bin | 8.7/10.1/12.1 | 239.0/244.6/285.6 | 254.8/261.0/300.1 | — | — | render | 173.6 | 5 |
+| codex | codex-cli 0.164.0 | 444.4 | pkg | 41.1/42.1/48.1 | 41.6/42.3/44.0 | 344.4/345.4/465.2 | — | — | render | 232.8 | 5 |
+| jcode | jcode v0.99.1 (7206efd0c) | 171.3 | bin | 9.5/9.7/10.1 | 10.8/11.4/12.9 | 11.0/11.5/13.5 | 242.6/243.4/371.6 | 2.9/3.0/3.2 | render | 34.0 | 5 |
+| pi | 1.4.0 | 111.8 | pkg | 252.3/259.4/269.3 | 320.5/325.5/339.9 | 338.1/341.8/365.9 | 576.7/595.1/604.7 | 3.7/3.8/3.9 | render | 128.8 | 5 |
+| pi-bolt | 1.4.0 (Pi-Bolt 1.0.0, linux-x64, JIT off) | 263.2 | bin | 11.6/13.8/15.5 | 37.1/40.1/43.9 | 41.2/44.2/48.5 | 232.1/235.1/239.2 | 3.0/3.1/3.3 | render | 88.8 | 5 |
+| gemini cli | 0.65.0 | 102.6 | pkg | 1534.7/1555.8/1562.8 | 1626.4/1637.0/1666.2 | 1626.4/1637.0/1666.2 | — | — | — | — | 5 |
+| copilot cli | GitHub Copilot CLI 1.0.103. | 198.5 | pkg | 101.5/106.4/110.0 | 683.2/706.6/943.6 | 972.9/1017.1/1203.1 | — | — | render | 356.2 | 5 |
+| crush | crush version v0.98.2 | 128.9 | pkg | 144.2/161.0/167.4 | 281.1/301.2/602.5 | 282.7/302.5/602.5 | — | — | render | 160.7 | 5 |
+| aider | aider 0.86.2 | 642.8 | pkg | 826.1/850.4/854.0 | 731.6/742.0/749.2 | 732.3/742.6/750.0 | 925.6/936.6/976.8 | 5.9/6.0/6.1 | render | 67.4 | 5 |
+| amp | 0.0.1792814442-g8ccdc4 (released 2026-10-24T04:00:42.000Z, 3 | 161.1 | bin | 199.4/211.8/237.2 | 226.6/227.3/241.1 | 226.6/227.3/241.1 | 396.6/397.0/412.1 | — | — | — | 5 |
+| cursor-agent | 2026.10.22-27dcf5f | 583.2 | pkg | 495.0/503.2/537.1 | 465.5/645.8/661.9 | 465.5/465.5/465.5 | — | — | render | 239.0 | 5 |
+| qwen code | 0.26.0 | 154.7 | pkg | 38.2/39.1/42.5 | 591.5/608.8/852.4 | 988.5/1004.9/1345.3 | — | — | render | 207.0 | 5 |
+| codebuff | 1.0.688 | 140.0 | bin | 925.4/953.0/965.3 | 930.2/931.4/941.9 | 1965.1/1968.5/2009.9 | — | — | render | 293.6 | 5 |
+| kilo code | 7.8.17 | 718.6 | pkg | 794.5/811.2/811.5 | 2158.2/2200.5/2328.4 | 2158.2/2200.5/2328.4 | 6380.4/6657.5/7019.5 | 11.1/12.6/13.6 | render | 957.9 | 5 |
+| droid | 0.249.0 | 319.7 | bin | 86.9/90.9/95.4 | 102.2/107.1/110.3 | — | — | — | render | 270.0 | 5 |
+| kimi code | 2.3.1 | 192.3 | bin | 575.0/588.2/637.7 | 761.8/785.1/787.9 | 796.3/816.6/823.2 | — | — | render | 326.5 | 5 |
+| devin | devin 3000.11.205 (6dea39440ae3) | 217.5 | bin | 4.9/7.0/7.5 | 28.9/48.8/53.9 | 29.4/51.4/56.4 | — | — | render | 98.7 | 5 |
+| cline | 3.0.73 | 330.3 | pkg | 894.7/906.8/948.1 | 1155.4/1317.2/1346.1 | 1155.4/1317.2/1346.1 | — | — | render | 268.4 | 5 |
+| continue | 1.5.47 | 82.7 | pkg | 1130.9/1142.4/1165.1 | 11229.4/11267.3/11289.2 | 11251.8/11289.6/11314.2 | — | — | render | 319.3 | 5 |
+| iflow cli | 0.5.19 | 180.2 | pkg | 1234.5/1247.8/1249.6 | 1316.2/1327.8/1330.2 | 1370.5/1401.0/1413.9 | 1780.9/1794.5/5579.8 | 48.5/48.9/49.0 | render | 358.4 | 5 |
+| opencode v2 | opencode2 v0.0.0-beta-19271 | 207.4 | bin | 84.4/89.7/91.8 | 154.2/175.5/185.5 | 154.2/175.5/185.5 | 1696.0/1725.1/2493.5 | 18.8/21.8/22.9 | render | 126.2 | 5 |
 
 </details>
 
-_Generated 2026-10-24T05:57:12Z on Linux x86_64 (6.18.33.2-microsoft-standard-WSL2), load 7.24 on 4 cpu. [Method and caveats](#benchmarks) · [raw JSON](bench/results.json)_
+<details><summary>what could not be measured</summary>
+
+- **amp**: latency: never settled
+- **claude code**: latency: probe 'zw' did not render
+- **claude code**: ttfi: probe 'zj' did not render
+- **cline**: latency: probe 'zw' did not render
+- **cline**: ttfi: probe 'zj' did not render
+- **codebuff**: latency: probe 'xj' did not render
+- **codebuff**: ttfi: probe 'zw' did not render
+- **codex**: latency: probe 'zw' did not render
+- **codex**: ttfi: probe 'jb' did not render
+- **continue**: latency: probe 'kb' did not render
+- **continue**: latency: probe 'xj' did not render
+- **continue**: ttfi: probe 'zj' did not render
+- **continue**: ttfi: probe 'zw' did not render
+- **copilot cli**: latency: probe 'zw' did not render
+- **copilot cli**: ttfi: probe 'zj' did not render
+- **copilot cli**: ttfi: probe 'zw' did not render
+- **crush**: latency: probe 'jk' did not render
+- **crush**: ttfi: probe 'zw' did not render
+- **cursor-agent**: latency: probe 'jk' did not render
+- **cursor-agent**: latency: probe 'xj' did not render
+- **cursor-agent**: ttfi: never became interactive
+- **cursor-agent**: ttfi: probe 'zx' did not render
+- **devin**: latency: probe 'zw' did not render
+- **devin**: ttfi: probe 'zx' did not render
+- **droid**: latency: probe 'xj' did not render
+- **droid**: ttfi: never became interactive
+- **gemini cli**: latency: never settled
+- **gemini cli**: ttfi: never became interactive
+- **kimi code**: latency: probe 'zw' did not render
+- **kimi code**: ttfi: probe 'zw' did not render
+- **qwen code**: latency: probe 'zw' did not render
+- **qwen code**: ttfi: probe 'zj' did not render
+- **qwen code**: ttfi: probe 'zw' did not render
+
+</details>
+
+_Generated 2026-10-24T08:14:24Z on Linux x86_64 (6.17.0-1022-azure), load 0.47 on 4 cpu. [Method and caveats](#benchmarks) · [raw JSON](bench/results.json)_

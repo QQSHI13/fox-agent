@@ -1,11 +1,11 @@
 {
-  "generated": "2026-10-24T05:57:12Z",
-  "machine": "Linux x86_64 (6.18.33.2-microsoft-standard-WSL2)",
+  "generated": "2026-10-24T08:14:24Z",
+  "machine": "Linux x86_64 (6.17.0-1022-azure)",
   "cpu_count": 4,
   "load_avg": [
-    7.24,
-    6.2,
-    6.09
+    0.47,
+    0.2,
+    0.19
   ],
   "method": {
     "timings": "Every duration comes from a forkless byte stream: the tool is launched in a detached tmux session behind a gate FIFO, `pipe-pane` is attached before the gate is released, and bytes are timestamped as they are read. t0 is the gate release (the exec), so tmux's own spawn cost is not charged to the tool and no early byte can be missed. The predecessor polled `tmux capture-pane`, which forks tmux: measured 9.2ms p50 / 32.2ms p95 per sample, a ~22ms poll cadence and a floor under every number it published (it reported 4.2ms input latency -- below the cost of one observation).",
@@ -22,43 +22,43 @@
     {
       "agent": "fox-agent",
       "installed": true,
-      "bin": "/home/qq/.openclaw/workspace/projects/fox-agent/bin/fox",
+      "bin": "/home/runner/work/fox-agent/fox-agent/bin/fox",
       "version": "0.6.0",
-      "bundle_mb": 116.61944,
+      "bundle_mb": 116.631728,
       "bundle_kind": "bin",
       "startup": {
-        "min": 31.491003988776356,
-        "p50": 52.9848940204829,
-        "p95": 57.18336795689538,
+        "min": 6.888470000006919,
+        "p50": 7.855374999991227,
+        "p95": 8.93701500001498,
         "n": 4
       },
       "first_byte": {
-        "min": 72.86071701673791,
-        "p50": 106.08779295580462,
-        "p95": 192.54517299123108,
+        "min": 16.3804389999882,
+        "p50": 20.147656999995434,
+        "p95": 20.777564000013626,
         "n": 5
       },
       "first_paint": {
-        "min": 133.4293249528855,
-        "p50": 162.0554099790752,
-        "p95": 242.87905701203272,
+        "min": 25.12693100001684,
+        "p50": 25.912868999995453,
+        "p95": 28.40364700000464,
         "n": 5
       },
       "ttfi": {
-        "min": 402.6345720048994,
-        "p50": 480.4424940375611,
-        "p95": 535.6350800138898,
+        "min": 195.94219199998975,
+        "p50": 196.81797199999096,
+        "p95": 199.35767800001258,
         "n": 5
       },
       "key_latency": {
-        "min": 21.249280020128936,
-        "p50": 28.76049099722877,
-        "p95": 53.84152999613434,
+        "min": 3.4241319999921416,
+        "p50": 3.4826399999872137,
+        "p95": 3.729917000015348,
         "n": 5
       },
       "input_signal": "render",
-      "idle_pss_mb": 21.4013671875,
-      "idle_pss_root_mb": 21.4013671875,
+      "idle_pss_mb": 44.859375,
+      "idle_pss_root_mb": 44.859375,
       "procs": 1,
       "launches": 5,
       "failures": []
@@ -66,135 +66,181 @@
     {
       "agent": "claude code",
       "installed": true,
-      "bin": "/home/qq/.local/bin/claude",
-      "version": "2.1.286 (Claude Code)",
-      "bundle_mb": 241.667256,
+      "bin": "/home/runner/.npm-global/bin/claude",
+      "version": "2.1.310 (Claude Code)",
+      "bundle_mb": 291.63864,
       "bundle_kind": "bin",
       "startup": {
-        "min": 29.0672029950656,
-        "p50": 33.008366997819394,
-        "p95": 37.512252980377525,
+        "min": 8.68675100002747,
+        "p50": 10.055954999984351,
+        "p95": 12.11580300000037,
         "n": 4
       },
       "first_byte": {
-        "min": 1478.6107100080699,
-        "p50": 1819.942247995641,
-        "p95": 4073.9078809856437,
+        "min": 238.9968939999676,
+        "p50": 244.58056000000283,
+        "p95": 285.58734800000707,
         "n": 5
       },
       "first_paint": {
-        "min": 2188.453094975557,
-        "p50": 2559.1474510147236,
-        "p95": 5148.63857999444,
+        "min": 254.8323589999768,
+        "p50": 260.97004299998616,
+        "p95": 300.10633699998834,
         "n": 5
       },
       "ttfi": {
-        "min": 3795.715943968389,
-        "p50": 4285.2452140068635,
-        "p95": 7152.899559005164,
-        "n": 5
+        "min": null,
+        "p50": null,
+        "p95": null,
+        "n": 0
       },
       "key_latency": {
-        "min": 43.3407939854078,
-        "p50": 61.014225997496396,
-        "p95": 90.73705697664991,
-        "n": 5
+        "min": null,
+        "p50": null,
+        "p95": null,
+        "n": 0
       },
       "input_signal": "render",
-      "idle_pss_mb": 247.25390625,
-      "idle_pss_root_mb": 240.3466796875,
-      "procs": 5,
+      "idle_pss_mb": 173.5615234375,
+      "idle_pss_root_mb": 173.5615234375,
+      "procs": 1,
       "launches": 5,
-      "failures": []
+      "failures": [
+        "latency: probe 'zw' did not render",
+        "ttfi: probe 'zj' did not render"
+      ]
     },
     {
       "agent": "codex",
-      "installed": false
+      "installed": true,
+      "bin": "/home/runner/.npm-global/bin/codex",
+      "version": "codex-cli 0.164.0",
+      "bundle_mb": 444.362832,
+      "bundle_kind": "pkg",
+      "startup": {
+        "min": 41.13718599995764,
+        "p50": 42.13724099997762,
+        "p95": 48.086418999957914,
+        "n": 4
+      },
+      "first_byte": {
+        "min": 41.646523999986584,
+        "p50": 42.30475600002137,
+        "p95": 44.03764699998192,
+        "n": 5
+      },
+      "first_paint": {
+        "min": 344.41826099998707,
+        "p50": 345.4488760000345,
+        "p95": 465.1763640000013,
+        "n": 5
+      },
+      "ttfi": {
+        "min": null,
+        "p50": null,
+        "p95": null,
+        "n": 0
+      },
+      "key_latency": {
+        "min": null,
+        "p50": null,
+        "p95": null,
+        "n": 0
+      },
+      "input_signal": "render",
+      "idle_pss_mb": 232.830078125,
+      "idle_pss_root_mb": 49.064453125,
+      "procs": 2,
+      "launches": 5,
+      "failures": [
+        "latency: probe 'zw' did not render",
+        "ttfi: probe 'jb' did not render"
+      ]
     },
     {
       "agent": "jcode",
       "installed": true,
-      "bin": "/home/qq/.local/bin/jcode",
-      "version": "jcode v0.91.0 (439a243bb)",
-      "bundle_mb": 135.126488,
+      "bin": "/home/runner/.local/bin/jcode",
+      "version": "jcode v0.99.1 (7206efd0c)",
+      "bundle_mb": 171.32416,
       "bundle_kind": "bin",
       "startup": {
-        "min": 54.835670976899564,
-        "p50": 67.74410494836047,
-        "p95": 70.38741401629522,
+        "min": 9.490851999998995,
+        "p50": 9.728930999983731,
+        "p95": 10.050497999998242,
         "n": 4
       },
       "first_byte": {
-        "min": 3353.1743249623105,
-        "p50": 3699.162407021504,
-        "p95": 4249.1731439949945,
+        "min": 10.761344999991707,
+        "p50": 11.424318000024414,
+        "p95": 12.89952400003358,
         "n": 5
       },
       "first_paint": {
-        "min": 3353.1743249623105,
-        "p50": 3699.7042290167883,
-        "p95": 4249.60146099329,
+        "min": 10.996782999995958,
+        "p50": 11.50209200000063,
+        "p95": 13.490847000014128,
         "n": 5
       },
       "ttfi": {
-        "min": 4166.35429195594,
-        "p50": 4500.786855001934,
-        "p95": 4889.934379025362,
+        "min": 242.5953060000552,
+        "p50": 243.43699599995716,
+        "p95": 371.60457200002384,
         "n": 5
       },
       "key_latency": {
-        "min": 10.735744028352201,
-        "p50": 14.766012027394027,
-        "p95": 22.27442100411281,
+        "min": 2.8507929999932458,
+        "p50": 3.018970000027821,
+        "p95": 3.1552479999845673,
         "n": 5
       },
       "input_signal": "render",
-      "idle_pss_mb": 31.9267578125,
-      "idle_pss_root_mb": 31.9267578125,
-      "procs": 3,
+      "idle_pss_mb": 33.9873046875,
+      "idle_pss_root_mb": 33.9873046875,
+      "procs": 2,
       "launches": 5,
       "failures": []
     },
     {
       "agent": "pi",
       "installed": true,
-      "bin": "/home/qq/.local/bin/pi",
-      "version": "1.0.4",
-      "bundle_mb": 22.785102,
+      "bin": "/home/runner/.npm-global/bin/pi",
+      "version": "1.4.0",
+      "bundle_mb": 111.832723,
       "bundle_kind": "pkg",
       "startup": {
-        "min": 869.8371229693294,
-        "p50": 1282.178052002564,
-        "p95": 1921.1734409909695,
+        "min": 252.2560150000004,
+        "p50": 259.39141399999244,
+        "p95": 269.3455600000334,
         "n": 4
       },
       "first_byte": {
-        "min": 1353.699247003533,
-        "p50": 1738.733506994322,
-        "p95": 2078.62316101091,
+        "min": 320.5246710000438,
+        "p50": 325.46124899999995,
+        "p95": 339.88851099996964,
         "n": 5
       },
       "first_paint": {
-        "min": 1407.9067910206504,
-        "p50": 1815.374272002373,
-        "p95": 2131.0097300447524,
+        "min": 338.13761800001885,
+        "p50": 341.76837199999,
+        "p95": 365.8582669999646,
         "n": 5
       },
       "ttfi": {
-        "min": 1694.199544028379,
-        "p50": 2158.681378001347,
-        "p95": 2478.773628012277,
+        "min": 576.6953419999936,
+        "p50": 595.1138700000342,
+        "p95": 604.7317869999915,
         "n": 5
       },
       "key_latency": {
-        "min": 11.461073998361826,
-        "p50": 23.733982990961522,
-        "p95": 33.67649100255221,
+        "min": 3.705726000021059,
+        "p50": 3.8413809999724435,
+        "p95": 3.898136000032082,
         "n": 5
       },
       "input_signal": "render",
-      "idle_pss_mb": 77.6904296875,
-      "idle_pss_root_mb": 77.705078125,
+      "idle_pss_mb": 128.796875,
+      "idle_pss_root_mb": 128.796875,
       "procs": 1,
       "launches": 5,
       "failures": []
@@ -202,201 +248,802 @@
     {
       "agent": "pi-bolt",
       "installed": true,
-      "bin": "/home/qq/.local/bin/pi-bolt",
-      "version": "1.3.0 (Pi-Bolt 0.9.5, linux-x64, JIT off)",
-      "bundle_mb": 260.40112,
+      "bin": "/home/runner/.local/bin/pi-bolt",
+      "version": "1.4.0 (Pi-Bolt 1.0.0, linux-x64, JIT off)",
+      "bundle_mb": 263.153632,
       "bundle_kind": "bin",
       "startup": {
-        "min": 32.72425604518503,
-        "p50": 35.46076902421191,
-        "p95": 37.12063800776377,
+        "min": 11.627906000001076,
+        "p50": 13.78339100000403,
+        "p95": 15.458098000010523,
         "n": 4
       },
       "first_byte": {
-        "min": 359.21267699450254,
-        "p50": 466.67143201921135,
-        "p95": 1362.4407410388812,
+        "min": 37.11759999998776,
+        "p50": 40.06228500003317,
+        "p95": 43.93293500004347,
         "n": 5
       },
       "first_paint": {
-        "min": 374.2809009854682,
-        "p50": 488.01821598317474,
-        "p95": 1424.5654140249826,
+        "min": 41.17868299999827,
+        "p50": 44.210122000038155,
+        "p95": 48.465776999989885,
         "n": 5
       },
       "ttfi": {
-        "min": 586.6463939892128,
-        "p50": 705.0750079797581,
-        "p95": 1715.5859700287692,
+        "min": 232.13130799996406,
+        "p50": 235.08748900002274,
+        "p95": 239.1593970000372,
         "n": 5
       },
       "key_latency": {
-        "min": 8.241840987466276,
-        "p50": 9.836007026024163,
-        "p95": 14.062581991311163,
+        "min": 3.0385880000380894,
+        "p50": 3.140694999956395,
+        "p95": 3.251312000031703,
         "n": 5
       },
       "input_signal": "render",
-      "idle_pss_mb": 118.6826171875,
-      "idle_pss_root_mb": 118.6826171875,
+      "idle_pss_mb": 88.8095703125,
+      "idle_pss_root_mb": 88.8095703125,
       "procs": 1,
       "launches": 5,
       "failures": []
     },
     {
       "agent": "gemini cli",
-      "installed": false
-    },
-    {
-      "agent": "copilot cli",
-      "installed": false
-    },
-    {
-      "agent": "crush",
-      "installed": false
-    },
-    {
-      "agent": "aider",
-      "installed": false
-    },
-    {
-      "agent": "amp",
-      "installed": false
-    },
-    {
-      "agent": "cursor-agent",
-      "installed": false
-    },
-    {
-      "agent": "qwen code",
-      "installed": false
-    },
-    {
-      "agent": "codebuff",
-      "installed": false
-    },
-    {
-      "agent": "kilo code",
-      "installed": false
-    },
-    {
-      "agent": "droid",
-      "installed": false
-    },
-    {
-      "agent": "kimi code",
       "installed": true,
-      "bin": "/home/qq/.kimi-code/bin/kimi",
-      "version": "2.3.1",
-      "bundle_mb": 192.285888,
-      "bundle_kind": "bin",
+      "bin": "/home/runner/.npm-global/bin/gemini",
+      "version": "0.65.0",
+      "bundle_mb": 102.572492,
+      "bundle_kind": "pkg",
       "startup": {
-        "min": 2843.7647440005094,
-        "p50": 7958.531843032688,
-        "p95": 8677.136046055239,
+        "min": 1534.68479899999,
+        "p50": 1555.8300330000066,
+        "p95": 1562.7686629999857,
         "n": 4
       },
       "first_byte": {
-        "min": 5345.829515019432,
-        "p50": 9281.270127976313,
-        "p95": 14170.613294991199,
+        "min": 1626.4203270000053,
+        "p50": 1637.0303799999988,
+        "p95": 1666.2051100000213,
         "n": 5
       },
       "first_paint": {
-        "min": 5635.50141901942,
-        "p50": 9776.933412998915,
-        "p95": 14780.131629027892,
+        "min": 1626.4203270000053,
+        "p50": 1637.0303799999988,
+        "p95": 1666.2051100000213,
         "n": 5
       },
       "ttfi": {
-        "min": 6056.483862979803,
-        "p50": 10279.247694998048,
-        "p95": 17084.262218035292,
+        "min": null,
+        "p50": null,
+        "p95": null,
+        "n": 0
+      },
+      "key_latency": {
+        "min": null,
+        "p50": null,
+        "p95": null,
+        "n": 0
+      },
+      "input_signal": null,
+      "idle_pss_mb": null,
+      "idle_pss_root_mb": null,
+      "procs": null,
+      "launches": 5,
+      "failures": [
+        "latency: never settled",
+        "ttfi: never became interactive"
+      ]
+    },
+    {
+      "agent": "copilot cli",
+      "installed": true,
+      "bin": "/home/runner/.npm-global/bin/copilot",
+      "version": "GitHub Copilot CLI 1.0.103.",
+      "bundle_mb": 198.489323,
+      "bundle_kind": "pkg",
+      "startup": {
+        "min": 101.45540300004541,
+        "p50": 106.36553299997331,
+        "p95": 110.0372390000075,
+        "n": 4
+      },
+      "first_byte": {
+        "min": 683.2000019999214,
+        "p50": 706.6441660000464,
+        "p95": 943.6198529999729,
+        "n": 5
+      },
+      "first_paint": {
+        "min": 972.8585929999554,
+        "p50": 1017.1280089999755,
+        "p95": 1203.0781019999495,
+        "n": 5
+      },
+      "ttfi": {
+        "min": null,
+        "p50": null,
+        "p95": null,
+        "n": 0
+      },
+      "key_latency": {
+        "min": null,
+        "p50": null,
+        "p95": null,
+        "n": 0
+      },
+      "input_signal": "render",
+      "idle_pss_mb": 356.23046875,
+      "idle_pss_root_mb": 47.3896484375,
+      "procs": 3,
+      "launches": 5,
+      "failures": [
+        "latency: probe 'zw' did not render",
+        "ttfi: probe 'zj' did not render",
+        "ttfi: probe 'zw' did not render"
+      ]
+    },
+    {
+      "agent": "crush",
+      "installed": true,
+      "bin": "/home/runner/.npm-global/bin/crush",
+      "version": "crush version v0.98.2",
+      "bundle_mb": 128.920784,
+      "bundle_kind": "pkg",
+      "startup": {
+        "min": 144.21722700001283,
+        "p50": 161.01506999996218,
+        "p95": 167.3680259999628,
+        "n": 4
+      },
+      "first_byte": {
+        "min": 281.1451019999822,
+        "p50": 301.203600000008,
+        "p95": 602.4707990000024,
+        "n": 5
+      },
+      "first_paint": {
+        "min": 282.7249979999351,
+        "p50": 302.53927199999,
+        "p95": 602.4707990000024,
+        "n": 5
+      },
+      "ttfi": {
+        "min": null,
+        "p50": null,
+        "p95": null,
+        "n": 0
+      },
+      "key_latency": {
+        "min": null,
+        "p50": null,
+        "p95": null,
+        "n": 0
+      },
+      "input_signal": "render",
+      "idle_pss_mb": 160.708984375,
+      "idle_pss_root_mb": 68.6533203125,
+      "procs": 2,
+      "launches": 5,
+      "failures": [
+        "latency: probe 'jk' did not render",
+        "ttfi: probe 'zw' did not render"
+      ]
+    },
+    {
+      "agent": "aider",
+      "installed": true,
+      "bin": "/home/runner/work/fox-agent/fox-agent/.venv-bench/bin/aider",
+      "version": "aider 0.86.2",
+      "bundle_mb": 642.813881,
+      "bundle_kind": "pkg",
+      "startup": {
+        "min": 826.0725229999935,
+        "p50": 850.3905129999794,
+        "p95": 853.9968339999859,
+        "n": 4
+      },
+      "first_byte": {
+        "min": 731.6019770000821,
+        "p50": 741.962550999915,
+        "p95": 749.2414450000524,
+        "n": 5
+      },
+      "first_paint": {
+        "min": 732.2620730000153,
+        "p50": 742.6061240000763,
+        "p95": 749.9556620000476,
+        "n": 5
+      },
+      "ttfi": {
+        "min": 925.5723160000571,
+        "p50": 936.5943699999661,
+        "p95": 976.8003390000786,
         "n": 5
       },
       "key_latency": {
-        "min": 74.5058850152418,
-        "p50": 142.22929102834314,
-        "p95": 763.1129930377938,
+        "min": 5.906471999992391,
+        "p50": 5.987619000052291,
+        "p95": 6.132788999934746,
         "n": 5
       },
       "input_signal": "render",
-      "idle_pss_mb": 412.3515625,
-      "idle_pss_root_mb": 360.2587890625,
-      "procs": 4,
+      "idle_pss_mb": 67.388671875,
+      "idle_pss_root_mb": 67.388671875,
+      "procs": 1,
       "launches": 5,
       "failures": []
     },
     {
+      "agent": "amp",
+      "installed": true,
+      "bin": "/home/runner/.local/bin/amp",
+      "version": "0.0.1792814442-g8ccdc4 (released 2026-10-24T04:00:42.000Z, 3",
+      "bundle_mb": 161.065136,
+      "bundle_kind": "bin",
+      "startup": {
+        "min": 199.42899800003033,
+        "p50": 211.76140100010343,
+        "p95": 237.18259900010707,
+        "n": 4
+      },
+      "first_byte": {
+        "min": 226.59101599992937,
+        "p50": 227.31183299993063,
+        "p95": 241.12605400000575,
+        "n": 5
+      },
+      "first_paint": {
+        "min": 226.59101599992937,
+        "p50": 227.31183299993063,
+        "p95": 241.12605400000575,
+        "n": 5
+      },
+      "ttfi": {
+        "min": 396.57884600001125,
+        "p50": 396.953577999966,
+        "p95": 412.0501479999348,
+        "n": 5
+      },
+      "key_latency": {
+        "min": null,
+        "p50": null,
+        "p95": null,
+        "n": 0
+      },
+      "input_signal": null,
+      "idle_pss_mb": null,
+      "idle_pss_root_mb": null,
+      "procs": null,
+      "launches": 5,
+      "failures": [
+        "latency: never settled"
+      ]
+    },
+    {
+      "agent": "cursor-agent",
+      "installed": true,
+      "bin": "/home/runner/.local/bin/cursor-agent",
+      "version": "2026.10.22-27dcf5f",
+      "bundle_mb": 583.198758,
+      "bundle_kind": "pkg",
+      "startup": {
+        "min": 495.0130839999929,
+        "p50": 503.1829790000302,
+        "p95": 537.0573740000282,
+        "n": 4
+      },
+      "first_byte": {
+        "min": 465.4745779999985,
+        "p50": 645.8111109999436,
+        "p95": 661.9167409999136,
+        "n": 5
+      },
+      "first_paint": {
+        "min": 465.4745779999985,
+        "p50": 465.4745779999985,
+        "p95": 465.4745779999985,
+        "n": 1
+      },
+      "ttfi": {
+        "min": null,
+        "p50": null,
+        "p95": null,
+        "n": 0
+      },
+      "key_latency": {
+        "min": null,
+        "p50": null,
+        "p95": null,
+        "n": 0
+      },
+      "input_signal": "render",
+      "idle_pss_mb": 239.0400390625,
+      "idle_pss_root_mb": 239.0400390625,
+      "procs": 1,
+      "launches": 5,
+      "failures": [
+        "latency: probe 'jk' did not render",
+        "latency: probe 'xj' did not render",
+        "ttfi: never became interactive",
+        "ttfi: probe 'zx' did not render"
+      ]
+    },
+    {
+      "agent": "qwen code",
+      "installed": true,
+      "bin": "/home/runner/.npm-global/bin/qwen",
+      "version": "0.26.0",
+      "bundle_mb": 154.674631,
+      "bundle_kind": "pkg",
+      "startup": {
+        "min": 38.20754399998805,
+        "p50": 39.08029800004442,
+        "p95": 42.465116000130365,
+        "n": 4
+      },
+      "first_byte": {
+        "min": 591.4925820000008,
+        "p50": 608.8141679999808,
+        "p95": 852.3799930001132,
+        "n": 5
+      },
+      "first_paint": {
+        "min": 988.5149560000173,
+        "p50": 1004.8902510000062,
+        "p95": 1345.3276109999024,
+        "n": 5
+      },
+      "ttfi": {
+        "min": null,
+        "p50": null,
+        "p95": null,
+        "n": 0
+      },
+      "key_latency": {
+        "min": null,
+        "p50": null,
+        "p95": null,
+        "n": 0
+      },
+      "input_signal": "render",
+      "idle_pss_mb": 207.0048828125,
+      "idle_pss_root_mb": 207.0048828125,
+      "procs": 1,
+      "launches": 5,
+      "failures": [
+        "latency: probe 'zw' did not render",
+        "ttfi: probe 'zj' did not render",
+        "ttfi: probe 'zw' did not render"
+      ]
+    },
+    {
+      "agent": "codebuff",
+      "installed": true,
+      "bin": "/home/runner/.npm-global/bin/codebuff",
+      "version": "1.0.688",
+      "bundle_mb": 139.954304,
+      "bundle_kind": "bin",
+      "startup": {
+        "min": 925.4145160000462,
+        "p50": 953.0466700000488,
+        "p95": 965.2774460000728,
+        "n": 4
+      },
+      "first_byte": {
+        "min": 930.1597369999399,
+        "p50": 931.4421060000768,
+        "p95": 941.9399680000424,
+        "n": 5
+      },
+      "first_paint": {
+        "min": 1965.1312239998333,
+        "p50": 1968.5276430000158,
+        "p95": 2009.9256129999503,
+        "n": 5
+      },
+      "ttfi": {
+        "min": null,
+        "p50": null,
+        "p95": null,
+        "n": 0
+      },
+      "key_latency": {
+        "min": null,
+        "p50": null,
+        "p95": null,
+        "n": 0
+      },
+      "input_signal": "render",
+      "idle_pss_mb": 293.5595703125,
+      "idle_pss_root_mb": 57.5078125,
+      "procs": 4,
+      "launches": 5,
+      "failures": [
+        "latency: probe 'xj' did not render",
+        "ttfi: probe 'zw' did not render"
+      ]
+    },
+    {
+      "agent": "kilo code",
+      "installed": true,
+      "bin": "/home/runner/.npm-global/bin/kilocode",
+      "version": "7.8.17",
+      "bundle_mb": 718.608439,
+      "bundle_kind": "pkg",
+      "startup": {
+        "min": 794.5168899998407,
+        "p50": 811.1834890000864,
+        "p95": 811.5216080000209,
+        "n": 4
+      },
+      "first_byte": {
+        "min": 2158.174992999875,
+        "p50": 2200.487548999945,
+        "p95": 2328.4315519999836,
+        "n": 5
+      },
+      "first_paint": {
+        "min": 2158.174992999875,
+        "p50": 2200.487548999945,
+        "p95": 2328.4315519999836,
+        "n": 5
+      },
+      "ttfi": {
+        "min": 6380.386706999843,
+        "p50": 6657.511066000097,
+        "p95": 7019.548986000018,
+        "n": 5
+      },
+      "key_latency": {
+        "min": 11.061175999884654,
+        "p50": 12.630967999939458,
+        "p95": 13.62223000000995,
+        "n": 5
+      },
+      "input_signal": "render",
+      "idle_pss_mb": 957.9423828125,
+      "idle_pss_root_mb": 46.1181640625,
+      "procs": 2,
+      "launches": 5,
+      "failures": []
+    },
+    {
+      "agent": "droid",
+      "installed": true,
+      "bin": "/home/runner/.local/bin/droid",
+      "version": "0.249.0",
+      "bundle_mb": 319.69912,
+      "bundle_kind": "bin",
+      "startup": {
+        "min": 86.85889299999872,
+        "p50": 90.94578500003081,
+        "p95": 95.43944500001089,
+        "n": 4
+      },
+      "first_byte": {
+        "min": 102.18596200002139,
+        "p50": 107.06100399988827,
+        "p95": 110.27460699983749,
+        "n": 5
+      },
+      "first_paint": {
+        "min": null,
+        "p50": null,
+        "p95": null,
+        "n": 0
+      },
+      "ttfi": {
+        "min": null,
+        "p50": null,
+        "p95": null,
+        "n": 0
+      },
+      "key_latency": {
+        "min": null,
+        "p50": null,
+        "p95": null,
+        "n": 0
+      },
+      "input_signal": "render",
+      "idle_pss_mb": 270.013671875,
+      "idle_pss_root_mb": 270.013671875,
+      "procs": 1,
+      "launches": 5,
+      "failures": [
+        "latency: probe 'xj' did not render",
+        "ttfi: never became interactive"
+      ]
+    },
+    {
+      "agent": "kimi code",
+      "installed": true,
+      "bin": "/home/runner/.kimi-code/bin/kimi",
+      "version": "2.3.1",
+      "bundle_mb": 192.285888,
+      "bundle_kind": "bin",
+      "startup": {
+        "min": 575.0426780000453,
+        "p50": 588.1841109999186,
+        "p95": 637.7375469999151,
+        "n": 4
+      },
+      "first_byte": {
+        "min": 761.8422200000623,
+        "p50": 785.0993859999562,
+        "p95": 787.8708390001066,
+        "n": 5
+      },
+      "first_paint": {
+        "min": 796.2994730000901,
+        "p50": 816.5977149999435,
+        "p95": 823.1602990001647,
+        "n": 5
+      },
+      "ttfi": {
+        "min": null,
+        "p50": null,
+        "p95": null,
+        "n": 0
+      },
+      "key_latency": {
+        "min": null,
+        "p50": null,
+        "p95": null,
+        "n": 0
+      },
+      "input_signal": "render",
+      "idle_pss_mb": 326.4697265625,
+      "idle_pss_root_mb": 326.4697265625,
+      "procs": 1,
+      "launches": 5,
+      "failures": [
+        "latency: probe 'zw' did not render",
+        "ttfi: probe 'zw' did not render"
+      ]
+    },
+    {
       "agent": "devin",
-      "installed": false
+      "installed": true,
+      "bin": "/home/runner/.local/bin/devin",
+      "version": "devin 3000.11.205 (6dea39440ae3)",
+      "bundle_mb": 217.494824,
+      "bundle_kind": "bin",
+      "startup": {
+        "min": 4.947449999917808,
+        "p50": 7.041630999992776,
+        "p95": 7.53058800000872,
+        "n": 4
+      },
+      "first_byte": {
+        "min": 28.88112000005094,
+        "p50": 48.75616300000729,
+        "p95": 53.88565900011599,
+        "n": 5
+      },
+      "first_paint": {
+        "min": 29.43758300011723,
+        "p50": 51.423017999923104,
+        "p95": 56.36914399997295,
+        "n": 5
+      },
+      "ttfi": {
+        "min": null,
+        "p50": null,
+        "p95": null,
+        "n": 0
+      },
+      "key_latency": {
+        "min": null,
+        "p50": null,
+        "p95": null,
+        "n": 0
+      },
+      "input_signal": "render",
+      "idle_pss_mb": 98.7421875,
+      "idle_pss_root_mb": 98.7421875,
+      "procs": 1,
+      "launches": 5,
+      "failures": [
+        "latency: probe 'zw' did not render",
+        "ttfi: probe 'zx' did not render"
+      ]
     },
     {
       "agent": "cline",
-      "installed": false
+      "installed": true,
+      "bin": "/home/runner/.npm-global/bin/cline",
+      "version": "3.0.73",
+      "bundle_mb": 330.330802,
+      "bundle_kind": "pkg",
+      "startup": {
+        "min": 894.7052660000736,
+        "p50": 906.83190499999,
+        "p95": 948.0530679998083,
+        "n": 4
+      },
+      "first_byte": {
+        "min": 1155.3701889999957,
+        "p50": 1317.1670780002387,
+        "p95": 1346.0843249999925,
+        "n": 5
+      },
+      "first_paint": {
+        "min": 1155.3701889999957,
+        "p50": 1317.1670780002387,
+        "p95": 1346.0843249999925,
+        "n": 5
+      },
+      "ttfi": {
+        "min": null,
+        "p50": null,
+        "p95": null,
+        "n": 0
+      },
+      "key_latency": {
+        "min": null,
+        "p50": null,
+        "p95": null,
+        "n": 0
+      },
+      "input_signal": "render",
+      "idle_pss_mb": 268.3798828125,
+      "idle_pss_root_mb": 55.0302734375,
+      "procs": 3,
+      "launches": 5,
+      "failures": [
+        "latency: probe 'zw' did not render",
+        "ttfi: probe 'zj' did not render"
+      ]
     },
     {
       "agent": "continue",
-      "installed": false
+      "installed": true,
+      "bin": "/home/runner/.npm-global/bin/cn",
+      "version": "1.5.47",
+      "bundle_mb": 82.660809,
+      "bundle_kind": "pkg",
+      "startup": {
+        "min": 1130.8744869998009,
+        "p50": 1142.4430479996772,
+        "p95": 1165.138473999832,
+        "n": 4
+      },
+      "first_byte": {
+        "min": 11229.448604000027,
+        "p50": 11267.29596999985,
+        "p95": 11289.181060999908,
+        "n": 5
+      },
+      "first_paint": {
+        "min": 11251.793307000298,
+        "p50": 11289.552298000217,
+        "p95": 11314.173133999702,
+        "n": 5
+      },
+      "ttfi": {
+        "min": null,
+        "p50": null,
+        "p95": null,
+        "n": 0
+      },
+      "key_latency": {
+        "min": null,
+        "p50": null,
+        "p95": null,
+        "n": 0
+      },
+      "input_signal": "render",
+      "idle_pss_mb": 319.3486328125,
+      "idle_pss_root_mb": 319.3486328125,
+      "procs": 1,
+      "launches": 5,
+      "failures": [
+        "latency: probe 'kb' did not render",
+        "latency: probe 'xj' did not render",
+        "ttfi: probe 'zj' did not render",
+        "ttfi: probe 'zw' did not render"
+      ]
     },
     {
       "agent": "iflow cli",
-      "installed": false
+      "installed": true,
+      "bin": "/home/runner/.npm-global/bin/iflow",
+      "version": "0.5.19",
+      "bundle_mb": 180.212336,
+      "bundle_kind": "pkg",
+      "startup": {
+        "min": 1234.5236090000071,
+        "p50": 1247.825966000164,
+        "p95": 1249.5750210000551,
+        "n": 4
+      },
+      "first_byte": {
+        "min": 1316.2494859998333,
+        "p50": 1327.8283449999435,
+        "p95": 1330.177256999832,
+        "n": 5
+      },
+      "first_paint": {
+        "min": 1370.5357989997538,
+        "p50": 1400.9903109999868,
+        "p95": 1413.9156269998239,
+        "n": 5
+      },
+      "ttfi": {
+        "min": 1780.872848999934,
+        "p50": 1794.5464519998495,
+        "p95": 5579.774456999985,
+        "n": 5
+      },
+      "key_latency": {
+        "min": 48.46049800016772,
+        "p50": 48.93919999994978,
+        "p95": 48.997524000242265,
+        "n": 5
+      },
+      "input_signal": "render",
+      "idle_pss_mb": 358.3603515625,
+      "idle_pss_root_mb": 57.326171875,
+      "procs": 2,
+      "launches": 5,
+      "failures": []
     },
     {
       "agent": "opencode v2",
       "installed": true,
-      "bin": "/home/qq/.opencode/bin/opencode2",
-      "version": "opencode v2.1.4",
-      "bundle_mb": 240.416944,
+      "bin": "/home/runner/.npm-global/bin/opencode2",
+      "version": "opencode2 v0.0.0-beta-19271",
+      "bundle_mb": 207.439328,
       "bundle_kind": "bin",
       "startup": {
-        "min": 328.0236860155128,
-        "p50": 368.139247992076,
-        "p95": 405.026076012291,
+        "min": 84.43751599997995,
+        "p50": 89.70937699996284,
+        "p95": 91.84276199994201,
         "n": 4
       },
       "first_byte": {
-        "min": 630.1955269882455,
-        "p50": 907.8521020128392,
-        "p95": 952.4663359625265,
+        "min": 154.23505799981285,
+        "p50": 175.53269099971658,
+        "p95": 185.5096979998052,
         "n": 5
       },
       "first_paint": {
-        "min": 2493.176465970464,
-        "p50": 2736.9522640365176,
-        "p95": 3314.5976520027034,
+        "min": 154.23505799981285,
+        "p50": 175.53269099971658,
+        "p95": 185.5096979998052,
         "n": 5
       },
       "ttfi": {
-        "min": 2859.517895965837,
-        "p50": 3288.433240028098,
-        "p95": 3763.6539170052856,
+        "min": 1696.0173380002743,
+        "p50": 1725.143205999757,
+        "p95": 2493.4748669998044,
         "n": 5
       },
       "key_latency": {
-        "min": 64.32815600419417,
-        "p50": 87.75602397508919,
-        "p95": 140.65321499947459,
+        "min": 18.784958999731316,
+        "p50": 21.8126980003035,
+        "p95": 22.87341400005971,
         "n": 5
       },
       "input_signal": "render",
-      "idle_pss_mb": 106.9677734375,
-      "idle_pss_root_mb": 106.9677734375,
-      "procs": 1,
+      "idle_pss_mb": 126.158203125,
+      "idle_pss_root_mb": 125.154296875,
+      "procs": 2,
       "launches": 5,
       "failures": []
     }
   ],
   "fox": {
-    "ttft_ms": 427.2,
+    "ttft_ms": 53.7,
     "ttft": {
-      "min": 237.7,
-      "p50": 427.2,
-      "p95": 493.7,
+      "min": 53.3,
+      "p50": 53.7,
+      "p95": 75.7,
       "n": 4
     },
-    "headless_peak_rss_mb": 52.9,
+    "headless_peak_rss_mb": 57.2,
     "method": "headless `fox -p ... --json` against the repo's scripted local provider (no key, no network); TTFT = spawn to the first parsed {\"type\":\"text\"} event; peak RSS via /usr/bin/time -v"
   }
 }
