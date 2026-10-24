@@ -22,6 +22,29 @@ export const gateway = new Proxy({}, { get: () => refuse }) as Record<string, un
 export const createGateway = refuse;
 export default gateway;
 
-// `ai` imports these two by name for its error-wrapping path.
-export class GatewayError extends Error {}
-export class GatewayAuthenticationError extends GatewayError {}
+// `ai` imports these two by name for its error paths, and calls the STATIC
+// `isInstance` on them — not just their constructors:
+//
+//   wrapGatewayError()          -> GatewayAuthenticationError.isInstance(error)
+//   retryWithExponentialBackoff -> GatewayError.isInstance(error) (inside shouldRetry)
+//
+// Exporting bare `class X extends Error {}` therefore left both statics
+// undefined, and either call site threw `TypeError: isInstance is not a
+// function` in place of the real provider error. It stayed hidden because the
+// retry check short-circuits on APICallError first, which is what a normal
+// provider failure is; only a non-API error reaching shouldRetry, or any error
+// at all reaching wrapGatewayError, took the broken branch.
+//
+// `false` is the correct answer, not a placeholder: a GatewayError cannot
+// exist when the gateway is not in the bundle. The marker check the real class
+// does (`symbol in error`) is unreachable by construction here.
+export class GatewayError extends Error {
+  static isInstance(_error: unknown): boolean {
+    return false;
+  }
+}
+export class GatewayAuthenticationError extends GatewayError {
+  static isInstance(_error: unknown): boolean {
+    return false;
+  }
+}
