@@ -24,15 +24,15 @@ No key? The TUI opens anyway and `/login` walks you through provider setup.
 <!-- bench:start -->
 | metric | fox-agent | rank |
 |---|---|---|
-| TUI 1st byte | **20.1** | **#2** of 22 |
-| TUI 1st paint | **25.9** | **#2** of 20 |
-| TUI 1st input | **197** | **#1** of 9 |
-| input latency | **3.5** | **#3** of 8 |
+| TUI 1st byte | **14.8** | **#2** of 22 |
+| TUI 1st paint | **20.4** | **#2** of 20 |
+| TUI 1st input | **190** | **#1** of 9 |
+| input latency | **3.1** | **#3** of 8 |
 | bundle | **117** | **#4** of 22 |
-| idle PSS | **45** | **#2** of 20 |
-| `--version` | **7.9** | **#2** of 22 |
+| idle PSS | **44** | **#2** of 20 |
+| `--version` | **6.9** | **#2** of 22 |
 
-fox-agent headless vs scripted local provider: time to first token **54 ms**, peak RSS **57 MB**.
+fox-agent headless vs scripted local provider: time to first token **50 ms**, peak RSS **57 MB**.
 
 <details><summary>dashboard · every tool, every metric</summary>
 
@@ -44,70 +44,66 @@ fox-agent headless vs scripted local provider: time to first token **54 ms**, pe
 
 | agent | version | bundle (MB) | kind | `--version` min/p50/p95 | 1st byte min/p50/p95 | 1st paint min/p50/p95 | 1st input min/p50/p95 | latency min/p50/p95 | signal | idle PSS (MB) | n |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| **fox-agent** | 0.6.0 | 116.6 | bin | 6.9/7.9/8.9 | 16.4/20.1/20.8 | 25.1/25.9/28.4 | 195.9/196.8/199.4 | 3.4/3.5/3.7 | render | 44.9 | 5 |
-| claude code | 2.1.310 (Claude Code) | 291.6 | bin | 8.7/10.1/12.1 | 239.0/244.6/285.6 | 254.8/261.0/300.1 | — | — | render | 173.6 | 5 |
-| codex | codex-cli 0.164.0 | 444.4 | pkg | 41.1/42.1/48.1 | 41.6/42.3/44.0 | 344.4/345.4/465.2 | — | — | render | 232.8 | 5 |
-| jcode | jcode v0.99.1 (7206efd0c) | 171.3 | bin | 9.5/9.7/10.1 | 10.8/11.4/12.9 | 11.0/11.5/13.5 | 242.6/243.4/371.6 | 2.9/3.0/3.2 | render | 34.0 | 5 |
-| pi | 1.4.0 | 111.8 | pkg | 252.3/259.4/269.3 | 320.5/325.5/339.9 | 338.1/341.8/365.9 | 576.7/595.1/604.7 | 3.7/3.8/3.9 | render | 128.8 | 5 |
-| pi-bolt | 1.4.0 (Pi-Bolt 1.0.0, linux-x64, JIT off) | 263.2 | bin | 11.6/13.8/15.5 | 37.1/40.1/43.9 | 41.2/44.2/48.5 | 232.1/235.1/239.2 | 3.0/3.1/3.3 | render | 88.8 | 5 |
-| gemini cli | 0.65.0 | 102.6 | pkg | 1534.7/1555.8/1562.8 | 1626.4/1637.0/1666.2 | 1626.4/1637.0/1666.2 | — | — | — | — | 5 |
-| copilot cli | GitHub Copilot CLI 1.0.103. | 198.5 | pkg | 101.5/106.4/110.0 | 683.2/706.6/943.6 | 972.9/1017.1/1203.1 | — | — | render | 356.2 | 5 |
-| crush | crush version v0.98.2 | 128.9 | pkg | 144.2/161.0/167.4 | 281.1/301.2/602.5 | 282.7/302.5/602.5 | — | — | render | 160.7 | 5 |
-| aider | aider 0.86.2 | 642.8 | pkg | 826.1/850.4/854.0 | 731.6/742.0/749.2 | 732.3/742.6/750.0 | 925.6/936.6/976.8 | 5.9/6.0/6.1 | render | 67.4 | 5 |
-| amp | 0.0.1792814442-g8ccdc4 (released 2026-10-24T04:00:42.000Z, 3 | 161.1 | bin | 199.4/211.8/237.2 | 226.6/227.3/241.1 | 226.6/227.3/241.1 | 396.6/397.0/412.1 | — | — | — | 5 |
-| cursor-agent | 2026.10.22-27dcf5f | 583.2 | pkg | 495.0/503.2/537.1 | 465.5/645.8/661.9 | 465.5/465.5/465.5 | — | — | render | 239.0 | 5 |
-| qwen code | 0.26.0 | 154.7 | pkg | 38.2/39.1/42.5 | 591.5/608.8/852.4 | 988.5/1004.9/1345.3 | — | — | render | 207.0 | 5 |
-| codebuff | 1.0.688 | 140.0 | bin | 925.4/953.0/965.3 | 930.2/931.4/941.9 | 1965.1/1968.5/2009.9 | — | — | render | 293.6 | 5 |
-| kilo code | 7.8.17 | 718.6 | pkg | 794.5/811.2/811.5 | 2158.2/2200.5/2328.4 | 2158.2/2200.5/2328.4 | 6380.4/6657.5/7019.5 | 11.1/12.6/13.6 | render | 957.9 | 5 |
-| droid | 0.249.0 | 319.7 | bin | 86.9/90.9/95.4 | 102.2/107.1/110.3 | — | — | — | render | 270.0 | 5 |
-| kimi code | 2.3.1 | 192.3 | bin | 575.0/588.2/637.7 | 761.8/785.1/787.9 | 796.3/816.6/823.2 | — | — | render | 326.5 | 5 |
-| devin | devin 3000.11.205 (6dea39440ae3) | 217.5 | bin | 4.9/7.0/7.5 | 28.9/48.8/53.9 | 29.4/51.4/56.4 | — | — | render | 98.7 | 5 |
-| cline | 3.0.73 | 330.3 | pkg | 894.7/906.8/948.1 | 1155.4/1317.2/1346.1 | 1155.4/1317.2/1346.1 | — | — | render | 268.4 | 5 |
-| continue | 1.5.47 | 82.7 | pkg | 1130.9/1142.4/1165.1 | 11229.4/11267.3/11289.2 | 11251.8/11289.6/11314.2 | — | — | render | 319.3 | 5 |
-| iflow cli | 0.5.19 | 180.2 | pkg | 1234.5/1247.8/1249.6 | 1316.2/1327.8/1330.2 | 1370.5/1401.0/1413.9 | 1780.9/1794.5/5579.8 | 48.5/48.9/49.0 | render | 358.4 | 5 |
-| opencode v2 | opencode2 v0.0.0-beta-19271 | 207.4 | bin | 84.4/89.7/91.8 | 154.2/175.5/185.5 | 154.2/175.5/185.5 | 1696.0/1725.1/2493.5 | 18.8/21.8/22.9 | render | 126.2 | 5 |
+| **fox-agent** | 0.6.0 | 116.6 | bin | 5.8/6.9/7.1 | 14.2/14.8/17.3 | 19.8/20.4/26.3 | 189.7/190.4/196.0 | 3.0/3.1/3.2 | render | 44.5 | 5 |
+| claude code | 2.1.310 (Claude Code) | 291.6 | bin | 9.0/9.4/9.4 | 188.5/194.1/227.6 | 200.1/205.8/239.0 | — | — | render | 173.0 | 5 |
+| codex | codex-cli 0.164.0 | 444.4 | pkg | 36.3/37.5/39.6 | 35.4/36.3/37.6 | 335.8/337.7/420.3 | — | — | render | 235.4 | 5 |
+| jcode | jcode v0.99.1 (7206efd0c) | 171.3 | bin | 8.2/8.3/8.6 | 9.6/9.7/11.7 | 9.8/10.0/12.5 | 239.0/239.3/343.4 | 2.4/2.5/2.6 | render | 34.2 | 5 |
+| pi | 1.4.0 | 111.8 | pkg | 191.7/196.8/197.8 | 243.1/250.3/265.0 | 263.0/267.1/285.7 | 446.7/496.3/500.4 | 3.2/3.3/3.4 | render | 128.5 | 5 |
+| pi-bolt | 1.4.0 (Pi-Bolt 1.0.0, linux-x64, JIT off) | 263.2 | bin | 11.1/12.5/13.1 | 29.1/30.5/36.7 | 32.0/33.4/39.7 | 221.4/222.9/229.3 | 2.6/2.7/2.7 | render | 89.2 | 5 |
+| gemini cli | 0.65.0 | 102.6 | pkg | 1152.4/1164.1/1176.8 | 1237.9/1252.7/1298.6 | 1237.9/1252.7/1298.6 | — | — | — | — | 5 |
+| copilot cli | GitHub Copilot CLI 1.0.103. | 198.5 | pkg | 84.5/87.7/88.1 | 538.2/561.8/759.1 | 739.5/743.6/956.1 | — | — | render | 400.1 | 5 |
+| crush | crush version v0.98.2 | 128.9 | pkg | 115.4/122.8/124.2 | 501.0/648.1/927.8 | 502.1/651.3/927.8 | — | — | render | 161.1 | 5 |
+| aider | aider 0.86.2 | 642.8 | pkg | 612.5/631.8/633.1 | 554.2/564.6/577.2 | 554.6/565.0/577.6 | 752.7/760.9/886.8 | 4.8/4.8/4.9 | render | 67.5 | 5 |
+| amp | 0.0.1792828848-gc7cca4 (released 2026-10-24T08:00:48.000Z, 3 | 161.1 | bin | 165.5/169.4/187.5 | 173.4/175.9/184.3 | 173.4/175.9/184.3 | 342.1/344.6/353.2 | — | — | — | 5 |
+| cursor-agent | 2026.10.22-27dcf5f | 583.2 | pkg | 359.7/377.8/396.6 | 348.7/491.8/497.1 | 348.7/348.7/348.7 | — | — | render | 234.6 | 5 |
+| qwen code | 0.26.0 | 154.7 | pkg | 30.6/31.5/35.0 | 443.0/450.9/651.7 | 788.7/802.2/1074.4 | — | — | render | 205.2 | 5 |
+| codebuff | 1.0.688 | 140.0 | bin | 768.3/812.6/813.6 | 729.9/741.0/818.9 | 1758.6/1769.0/1846.6 | — | — | render | 266.9 | 5 |
+| kilo code | 7.8.17 | 718.6 | pkg | 639.7/654.5/657.2 | 1693.1/1712.1/1799.1 | 1693.1/1712.1/1799.1 | 5542.5/5666.8/6004.9 | 8.5/15.0/29.2 | render | 949.9 | 5 |
+| droid | 0.249.0 | 319.7 | bin | 66.0/69.9/72.9 | 74.2/78.8/82.2 | — | — | — | render | 272.8 | 5 |
+| kimi code | 2.3.1 | 192.3 | bin | 464.1/475.9/486.3 | 565.0/574.2/610.6 | 590.2/599.3/640.4 | — | — | render | 325.1 | 5 |
+| devin | devin 3000.11.205 (6dea39440ae3) | 217.5 | bin | 4.4/5.0/6.4 | 19.6/40.5/43.2 | 21.7/42.7/45.1 | — | — | render | 101.3 | 5 |
+| cline | 3.0.73 | 330.3 | pkg | 761.3/924.2/1140.2 | 1002.1/1104.4/1130.9 | 1002.1/1104.4/1130.9 | — | — | render | 268.6 | 5 |
+| continue | 1.5.47 | 82.7 | pkg | 872.1/889.8/893.0 | 11064.1/11077.1/11094.8 | 11081.0/11093.8/11111.0 | — | — | render | 320.8 | 5 |
+| iflow cli | 0.5.19 | 180.2 | pkg | 945.3/954.7/959.2 | 1009.6/1014.4/1022.7 | 1046.0/1076.1/1085.5 | 1408.0/1422.0/5224.8 | 46.8/47.2/47.3 | render | 358.9 | 5 |
+| opencode v2 | opencode2 v0.0.0-beta-19271 | 207.4 | bin | 64.1/66.6/67.0 | 110.3/119.7/127.9 | 110.3/119.7/127.9 | 1604.9/1610.9/2187.2 | 15.0/18.1/18.4 | render | 130.3 | 5 |
 
 </details>
 
 <details><summary>what could not be measured</summary>
 
-- **amp**: latency: never settled
-- **claude code**: latency: probe 'zw' did not render
-- **claude code**: ttfi: probe 'zj' did not render
-- **cline**: latency: probe 'zw' did not render
-- **cline**: ttfi: probe 'zj' did not render
-- **codebuff**: latency: probe 'xj' did not render
-- **codebuff**: ttfi: probe 'zw' did not render
-- **codex**: latency: probe 'zw' did not render
-- **codex**: ttfi: probe 'jb' did not render
-- **continue**: latency: probe 'kb' did not render
-- **continue**: latency: probe 'xj' did not render
-- **continue**: ttfi: probe 'zj' did not render
-- **continue**: ttfi: probe 'zw' did not render
-- **copilot cli**: latency: probe 'zw' did not render
-- **copilot cli**: ttfi: probe 'zj' did not render
-- **copilot cli**: ttfi: probe 'zw' did not render
-- **crush**: latency: probe 'jk' did not render
-- **crush**: ttfi: probe 'zw' did not render
-- **cursor-agent**: latency: probe 'jk' did not render
-- **cursor-agent**: latency: probe 'xj' did not render
-- **cursor-agent**: ttfi: never became interactive
-- **cursor-agent**: ttfi: probe 'zx' did not render
-- **devin**: latency: probe 'zw' did not render
-- **devin**: ttfi: probe 'zx' did not render
-- **droid**: latency: probe 'xj' did not render
-- **droid**: ttfi: never became interactive
-- **gemini cli**: latency: never settled
-- **gemini cli**: ttfi: never became interactive
-- **kimi code**: latency: probe 'zw' did not render
-- **kimi code**: ttfi: probe 'zw' did not render
-- **qwen code**: latency: probe 'zw' did not render
-- **qwen code**: ttfi: probe 'zj' did not render
-- **qwen code**: ttfi: probe 'zw' did not render
+- **amp**: latency: never stopped repainting (no quiet window)
+- **claude code**: latency: no input field accepted the keystroke
+- **claude code**: ttfi: no input field accepted the keystroke
+- **cline**: latency: waiting for login
+- **cline**: ttfi: waiting for login
+- **codebuff**: latency: no input field accepted the keystroke
+- **codebuff**: ttfi: no input field accepted the keystroke
+- **codex**: latency: waiting for login
+- **codex**: ttfi: waiting for login
+- **continue**: latency: no input field accepted the keystroke
+- **continue**: ttfi: no input field accepted the keystroke
+- **copilot cli**: latency: trust prompt
+- **copilot cli**: ttfi: trust prompt
+- **crush**: latency: no input field accepted the keystroke
+- **crush**: ttfi: no input field accepted the keystroke
+- **cursor-agent**: latency: blank screen
+- **cursor-agent**: latency: no input field accepted the keystroke
+- **cursor-agent**: ttfi: never became interactive (blank screen)
+- **cursor-agent**: ttfi: no input field accepted the keystroke
+- **devin**: latency: waiting for login
+- **devin**: ttfi: waiting for login
+- **droid**: latency: blank screen
+- **droid**: ttfi: never became interactive (blank screen)
+- **gemini cli**: latency: never stopped repainting (no quiet window)
+- **gemini cli**: ttfi: never became interactive (blank screen)
+- **kimi code**: latency: trust prompt
+- **kimi code**: ttfi: trust prompt
+- **qwen code**: latency: waiting for login
+- **qwen code**: ttfi: waiting for login
 
 </details>
 
-_Generated 2026-10-24T08:14:24Z on Linux x86_64 (6.17.0-1022-azure), load 0.47 on 4 cpu. [Method and caveats](#benchmarks) · [raw JSON](bench/results.json)_
+_Generated 2026-10-24T09:15:08Z on Linux x86_64 (6.17.0-1022-azure), load 0.59 on 4 cpu. [Method and caveats](#benchmarks) · [raw JSON](bench/results.json)_
 <!-- bench:end -->
 
 ---
