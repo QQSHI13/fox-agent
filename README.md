@@ -84,15 +84,6 @@ cd fox-agent
 bun install && bun run build      # -> bin/fox
 ```
 
-Then point it at a provider:
-
-```bash
-export FOX_AGENT_BASE_URL=https://your-provider.com/v1
-export FOX_AGENT_API_KEY=sk-...
-export FOX_AGENT_MODEL=gpt-4o
-fox
-```
-
 More: [install options](docs/getting-started/install.md) · [quickstart](docs/getting-started/quickstart.md).
 
 ## Usage
@@ -101,7 +92,6 @@ More: [install options](docs/getting-started/install.md) · [quickstart](docs/ge
 fox                                              # TUI
 fox -p "summarize this repo's layout"            # one-shot answer
 fox json -p "..."                                # NDJSON agent events
-echo "explain src/loop/turn.ts" | fox            # piped prompt
 fox mini                                         # plain streaming REPL, no TUI
 fox -c                                           # resume latest session
 fox acp                                          # serve ACP on stdio
