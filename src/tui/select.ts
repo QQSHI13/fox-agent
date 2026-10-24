@@ -57,20 +57,28 @@ export function orderSel(a: Anchor, b: Anchor): [Anchor, Anchor] {
 }
 
 /**
- * The highest cell column holding a non-whitespace character, or -1 for a row
- * that paints only blanks.
+ * The highest cell column holding a glyph inside the row's non-whitespace
+ * prefix, or -1 when the row paints only blanks.
  *
- * Rows are not always as wide as their text: a code block pads every line of
- * the block to its widest so the gutter and background line up, and a table
- * pads each cell to its column width. Those padding cells are real painted
- * cells, so `width` counts them — which is right for layout and wrong for a
- * selection.
+ * Rows are not always as wide as their text: padding cells are real painted
+ * cells, so `width` counts them — right for layout, wrong for a selection.
+ *
+ * This asks "is this cell inside the trimmed text", NOT "is this cell's slice
+ * whitespace". The difference is not stylistic: `/[\s]/.test("")` is FALSE, so
+ * any cell whose slice came back empty (`start[c] === end[c]`, which a renderer
+ * can produce for a zero-width glyph or the continuation cell of a wide one)
+ * was reported as content and pinned the boundary to the row's full width —
+ * which is exactly how a multi-line selection lit every earlier line out to
+ * the right edge instead of stopping at the end of its own text.
  */
 function lastContentCol(cells: RowCells): number {
+  // the length of the text with trailing whitespace removed; a cell belongs to
+  // the content iff it STARTS before that offset. Comparing offsets rather than
+  // re-testing each slice cannot be fooled by an empty or split range.
+  const contentLen = cells.text.replace(/\s+$/, "").length;
+  if (!contentLen) return -1;
   for (let c = cells.start.length - 1; c >= 0; c--) {
-    // slice, not charAt: a wide character owns two columns that both map to
-    // the same string range, so the continuation cell reports the same glyph
-    if (!/\s/.test(cells.text.slice(cells.start[c], cells.end[c]))) return c;
+    if (cells.start[c] < contentLen) return c;
   }
   return -1;
 }
