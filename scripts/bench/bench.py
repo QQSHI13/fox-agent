@@ -41,6 +41,7 @@ measurements, just narrated — use it to see why a tool got n/a or where the
 wall-clock went.
 """
 import json
+import fcntl
 import os
 import pty
 import re
@@ -48,6 +49,7 @@ import select
 import shlex
 import shutil
 import signal
+import struct
 import subprocess
 import sys
 import tempfile
@@ -412,16 +414,9 @@ def tui_first_byte(path, probes=5):
     for _ in range(probes):
         start = time.perf_counter()
         try:
-            pid, fd = pty.fork()
+            pid, fd = _spawn_tui(path)
         except OSError:
             return None
-        if pid == 0:
-            # execv inherits os.environ: set TERM in-process, in the child only
-            os.environ["TERM"] = "xterm-256color"
-            try:
-                os.execv(path, [path])
-            except Exception:
-                os._exit(127)
         first = None
         try:
             while True:
@@ -452,25 +447,6 @@ def tui_first_byte(path, probes=5):
     return samples
 
 
-def _ppid_of(pid):
-    try:
-        with open(f"/proc/{pid}/stat", "rb") as f:
-            data = f.read()
-    except OSError:
-        return None
-    # comm may contain spaces/parens; it is the only parenthesised field
-    rparen = data.rfind(b")")
-    if rparen < 0:
-        return None
-    fields = data[rparen + 2 :].split()
-    if len(fields) < 2:
-        return None
-    try:
-        return int(fields[1])
-    except ValueError:
-        return None
-
-
 def _pss_of(pid):
     """PSS of one process in MB, or None."""
     try:
@@ -483,42 +459,6 @@ def _pss_of(pid):
     return None
 
 
-def _pss_tree(root_pid):
-    """PSS of a process AND its descendants, in MB.
-
-    Summing the tree, rather than reading the direct child alone, is the honest
-    number for these CLIs: most are launchers (a node shim, a `.sh` wrapper, an
-    npm `bin` stub) that exec or spawn the binary which actually renders the
-    TUI. Reading only the root either reports a wrapper's few megabytes or, when
-    the wrapper has already handed off and exited, nothing at all.
-
-    Descendants are found by scanning /proc for the parent link, which costs one
-    pass over a few hundred entries — cheap next to the settle window, and it
-    keeps working when a tool spawns grandchildren.
-    """
-    kids = {}
-    for entry in os.listdir("/proc"):
-        if not entry.isdigit():
-            continue
-        pid = int(entry)
-        ppid = _ppid_of(pid)
-        if ppid is not None:
-            kids.setdefault(ppid, []).append(pid)
-    total = 0.0
-    seen = set()
-    stack = [root_pid]
-    while stack:
-        pid = stack.pop()
-        if pid in seen:
-            continue
-        seen.add(pid)
-        v = _pss_of(pid)
-        if v is not None:
-            total += v
-        stack.extend(kids.get(pid, ()))
-    return total if total > 0 else None
-
-
 def idle_pss(path, settle=1.5, tries=12):
     """PSS after launching the TUI and letting it settle (Linux only).
 
@@ -526,38 +466,34 @@ def idle_pss(path, settle=1.5, tries=12):
     out the settle window and read smaps_rollup — idle harness cost, before
     any model traffic (which would dominate everything).
 
-    Two things this does that a single timed read does not:
+    Reads the ROOT process only. An earlier attempt summed the whole process
+    tree on the theory that these entries are launchers; that inflated eight
+    tools by 2-7x (kilo 46->353, copilot 47->303, codex 49->244) while native
+    binaries barely moved. The extra megabytes were helper daemons and
+    node workers that are not "this TUI at rest", and it still did not fix the
+    one tool it was aimed at. The tree of a long-lived CLI is not the metric.
 
-      * it sums the PROCESS TREE (see _pss_tree), because these entries are
-        often launchers for the process that actually draws the TUI;
-      * it retries instead of sampling once at exactly `settle` seconds. A
-        single read raced the last startup write and reported None for a tool
-        that was perfectly measurable a moment later — goose did exactly that
-        in a published run while every other tool reported fine. The first
-        successful reading wins; a tool that really never comes up still ends
-        as None.
+    It DOES retry instead of sampling once at exactly `settle` seconds: a single
+    read raced the final startup write and reported None for a tool that was
+    measurable a moment later — goose did exactly that in a published run while
+    every other tool reported fine. First successful reading wins; a tool that
+    really never comes up still ends as None.
     """
     try:
-        pid, fd = pty.fork()
+        pid, fd = _spawn_tui(path)
     except OSError:
         return None
-    if pid == 0:
-        os.environ["TERM"] = "xterm-256color"
-        try:
-            os.execv(path, [path])
-        except Exception:
-            os._exit(127)
 
     pss = None
     try:
         time.sleep(settle)
         for _ in range(tries):
-            pss = _pss_tree(pid)
+            pss = _pss_of(pid)
             if pss is not None:
                 break
             if not _alive(pid):
                 break
-            time.sleep(0.25)
+            time.sleep(0.1)
     finally:
         try:
             os.close(fd)
@@ -594,6 +530,36 @@ INPUT_MARKERS = {
 # splits it across rows. `screen.py` parses the stream into a character grid and
 # the probe is searched there instead, which is the only thing "did my typing
 # appear" ever meant. Kept as a note so the idea is not reintroduced.
+
+
+def _spawn_tui(path, rows=40, cols=120):
+    """Fork a PTY with a REAL window size, and return (pid, fd).
+
+    `pty.fork()` gives the child a 0x0 terminal. Every full-screen TUI queries
+    TIOCGWINSZ before drawing, so a 0x0 window makes it collapse or skip its
+    input box entirely — measured on jcode: 928 bytes of output at 0x0 versus
+    6229 bytes at 40x120. The probe then has nowhere to appear, which is exactly
+    the set of tools that reported n/a.
+
+    The trust prompt is the other half: fox-agent (and the trust-gated flow it
+    models) asks "Do you trust this folder?" on an interactive start and waits
+    for a keypress. In a bench temp dir that swallows the probe, so fox-agent
+    itself scored n/a. `shouldSkipTrustCheck` in src/core/trust.ts exists for
+    exactly this ("never prompt in scripts/tests"), so the bench opts out.
+    """
+    pid, fd = pty.fork()
+    if pid == 0:
+        os.environ["TERM"] = "xterm-256color"
+        os.environ.setdefault("FOX_AGENT_NO_TRUST_CHECK", "1")
+        try:
+            os.execv(path, [path])
+        except Exception:
+            os._exit(127)
+    try:
+        fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
+    except OSError:
+        pass
+    return pid, fd
 
 
 def _wait_output(fd, timeout):
@@ -774,15 +740,9 @@ def tui_first_input(path, label, probes=3, timeout=15):
     signal_kind = None
     for _ in range(probes):
         try:
-            pid, fd = pty.fork()
+            pid, fd = _spawn_tui(path)
         except OSError:
             return None, None
-        if pid == 0:
-            os.environ["TERM"] = "xterm-256color"
-            try:
-                os.execv(path, [path])
-            except Exception:
-                os._exit(127)
         logf = None
         try:
             start = time.perf_counter()
@@ -922,15 +882,9 @@ def tui_input_latency(path, label, settle_s=0.5, probes=3, timeout=15):
     signal_kind = None
     for _ in range(probes):
         try:
-            pid, fd = pty.fork()
+            pid, fd = _spawn_tui(path)
         except OSError:
             return None, None
-        if pid == 0:
-            os.environ["TERM"] = "xterm-256color"
-            try:
-                os.execv(path, [path])
-            except Exception:
-                os._exit(127)
         logf = None
         try:
             # A silent cooked-mode CLI (cat, a bare REPL) emits nothing at
