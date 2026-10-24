@@ -152,6 +152,14 @@ jobs:
           done
           exit 0
 
+      # Verify the rig BEFORE it measures. These checks cover the failure
+      # modes that produced wrong published numbers: a footprint lookup
+      # shared across tools, a measurement taken inside an escape sequence,
+      # a probe matched only against a single chunk, a timeout ranked as a
+      # measurement, and a "hermetic" run that still read the dev's config.
+      - name: verify the bench rig
+        run: python3 scripts/bench/bench.py --self-test
+
       - name: run benchmarks
         run: python3 scripts/bench/bench.py --out bench
 

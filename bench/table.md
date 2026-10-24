@@ -1,24 +1,24 @@
-| agent | version | bin | bundle (MB) | bundle kind | `--version` (ms) | TUI 1st byte (ms) | TUI 1st input (ms) | input latency (ms) | signal | idle PSS (MB) |
-|---|---|---|---|---|---|---|---|---|---|---|
-| **fox-agent** | 0.6.0 | `/home/runner/work/fox-agent/fox-agent/bin/fox` | 116.6 | bin | 5.3 | 34.7 | 47.0 | 4.2 | render | 44.8 |
-| claude code | 2.1.310 (Claude Code) | `/home/runner/.npm-global/bin/claude` | 291.6 | bin | 8.4 | 196.0 | — | — | render | 167.8 |
-| codex | codex-cli 0.164.0 | `/home/runner/.npm-global/bin/codex` | 444.4 | pkg | 29.8 | 342.4 | 354.8 | — | render | 238.4 |
-| opencode v2 | opencode2 v0.0.0-beta-19271 | `/home/runner/.npm-global/bin/opencode2` | 207.4 | bin | 51.9 | 101.2 | 15203.1 | 41.3 | render | 122.4 |
-| jcode | jcode v0.99.1 (7206efd0c) | `/home/runner/.local/bin/jcode` | 171.3 | bin | 8.0 | 27.9 | 75.4 | 6.1 | render | 33.8 |
-| pi | 1.4.0 | `/home/runner/.npm-global/bin/pi` | 111.8 | pkg | 164.9 | 247.9 | 260.3 | 15.4 | render | 127.9 |
-| pi-bolt | 1.4.0 (Pi-Bolt 1.0.0, linux-x64, JIT off) | `/home/runner/.local/bin/pi-bolt` | 263.2 | bin | 11.6 | 51.0 | 50.8 | 4.9 | render | 88.6 |
-| gemini cli | 0.65.0 | `/home/runner/.npm-global/bin/gemini` | 102.6 | pkg | 844.6 | 984.9 | 964.4 | — | — | — |
-| copilot cli | GitHub Copilot CLI 1.0.103. | `/home/runner/.npm-global/bin/copilot` | 198.5 | pkg | 66.8 | 669.0 | — | — | render | 356.2 |
-| crush | crush version v0.98.2 | `/home/runner/.npm-global/bin/crush` | 128.9 | pkg | 89.3 | 396.0 | 649.8 | 230.4 | render | 159.5 |
-| aider | aider 0.86.2 | `/home/runner/work/fox-agent/fox-agent/.venv-bench/bin/aider` | 642.8 | pkg | 443.8 | 421.1 | 430.9 | 12.9 | render | 67.3 |
-| amp | 0.0.1792800065-ga5b55b (released 2026-10-24T00:01:05.000Z, 2 | `/home/runner/.local/bin/amp` | 161.1 | bin | 123.8 | 166.0 | 15053.7 | 4.0 | render | 138.0 |
-| cursor-agent | 2026.10.22-27dcf5f | `/home/runner/.local/bin/cursor-agent` | 583.2 | pkg | 268.3 | 282.1 | — | — | render | 239.5 |
-| qwen code | 0.26.0 | `/home/runner/.npm-global/bin/qwen` | 154.7 | pkg | 23.4 | 674.8 | — | — | render | 322.9 |
-| codebuff | 1.0.688 | `/home/runner/.npm-global/bin/codebuff` | 140.0 | bin | 546.2 | 1665.9 | — | — | render | 277.8 |
-| kilo code | 7.8.17 | `/home/runner/.npm-global/bin/kilocode` | 718.6 | pkg | 586.8 | 4584.9 | 16476.3 | 25.6 | render | 936.8 |
-| droid | 0.249.0 | `/home/runner/.local/bin/droid` | 319.7 | bin | 51.8 | — | — | — | render | 274.6 |
-| kimi code | 2.3.1 | `/home/runner/.kimi-code/bin/kimi` | 192.3 | bin | 352.7 | 548.3 | — | — | render | 354.0 |
-| devin | devin 3000.11.205 (6dea39440ae3) | `/home/runner/.local/bin/devin` | 217.5 | bin | 3.5 | 34.3 | 52.4 | — | render | 103.1 |
-| cline | 3.0.73 | `/home/runner/.npm-global/bin/cline` | 330.3 | pkg | 646.7 | 1206.5 | — | — | render | 270.2 |
-| continue | 1.5.47 | `/home/runner/.npm-global/bin/cn` | 82.7 | pkg | 649.6 | 10978.1 | 8008.5 | — | render | 317.0 |
-| iflow cli | 0.5.19 | `/home/runner/.npm-global/bin/iflow` | 180.2 | pkg | 715.2 | 824.4 | 852.5 | 48.9 | render | 360.7 |
+| agent | version | bundle (MB) | kind | `--version` min/p50/p95 | 1st byte min/p50/p95 | 1st paint min/p50/p95 | 1st input min/p50/p95 | latency min/p50/p95 | signal | idle PSS (MB) | n |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| **fox-agent** | 0.6.0 | 116.6 | bin | 31.5/53.0/57.2 | 72.9/106.1/192.5 | 133.4/162.1/242.9 | 402.6/480.4/535.6 | 21.2/28.8/53.8 | render | 21.4 | 5 |
+| claude code | 2.1.286 (Claude Code) | 241.7 | bin | 29.1/33.0/37.5 | 1478.6/1819.9/4073.9 | 2188.5/2559.1/5148.6 | 3795.7/4285.2/7152.9 | 43.3/61.0/90.7 | render | 247.3 | 5 |
+| codex | n/a (not installed) | — | — | — | — | — | — | — | — | — | — |
+| jcode | jcode v0.91.0 (439a243bb) | 135.1 | bin | 54.8/67.7/70.4 | 3353.2/3699.2/4249.2 | 3353.2/3699.7/4249.6 | 4166.4/4500.8/4889.9 | 10.7/14.8/22.3 | render | 31.9 | 5 |
+| pi | 1.0.4 | 22.8 | pkg | 869.8/1282.2/1921.2 | 1353.7/1738.7/2078.6 | 1407.9/1815.4/2131.0 | 1694.2/2158.7/2478.8 | 11.5/23.7/33.7 | render | 77.7 | 5 |
+| pi-bolt | 1.3.0 (Pi-Bolt 0.9.5, linux-x64, JIT off) | 260.4 | bin | 32.7/35.5/37.1 | 359.2/466.7/1362.4 | 374.3/488.0/1424.6 | 586.6/705.1/1715.6 | 8.2/9.8/14.1 | render | 118.7 | 5 |
+| gemini cli | n/a (not installed) | — | — | — | — | — | — | — | — | — | — |
+| copilot cli | n/a (not installed) | — | — | — | — | — | — | — | — | — | — |
+| crush | n/a (not installed) | — | — | — | — | — | — | — | — | — | — |
+| aider | n/a (not installed) | — | — | — | — | — | — | — | — | — | — |
+| amp | n/a (not installed) | — | — | — | — | — | — | — | — | — | — |
+| cursor-agent | n/a (not installed) | — | — | — | — | — | — | — | — | — | — |
+| qwen code | n/a (not installed) | — | — | — | — | — | — | — | — | — | — |
+| codebuff | n/a (not installed) | — | — | — | — | — | — | — | — | — | — |
+| kilo code | n/a (not installed) | — | — | — | — | — | — | — | — | — | — |
+| droid | n/a (not installed) | — | — | — | — | — | — | — | — | — | — |
+| kimi code | 2.3.1 | 192.3 | bin | 2843.8/7958.5/8677.1 | 5345.8/9281.3/14170.6 | 5635.5/9776.9/14780.1 | 6056.5/10279.2/17084.3 | 74.5/142.2/763.1 | render | 412.4 | 5 |
+| devin | n/a (not installed) | — | — | — | — | — | — | — | — | — | — |
+| cline | n/a (not installed) | — | — | — | — | — | — | — | — | — | — |
+| continue | n/a (not installed) | — | — | — | — | — | — | — | — | — | — |
+| iflow cli | n/a (not installed) | — | — | — | — | — | — | — | — | — | — |
+| opencode v2 | opencode v2.1.4 | 240.4 | bin | 328.0/368.1/405.0 | 630.2/907.9/952.5 | 2493.2/2737.0/3314.6 | 2859.5/3288.4/3763.7 | 64.3/87.8/140.7 | render | 107.0 | 5 |

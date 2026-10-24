@@ -1,80 +1,98 @@
 #!/usr/bin/env python3
 """Multi-agent harness benchmark.
 
-Measures what `--version` cannot: the cost of actually starting the thing.
+Measures what `--version` cannot: the cost of actually starting the thing and
+of typing into it.
 
-Per tool (best effort — anything not installed is recorded as n/a, never
-invented):
-  - disk: on-disk bytes of the resolved executable (following launcher
-    wrappers to the binary they exec)
-  - startup: best of 4 `--version` runs (the harness floor, for reference)
-  - tui_first_byte: best of 5 PTY launches with no args, time to first output
-    byte — the real "time to first char" of an interactive launch
-  - tui_first_input: best of 3 PTY launches — time from spawn, once the TUI is
-    alive and quiet, to a typed probe rendering on screen (time to interactive
-  - tui_input_latency: best of 3 PTY launches — launch, wait until interactive
-    (alive and quiet, the same readiness tui_first_input measures), wait 500ms,
-    then type the same probe — isolates input-handling latency from startup cost
+WHY THIS FILE WAS REWRITTEN
+---------------------------
+The previous version derived every interactive number by polling
+`tmux capture-pane`, once per sample of a 5ms-sleep loop. A single
+`capture-pane` forks tmux, which measured 9.2ms at p50 and 32.2ms at p95 on a
+4-core box -- so the poll cadence was ~22ms, not 5ms, and every published
+figure carried a floor and a jitter it never declared. The tell was a
+published fox input latency of 4.2ms: BELOW the cost of one observation, a
+number that cannot exist. Worse, the 15s probe timeout and the 8s readiness
+cap leaked into the table as data (opencode 15203.1ms, amp 15053.7ms, kilo
+16476.3ms, continue 8008.5ms are all timeouts wearing a measurement's
+clothes), and only `min` was published, which hid the shipped opencode
+first-byte spread of 101ms (min) to 1539ms (p95).
+
+This version takes the measurement out of the polling loop:
+
+  * Bytes come from `tmux pipe-pane` into a FIFO, drained by a thread. No
+    fork per sample, no cadence floor, timestamps on the actual write.
+  * The tool is launched behind a GATE FIFO, so the clock starts at exec
+    rather than at tmux spawn -- tmux's own ~30ms is no longer charged to
+    the tool, and early bytes cannot be missed because the pipe is attached
+    before the program is released.
+  * One launch yields every timing metric (old: 14 launches per tool).
+  * Timeouts are counted as failures and never enter the statistics.
+  * p50 is the headline, with min/p95/n beside it; rows with fewer than 3
+    successful samples are reported but not ranked.
+
+Per tool (best effort -- anything not installed is n/a, never invented):
+  - bundle:   on-disk bytes of the resolved executable (following launcher
+              wrappers to the binary they exec; a script CLI is weighed as
+              its package dir, minus any bundled node/bun runtime)
+  - startup:  best of N `--version` runs -- the harness floor, for reference
+  - first_byte: exec -> first byte the tool writes (the literal name)
+  - first_paint: exec -> first printable glyph (what a user waits for)
+  - ttfi:     exec -> probe rendered, where the probe is typed as soon as the
+              tool owns the tty and has gone quiet (time to interactive)
+  - key_latency: keystroke -> probe rendered, with startup removed (pure
+              input handling, ranked among render-signal tools only)
+  - idle_pss: settled resident set of the whole process tree
 
 Plus fox-agent only (hermetic, no API key, no network):
-  - ttft: headless `fox -p … --json` against the repo's scripted fake
+  - ttft: headless `fox -p ... --json` against the repo's scripted fake
     provider, spawn to first `{"type":"text"}` event
-  - rss: peak resident set of that same headless turn (`/usr/bin/time -v`)
+  - rss:  peak resident set of that same headless turn (`/usr/bin/time -v`)
 
 Outputs (all under bench/):
   results.json, table.md, snippet.md, bench.svg (one dashboard image)
 
-snippet.md is the top-of-README block: the bench workflow splices it between
-<!-- bench:start --> and <!-- bench:end --> markers so the graphs and numbers
-at the top of the README refresh with every run. The default view is one
-compact table — a row per metric, fox-agent's absolute score and its rank in
-the field — because a 23-row grid of everyone else's numbers is a reference
-document, not a headline. The dashboard SVG, the rounded per-agent grid and
-the full-precision table all live inside folded <details> blocks.
-
 Usage:
-  python3 scripts/bench/bench.py [--quick] [--out bench] [--debug]
-  bun run bench   # build + bench in one step (see package.json)
+  python3 scripts/bench/bench.py [--quick] [--out bench] [--only NAME,...]
+  python3 scripts/bench/bench.py --self-test
+  bun run bench          # build + bench in one step (see package.json)
 
---debug: verbose per-step timing + decision logging to stderr. Same
-measurements, just narrated — use it to see why a tool got n/a or where the
-wall-clock went.
+--debug: verbose per-step timing + decision logging to stderr.
+--only:  restrict the field to the named tools (smoke tests on a dev box).
 """
+import glob
 import json
 import os
 import re
 import select
 import shlex
 import shutil
-import signal
 import subprocess
 import sys
 import tempfile
 import termios
+import threading
 import time
-
-
-
 
 DEBUG = "--debug" in sys.argv
 
 
 def dbg(msg):
-    """Debug narration to stderr (--debug only). Timestamped so a slow step is
-    attributable at a glance; goes to stderr so stdout stays the clean result."""
+    """Debug narration to stderr (--debug only)."""
     if DEBUG:
-        print(f"[bench {time.strftime('%H:%M:%S')}.{int(time.time()*1000)%1000:03d}] {msg}", file=sys.stderr, flush=True)
+        print(f"[bench {time.strftime('%H:%M:%S')}.{int(time.time() * 1000) % 1000:03d}] {msg}", file=sys.stderr, flush=True)
 
 
 def step(tool, what, detail=""):
-    """Live progress line to stderr: WHERE we are and WHAT is being tested, so a
-    long serial run is legible in CI logs (a tool that hangs is visible at a
-    glance). Always on — this is status, not debug detail.
+    """Live progress line to stderr: WHERE we are and WHAT is being measured.
 
-    \r keeps it to one updating line on a terminal; CI captures each as a row.
+    A plain newline per line, never \\r: the old version reserved a single
+    updating line, and any stray print interleaved with it and destroyed the
+    line. One row per step also reads correctly in a CI log.
     """
-    suffix = f" — {detail}" if detail else ""
-    print(f"\r[bench] {tool:<14} {what}{suffix}   ", file=sys.stderr, flush=True)
+    suffix = f" -- {detail}" if detail else ""
+    print(f"[bench] {tool:<14} {what}{suffix}", file=sys.stderr, flush=True)
+
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 FOX = os.path.join(ROOT, "bin", "fox")
@@ -82,9 +100,8 @@ FAKE = os.path.join(ROOT, "test", "fixtures", "fake-provider.ts")
 
 # (label, candidate binary names). Rows are labeled by the version the binary
 # REPORTS, so a renamed/vendored install cannot silently pose as something else.
-# opencode v2 is measured separately below (bin `opencode2`, installed from
-# @opencode-ai/cli@beta). v1 was dropped: v2 is the current product and the
-# v1 row only added a n/a-or-stale line to the table.
+# opencode v2 is measured separately below (bin `opencode2`, from
+# @opencode-ai/cli@beta). v1 was dropped: v2 is the current product.
 OPENCODE_BINS = (("opencode2", "opencode v2"),)
 AGENTS = [
     ("fox-agent", ["bin/fox"]),
@@ -116,12 +133,16 @@ VERSION_FALLBACKS = [["--version"], ["-v"], ["version"], ["--help"]]
 
 # Tools whose real binary is fetched on FIRST RUN into a data dir, so the file a
 # shim points at is not the cost (the downloader spawns it from child_process,
-# which no exec-line walk can see). Label -> paths relative to $HOME. Add a row
-# per tool; the lookup is keyed by label so one tool's download cannot be
-# reported as another's footprint.
+# which no exec-line walk can see). Label -> paths relative to $HOME. Keyed by
+# label so one tool's download cannot be reported as another's footprint.
 FIRST_RUN_DOWNLOADERS = {
     "codebuff": [os.path.join(".config", "manicode", "codebuff")],
 }
+
+
+# ---------------------------------------------------------------------------
+# Launch / locate
+# ---------------------------------------------------------------------------
 
 
 def which(names):
@@ -136,16 +157,6 @@ def which(names):
     return None
 
 
-def version_of(path):
-    # version may go to either stream (node CLIs split both ways)
-    for args in VERSION_FALLBACKS:
-        dt, out = run_quiet([path] + args, timeout=15)
-        line = (out.strip().splitlines() or [""])[0].strip()[:60]
-        if line:
-            return line
-    return "n/a"
-
-
 def run_quiet(argv, timeout=30, env=None):
     try:
         t0 = time.perf_counter()
@@ -157,21 +168,30 @@ def run_quiet(argv, timeout=30, env=None):
         return None, ""
 
 
+def version_of(path):
+    """First non-empty line of a version probe; `n/a` when nothing answers."""
+    for args in VERSION_FALLBACKS:
+        _dt, out = run_quiet([path] + args, timeout=15)
+        line = (out.strip().splitlines() or [""])[0].strip()[:60]
+        if line:
+            return line
+    return "n/a"
+
+
 def best_startup(path, n, ver=None):
-    # `ver` lets the caller pass the version it already looked up, so a slow
-    # CLI (gemini: ~1s per --version) is not spawned an extra time just to pick
-    # argv. Falls back to a local probe when not given.
-    if ver is None:
-        ver = version_of(path)
-    argv = [path, "--version"]
-    if ver == "n/a":
-        argv = [path, "--help"]
+    """Best of N `--version` runs, in ms. The harness floor, for reference."""
+    argv = [path, "--version"] if ver != "n/a" else [path, "--help"]
     ts = []
     for _ in range(n):
         dt, _ = run_quiet(argv, timeout=15)
         if dt is not None:
             ts.append(dt * 1000)
     return ts
+
+
+# ---------------------------------------------------------------------------
+# On-disk footprint
+# ---------------------------------------------------------------------------
 
 
 def is_binary_file(path):
@@ -182,47 +202,163 @@ def is_binary_file(path):
         return False
 
 
-def _exec_target_of_script(path):
-    """Binary a launcher script hands off to, if any.
+UNKNOWN = "\x00"  # a shell variable whose value cannot be known statically
 
-    Versioned-install launchers (jcode: a 505-byte sh wrapper that execs
-    `$self_dir/jcode-linux-x86_64.bin`) weigh nothing by themselves; the
-    binary they hand off to is the honest cost, and weighing the wrapper
-    reported jcode as 0.0 MB. Only path-form targets are followed (absolute,
-    $var/relative, ./): a bare command (`exec node ...`) is a shared runtime,
-    not this tool's cost, and keeps the package-dir behavior. Variables are
-    NOT evaluated — only their position (script dir) is used.
+_ASSIGN_RE = re.compile(r"^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
+_READ_RE = re.compile(r"\bread\s+(?:-\w+\s+)*([A-Za-z_][A-Za-z0-9_]*)")
+_VAR_RE = re.compile(r"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)([^}]*)\}|([A-Za-z_][A-Za-z0-9_]*))")
+
+
+def _expand(tok, env, depth=0):
+    """Substitute $VAR / ${VAR...} from `env`; unresolvable vars become UNKNOWN.
+
+    Only the forms a launcher actually uses are implemented: plain expansion,
+    `%/*` (and `%%/*`) as dirname, `#*/` as basename, a literal `%suffix`
+    strip, and `:-default`. Anything else degrades to UNKNOWN, which the caller
+    turns into a glob -- never into a wrong path.
+    """
+    if depth > 6:
+        return UNKNOWN
+
+    def sub(m):
+        name, ops, bare = m.group(1), m.group(2), m.group(3)
+        val = env.get(name or bare, UNKNOWN)
+        if bare:
+            return val
+        ops = ops or ""
+        if ops.startswith(":-"):
+            default = ops[2:]
+            return val if val not in (UNKNOWN, "") else _expand(default, env, depth + 1)
+        if ops == "%/*" or ops == "%%/*":
+            if val == UNKNOWN:
+                return UNKNOWN
+            head = os.path.dirname(val)
+            return head or val
+        if ops == "#*/":
+            return UNKNOWN if val == UNKNOWN else os.path.basename(val)
+        if ops.startswith("%") and len(ops) > 1:
+            suf = ops[1:]
+            if val == UNKNOWN:
+                return UNKNOWN
+            return val[: -len(suf)] if suf and val.endswith(suf) else val
+        return UNKNOWN
+
+    return _VAR_RE.sub(sub, tok)
+
+
+def _launcher_target(path):
+    """The path a launcher script hands off to, or None.
+
+    Versioned-install launchers weigh nothing by themselves: jcode is a 505-byte
+    sh wrapper that execs a sibling `.bin`, and pi's computes its target from a
+    version file it reads at runtime (`exec "$pi_release_bin"`). Weighing the
+    wrapper reported jcode as 0.0 MB, and pi as 0.0 MB before this existed.
+
+    Rather than model the shell, this tries a small set of CANDIDATE
+    interpretations of the exec argument and takes the first that actually
+    exists on disk:
+
+      1. literal (no variables) -- absolute or relative to the script dir;
+      2. assignments tracked from the script's own `x=...` / `x=${y%/*}` lines;
+      3. any unresolved variable replaced by the script dir (jcode's
+         `$self_dir/thing.bin` idiom, where self_dir is the script's dir);
+      4. any unresolved variable globbed as `*` (pi's versioned release dir);
+      5. any unresolved variable removed (a bare sibling);
+      6. finally, the basename globbed inside the script dir.
+
+    Candidate order matters: the textual/glob fallbacks only fire when the
+    cheaper interpretations do not resolve, so a real install root is never
+    overridden by a guess. A bare command (`exec node ...`) is never followed --
+    node is a shared runtime, not this tool's cost.
     """
     try:
         with open(path, "r", errors="replace") as f:
-            lines = [f.readline() for _ in range(40)]
+            lines = [f.readline() for _ in range(60)]
     except OSError:
         return None
     if not lines or not lines[0].startswith("#!"):
         return None
+
     script_dir = os.path.dirname(os.path.realpath(path))
+    env = {"0": os.path.realpath(path)}
+    exec_line = None
     for line in lines:
         s = line.strip()
-        if not s.startswith("exec "):
+        m = _ASSIGN_RE.match(s)
+        if m and "$(" not in m.group(2) and "`" not in m.group(2):
+            env[m.group(1)] = _expand(m.group(2).strip("\"'"), env)
+        elif _READ_RE.search(s):
+            # value comes from a file we are not going to interpret
+            env[_READ_RE.search(s).group(1)] = UNKNOWN
+        if s.startswith("exec "):
+            exec_line = s
+
+    if exec_line is None:
+        return None
+    try:
+        toks = shlex.split(exec_line, posix=True)
+    except ValueError:
+        return None
+
+    arg = next((t for t in toks[1:] if t and not t.startswith("-") and t not in ("$@", "$*")), None)
+    if not arg:
+        return None
+
+    def abs_for(p):
+        return p if os.path.isabs(p) else os.path.normpath(os.path.join(script_dir, p))
+
+    candidates = []
+
+    # 1. as written
+    if UNKNOWN not in arg and "$" not in arg:
+        candidates.append(abs_for(arg))
+
+    # 2. tracked assignments
+    tracked = _expand(arg, env)
+    if UNKNOWN not in tracked and "$" not in tracked:
+        candidates.append(abs_for(tracked))
+
+    # 3/4/5. unresolved variables: try plausible roots for the unknown PREFIX,
+    # then glob the KNOWN tail. pi is the case that needs this: its prefix is
+    # `pi_agent_dir`, read out of a version file at runtime, but the tail
+    # `/install/releases/<ver>/node_modules/.bin/pi` is literal and exists
+    # under the wrapper's own grandparent.
+    if UNKNOWN in tracked or "$" in tracked:
+        raw = _expand(arg, env)
+        roots = [script_dir, os.path.dirname(script_dir), os.path.expanduser("~"), "/"]
+        if os.path.isabs(raw):
+            candidates.append(raw.replace(UNKNOWN, "*"))
+        else:
+            for root in roots:
+                stem = raw.replace(UNKNOWN, "*")
+                candidates.append(os.path.join(root, stem))
+                # An unknown that occupies a WHOLE component (pi's
+                # `pi_agent_dir`) is a directory, not an extra level: strip
+                # that leading `*/` so root itself can be the unknown.
+                if stem.startswith("*/"):
+                    candidates.append(os.path.join(root, stem[2:]))
+                else:
+                    candidates.append(os.path.join(root, "*", stem))
+        # last resort on the prefix: substitute the script dir, then remove it
+        candidates.append(abs_for(raw.replace(UNKNOWN, script_dir)))
+        candidates.append(abs_for(raw.replace(UNKNOWN, "")))
+
+    # 6. last resort: does a file of that basename sit next to the wrapper?
+    base = os.path.basename(arg.replace("\"", "").rstrip("/"))
+    if base and UNKNOWN not in base and "$" not in base:
+        candidates += sorted(glob.glob(os.path.join(script_dir, base)))
+        candidates += sorted(glob.glob(os.path.join(script_dir, "*", base)))
+
+    for cand in candidates:
+        if not cand or UNKNOWN in cand or "$" in cand:
             continue
-        try:
-            toks = shlex.split(s, posix=True)
-        except ValueError:
-            continue
-        for tok in toks[1:]:
-            if tok.startswith("-") or tok in ("$@", "$*", "$#", "$$", "$?", "$!", "$-", "$0"):
-                continue
-            if os.path.isabs(tok):
-                cand = tok
-            elif "/" in tok or "$" in tok:
-                cand = re.sub(r"\$\{?[A-Za-z_][A-Za-z0-9_]*\}?", script_dir, tok)
-                if not os.path.isabs(cand):
-                    cand = os.path.normpath(os.path.join(script_dir, cand))
-            else:
-                continue  # bare command: node, env, ... — shared, not followed
+        hits = sorted(glob.glob(cand)) if "*" in cand else [cand]
+        for hit in hits:
             try:
-                if os.path.isfile(cand) and is_binary_file(cand):
-                    return cand
+                # follow symlinks: pi's release entry is a symlink to cli.js
+                real = os.path.realpath(hit)
+                if os.path.exists(real):
+                    return real
             except OSError:
                 continue
     return None
@@ -232,9 +368,8 @@ def _looks_like_js_runtime(path):
     """True when `path` is an embedded/shared JavaScript runtime binary (node or
     bun), not the tool's own code. These CLIs bundle a full Node/Bun runtime
     (~90-150MB) that dominates the package dir and makes every tool report the
-    same ~140MB regardless of its actual code size (pi's own cli.js is 160 bytes).
-    The runtime is identified by name + ELF magic; versioned runtime dirs
-    (pi-node, */node_modules/node/*) are caught by the dir prunes in du_bytes.
+    same ~140MB regardless of its actual code size (pi's own cli.js is 160
+    bytes). Identified by name + ELF magic.
     """
     base = os.path.basename(path).lower()
     if base not in ("node", "node.exe", "bun", "bun.exe"):
@@ -247,11 +382,10 @@ def _looks_like_js_runtime(path):
 
 
 def _runtime_dirs_under(path):
-    """Subdirectories of `path` that hold only an embedded JS runtime (pi's
-    pi-node, any node_modules/{node,bun} install). These ship a full Node/Bun
-    (~90-150MB) that dominates the package dir; excluding them measures the
-    tool's own code, not the interpreter. Returns relative dir names for
-    `du --exclude`.
+    """Subdirectories of `path` holding only an embedded JS runtime.
+
+    pi's pi-node, any node_modules/{node,bun} install. Returns relative dir
+    names so `du --exclude` can prune them: the interpreter is not the tool.
     """
     found = []
     if not os.path.isdir(path):
@@ -261,17 +395,12 @@ def _runtime_dirs_under(path):
             low = d.lower()
             if low == "pi-node" or (low in ("node", "bun") and os.path.basename(root) == "node_modules"):
                 found.append(os.path.relpath(os.path.join(root, d), path))
-        # don't recurse into a found runtime dir looking for nested ones
         dirs[:] = [d for d in dirs if os.path.relpath(os.path.join(root, d), path) not in found]
     return found
 
 
 def du_bytes(path, exclude_runtimes=True):
-    """Disk use of a file or tree in bytes. When exclude_runtimes and `path` is a
-    dir, any embedded JS runtime (node/bun) is left out so the tool's own code is
-    measured, not the ~140MB interpreter it ships. du -sb (with --exclude for the
-    runtime dirs) when present; a portable walk that prunes them otherwise.
-    """
+    """Disk use of a file or tree in bytes, minus any embedded JS runtime."""
     if os.path.isfile(path):
         if exclude_runtimes and _looks_like_js_runtime(path):
             return 0
@@ -280,17 +409,11 @@ def du_bytes(path, exclude_runtimes=True):
         except OSError:
             return 0
     excludes = _runtime_dirs_under(path) if exclude_runtimes else []
+    base = ["du", "-sb"]
     if excludes:
-        try:
-            p = subprocess.run(
-                ["du", "-sb", "--exclude=" + " --exclude=".join(excludes), path],
-                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=60,
-            )
-            return int(p.stdout.split()[0])
-        except Exception:
-            pass
+        base.append("--exclude=" + " --exclude=".join(excludes))
     try:
-        p = subprocess.run(["du", "-sb", path], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=60)
+        p = subprocess.run(base + [path], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=60)
         return int(p.stdout.split()[0])
     except Exception:
         pass
@@ -310,7 +433,6 @@ def du_bytes(path, exclude_runtimes=True):
 
 
 def _contains_js_runtime(path):
-    """True when the dir `path` bundles an embedded node/bun runtime."""
     return bool(_runtime_dirs_under(path))
 
 
@@ -319,13 +441,12 @@ def _first_run_downloader(agent_label):
 
     Keyed by the TOOL, because the lookup used to be unconditional: every tool
     fell into codebuff's `~/.config/manicode/codebuff` and was reported at that
-    file's size. Thirteen unrelated vendors came out at exactly 139.954304 MB —
-    including aider, which is Python — and none of them had their package dir
-    measured at all. The size was real; it just belonged to one tool.
+    file's size. Thirteen unrelated vendors came out at exactly 139.954304 MB
+    -- including aider, which is Python -- and none of them had their package
+    dir measured at all. The size was real; it just belonged to one tool.
 
     A downloader is invisible to the exec-line walk (the shim spawns the binary
-    from child_process), so it has to be named here. Add a row per tool that
-    needs one: label -> path relative to $HOME.
+    from child_process), so it has to be named here.
     """
     rels = FIRST_RUN_DOWNLOADERS.get(agent_label)
     if not rels:
@@ -343,47 +464,43 @@ def _first_run_downloader(agent_label):
 def footprint(path, agent_label=None):
     """Honest on-disk cost of a CLI as (mb, kind).
 
-    A native executable is its own whole cost ("bin"). A script/shim is not —
+    A native executable is its own whole cost ("bin"). A script/shim is not --
     weighing only pi's 5MB cli.js while pretending node and 200MB of
     node_modules are free would make every script CLI look impossibly small
     next to a self-contained binary. So for scripts the cost is the enclosing
-    install root: the nearest ancestor with package.json (npm), or with
-    pyvenv.cfg (a venv console script — the bench venv holds aider only).
-    The exception is a launcher script that execs a real binary by path
-    (jcode's wrapper hands off to its sibling .bin): the binary it names is
-    weighed as "bin", since that file alone is the whole cost. Bare-command
-    execs (`exec node ...`) are never followed — node is shared, not the
-    tool's. "entry" is the fallback when no root is found: the file alone,
-    flagged.
+    install root: the nearest ancestor with package.json (npm) or pyvenv.cfg (a
+    venv console script). The exception is a launcher that execs a real binary
+    by path (jcode's wrapper): that binary is weighed as "bin". Bare-command
+    execs (`exec node ...`) are never followed -- node is shared.
     """
     real = os.path.realpath(path)
+
+    # Follow a launcher chain (wrapper -> versioned binary -> package entry),
+    # bounded, before weighing anything: a 505-byte sh wrapper is not a tool.
+    probe = real
+    seen = set()
+    for _ in range(4):
+        if probe in seen:
+            break
+        seen.add(probe)
+        nxt = _launcher_target(probe)
+        if not nxt or nxt == probe:
+            break
+        probe = nxt
+
     try:
-        if is_binary_file(real):
-            return os.path.getsize(real) / 1e6, "bin"
+        if is_binary_file(probe):
+            return os.path.getsize(probe) / 1e6, "bin"
     except OSError:
         return None, "entry"
-    # a launcher script is weightless; the binary it execs is the cost
-    target = _exec_target_of_script(real)
-    if target:
-        try:
-            return os.path.getsize(target) / 1e6, "bin"
-        except OSError:
-            pass
-    # a first-run downloader spawns its real binary from a data dir via
-    # child_process, not an exec line — the walk above cannot see it. Scoped to
-    # the tool that owns it: an unconditional lookup reported one file as twelve
-    # vendors' footprint. The FRESH-download caveat lives in the workflow
-    # comment: CI installs are cold, so this only pays off after the probe
-    # launches have warmed it.
+
     cand = _first_run_downloader(agent_label)
     if cand:
         return os.path.getsize(cand) / 1e6, "bin"
-    d = os.path.dirname(real)
-    for _ in range(5):
+
+    d = os.path.dirname(probe)
+    for _ in range(6):
         if os.path.isfile(os.path.join(d, "package.json")) or os.path.isfile(os.path.join(d, "pyvenv.cfg")):
-            # a bundled runtime (node/bun) is the interpreter, not the tool's
-            # code — excluding it yields the tool's own footprint; the kind
-            # says which was measured. Without a runtime, pkg == app.
             has_rt = _contains_js_runtime(d)
             return du_bytes(d, exclude_runtimes=True) / 1e6, ("app" if has_rt else "pkg")
         nd = os.path.dirname(d)
@@ -391,445 +508,14 @@ def footprint(path, agent_label=None):
             break
         d = nd
     try:
-        return os.path.getsize(real) / 1e6, "entry"
+        return os.path.getsize(probe) / 1e6, "entry"
     except OSError:
         return None, "entry"
 
 
-# No whitespace: a tool still in cooked mode has the terminal line discipline
-# echo its keys, and that discipline eats spaces — "hello bench" arrived as
-# "hellobench" and never matched, so cooked-mode tools (claude, jcode) timed
-# out as n/a even though they echoed fine. A bare word survives both modes.
-PROBE_TEXT = "hellobench"
-
-# Tools whose input readiness cannot be read off the screen: {"log": file to
-# tail, "marker": regex ending the probe}. The motivating case is a sign-in
-# screen that swallows echoed keystrokes while the tool logs its own
-# input-ready marker internally — typing is still sent the same way; only the
-# completion signal differs (internal ack rather than screen echo), which the
-# method strings below say out loud.
-INPUT_MARKERS = {
-    # "antigravity": {"log": "~/.antigravity/input-ready.log", "marker": r"..."},
-}
-
-
-# The probe is matched against tmux's rendered screen (`capture-pane -p -J`),
-# not against the raw byte stream. Matching bytes was wrong four separate times
-# and each time produced wrong published numbers: a cell-diffing TUI never emits
-# the probe as one contiguous run, a wrapped input box splits it across rows,
-# multibyte glyphs decoded per-byte shifted the layout, and escape sequences
-# arrive split across reads. tmux already keeps the screen model, so asking it
-# what is on screen is asking the question the metric actually poses.
-
-
 # ---------------------------------------------------------------------------
-# Interactive measurement runs inside tmux.
-#
-# Why tmux and not a raw PTY: tmux IS the terminal. It already keeps a screen
-# model, applies cursor addressing, handles wrapping, UTF-8 and cell diffs, and
-# hands the result back as text via `capture-pane`. The previous version
-# re-derived all of that by hand from the byte stream and got it wrong in ways
-# that produced WRONG PUBLISHED NUMBERS four separate times (cell-diffing TUIs
-# never emitting the probe contiguously, wrapped input boxes splitting it,
-# multibyte glyphs decoded per-byte, escape sequences split across reads).
-# `capture-pane` is what a user sees, so measuring it is measuring the thing.
-#
-# The three metrics map onto that directly, which is the whole point:
-#
-#   first char : the viewbox stops being empty for the first time
-#   ttfi       : spawn -> probe text appears in the viewbox
-#   latency    : probe typed -> probe text appears in the viewbox
-#
-# tmux is also what fox-agent's own `pty` tool is built on, so this is the same
-# primitive the product uses.
+# Memory (Linux /proc)
 # ---------------------------------------------------------------------------
-
-TMUX_ROWS = 40
-TMUX_COLS = 120
-_TMUX_SRV = "bench"
-
-
-
-def _tmux(*args, timeout=20):
-    """Run one tmux command against the bench server. Returns stdout text."""
-    try:
-        r = subprocess.run(
-            ["tmux", "-L", _TMUX_SRV, *args],
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-        return r.stdout
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-        return ""
-
-
-def _tmux_ready():
-    return bool(shutil.which("tmux"))
-
-
-def _session_run(path, name=None):
-    """Start `path` in a detached tmux session sized like a real terminal.
-
-    Returns the session name, or None when tmux/the binary is unavailable.
-
-    The window size is not cosmetic: a TUI that queries TIOCGWINSZ against a 0x0
-    terminal collapses or skips its input box, so the probe has nowhere to land
-    (measured on jcode: 928 bytes drawn at 0x0 versus 6229 at 120x40).
-
-    FOX_AGENT_NO_TRUST_CHECK is set because fox-agent asks "Do you trust this
-    folder?" on interactive start and waits for a keypress; in a bench temp dir
-    that swallows the probe. src/core/trust.ts documents that variable for
-    exactly this case ("never prompt in scripts/tests").
-    """
-    if not _tmux_ready():
-        return None
-    name = name or f"m{next(_counter)}"
-    _tmux("kill-session", "-t", name)  # ignore: usually absent
-    _tmux(
-        "new-session",
-        "-d",
-        "-s",
-        name,
-        "-x",
-        str(TMUX_COLS),
-        "-y",
-        str(TMUX_ROWS),
-        "-e",
-        "TERM=xterm-256color",
-        "-e",
-        "FOX_AGENT_NO_TRUST_CHECK=1",
-        path,
-    )
-    return name
-
-
-class _Counter:
-    def __init__(self):
-        self.n = 0
-
-    def __next__(self):
-        self.n += 1
-        return self.n
-
-
-_counter = _Counter()
-
-
-def _session_kill(name):
-    _tmux("kill-session", "-t", name)
-
-
-def _pane_text(name):
-    """The rendered screen as text.
-
-    -J joins lines the terminal wrapped, so a probe split across a row boundary
-    reads as one string again (that was a real failure of the old matcher).
-    -S -400 also reads back into scrollback, so a startup banner that pushed the
-    input box out of the visible window cannot hide the probe.
-    """
-    return _tmux("capture-pane", "-p", "-J", "-S", "-400", "-t", name)
-
-
-def _pane_alive(name):
-    return bool(_tmux("display-message", "-p", "-t", name, "#{pane_pid}").strip())
-
-
-def _pane_pid(name):
-    out = _tmux("display-message", "-p", "-t", name, "#{pane_pid}").strip()
-    try:
-        return int(out)
-    except ValueError:
-        return None
-
-
-def _pane_tty(name):
-    return _tmux("display-message", "-p", "-t", name, "#{pane_tty}").strip() or None
-
-
-def _send(name, text):
-    """Type literal text into the session (no key-name interpretation)."""
-    _tmux("send-keys", "-l", "-t", name, text)
-
-
-def _wait_viewbox(name, budget_s, t0=None):
-    """Time until the viewbox first has content, in ms from t0.
-
-    "First char" as a user experiences it: the screen stops being blank. This is
-    more honest than timing the first byte on the wire, which for a TUI is
-    cursor bookkeeping (fox writes a bare `\\e[?25l` before compositing).
-    """
-    start = t0 if t0 is not None else time.perf_counter()
-    deadline = start + budget_s
-    while time.perf_counter() < deadline:
-        if _pane_text(name).strip():
-            return (time.perf_counter() - start) * 1000
-        if not _pane_alive(name):
-            return None
-        time.sleep(0.005)
-    return None
-
-
-def _wait_probe(name, probe, budget_s, t0):
-    """Time until `probe` reads out of the rendered viewbox, in ms from t0.
-
-    `budget_s` is a DURATION from now, while `t0` is the moment the figure is
-    measured from. They must be separate: readiness can legitimately consume most
-    of a caller's patience (a cooked CLI never paints, so its readiness wait runs
-    to the cap), and an absolute deadline computed from spawn then expired before
-    we ever typed — which reported n/a for tools that were working fine.
-    """
-    deadline = time.perf_counter() + budget_s
-    while time.perf_counter() < deadline:
-        if probe in _pane_text(name):
-            return (time.perf_counter() - t0) * 1000
-        if not _pane_alive(name):
-            return None
-        time.sleep(0.005)
-    return None
-
-
-def _await_ready(name, budget_s, t0=None):
-    """Wait until the app owns the terminal and can accept a keystroke.
-
-    Readiness is "the app has taken the tty", which is exactly what the mode
-    tells us:
-
-      * ECHO turns OFF  -> the tool is in raw mode and redraws its own screen.
-                           Ready. (It may have painted nothing yet; a raw-mode
-                           app that hasn't drawn is still ours to type into.)
-      * the viewbox has text -> ready regardless of mode.
-      * ECHO stays ON    -> a cooked-mode CLI. Ready ONLY at the very end of the
-                            budget, because "cooked" early on is far more often
-                            a TUI that hasn't booted its UI yet than a tool that
-                            is genuinely cooked.
-
-    That last clause is not cosmetic. An earlier version accepted cooked mode as
-    ready after a 4s grace; measured, that made kimi and cat report ttfi ≈ 4.05s
-    — the grace itself — because we typed into kimi's cooked boot window and the
-    KERNEL echoed the probe. The metric was timing line-discipline echo, which
-    is the one thing this bench exists to exclude.
-    """
-    start = t0 if t0 is not None else time.perf_counter()
-    # Cap the readiness wait below the probe budget. A cooked CLI never paints,
-    # so waiting the full probe budget here would burn it entirely and then give
-    # the probe no time at all (measured: cat reported ttfi=20s — the budget
-    # itself). 8s comfortably covers the slowest real TUI measured (~2.8s to take
-    # the tty, ~5s to first paint) and leaves the rest for the probe.
-    deadline = start + min(budget_s, 8.0)
-    while time.perf_counter() < deadline:
-        if _pane_text(name).strip():
-            return True
-        if _echo_mode(name) == "render":
-            return True
-        if not _pane_alive(name):
-            return False
-        time.sleep(0.02)
-    # Timed out: either a genuinely cooked CLI (cat) or a tool that never takes
-    # the tty. Typing is still worth trying; the row records kernel-echo so it
-    # is excluded from the render ranking.
-    return _pane_alive(name)
-
-
-def _await_settled(name, budget_s=6.0, quiet=3):
-    """Wait until the pane text stops changing (the app has finished painting).
-
-    Typing into a still-starting app proves nothing: the keystroke can be
-    swallowed before it ever reaches the input loop.
-    """
-    deadline = time.perf_counter() + budget_s
-    last = None
-    streak = 0
-    while time.perf_counter() < deadline:
-        cur = _pane_text(name)
-        if cur == last:
-            streak += 1
-            if streak >= quiet:
-                return True
-        else:
-            last = cur
-            streak = 0
-        if not _pane_alive(name):
-            return False
-        time.sleep(0.05)
-    return True
-
-
-def _echo_mode(name):
-    """Whether the tool's tty is echoing (cooked) or the app owns the screen.
-
-    Read from the pane's own pty, which is the terminal the tool actually holds.
-    A cooked-mode CLI has the line discipline echo each byte before it wakes, so
-    its "latency" describes the kernel, not the tool — measured: `cat` in a pty
-    times ~0.3ms with no UI at all. Ranking those against a raw-mode TUI that
-    must repaint a cell is meaningless, so the classification is recorded and
-    ranks are computed within the `render` class only.
-    """
-    tty = _pane_tty(name)
-    if not tty:
-        return None
-    try:
-        fd = os.open(tty, os.O_RDONLY | os.O_NOCTTY | os.O_NONBLOCK)
-    except OSError:
-        return None
-    try:
-        lflag = termios.tcgetattr(fd)[3]
-    except (termios.error, OSError):
-        return None
-    finally:
-        try:
-            os.close(fd)
-        except OSError:
-            pass
-    return "kernel-echo" if lflag & termios.ECHO else "render"
-
-
-def _classify_mode(name, budget_s=6.0):
-    """Watch the tty mode until the tool commits to one.
-
-    Sampling once is wrong: several TUIs boot COOKED and switch to raw when
-    their UI takes over (measured: jcode ~2.5s, pi-bolt ~2.5s, kimi ~2.8s). An
-    early sample labelled them kernel-echo, so the metric timed the kernel
-    echoing rather than the app rendering, and the answer depended on timing.
-
-    ECHO turning off at any point means the app took the terminal -> `render`.
-    Staying on for the whole window means a cooked CLI -> `kernel-echo`.
-    """
-    deadline = time.perf_counter() + budget_s
-    last = None
-    while time.perf_counter() < deadline:
-        cur = _echo_mode(name)
-        if cur == "render":
-            return "render"
-        last = cur
-        if not _pane_alive(name):
-            break
-        time.sleep(0.1)
-    return last
-
-
-def tui_first_byte(path, probes=5):
-    """Time from session creation to the first RENDERED character, best of N.
-
-    Replaces "time to first output byte": for a TUI the first byte on the wire is
-    cursor bookkeeping (fox emits a bare 6-byte `\\e[?25l` before compositing),
-    so it measured the wrong event. The first rendered cell is what a user waits
-    for.
-
-    The clock starts BEFORE the tmux session is created, so the figure includes
-    tmux's own spawn cost (~30ms, measured). That cost is identical for every
-    tool, so the ordering between tools is preserved — but the absolute numbers
-    are not comparable to the old raw-PTY ones, which is why the dashboard
-    caption says so.
-    """
-    if not _tmux_ready():
-        return None
-    samples = []
-    for _ in range(probes):
-        start = time.perf_counter()
-        name = _session_run(path)
-        if name is None:
-            return None
-        try:
-            hit = _wait_viewbox(name, 20, t0=start)
-            if hit is not None:
-                samples.append(hit)
-        finally:
-            _session_kill(name)
-    return samples
-
-
-def _probe_once(name, probe, budget, t0=None):
-    """Type the probe and wait for it to render.
-
-    Returns (ms from t0, signal) or (None, None). `t0` is the moment to time
-    from: the keystroke for latency, spawn for ttfi.
-
-    Deliberately does NOT wait for the pane to settle. That wait is startup
-    observation, and when it ran inside a latency measurement it charged the
-    whole settle window to the keystroke round-trip — an earlier version of this
-    had `cat` reading 3007ms instead of ~0.3ms for exactly that reason. Callers
-    settle BEFORE they start their clock; here we only type and watch.
-    """
-    _send(name, probe)
-    hit = _wait_probe(name, probe, budget, t0 if t0 is not None else time.perf_counter())
-    if hit is None:
-        return None, None
-    return hit, "drained"
-
-
-def tui_first_input(path, label, probes=3, timeout=15):
-    """Spawn -> probe rendered in the viewbox, best of N. Time to interactive.
-
-    Two rounds when the first probe never lands: an app still finishing startup
-    can swallow it, and the honest answer is "how long until my input renders",
-    not n/a. An app that never renders it still reports n/a.
-    """
-    if not _tmux_ready():
-        return None, None
-    samples = []
-    signal_kind = None
-    for _ in range(probes):
-        # Clock starts BEFORE the session exists — the same origin
-        # tui_first_byte uses. Starting it after the session was created made
-        # ttfi occasionally read LOWER than first-char for the same tool, which
-        # is impossible and means the two figures were not measuring from the
-        # same point.
-        start = time.perf_counter()
-        name = _session_run(path)
-        if name is None:
-            return None, None
-        try:
-            if not _await_ready(name, 20, t0=start):
-                continue
-            for _attempt in (1, 2):
-                hit, via = _probe_once(name, PROBE_TEXT, timeout, t0=start)
-                if hit is not None:
-                    samples.append(hit)
-                    break
-            # Classify AFTER measuring: the mode watch can take up to 6s on a
-            # tool that boots cooked and switches late, and doing it before the
-            # probe would sit between spawn and keystroke — inflating ttfi by an
-            # amount that has nothing to do with the tool's startup.
-            if signal_kind is None:
-                signal_kind = _classify_mode(name)
-        finally:
-            _session_kill(name)
-    return samples, signal_kind
-
-
-def tui_input_latency(path, label, settle_s=0.5, probes=3, timeout=15):
-    """Keystroke -> probe rendered, with startup removed. Pure input handling.
-
-    Launch, wait for the viewbox to appear and settle, then time ONLY the
-    keystroke round trip. Classification happens before the clock starts: waiting
-    for the tty mode to settle is startup observation, not input latency, and
-    charging it to the measurement is a bug that once made `cat` read 3007ms
-    instead of ~0.3ms.
-    """
-    if not _tmux_ready():
-        return None, None
-    samples = []
-    signal_kind = None
-    for _ in range(probes):
-        name = _session_run(path)
-        if name is None:
-            return None, None
-        try:
-            if _wait_viewbox(name, 20) is None:
-                continue
-            if not _await_settled(name):
-                continue
-            time.sleep(settle_s)
-            if signal_kind is None:
-                signal_kind = _classify_mode(name)
-            t0 = time.perf_counter()
-            hit, _via = _probe_once(name, PROBE_TEXT, timeout, t0=t0)
-            if hit is not None:
-                samples.append(hit)
-        finally:
-            _session_kill(name)
-    return samples, signal_kind
 
 
 def _pss_of(pid):
@@ -866,14 +552,12 @@ def _ppid_of(pid):
 def _pss_tree(root_pid):
     """(total PSS in MB, process count) for a pid and all its descendants.
 
-    Summing is the honest accounting for a CLI's footprint: a node-based tool's
-    workers hold real, user-visible memory, and charging only the launcher
-    understates it by 2-8x (measured: kilo 46->353MB, copilot 47->303).
-
-    This does NOT double-count shared memory — the kernel divides each shared
-    page's PSS among the processes mapping it, so a fork with inherited
-    copy-on-write memory reads tree/root = 1.05, not 2.0 (verified with a
-    synthetic parent/child pair).
+    Summing is the honest accounting: a node-based tool's workers hold real,
+    user-visible memory, and charging only the launcher understates it by 2-8x
+    (measured: kilo 46->353MB, copilot 47->303). This does not double-count
+    shared memory -- the kernel divides each shared page's PSS among the
+    processes mapping it, so a fork with inherited copy-on-write memory reads
+    tree/root = 1.05, not 2.0.
     """
     kids = {}
     for entry in os.listdir("/proc"):
@@ -900,77 +584,549 @@ def _pss_tree(root_pid):
     return (total, count) if count else (None, 0)
 
 
-def idle_pss(path, settle=1.5, budget_s=8.0, quiet_reads=3):
-    """Settled PSS of the tool AND its process tree, in MB (Linux only).
+# ---------------------------------------------------------------------------
+# The measurement rig
+#
+# One detached tmux session per launch, three sockets of information out of it:
+#
+#   bytes  : `pipe-pane` -> FIFO -> drain thread. Forkless, timestamped at the
+#            write. This is where every timing number comes from.
+#   screen : `capture-pane`, used TWICE per launch (to choose a probe the
+#            screen does not already contain, and to verify it landed). It is
+#            a fork, so it is never in a loop.
+#   tty    : the pane's pty, opened once; termios reads are then free and say
+#            whether the tool took the terminal (ECHO off -> it renders).
+#
+# The tool starts behind a GATE FIFO: tmux spawns `sh`, which blocks on the
+# gate, and only then execs the tool. The pipe is attached before the gate is
+# released, so (a) no early byte can be missed and (b) t0 is the exec, not
+# tmux's own spawn cost.
+# ---------------------------------------------------------------------------
 
-    Two things matter, and each was wrong in an earlier attempt:
+GATE_SCRIPT = 'read _ < "$1" || true; shift; exec "$@"'
+TMUX_ROWS = 40
+TMUX_COLS = 120
 
-    1. THE TREE, not the root: node-based CLIs run the UI in children.
-    2. A SETTLED, REPRODUCIBLE instant. A tree at a fixed t=1.5s contains
-       whatever startup work is in flight. Convergence alone is not enough
-       either — periodic work can hold a stable but INFLATED tree. Measured
-       spreads across launches were 41% (opencode), 46% (kimi), 134% (jcode).
-
-    Extra processes only ever ADD, so the resting figure is the FLOOR over a few
-    launches: the reading taken when the least startup work was in flight.
-    """
-    detail = idle_pss_detail(path, settle=settle, budget_s=budget_s, quiet_reads=quiet_reads)
-    return detail["tree_mb"] if detail else None
+# Probe alphabet. Letters, because every TUI inserts a letter into its input
+# box; no control chars and no keys that commonly act as global shortcuts
+# (q/Esc/Enter/Tab), so the probe is a keystroke and not a command.
+PROBE_ALPHABET = "zwxjkvby"
 
 
-def idle_pss_detail(path, settle=1.5, budget_s=8.0, quiet_reads=3, launches=3):
-    """Resting {root_mb, tree_mb, procs, reads} for one tool, or None."""
-    best = None
-    for _ in range(max(1, launches)):
-        one = _one_pss_launch(path, settle=settle, budget_s=budget_s, quiet_reads=quiet_reads)
-        if one is None:
-            continue
-        if best is None or one["tree_mb"] < best["tree_mb"]:
-            best = one
-    return best
-
-
-def _one_pss_launch(path, settle, budget_s, quiet_reads):
-    """One launch: wait out `settle`, then read the tree until it converges."""
-    name = _session_run(path)
-    if name is None:
-        return None
+def _tmux(server, *args, timeout=20):
     try:
-        time.sleep(settle)
-        deadline = time.perf_counter() + budget_s
-        last = None
-        stable = 0
-        reads = 0
-        best = None
-        root = _pane_pid(name)
-        while time.perf_counter() < deadline:
-            tree, nprocs = _pss_tree(root)
-            reads += 1
-            if tree is None:
-                if not _pane_alive(name):
-                    break
-                time.sleep(0.2)
-                continue
-            best = (tree, nprocs)
-            # converged when the total stops moving; 2MB is allocator jitter
-            if last is not None and abs(tree - last) <= 2.0:
-                stable += 1
-                if stable >= quiet_reads:
-                    break
-            else:
-                stable = 0
-            last = tree
-            time.sleep(0.25)
-        if best is None:
+        r = subprocess.run(["tmux", "-L", server, *args], capture_output=True, text=True, timeout=timeout)
+        return r.stdout
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return ""
+
+
+def tmux_ready():
+    return bool(shutil.which("tmux"))
+
+
+class Launch:
+    """One tool launched in a detached tmux session with a forkless byte stream.
+
+    Use as a context manager. All timings are relative to `self.t0`, the moment
+    the gate was released (i.e. the exec).
+    """
+
+    def __init__(self, argv, server="bench", size=(TMUX_COLS, TMUX_ROWS), extra_env=None):
+        self.argv = list(argv)
+        self.server = server
+        self.size = size
+        self.extra_env = extra_env or {}
+        self.tmp = tempfile.mkdtemp(prefix="bench-launch-")
+        self.fifo = os.path.join(self.tmp, "stream")
+        self.gate = os.path.join(self.tmp, "gate")
+        self.name = f"b{int(time.time() * 1e6) % 10**9}"
+        self.t0 = None
+        self.err = None
+        self.pid = None
+        self.tty_fd = None
+        self._chunks = []  # [(perf_counter_ts, bytes)]
+        self._lock = threading.Lock()
+        self._cond = threading.Condition(self._lock)
+        self._stop = threading.Event()
+        self._thread = None
+        self._fd = None
+        self._start()
+
+    # -- setup ------------------------------------------------------------
+    def _start(self):
+        if not tmux_ready():
+            self.err = "tmux not installed"
+            return
+        _tmux(self.server, "kill-session", "-t", self.name)
+        for p in (self.fifo, self.gate):
+            os.mkfifo(p)
+        # O_RDWR keeps the read end open whether or not a writer exists, so
+        # neither we nor `cat` block on open, and there is no EOF when a tool
+        # exits for a moment.
+        self._fd = os.open(self.fifo, os.O_RDWR | os.O_NONBLOCK)
+        os.set_blocking(self._fd, True)
+        self._thread = threading.Thread(target=self._drain, daemon=True)
+        self._thread.start()
+
+        env_args = ["-e", "TERM=xterm-256color"]
+        for k, v in self.extra_env.items():
+            env_args += ["-e", f"{k}={v}"]
+        out = _tmux(
+            self.server,
+            "new-session",
+            "-d",
+            "-s",
+            self.name,
+            "-x",
+            str(self.size[0]),
+            "-y",
+            str(self.size[1]),
+            *env_args,
+            "sh",
+            "-c",
+            GATE_SCRIPT,
+            "bench-gate",
+            self.gate,
+            *self.argv,
+        )
+        if not self._alive():
+            self.err = f"tmux could not start the session ({out.strip()[:80]})"
+            return
+
+        # Attach the pipe BEFORE releasing the gate: the program is blocked on
+        # the gate read, so nothing has been written yet and no byte can be
+        # lost to the attach window.
+        _tmux(self.server, "pipe-pane", "-O", "-t", self.name, "cat >> " + shlex.quote(self.fifo))
+
+        self.pid = self._query_pid()
+        self.tty = self._query_tty()
+
+        # Release the gate. t0 is taken immediately before the write; the
+        # shell's exec follows within microseconds and is identical for every
+        # tool, so the ordering between tools is exact.
+        try:
+            self.t0 = time.perf_counter()
+            w = os.open(self.gate, os.O_WRONLY)
+            os.write(w, b"go")
+            os.close(w)
+        except OSError as e:
+            self.err = f"gate release failed: {e}"
+
+    def _drain(self):
+        while not self._stop.is_set():
+            try:
+                b = os.read(self._fd, 1 << 20)
+            except (OSError, ValueError):
+                return
+            if not b:
+                return
+            ts = time.perf_counter()
+            with self._cond:
+                self._chunks.append((ts, b))
+                self._cond.notify_all()
+
+    def _query_pid(self):
+        out = _tmux(self.server, "display-message", "-p", "-t", self.name, "#{pane_pid}").strip()
+        try:
+            return int(out)
+        except ValueError:
             return None
-        return {
-            "root_mb": _pss_of(root),
-            "tree_mb": best[0],
-            "procs": best[1],
-            "reads": reads,
-        }
-    finally:
-        _session_kill(name)
+
+    def _query_tty(self):
+        return _tmux(self.server, "display-message", "-p", "-t", self.name, "#{pane_tty}").strip() or None
+
+    # -- state ------------------------------------------------------------
+    def _alive(self):
+        return bool(_tmux(self.server, "display-message", "-p", "-t", self.name, "#{pane_pid}").strip())
+
+    def alive(self):
+        """True while the launched process (or the pane) still exists.
+
+        /proc, not tmux: this is checked often and must not fork. The pane can
+        outlive the program (the shell wrapper), so both are consulted.
+        """
+        if self.pid is not None and os.path.isdir(f"/proc/{self.pid}"):
+            return True
+        return self._alive()
+
+    def termios_flags(self):
+        """lflag of the pane's pty, or None. Opened once, then free."""
+        if not hasattr(self, "tty") or not self.tty:
+            return None
+        if self.tty_fd is None:
+            try:
+                self.tty_fd = os.open(self.tty, os.O_RDONLY | os.O_NOCTTY | os.O_NONBLOCK)
+            except OSError:
+                return None
+        try:
+            return termios.tcgetattr(self.tty_fd)[3]
+        except (termios.error, OSError):
+            return None
+
+    def echo_mode(self):
+        """'render' when the app disabled ECHO (it paints its own screen),
+        'kernel-echo' when the line discipline still echoes for it, None when
+        unreadable.
+
+        A cooked-mode CLI has the kernel echo each byte before the app wakes,
+        so its "latency" describes the kernel, not the tool -- measured: `cat`
+        in a pty times ~0.3ms with no UI at all. Ranking those against a
+        raw-mode TUI that must repaint a cell is meaningless, so the class is
+        recorded and latency is ranked within `render` only.
+        """
+        lflag = self.termios_flags()
+        if lflag is None:
+            return None
+        return "kernel-echo" if lflag & termios.ECHO else "render"
+
+    def screen(self):
+        """The rendered screen as text, or '' when the pane is gone.
+
+        -J rejoins lines the terminal wrapped (a probe split across a row
+        boundary reads as one string again); -S -400 also reads scrollback, so
+        a startup banner that pushed the input box out of the visible window
+        cannot hide the probe. Note that the scrollback region is reported as
+        blank lines, so a caller must look for CONTENT, not for a non-empty
+        string.
+        """
+        return _tmux(self.server, "capture-pane", "-p", "-J", "-S", "-400", "-t", self.name)
+
+    def rendered_text(self, limit=4000):
+        """Non-whitespace screen content, or ''. Used to decide whether a TUI
+        has actually painted something the eye can see."""
+        return "".join(self.screen()[:limit]).strip()
+
+    def send(self, text):
+        _tmux(self.server, "send-keys", "-l", "-t", self.name, text)
+
+    # -- stream access ----------------------------------------------------
+    def mark(self):
+        with self._lock:
+            return len(self._chunks)
+
+    def since(self, mark):
+        with self._lock:
+            return list(self._chunks[mark:])
+
+    def wait_for(self, pred, deadline_s, mark=0, alive_check=True):
+        """Block until pred(ts, chunk) returns a value, or the deadline passes.
+
+        Predicates get each chunk with its own timestamp, so a caller reports
+        the moment the bytes were WRITTEN, not the moment a poll noticed. The
+        condition variable means no sleep-and-fork loop: idle cost is zero.
+        """
+        deadline = time.perf_counter() + deadline_s
+        idx = mark
+        while True:
+            with self._cond:
+                pending = self._chunks[idx:]
+                idx = len(self._chunks)
+            for ts, b in pending:
+                hit = pred(ts, b)
+                if hit is not None:
+                    return hit
+            remaining = deadline - time.perf_counter()
+            if remaining <= 0:
+                return None
+            if alive_check and not self.alive():
+                # drain whatever landed before the exit, then give up
+                with self._cond:
+                    tail = self._chunks[idx:]
+                for ts, b in tail:
+                    hit = pred(ts, b)
+                    if hit is not None:
+                        return hit
+                return None
+            with self._cond:
+                self._cond.wait(timeout=min(remaining, 0.05))
+
+    def quiet_for(self, window_s):
+        """True when no byte arrived in the last `window_s`."""
+        with self._lock:
+            if not self._chunks:
+                return False
+            return (time.perf_counter() - self._chunks[-1][0]) >= window_s
+
+    def bytes_since(self, mark):
+        return b"".join(b for _ts, b in self.since(mark))
+
+    def ms_since_t0(self, ts):
+        return None if self.t0 is None else (ts - self.t0) * 1000
+
+    # -- teardown ---------------------------------------------------------
+    def close(self):
+        self._stop.set()
+        _tmux(self.server, "kill-session", "-t", self.name)
+        if self.tty_fd is not None:
+            try:
+                os.close(self.tty_fd)
+            except OSError:
+                pass
+            self.tty_fd = None
+        if self._fd is not None:
+            try:
+                os.close(self._fd)
+            except OSError:
+                pass
+            self._fd = None
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+        return False
+
+
+class FirstGlyph:
+    """Stateful scanner: the first printable byte written OUTSIDE an escape
+    sequence.
+
+    A stateless "is there a byte in 32..126" test is wrong, and wrong in a way
+    that silently collapses two metrics into one: every TUI's boot sequence
+    starts with `\\e[?1049h` (alternate screen) and `\\e[?25l` (hide cursor),
+    whose parameters and final bytes (`[`, `?`, `1`, `0`, `4`, `9`, `h`, `l`)
+    are all printable. Tested naively, "first paint" and "first byte" return the
+    same timestamp for every tool -- which is what this bench did on its first
+    run, and is exactly the kind of plausible-but-meaningless number the
+    rewrite is meant to eliminate.
+
+    State is carried across chunks because an escape sequence routinely spans
+    reads (`\\e[` in one chunk, `?25l` in the next).
+    """
+
+    GROUND, ESC, CSI, OSC, OSC_ESC, STR = range(6)
+
+    def __init__(self):
+        self.state = self.GROUND
+
+    def __call__(self, ts, chunk):
+        for b in chunk:
+            if self.state == self.GROUND:
+                if b == 0x1B:  # ESC
+                    self.state = self.ESC
+                elif b == 0x7F:  # DEL is control, not a glyph
+                    continue
+                elif b == 0x20:  # a SPACE is not a visible glyph
+                    continue
+                elif b > 0x20:
+                    # Includes >=0x80: UTF-8 continuation bytes are glyph
+                    # content, and a multi-byte glyph's first byte is enough
+                    # to say "something was rendered".
+                    return ts
+            elif self.state == self.ESC:
+                if b == 0x5B:  # '['
+                    self.state = self.CSI
+                elif b == 0x5D:  # ']'
+                    self.state = self.OSC
+                elif b in (0x50, 0x58, 0x5E, 0x5F):  # DCS, SOS, PM, APC
+                    self.state = self.STR
+                else:
+                    # two-byte escape (e.g. ESC 7, ESC =, ESC M)
+                    self.state = self.GROUND
+            elif self.state == self.CSI:
+                # parameters/intermediates are 0x20-0x3F, final byte 0x40-0x7E
+                if 0x40 <= b <= 0x7E:
+                    self.state = self.GROUND
+            elif self.state == self.OSC:
+                if b == 0x07:  # BEL terminates an OSC title
+                    self.state = self.GROUND
+                elif b == 0x1B:
+                    self.state = self.OSC_ESC
+            elif self.state == self.OSC_ESC:
+                # ESC \ (ST) ends it; anything else means the ESC started a
+                # new sequence inside the OSC text
+                self.state = self.GROUND if b == 0x5C else self.ESC
+            elif self.state == self.STR:
+                if b == 0x1B:
+                    self.state = self.OSC_ESC
+                elif b == 0x07:
+                    self.state = self.GROUND
+        return None
+
+
+def _probe_matcher(probe):
+    """Match `probe` across chunk boundaries; return the completing timestamp.
+
+    CT-framed TUIs repaint per cell, so a two-character probe can arrive as two
+    chunks. Matching the joined bytes after the keystroke is what makes this
+    correct for cell-diffing renderers -- matching single chunks was the bug
+    that produced wrong published numbers in the byte-scanning predecessor.
+    """
+    needle = probe.encode()
+    acc = bytearray()
+
+    def pred(ts, chunk):
+        acc.extend(chunk)
+        if acc.find(needle) >= 0:
+            return ts
+        # keep only a tail that could still be a prefix of the needle
+        if len(acc) > len(needle) * 4:
+            del acc[: len(acc) - len(needle) * 2]
+        return None
+
+    return pred
+
+
+def _pick_probe(screen_text):
+    """Two letters not already on screen, so a later match is meaningful."""
+    out = []
+    for c in PROBE_ALPHABET:
+        if c not in screen_text:
+            out.append(c)
+        if len(out) == 2:
+            return "".join(out)
+    # screen is dense in probe letters; fall back to a pair that is at least
+    # not a single character (still verifiable on screen afterwards)
+    return PROBE_ALPHABET[:2]
+
+
+def measure_launch(path, ready_budget=20.0, ttfi_budget=15.0, settle_budget=8.0, latency_budget=8.0):
+    """One launch -> every interactive metric, or explicit failures.
+
+    Returns a dict of samples. Nothing that timed out is ever a number: a
+    timeout lands in `failed`, because the predecessor published its 15s probe
+    timeout as a measurement (opencode 15203.1ms) and ranked it.
+    """
+    rec = {
+        "first_byte_ms": None,
+        "first_paint_ms": None,
+        "ready_ms": None,
+        "ttfi_ms": None,
+        "key_latency_ms": None,
+        "signal": None,
+        "pss_mb": None,
+        "pss_root_mb": None,
+        "procs": None,
+        "failed": [],
+    }
+    with Launch([path], extra_env={"FOX_AGENT_NO_TRUST_CHECK": "1"}) as L:
+        if L.err:
+            rec["failed"].append(f"launch: {L.err}")
+            return rec
+
+        # 1. exec -> first byte. The literal name, from the byte stream.
+        first = L.wait_for(lambda ts, _b: ts, 40.0)
+        if first is None:
+            rec["failed"].append("no output within 40s")
+            return rec
+        rec["first_byte_ms"] = L.ms_since_t0(first)
+
+        # 2. exec -> first printable glyph outside an escape sequence. What a
+        # user actually waits for: the first BYTE is usually only ANSI
+        # bookkeeping (fox writes `\e[?1049h\e[?25l` before compositing), and
+        # a naive printable-byte test counts the parameters inside that escape
+        # -- collapsing this metric into first_byte for every tool.
+        paint = L.wait_for(FirstGlyph(), 40.0, mark=0)
+        if paint is not None:
+            rec["first_paint_ms"] = L.ms_since_t0(paint)
+
+        # 3. readiness: the app owns the tty (ECHO off), has actually PUT
+        # SOMETHING ON SCREEN, and has stopped writing. Readiness is not a
+        # metric -- it is only when we are allowed to type -- but getting it
+        # wrong silently destroys the input metrics below.
+        #
+        # Both halves matter. opencode switches to raw mode ~1.5s in and then
+        # goes quiet with a frame of nothing but spaces, so an
+        # echo-mode-only gate typed into a still-booting app: the keystroke was
+        # swallowed and the row read as "never interactive" (the predecessor
+        # published the resulting 15s timeout as 15203.1ms of latency). A
+        # printable-byte test is not enough either -- a space IS a printable
+        # glyph -- so readiness requires NON-WHITESPACE content.
+        #
+        # capture-pane is a fork, so it is polled coarsely (>=150ms apart). The
+        # expensive mistake the old bench made was forking per SAMPLE inside a
+        # timing loop; a bounded poll during a startup gate is fine, because
+        # nothing here is being timed.
+        ready_deadline = time.perf_counter() + ready_budget
+        ready = False
+        last_screen_check = 0.0
+        while time.perf_counter() < ready_deadline:
+            if L.echo_mode() == "render" and L.quiet_for(0.15):
+                now = time.perf_counter()
+                if now - last_screen_check >= 0.15:
+                    last_screen_check = now
+                    if L.rendered_text():
+                        ready = True
+                        break
+            if not L.alive():
+                break
+            time.sleep(0.02)
+        rec["ready_ms"] = L.ms_since_t0(time.perf_counter())
+
+        pre = L.screen()
+        probe = _pick_probe(pre)
+        if ready:
+            # 4. time to interactive: type now, clock from exec.
+            mark = L.mark()
+            L.send(probe)
+            hit = L.wait_for(_probe_matcher(probe), ttfi_budget, mark=mark)
+            if hit is not None:
+                rec["ttfi_ms"] = L.ms_since_t0(hit)
+            else:
+                rec["failed"].append(f"ttfi: probe {probe!r} did not render")
+            # the probe is only a measurement if it is really on screen
+            if rec["ttfi_ms"] is not None and probe not in L.screen():
+                rec["ttfi_ms"] = None
+                rec["failed"].append("ttfi: probe not on screen (stream false positive)")
+        else:
+            rec["failed"].append("ttfi: never became interactive")
+
+        # 5. settle, then measure pure keystroke handling. The settle wait is
+        # startup observation and must NOT be inside the latency clock: an
+        # earlier version charged it and read `cat` at 3007ms instead of
+        # ~0.3ms.
+        settled = False
+        settle_deadline = time.perf_counter() + settle_budget
+        while time.perf_counter() < settle_deadline:
+            if L.quiet_for(0.4):
+                settled = True
+                break
+            if not L.alive():
+                break
+            time.sleep(0.01)
+
+        # 6. memory at rest, before the latency probe perturbs anything.
+        if L.pid is not None:
+            _pss_start = time.perf_counter()
+            while True:
+                tree, nprocs = _pss_tree(L.pid)
+                if tree is not None or time.perf_counter() - _pss_start > 2.0:
+                    break
+                time.sleep(0.1)
+            if tree is not None:
+                rec["pss_mb"] = tree
+                rec["pss_root_mb"] = _pss_of(L.pid)
+                rec["procs"] = nprocs
+
+        rec["signal"] = L.echo_mode()
+
+        if settled and L.alive():
+            pre2 = L.screen()
+            probe2 = _pick_probe(pre2 + probe)
+            mark2 = L.mark()
+            t_key = time.perf_counter()
+            L.send(probe2)
+            hit2 = L.wait_for(_probe_matcher(probe2), latency_budget, mark=mark2)
+            if hit2 is not None:
+                on_screen = probe2 in L.screen()
+                if on_screen:
+                    rec["key_latency_ms"] = (hit2 - t_key) * 1000
+                else:
+                    rec["failed"].append("latency: probe not on screen (stream false positive)")
+            else:
+                rec["failed"].append(f"latency: probe {probe2!r} did not render")
+        elif not settled:
+            rec["failed"].append("latency: never settled")
+
+    return rec
+
+
+# ---------------------------------------------------------------------------
+# fox-agent headless extras (hermetic: no key, no network)
+# ---------------------------------------------------------------------------
 
 
 def start_fake_provider():
@@ -979,14 +1135,7 @@ def start_fake_provider():
     if not bun or not os.path.isfile(FAKE):
         return None, None
     env = dict(os.environ, FAKE_SCRIPT="text")
-    p = subprocess.Popen(
-        [bun, FAKE],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        env=env,
-        text=True,
-        bufsize=1,
-    )
+    p = subprocess.Popen([bun, FAKE], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env, text=True, bufsize=1)
     try:
         line = p.stdout.readline().strip()
     except Exception:
@@ -997,36 +1146,99 @@ def start_fake_provider():
     return p, line
 
 
-def fox_ttft(base_url):
-    """Spawn-to-first-text-event of a headless turn against the fake provider."""
-    home = tempfile.mkdtemp(prefix="fox-bench-home-")
-    work = tempfile.mkdtemp(prefix="fox-bench-work-")
-    env = dict(
+def _fox_env(base_url, home):
+    """A genuinely hermetic environment for a headless turn.
+
+    FOX_AGENT_HOME alone is NOT enough, and the difference is enormous. It
+    redirects the data dir (sessions, catalog cache) but the global CONFIG path
+    is `homedir()/.config/fox-agent/config.toml`, which FOX_AGENT_HOME does not
+    affect -- `loadConfig` in src/core/config.ts only honours the FOX_CONFIG
+    overrides for that.
+
+    Measured on this box, same command, same local provider:
+
+        FOX_AGENT_HOME only ............ 23.23s, 18.66s wall (14.4s user CPU)
+        + FOX_AGENT_CONFIG=<empty> .....  0.25s,  0.24s wall
+
+    The 90x difference is the real user config's three [mcpServers.*] entries:
+    every headless turn was spawning chrome-devtools, thorium-devtools and
+    wincontrol before it saw the prompt. A bench that claims "no key, no
+    network" must not be reading the developer's MCP servers, so an empty
+    config is written per run and pointed at explicitly.
+    """
+    cfg = os.path.join(home, "config.toml")
+    try:
+        os.makedirs(home, exist_ok=True)
+        with open(cfg, "w") as f:
+            f.write("")
+    except OSError:
+        pass
+    return dict(
         os.environ,
         FOX_AGENT_HOME=home,
+        FOX_AGENT_CONFIG=cfg,
+        # keep the catalog offline too: a refresh is a 10s fetch that has no
+        # business inside a startup measurement
+        FOX_AGENT_MODELS_OFFLINE="1",
         FOX_AGENT_BASE_URL=base_url,
         FOX_AGENT_API_KEY="bench-fake-key",
         FOX_AGENT_PROVIDER="openai-compatible",
         FOX_AGENT_MODEL="bench-model",
     )
-    argv = [FOX, "-p", "say hi", "--json"]
+
+
+def fox_ttft(base_url, budget=60.0):
+    """Spawn -> first `text` event of one headless turn, in ms, or None.
+
+    Reads with select against a deadline. The predecessor iterated the child's
+    stdout with `for line in ...`, which BLOCKS past its own 60s check: the
+    in-loop timeout only fired if a line arrived, so a provider that accepted
+    the connection and then stalled would hang the whole bench step.
+    """
+    home = tempfile.mkdtemp(prefix="fox-bench-home-")
+    work = tempfile.mkdtemp(prefix="fox-bench-work-")
     t0 = time.perf_counter()
     first = None
     try:
-        p = subprocess.Popen(argv, cwd=work, env=env, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, bufsize=1)
+        p = subprocess.Popen(
+            [FOX, "-p", "say hi", "--json"],
+            cwd=work,
+            env=_fox_env(base_url, home),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
         assert p.stdout is not None
-        for line in p.stdout:
-            if '"type":"text"' in line or '"type": "text"' in line:
-                first = (time.perf_counter() - t0) * 1000
+        fd = p.stdout.fileno()
+        buf = b""
+        while time.perf_counter() - t0 < budget:
+            r, _w, _x = select.select([fd], [], [], max(0.0, budget - (time.perf_counter() - t0)))
+            if not r:
                 break
-            if time.perf_counter() - t0 > 60:
+            chunk = os.read(fd, 65536)
+            if not chunk:
+                break
+            buf += chunk
+            # parse rather than substring-match: `"type":"text_delta"` contains
+            # `"type":"text` and a naive match counts it as the first token.
+            for line in buf.split(b"\n"):
+                line = line.strip()
+                if not line.startswith(b"{"):
+                    continue
+                try:
+                    ev = json.loads(line)
+                except Exception:
+                    continue
+                if isinstance(ev, dict) and ev.get("type") == "text":
+                    first = (time.perf_counter() - t0) * 1000
+                    break
+            if first is not None:
                 break
         try:
-            p.wait(timeout=60)
+            p.wait(timeout=5)
         except subprocess.TimeoutExpired:
             p.kill()
-    except Exception:
-        first = None
+    except Exception as e:
+        dbg(f"fox_ttft failed: {e}")
     finally:
         shutil.rmtree(home, ignore_errors=True)
         shutil.rmtree(work, ignore_errors=True)
@@ -1040,19 +1252,11 @@ def fox_headless_rss(base_url):
         return None
     home = tempfile.mkdtemp(prefix="fox-bench-home-")
     work = tempfile.mkdtemp(prefix="fox-bench-work-")
-    env = dict(
-        os.environ,
-        FOX_AGENT_HOME=home,
-        FOX_AGENT_BASE_URL=base_url,
-        FOX_AGENT_API_KEY="bench-fake-key",
-        FOX_AGENT_PROVIDER="openai-compatible",
-        FOX_AGENT_MODEL="bench-model",
-    )
     try:
         p = subprocess.run(
             [timer, "-v", FOX, "-p", "say hi", "--json"],
             cwd=work,
-            env=env,
+            env=_fox_env(base_url, home),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
             timeout=120,
@@ -1067,7 +1271,120 @@ def fox_headless_rss(base_url):
         shutil.rmtree(work, ignore_errors=True)
 
 
-# ---- svg ----
+# ---------------------------------------------------------------------------
+# Statistics -- p50 is the headline, with the spread beside it
+# ---------------------------------------------------------------------------
+
+
+def percentile(sorted_samples, p):
+    """Nearest-rank p-th percentile (0-100) of an ALREADY-SORTED list."""
+    if not sorted_samples:
+        return None
+    k = max(0, min(len(sorted_samples) - 1, int(round((p / 100) * (len(sorted_samples) - 1)))))
+    return sorted_samples[k]
+
+
+def stat_block(samples):
+    """Collapse timings into {min, p50, p95, n}.
+
+    p50 is the value the table publishes: the old version published `min`,
+    which is the single luckiest launch and hid the spread entirely -- the
+    shipped opencode first-byte row was 101ms min against 1539ms p95.
+    """
+    vals = [v for v in samples if v is not None]
+    if not vals:
+        return {"min": None, "p50": None, "p95": None, "n": 0}
+    s = sorted(vals)
+    return {"min": s[0], "p50": percentile(s, 50), "p95": percentile(s, 95), "n": len(s)}
+
+
+# ---------------------------------------------------------------------------
+# Per-tool measurement
+# ---------------------------------------------------------------------------
+
+# Fewer than this many successful samples and the row is reported but NOT
+# ranked: an n=1 sample ranked against an n=5 row is not a comparison. The
+# predecessor shipped cursor-agent and devin that way.
+MIN_RANK_N = 3
+
+
+def measure(label, path, n_start, launches):
+    step(label, "probing version")
+    ver = version_of(path)
+    step(label, "weighing on-disk footprint", os.path.basename(path))
+    disk, kind = footprint(path, label)
+    step(label, f"timing `--version` startup (best of {n_start})")
+    startup = best_startup(path, n_start, ver=ver)
+
+    samples = {k: [] for k in ("first_byte_ms", "first_paint_ms", "ttfi_ms", "key_latency_ms", "pss_mb")}
+    failures = []
+    signals = []
+    procs = None
+    pss_root = None
+    for i in range(launches):
+        step(label, f"interactive launch {i + 1}/{launches}")
+        rec = measure_launch(path)
+        for k in samples:
+            if rec.get(k) is not None:
+                samples[k].append(rec[k])
+        failures.extend(rec["failed"])
+        if rec["signal"]:
+            signals.append(rec["signal"])
+        if rec["procs"]:
+            procs = max(procs or 0, rec["procs"])
+        if rec["pss_root_mb"]:
+            pss_root = rec["pss_root_mb"] if pss_root is None else min(pss_root, rec["pss_root_mb"])
+
+    # The signal of record: if ANY launch had the tool rendering its own echo,
+    # it is a render-mode tool (a boot-time sample in cooked mode is a TUI that
+    # had not taken the tty yet, which is why sampling once was wrong).
+    signal = "render" if "render" in signals else (signals[0] if signals else None)
+
+    row = {
+        "agent": label,
+        "installed": True,
+        "bin": path,
+        "version": ver,
+        "bundle_mb": disk,
+        "bundle_kind": kind,
+        "startup": stat_block(startup),
+        "first_byte": stat_block(samples["first_byte_ms"]),
+        "first_paint": stat_block(samples["first_paint_ms"]),
+        "ttfi": stat_block(samples["ttfi_ms"]),
+        "key_latency": stat_block(samples["key_latency_ms"]),
+        "input_signal": signal,
+        # Floored over launches: extra processes only ever ADD, so the reading
+        # taken when the least startup work was in flight is the resting cost.
+        "idle_pss_mb": min(samples["pss_mb"]) if samples["pss_mb"] else None,
+        "idle_pss_root_mb": pss_root,
+        "procs": procs,
+        "launches": launches,
+        "failures": sorted(set(failures)),
+    }
+
+    def f(v, nd=0):
+        return "-" if v is None else f"{v:.{nd}f}"
+
+    pss = f(row["idle_pss_mb"], 1) + "MB" if row["idle_pss_mb"] is not None else "-"
+    print(
+        f"{label}: {ver}\n"
+        f"  bundle={f(disk, 1)}MB({kind}) "
+        f"startup={f(row['startup']['p50'])} "
+        f"1st_byte={f(row['first_byte']['p50'])} "
+        f"1st_paint={f(row['first_paint']['p50'])} "
+        f"ttfi={f(row['ttfi']['p50'])} "
+        f"latency={f(row['key_latency']['p50'])} "
+        f"pss={pss} signal={signal or '-'} n={row['first_byte']['n']}",
+        flush=True,
+    )
+    for fail in row["failures"]:
+        print(f"  ! {fail}", flush=True)
+    return row
+
+
+# ---------------------------------------------------------------------------
+# SVG dashboard
+# ---------------------------------------------------------------------------
 
 INK = "#e6e1d8"
 MUT = "#8a8578"
@@ -1078,42 +1395,45 @@ BG = "#141310"
 BG2 = "#1b1916"
 GRID = "#2e2b25"
 
+MEDALS = {0: "1", 1: "2", 2: "3"}
+
 
 def esc(s):
     return str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
-def dashboard_svg(panels, out_path):
-    """panels: [(title, subtitle, rows, unit, fmt)] rendered as one image.
+def fmt_ms(v):
+    return f"{v:,.0f}" if v >= 100 else f"{v:.1f}"
 
-    A 2x2 dashboard replaces four separate SVGs: GitHub renders one image
-    with one row height regardless of how the four charts would wrap, and
-    the shared header carries the method note that used to live in each
-    per-chart subtitle. fox-agent is orange everywhere else; the podium
-    rows get medal markers so the top-3 is scannable without reading
-    numbers.
+
+def dashboard_svg(panels, out_path, note):
+    """panels: [(title, subtitle, rows, unit, fmt)] as one 3x2 image.
+
+    One image rather than six files: GitHub renders a single row height
+    regardless of how separate charts would wrap, and the shared header is the
+    only place the method note can live once without repeating it per chart.
+    fox-agent is orange everywhere; medals mark the top three.
     """
     W, GUT, PAD, LANE_LABEL = 1180, 20, 24, 148
     NCOL = 3
     COLW = (W - PAD * 2 - GUT * (NCOL - 1)) // NCOL
     HEADER_H, LANE_H, SUB_H, FOOT_H = 84, 30, 18, 34
-    NROW = -(-len(panels) // NCOL)  # ceil division
+    NROW = -(-len(panels) // NCOL)
     n_rows = max(len(p[2]) for p in panels)
     H = HEADER_H + SUB_H + NROW * (LANE_H * n_rows + SUB_H + SUB_H) + FOOT_H
     L = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" font-family="ui-monospace,Menlo,Consolas,monospace">',
-        # base + header band
         f'<rect width="{W}" height="{H}" fill="{BG}"/>',
         f'<rect width="{W}" height="{HEADER_H}" fill="{BG2}"/>',
         f'<rect x="0" y="{HEADER_H - 2}" width="{W}" height="2" fill="{ACC}"/>',
         f'<text x="{PAD}" y="36" fill="{INK}" font-size="20" font-weight="bold">fox-agent · harness bench</text>',
-        f'<text x="{PAD}" y="58" fill="{MUT}" font-size="12">startup · TUI latency · footprint · idle memory — github actions ubuntu-latest, refreshed on every push</text>',
-        f'<text x="{PAD}" y="76" fill="{MUT}" font-size="11">{esc("1st byte = PTY launch, best of 5 · 1st input = spawn→quiet→typed→probe text on screen, best of 3 · latency = ready→500ms→typed→probe text on screen (keystroke only), ranked among render-signal tools only · bundle = binary or pkg dir · PSS at rest")}</text>',
+        f'<text x="{PAD}" y="58" fill="{MUT}" font-size="12">startup · TUI latency · footprint · idle memory — github actions ubuntu-latest, refreshed weekly</text>',
+        f'<text x="{PAD}" y="76" fill="{MUT}" font-size="11">{esc(note)}</text>',
     ]
     for pi_, (title, subtitle, rows, unit, fmt) in enumerate(panels):
-        col, row = pi_ % NCOL, pi_ // NCOL
+        col, row_i = pi_ % NCOL, pi_ // NCOL
         x0 = PAD + col * (COLW + GUT)
-        y0 = HEADER_H + row * (LANE_H * n_rows + SUB_H + SUB_H) + SUB_H
+        y0 = HEADER_H + row_i * (LANE_H * n_rows + SUB_H + SUB_H) + SUB_H
         L.append(f'<text x="{x0}" y="{y0 - 6}" fill="{INK}" font-size="14">{esc(title)}</text>')
         L.append(f'<rect x="{x0}" y="{y0 - 2}" width="{COLW}" height="1" fill="{GRID}"/>')
         have = sorted([r for r in rows if r[1] is not None], key=lambda r: r[1])
@@ -1123,10 +1443,10 @@ def dashboard_svg(panels, out_path):
         bw = COLW - LANE_LABEL - 78
         for i, (label, v, is_fox) in enumerate(have + missing):
             y = y0 + i * LANE_H
-            medal = {0: "\U0001F947", 1: "\U0001F948", 2: "\U0001F949"}.get(i, "") if v is not None else ""
-            label_col = ACC if is_fox else (INK if v is not None and i < 3 else MUT)
-            L.append(f'<text x="{x0}" y="{y + 14}" fill="{label_col}" font-size="12">{esc(label[:19]):<19}</text>' if False else
-                     f'<text x="{x0}" y="{y + 14}" fill="{label_col}" font-size="12">{esc(label[:19])}</text>')
+            ranked = v is not None
+            medal = MEDALS.get(i, "") if ranked else ""
+            label_col = ACC if is_fox else (INK if ranked and i < 3 else MUT)
+            L.append(f'<text x="{x0}" y="{y + 14}" fill="{label_col}" font-size="12">{esc(label[:19])}</text>')
             if v is None:
                 L.append(f'<rect x="{bx}" y="{y + 2}" width="{bw}" height="14" rx="3" fill="{BAR_NA}"/>')
                 L.append(f'<text x="{bx + 8}" y="{y + 13}" fill="{MUT}" font-size="10">n/a</text>')
@@ -1135,139 +1455,289 @@ def dashboard_svg(panels, out_path):
                 fill = ACC if is_fox else BAR
                 L.append(f'<rect x="{bx}" y="{y + 2}" width="{w:.0f}" height="14" rx="3" fill="{fill}"/>')
                 vt = f"{fmt(v)} {unit}"
-                L.append(f'<text x="{bx + bw + 6}" y="{y + 13}" fill="{INK if is_fox else MUT}" font-size="11">{medal}{esc(vt)}</text>')
+                L.append(
+                    f'<text x="{bx + bw + 6}" y="{y + 13}" fill="{INK if is_fox else MUT}" font-size="11">'
+                    f"{medal}{esc(vt)}</text>"
+                )
         if subtitle:
             L.append(f'<text x="{x0}" y="{y0 + LANE_H * n_rows + 12}" fill="{MUT}" font-size="10">{esc(subtitle)}</text>')
-    L.append(f'<text x="{PAD}" y="{H - 12}" fill="{MUT}" font-size="10">lower is better on every lane · medals mark the top 3 · fox-agent in orange · full method + raw numbers in bench/table.md</text>')
+    L.append(
+        f'<text x="{PAD}" y="{H - 12}" fill="{MUT}" font-size="10">'
+        "lower is better on every lane · numbers are p50 of successful launches · n/a = not installed or never measured · "
+        "full method + per-launch spread in bench/table.md</text>"
+    )
     L.append("</svg>")
     with open(out_path, "w") as f:
         f.write("\n".join(L) + "\n")
 
 
-def fmt_ms(v):
-    return f"{v:,.0f}" if v >= 100 else f"{v:.1f}"
+# ---------------------------------------------------------------------------
+# Outputs
+# ---------------------------------------------------------------------------
+
+# One entry per lane: (key, column label, unit, formatter). Order is the order
+# the README summary lists them in -- the headline metric first. The optional
+# 5th item restricts the ranking pool; latency needs it because kernel-echo
+# tools are not racing the same event as a raw-mode TUI (see echo_mode).
+METRICS = [
+    ("first_byte", "TUI 1st byte", "ms", fmt_ms, None),
+    ("first_paint", "TUI 1st paint", "ms", fmt_ms, None),
+    ("ttfi", "TUI 1st input", "ms", fmt_ms, None),
+    ("key_latency", "input latency", "ms", fmt_ms, "render"),
+    ("bundle_mb", "bundle", "MB", lambda v: f"{v:.0f}", None),
+    ("idle_pss_mb", "idle PSS", "MB", lambda v: f"{v:.0f}", None),
+    ("startup", "`--version`", "ms", fmt_ms, None),
+]
 
 
-def percentile(sorted_samples, p):
-    """p-th percentile (0-100) of an ALREADY-SORTED list; None when empty.
+def metric_value(row, key):
+    """The published number for one lane: p50, or None.
 
-    Nearest-rank: the smallest value at or below the p fraction. p50 is the
-    median (typical experience), p95 the tail (the slow run a user notices).
+    p50 rather than min: min is the luckiest single launch and hides the
+    spread (the shipped opencode first-byte row was 101ms min / 1539ms p95).
     """
-    if not sorted_samples:
-        return None
-    k = max(0, min(len(sorted_samples) - 1, int(round((p / 100) * (len(sorted_samples) - 1)))))
-    return sorted_samples[k]
+    if key in ("bundle_mb", "idle_pss_mb"):
+        return row.get(key)
+    blk = row.get(key) or {}
+    return blk.get("p50")
 
 
-def stat_block(samples):
-    """Collapse a list of timings into {min, p50, p95} (best, typical, tail).
+def metric_n(row, key):
+    blk = row.get(key) or {}
+    return blk.get("n", 0) if isinstance(blk, dict) else 0
 
-    Reporting only best-of-N hid variance: two tools with the same best-of-3
-    can feel very different if one is consistent and the other occasionally
-    triples. min stays the floor; p50/p95 are what a user actually feels.
-    None only when there were no samples at all (probe never landed).
+
+def rank_of(rows, key, fox_name="fox-agent", only=None):
+    """fox's position for one metric plus the field size.
+
+    Ties share a rank (1 + number of strictly better tools). Rows that were not
+    measured, or that have fewer than MIN_RANK_N samples, are excluded rather
+    than ranked last -- an n/a row is not a slow one, and one lucky launch is
+    not a comparison.
     """
-    if not samples:
-        return None, None, None
-    s = sorted(samples)
-    return s[0], percentile(s, 50), percentile(s, 95)
+    pool = [r for r in rows if r.get("installed") and (only is None or r.get("input_signal") == only)]
+    vals = []
+    for r in pool:
+        v = metric_value(r, key)
+        if v is None:
+            continue
+        if key not in ("bundle_mb", "idle_pss_mb") and metric_n(r, key) < MIN_RANK_N:
+            continue
+        vals.append((r["agent"], v))
+    fox = next((v for a, v in vals if a == fox_name), None)
+    if fox is None:
+        return None, len(vals)
+    return 1 + sum(1 for _a, v in vals if v < fox), len(vals)
 
 
-def measure(label, path, n_start, n_probes, n_input):
-    step(label, "probing version")
-    ver = version_of(path)
-    step(label, "measuring on-disk footprint", os.path.basename(path))
-    disk, kind = footprint(path, label)
-    step(label, f"timing `--version` startup (best of {n_start})")
-    startup = best_startup(path, n_start, ver=ver)  # reuse ver: no extra spawn
-    step(label, f"timing TUI first byte (best of {n_probes} PTY launches)")
-    ttfb = tui_first_byte(path, n_probes)
-    step(label, f"timing time-to-interactive (best of {n_input} PTY launches)")
-    tfin, fi_signal = tui_first_input(path, label, n_input)
-    step(label, f"timing input latency (ready + 500ms settle, best of {n_input})")
-    latency, la_signal = tui_input_latency(path, label, probes=n_input)
-    step(label, "measuring idle memory (PSS)")
-    pss_detail = idle_pss_detail(path)
-    pss = pss_detail["tree_mb"] if pss_detail else None
-    su_min, su_p50, su_p95 = stat_block(startup)
-    fb_min, fb_p50, fb_p95 = stat_block(ttfb)
-    fi_min, fi_p50, fi_p95 = stat_block(tfin)
-    la_min, la_p50, la_p95 = stat_block(latency)
-    row = {
-        "agent": label,
-        "installed": True,
-        "bin": path,
-        "version": ver,
-        # full precision in the JSON; the md table and SVG round for display
-        "disk_mb": disk,
-        "disk_kind": kind,
-        # legacy single-value fields stay the best (floor) so existing readers
-        # keep working; the _min/_p50/_p95 triples carry the full distribution
-        "startup_ms": su_min,
-        "tui_first_byte_ms": fb_min,
-        "tui_first_input_ms": fi_min,
-        "tui_input_latency_ms": la_min,
-        "startup": {"min": su_min, "p50": su_p50, "p95": su_p95, "n": len(startup)},
-        "tui_first_byte": {"min": fb_min, "p50": fb_p50, "p95": fb_p95, "n": len(ttfb)},
-        "tui_first_input": {"min": fi_min, "p50": fi_p50, "p95": fi_p95, "n": len(tfin)},
-        "tui_input_latency": {"min": la_min, "p50": la_p50, "p95": la_p95, "n": len(latency)},
-        # How the number was obtained. "kernel-echo" means the tty line
-        # discipline echoed the byte before the app woke, so the figure says
-        # nothing about the tool's own rendering; "render" means the app was in
-        # raw mode and had to repaint a cell itself; "log-marker" means a tool
-        # that swallows echo logged its own ack. Comparing across these is not
-        # meaningful, which is why the table groups them instead of ranking
-        # every tool in one column.
-        "input_signal": la_signal or fi_signal,
-        "idle_pss_mb": pss,
-        # Breakdown behind idle_pss_mb. tree_mb counts the whole process tree
-        # (children included: a node CLI's workers hold real, user-paid memory),
-        # root_mb is the launched process alone, procs is how many contributed.
-        # tree_mb == root_mb for a single-process native binary. Kept in the
-        # JSON because "which of these numbers moved" is the first question
-        # asked when a refresh looks wrong.
-        "idle_pss_root_mb": pss_detail["root_mb"] if pss_detail else None,
-        "idle_pss_procs": pss_detail["procs"] if pss_detail else None,
-    }
-    def _t(a, b, c):
-        return "-" if a is None else f"{a:.0f}/{b:.0f}/{c:.0f}"
-    # pss is None when the tool never reported one (no /proc/smaps_rollup, or
-    # the process died before the read) — format it like the others, not with a
-    # bare :.1f that raised TypeError on the first n/a tool
-    print(
-        f"{label}: {ver} disk={disk:.1f}MB({kind}) "
-        f"startup[min/p50/p95]={_t(su_min, su_p50, su_p95)} "
-        f"ttfb={_t(fb_min, fb_p50, fb_p95)} "
-        f"tfin={_t(fi_min, fi_p50, fi_p95)} "
-        f"latency={_t(la_min, la_p50, la_p95)} pss={'-' if pss is None else f'{pss:.1f}MB'}"
+def render_outputs(out, rows, fox_extra, payload):
+    """Write every generated artifact from already-measured rows."""
+    is_fox = lambda r: r["agent"] == "fox-agent"  # noqa: E731
+
+    def panel_rows(only=None, key=None):
+        src = [r for r in rows if not only or r.get("input_signal") == only]
+        return [(r["agent"], metric_value(r, key), is_fox(r)) for r in src]
+
+    render_only = [r for r in rows if r.get("input_signal") == "render"]
+    excluded = sum(1 for r in rows if r.get("installed") and r.get("input_signal") != "render")
+    p50_note = "p50 of successful launches"
+
+    dashboard_svg(
+        [
+            (
+                "1st byte — exec to first byte",
+                f"literal stream position · {p50_note} · lower is better",
+                panel_rows(key="first_byte"),
+                "ms",
+                fmt_ms,
+            ),
+            (
+                "1st paint — exec to first glyph",
+                f"first printable char on the wire · {p50_note} · lower is better",
+                panel_rows(key="first_paint"),
+                "ms",
+                fmt_ms,
+            ),
+            (
+                "1st input — spawn to interactive",
+                f"typed once the app owns the tty · {p50_note} · lower is better",
+                panel_rows(key="ttfi"),
+                "ms",
+                fmt_ms,
+            ),
+            (
+                "input latency (render only)",
+                f"keystroke to glyph, startup removed · {excluded} tool(s) excluded (kernel-echo)",
+                panel_rows(only="render", key="key_latency"),
+                "ms",
+                fmt_ms,
+            ),
+            (
+                "bundle size",
+                "binary, or package dir for script CLIs · lower is better",
+                panel_rows(key="bundle_mb"),
+                "MB",
+                lambda v: f"{v:.0f}",
+            ),
+            (
+                "idle memory",
+                "PSS of the whole process tree at rest · lower is better",
+                panel_rows(key="idle_pss_mb"),
+                "MB",
+                lambda v: f"{v:.0f}",
+            ),
+        ],
+        os.path.join(out, "bench.svg"),
+        "numbers are p50 with min/p95 in the table · durations from a forkless pipe-pane stream (no polling floor)",
     )
-    return row
+
+    def cell(v, nd=1, unit=""):
+        return "—" if v is None else f"{v:.{nd}f}{unit}"
+
+    # full-precision record: every field, including the spread that the old
+    # single-value table could not show
+    T = [
+        "| agent | version | bundle (MB) | kind | `--version` min/p50/p95 | 1st byte min/p50/p95 | 1st paint min/p50/p95 "
+        "| 1st input min/p50/p95 | latency min/p50/p95 | signal | idle PSS (MB) | n |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|",
+    ]
+    for r in rows:
+        if not r.get("installed"):
+            T.append(f"| {r['agent']} | n/a (not installed) | — | — | — | — | — | — | — | — | — | — |")
+            continue
+        name = f"**{r['agent']}**" if r["agent"] == "fox-agent" else r["agent"]
+
+        def trip(key):
+            """min/p50/p95 for one metric, or an em dash when it was never
+            measured. The spread IS the record: the predecessor published a
+            single best-of-N value and so could not show that a tool's good
+            launch and its typical launch differed by 15x."""
+            blk = r.get(key) or {}
+            if not isinstance(blk, dict) or blk.get("p50") is None:
+                return "—"
+            return f"{cell(blk['min'])}/{cell(blk['p50'])}/{cell(blk['p95'])}"
+
+        T.append(
+            f"| {name} | {r['version']} | {cell(r.get('bundle_mb'))} | {r.get('bundle_kind', '—')} | "
+            f"{trip('startup')} | {trip('first_byte')} | {trip('first_paint')} | {trip('ttfi')} | "
+            f"{trip('key_latency')} | {r.get('input_signal') or '—'} | {cell(r.get('idle_pss_mb'))} | "
+            f"{r.get('launches', 0)} |"
+        )
+    table_md = "\n".join(T) + "\n"
+    with open(os.path.join(out, "table.md"), "w") as f:
+        f.write(table_md)
+
+    # README snapshot: one row per metric (fox's score + rank), everything else
+    # folded. A 22-row grid of competitors is a reference document, not a
+    # headline -- but it is still generated and still one click away.
+    fox_row = next((r for r in rows if r["agent"] == "fox-agent" and r.get("installed")), None)
+    HT = ["| metric | fox-agent | rank |", "|---|---|---|"]
+    for key, label, _unit, fmt, only in METRICS:
+        val = metric_value(fox_row, key) if fox_row else None
+        rank, field = rank_of(rows, key, only=only)
+        if val is None:
+            HT.append(f"| {label} | — | — |")
+            continue
+        rank_s = f"**#{rank}** of {field}" if rank is not None else f"— of {field}"
+        HT.append(f"| {label} | **{fmt(val)}** | {rank_s} |")
+    summary_md = "\n".join(HT)
+
+    # rounded per-agent grid, folded
+    GT = [
+        "| agent | bundle | 1st byte | 1st paint | 1st input | input latency | signal | idle PSS |",
+        "|---|---|---|---|---|---|---|---|",
+    ]
+    for r in rows:
+        if not r.get("installed"):
+            GT.append(f"| {r['agent']} | — | — | — | — | — | — | — |")
+            continue
+        name = f"**{r['agent']}**" if r["agent"] == "fox-agent" else r["agent"]
+
+        def p50(key, unit="", nd=0):
+            v = metric_value(r, key)
+            return "—" if v is None else f"{v:.{nd}f} {unit}".strip()
+
+        sig = r.get("input_signal") or "—"
+        if sig == "kernel-echo":
+            sig = "kernel-echo (tty)"
+        GT.append(
+            f"| {name} | {p50('bundle_mb', 'MB')} | {p50('first_byte', 'ms')} | {p50('first_paint', 'ms')} | "
+            f"{p50('ttfi', 'ms')} | {p50('key_latency', 'ms')} | {sig} | {p50('idle_pss_mb', 'MB')} |"
+        )
+    grid_md = "\n".join(GT)
+
+    failures = sorted({(r["agent"], f) for r in rows if r.get("installed") for f in r.get("failures", [])})
+
+    S = [summary_md, ""]
+    if fox_extra.get("ttft_ms") is not None:
+        rss = fox_extra.get("headless_peak_rss_mb")
+        rss_s = f"{rss:.0f} MB" if rss is not None else "n/a (/usr/bin/time missing)"
+        S.append(
+            f"fox-agent headless vs scripted local provider: time to first token "
+            f"**{fox_extra['ttft_ms']:.0f} ms**, peak RSS **{rss_s}**."
+        )
+        S.append("")
+    S += [
+        "<details><summary>every tool, every metric</summary>",
+        "",
+        "![harness bench dashboard](bench/bench.svg)",
+        "",
+        grid_md,
+        "",
+        "</details>",
+        "",
+        "<details><summary>full precision · min/p50/p95 per metric</summary>",
+        "",
+        table_md.rstrip(),
+        "",
+        "</details>",
+        "",
+    ]
+    if failures:
+        # A failure is published, not swallowed: the predecessor ranked its own
+        # timeouts as measurements (opencode 15203.1ms was the 15s probe
+        # timeout), which made a hang indistinguishable from a slow tool.
+        S += ["<details><summary>what could not be measured</summary>", ""]
+        S += [f"- **{agent}**: {why}" for agent, why in failures]
+        S += ["", "</details>", ""]
+    S.append(
+        f"_Generated {payload['generated']} on {payload['machine']}"
+        + (
+            f", load {payload['load_avg'][0]} on {payload['cpu_count']} cpu"
+            if payload.get("load_avg") and payload["load_avg"][0] is not None
+            else ""
+        )
+        + ". [Method and caveats](#benchmarks) · [raw JSON](bench/results.json)_"
+    )
+    with open(os.path.join(out, "snippet.md"), "w") as f:
+        f.write("\n".join(S) + "\n")
 
 
-def opencode_label(ver):
-    """Label a bare `opencode` binary by the major version it reports."""
-    m = re.search(r"(\d+)\.", ver)
-    if not m:
-        return None
-    if m.group(1) == "2":
-        return "opencode v2"
-    if m.group(1) in ("0", "1"):
-        # 0.x/1.x is the v1 line — except a 0.0.0-beta, which is the v2 beta
-        return "opencode v2" if "beta" in ver else "opencode v1"
-    return None
+# ---------------------------------------------------------------------------
+# Self-test -- the wiring, not the tools
+# ---------------------------------------------------------------------------
 
 
 def self_test():
-    """Regression checks for the footprint logic — no network, no tools needed.
+    """Regression checks for the measurement rig. No network, no competitor
+    tools needed; uses /bin/sh and the filesystem.
 
-    Written because a single unconditional lookup silently reported ONE tool's
-    140MB downloader as thirteen unrelated vendors' footprint (including aider,
-    which is Python). The tell was thirteen byte-identical sizes; the check here
-    is the direct one: only the owning tool may claim a downloader.
+    Each check exists because a specific published number was wrong:
+
+      * footprint scoped per tool -- an unconditional lookup once reported ONE
+        tool's 140MB downloader as thirteen unrelated vendors' footprint
+        (including aider, which is Python); the tell was thirteen byte-identical
+        sizes.
+      * capture is not the clock -- one `capture-pane` fork costs ~9-17ms, and
+        the predecessor's published 4.2ms latency was below that floor.
+      * a probe split across chunks is still found -- cell-diffing TUIs never
+        emit a contiguous run.
+      * the probe is really on screen -- a stream match alone is not evidence.
+      * a timeout is a failure, not a sample -- the predecessor ranked its 15s
+        probe timeout as opencode's "1537ms" of extra latency.
+      * gate release starts the clock -- early bytes must not be lost and
+        tmux's own spawn cost must not be charged to the tool.
     """
-    import tempfile
-
     fails = []
 
     def check(name, cond, detail=""):
@@ -1277,16 +1747,15 @@ def self_test():
             print(f"  FAIL {name} {detail}")
             fails.append(name)
 
+    # -- footprint scoping ------------------------------------------------
     with tempfile.TemporaryDirectory() as tmp:
         home = os.path.join(tmp, "home")
-        # a fake first-run download for codebuff only
         manicode = os.path.join(home, ".config", "manicode")
         os.makedirs(manicode)
         dl = os.path.join(manicode, "codebuff")
         with open(dl, "wb") as f:
             f.write(b"\x00" * 4096)
 
-        # two unrelated npm-style shims, each in its own package dir
         shims = {}
         for pkg in ("codex", "aider"):
             d = os.path.join(tmp, "npm", "lib", "node_modules", pkg)
@@ -1302,162 +1771,384 @@ def self_test():
         old_home = os.environ.get("HOME")
         os.environ["HOME"] = home
         try:
-            # the bug: these inherited codebuff's size when the lookup was global
             for pkg, p in shims.items():
                 mb, kind = footprint(p, pkg)
                 check(
                     f"{pkg} does not inherit codebuff's downloader",
-                    mb < 1.0 and kind in ("pkg", "app"),
-                    f"got {mb:.1f} MB kind={kind}",
+                    mb is not None and mb < 1.0 and kind in ("pkg", "app"),
+                    f"got {mb} kind={kind}",
                 )
-            # ...and only the owner claims it
             mb, kind = footprint(shims["codex"], "codebuff")
-            check("codebuff claims its downloader", mb > 0 and kind == "bin", f"got {mb:.1f} MB kind={kind}")
-            # an unknown label gets no downloader, not someone else's
+            check("codebuff claims its own downloader", mb is not None and mb > 0 and kind == "bin", f"{mb} {kind}")
             mb2, _ = footprint(shims["aider"], "not-a-real-tool")
-            check("an unknown label claims nothing", mb2 < 1.0, f"got {mb2:.1f} MB")
+            check("an unknown label claims nothing", mb2 is not None and mb2 < 1.0, f"got {mb2}")
         finally:
             if old_home is None:
                 os.environ.pop("HOME", None)
             else:
                 os.environ["HOME"] = old_home
 
-    if fails:
-        print(f"\nself-test FAILED ({len(fails)})")
-        return 1
+        # -- launcher resolution ------------------------------------------
+        # Three real launcher shapes, each of which reported 0.0 MB once:
+        # jcode (execs a literal sibling .bin), pi (computes its target from a
+        # version file at runtime), and `exec node ...` (a shared runtime that
+        # must NOT be followed).
+        lroot = os.path.join(tmp, "launchers")
+        os.makedirs(lroot)
 
-    # --- tmux measurement primitives ------------------------------------
-    # These check the metric's wiring, not tmux itself: the properties that
-    # produced wrong published numbers when they were absent.
-    if _tmux_ready():
-        name = _session_run("/bin/sh")
-        if name and _pane_alive(name):
-            check("tmux: session starts and reports a pane pid", _pane_pid(name) is not None)
-            check("tmux: pane tty is readable (echo-mode source)", _pane_tty(name) is not None)
-            _sig = _echo_mode(name)
-            check("tmux: echo mode classifies", _sig in ("kernel-echo", "render"), str(_sig))
-            _session_kill(name)
-        else:
-            check("tmux: session starts", False, "could not create a session")
+        # (a) literal sibling binary -- jcode's shape
+        with open(os.path.join(lroot, "payload.bin"), "wb") as f:
+            f.write(b"\x7fELF" + b"\x00" * 2048)
+        a = os.path.join(lroot, "literal")
+        with open(a, "w") as f:
+            f.write("#!/bin/sh\nself_dir=${0%/*}\nexec \"$self_dir/payload.bin\" \"$@\"\n")
+        check("launcher: literal ${0%/*}/payload.bin is followed", _launcher_target(a) == os.path.realpath(os.path.join(lroot, "payload.bin")))
 
-        # A probe split across a wrapped row must still be found: -J joins the
-        # lines the terminal wrapped, which is what the old byte matcher missed.
-        name = _session_run("/bin/sh")
-        if name:
-            _send(name, "printf 'hello")
-            _send(name, "bench\\n'")
-            _tmux("send-keys", "-t", name, "Enter")
-            time.sleep(0.4)
-            check("tmux: wrapped probe is found via capture-pane", PROBE_TEXT in _pane_text(name))
-            _session_kill(name)
+        # (b) target read from a version file -- pi's shape. The prefix is
+        # statically UNKNOWABLE, so the answer must come from globbing the
+        # literal tail, not from a guess.
+        rel = os.path.join(lroot, "install", "releases", "9.9.9", "node_modules", ".bin")
+        os.makedirs(rel)
+        with open(os.path.join(rel, "tool"), "wb") as f:
+            f.write(b"\x7fELF" + b"\x00" * 1024)
+        with open(os.path.join(lroot, "install", "current-version"), "w") as f:
+            f.write("9.9.9\n")
+        b = os.path.join(lroot, "bin", "versioned")
+        os.makedirs(os.path.dirname(b))
+        with open(b, "w") as f:
+            f.write(
+                "#!/bin/sh\n"
+                'd=$(dirname "$0")\n'
+                'if ! IFS= read -r ver < "$d/../install/current-version"; then exit 1; fi\n'
+                'rel="$d/../install/releases/$ver/node_modules/.bin/tool"\n'
+                'exec "$rel" "$@"\n'
+            )
+        got_b = _launcher_target(b)
+        check(
+            "launcher: runtime-computed target resolves by globbing the known tail",
+            got_b is not None and got_b.endswith(os.path.join("releases", "9.9.9", "node_modules", ".bin", "tool")),
+            str(got_b),
+        )
+
+        # (c) `exec node ...` is a shared runtime, never the tool's cost
+        c = os.path.join(lroot, "nodewrap")
+        with open(c, "w") as f:
+            f.write("#!/usr/bin/env node\nexec node /usr/lib/thing.js \"$@\"\n")
+        check("launcher: bare `exec node` is not followed", _launcher_target(c) is None)
+
+        # (d) a non-script is not a launcher
+        check("launcher: an ELF is not treated as a script", _launcher_target(os.path.join(lroot, "payload.bin")) is None)
+
+    # -- statistics -------------------------------------------------------
+    blk = stat_block([10, 20, 30, 40, 1000])
+    check("p50 is the headline, not min", blk["p50"] == 30 and blk["min"] == 10, str(blk))
+    check("p95 exposes the tail", blk["p95"] == 1000, str(blk))
+    check("empty samples are n=0, not a zero", stat_block([]) ["n"] == 0 and stat_block([])["p50"] is None)
+    blk2 = stat_block([5, None, 7])
+    check("None samples are dropped, not counted as 0", blk2["n"] == 2 and blk2["min"] == 5, str(blk2))
+
+    # -- probe matching across chunk boundaries ---------------------------
+    m = _probe_matcher("zw")
+    check("probe split across chunks is still matched", m(1.0, b"...z") is None and m(2.0, b"w...") == 2.0)
+    check("probe matched in one chunk", _probe_matcher("ab")(3.0, b"xxabxx") == 3.0)
+    check("no match returns None", _probe_matcher("zz")(1.0, b"nothing") is None)
+
+    # -- probe choice avoids text already on screen ----------------------
+    probe = _pick_probe("hello zworld")
+    check("probe avoids letters already on screen", "z" not in probe and len(probe) == 2, repr(probe))
+
+    # -- first glyph is not measured inside an escape sequence -----------
+    # Every TUI boots with `\e[?1049h\e[?25l`; those bytes are printable, so a
+    # naive 32..126 test returns the SAME timestamp as first_byte for every
+    # tool. That is what this bench did on its first run.
+    g = FirstGlyph()
+    boot = [
+        b"\x1b[?1049h\x1b[2J\x1b[H\x1b[?25l\x1b[?2004h",
+        b"\x1b]7;file:///tmp/x\x07",
+        b"\x1b]0;title\x07",
+        b"\x1b[1;1H\x1b[K",
+    ]
+    hits = [g(i, c) for i, c in enumerate(boot)]
+    check("no glyph is reported inside boot escape sequences", all(h is None for h in hits), str(hits))
+    check("first real glyph is reported at its own timestamp", g(9.0, b"\x1b[3;2Hfox") == 9.0)
+    g2 = FirstGlyph()
+    check(
+        "an escape sequence split across chunks is not mistaken for a glyph",
+        g2(1.0, b"\x1b[") is None and g2(2.0, b"?25l") is None and g2(3.0, b"hi") == 3.0,
+    )
+    g3 = FirstGlyph()
+    check("a UTF-8 glyph counts as painted", g3(1.0, "\u4f60".encode()) == 1.0)
+
+    # -- ranking excludes thin and unmeasured rows -----------------------
+    def row(name, key, p50, n=5, installed=True):
+        return {"agent": name, "installed": installed, key: {"min": p50, "p50": p50, "p95": p50, "n": n}}
+
+    rows = [row("fox-agent", "ttfi", 50), row("fast", "ttfi", 10), row("slow", "ttfi", 90), row("thin", "ttfi", 1, n=1)]
+    rank, field = rank_of(rows, "ttfi")
+    check("rank ignores n<3 samples (a lucky launch is not a comparison)", rank == 2 and field == 3, f"{rank} of {field}")
+    rows2 = [row("fox-agent", "ttfi", 50), {"agent": "gone", "installed": False}]
+    r2, f2 = rank_of(rows2, "ttfi")
+    check("rank ignores n/a rows instead of ranking them last", r2 == 1 and f2 == 1, f"{r2} of {f2}")
+
+    # -- the hermetic environment is actually hermetic -------------------
+    # FOX_AGENT_HOME does NOT redirect the global config path (loadConfig
+    # reads homedir()/.config/fox-agent/config.toml unless told otherwise), so
+    # "no key, no network" TTFT was really spawning the developer's MCP
+    # servers: measured 23.2s versus 0.25s for the same command.
+    with tempfile.TemporaryDirectory() as tmp:
+        env = _fox_env("http://127.0.0.1:1/v1", tmp)
+        check("env: FOX_AGENT_CONFIG is set (FOX_AGENT_HOME alone is not enough)", bool(env.get("FOX_AGENT_CONFIG")))
+        check("env: the config it points at exists and is empty", os.path.isfile(env["FOX_AGENT_CONFIG"]) and open(env["FOX_AGENT_CONFIG"]).read() == "")
+        check("env: the catalog refresh is disabled", env.get("FOX_AGENT_MODELS_OFFLINE") == "1")
+        check("env: a fake key is used, never a real one", env.get("FOX_AGENT_API_KEY") == "bench-fake-key")
+
+    # -- the rig itself ---------------------------------------------------
+    if tmux_ready():
+        with Launch(["/bin/sh", "-c", "printf 'A'; sleep 5"]) as L:
+            if L.err:
+                check("launch: session starts", False, L.err)
+            else:
+                check("launch: gate release yields a t0", L.t0 is not None)
+                check("launch: pane pid is readable", L.pid is not None)
+                check("launch: pane tty is readable", getattr(L, "tty", None) is not None)
+                # first byte must arrive, and must be timed from exec
+                first = L.wait_for(lambda ts, _b: ts, 5.0)
+                check("stream: first byte arrives through pipe-pane", first is not None)
+                if first is not None:
+                    dt = L.ms_since_t0(first)
+                    check("stream: first byte is timed from exec, not tmux spawn", dt is not None and dt < 2000, f"{dt}ms")
+                full = L.bytes_since(0)
+                check("stream: no byte written before the gate is lost", b"A" in full, repr(full[:20]))
+                check("screen: capture-pane returns rendered text", "A" in L.screen(), repr(L.screen()[:40]))
+                # a probe typed into a shell echo is visible on screen: the
+                # verification step depends on it
+                L.send("probezz")
+                time.sleep(0.3)
+                check("screen: typed text is readable back", "probezz" in L.screen())
+                _sig = L.echo_mode()
+                check("termios: echo mode classifies", _sig in ("kernel-echo", "render"), str(_sig))
+
+        # a render-mode app must classify as render after it takes the tty
+        with Launch(["/bin/sh", "-c", "stty -echo 2>/dev/null; printf 'ready'; sleep 5"]) as L:
+            if not L.err:
+                got = None
+                for _ in range(200):
+                    got = L.echo_mode()
+                    if got == "render":
+                        break
+                    time.sleep(0.01)
+                check("termios: ECHO off classifies as render", got == "render", str(got))
+
+        # the clock is not a poll cadence: a deliberately delayed write must be
+        # reported at its own timestamp, not rounded up to a 22ms poll
+        with Launch(["/bin/sh", "-c", "sleep 0.4; printf 'X'; sleep 5"]) as L:
+            if not L.err:
+                hit = L.wait_for(lambda ts, b: ts if b"X" in b else None, 5.0)
+                if hit is not None:
+                    dt = L.ms_since_t0(hit)
+                    check("stream: delayed write is timed at the write, +/-50ms", 350 < dt < 550, f"{dt:.1f}ms")
+                else:
+                    check("stream: delayed write is timed at the write", False, "no hit")
     else:
-        print("  skip tmux checks (tmux not installed)")
+        print("  skip rig checks (tmux not installed)")
 
     if fails:
-        print(f"\nself-test FAILED ({len(fails)})")
+        print(f"\nself-test FAILED ({len(fails)}): {', '.join(fails)}")
         return 1
     print("\nself-test ok")
     return 0
 
 
+# ---------------------------------------------------------------------------
+# main
+# ---------------------------------------------------------------------------
+
+
+USAGE = """usage: bench.py [--quick] [--out DIR] [--only NAME,...] [--debug]
+                [--self-test] [--help]
+
+  --quick           2 launches per tool instead of 5 (smoke tests)
+  --out DIR         output directory (default: <repo>/bench)
+  --only NAME,...   measure only these tools, by label
+  --debug           verbose narration to stderr
+  --self-test       verify the measurement rig itself, then exit
+  --help            this text
+"""
+
+
 def main():
+    # Checked first, and deliberately NOT by falling through: an unrecognised
+    # flag must not start a 20-minute measurement run, which is what happened
+    # before this existed (`bench.py --help` measured the whole field).
+    if "--help" in sys.argv or "-h" in sys.argv:
+        print(USAGE, end="")
+        sys.exit(0)
+    unknown = [a for a in sys.argv[1:] if a.startswith("-") and a not in ("--quick", "--debug", "--self-test")]
+    if "--out" in sys.argv and sys.argv.index("--out") + 1 >= len(sys.argv):
+        print("bench: --out needs a directory", file=sys.stderr)
+        sys.exit(2)
+    if "--only" in sys.argv and sys.argv.index("--only") + 1 >= len(sys.argv):
+        print("bench: --only needs a comma-separated list", file=sys.stderr)
+        sys.exit(2)
+    if unknown:
+        print(f"bench: unknown option(s) {', '.join(unknown)}\n\n{USAGE}", file=sys.stderr)
+        sys.exit(2)
     if "--self-test" in sys.argv:
         sys.exit(self_test())
     quick = "--quick" in sys.argv
     out = sys.argv[sys.argv.index("--out") + 1] if "--out" in sys.argv else os.path.join(ROOT, "bench")
+    only = None
+    if "--only" in sys.argv:
+        only = {s.strip().lower() for s in sys.argv[sys.argv.index("--only") + 1].split(",") if s.strip()}
     os.makedirs(out, exist_ok=True)
 
     n_start = 2 if quick else 4
-    n_probes = 2 if quick else 5
-    # first-input is slower per probe (full launch + typing + echo wait)
-    n_input = 2 if quick else 3
+    launches = 2 if quick else 5
 
+    if not tmux_ready():
+        print("bench: tmux is required for the interactive metrics", file=sys.stderr)
+        sys.exit(2)
+
+    field = [(lb, bins) for lb, bins in AGENTS if only is None or lb in only]
     rows = []
-    n_tools = len(AGENTS) + len(OPENCODE_BINS)
-    for i, (label, bins) in enumerate(AGENTS):
+    for i, (label, bins) in enumerate(field):
         path = which(bins)
-        step(label, f"[{i+1}/{n_tools}] locating", " ".join(bins))
+        step(label, f"[{i + 1}/{len(field)}] locating", " ".join(bins))
         if not path:
             rows.append({"agent": label, "installed": False})
             print(f"{label}: not installed", flush=True)
             continue
-        rows.append(measure(label, path, n_start, n_probes, n_input))
-        print(flush=True)  # end the \r progress line for this tool
+        rows.append(measure(label, path, n_start, launches))
+        print(flush=True)
 
-    # opencode v2: fixed binary name `opencode2`. (The loop stays generic so a
-    # future bare-`opencode` fallback can be re-added as another tuple entry.)
-    oc_rows: list = []
+    # opencode v2 lives under a fixed binary name (`opencode2`); measured in
+    # the same pass so it is not a second, differently-configured run.
     seen_oc = set()
     for bin_name, fixed in OPENCODE_BINS:
+        if fixed and only is not None and fixed.lower() not in only and bin_name not in only:
+            continue
         path = shutil.which(bin_name)
         if not path:
+            if fixed:
+                rows.append({"agent": fixed, "installed": False})
+                print(f"{fixed}: not installed", flush=True)
             continue
-        if fixed is not None:
-            label = fixed
-            ver = version_of(path)
-        else:
-            ver = version_of(path)
-            label = opencode_label(ver)
-            if label is None:
-                print(f"{bin_name}: unrecognized version {ver!r} — skipped")
-                continue
+        ver = version_of(path)
+        label = fixed or ver
         if label in seen_oc:
             print(f"{bin_name}: {ver} (duplicate {label}, kept first)")
             continue
         seen_oc.add(label)
-        oc_rows.append(measure(label, path, n_start, n_probes, n_input))
-    for want in ("opencode v2",):
-        if want not in seen_oc:
-            oc_rows.append({"agent": want, "installed": False})
-            print(f"{want}: not installed")
-    at = next((i + 1 for i, r in enumerate(rows) if r["agent"] == "codex"), len(rows))
-    rows[at:at] = sorted(oc_rows, key=lambda r: r["agent"])
+        rows.append(measure(label, path, n_start, launches))
+        print(flush=True)
 
-    fox = next((r for r in rows if r["agent"] == "fox-agent" and r.get("installed")), None)
+    fox_row = next((r for r in rows if r["agent"] == "fox-agent" and r.get("installed")), None)
     fox_extra = {}
-    if fox:
+    if fox_row:
         fake, base = start_fake_provider()
         if base:
             try:
-                ttft = fox_ttft(base)
+                # Sampled, not taken once. Measured on an idle 4-core box, a
+                # single headless turn ranged 16.4s to 36.2s -- a 2x spread
+                # that is fox's own CPU-bound startup, not the provider (the
+                # fake is local and answers instantly, and `user` CPU is ~10s
+                # per run). One sample would have published whichever end of
+                # that spread the run happened to catch.
+                ttfts = []
+                for i in range(n_start):
+                    step("fox-agent", f"headless TTFT vs scripted provider {i + 1}/{n_start}")
+                    v = fox_ttft(base)
+                    if v is not None:
+                        ttfts.append(v)
+                step("fox-agent", "headless peak RSS")
                 rss = fox_headless_rss(base)
+                ttft_block = stat_block(ttfts)
                 fox_extra = {
-                    "ttft_ms": round(ttft, 1) if ttft is not None else None,
+                    "ttft_ms": round(ttft_block["p50"], 1) if ttft_block["p50"] is not None else None,
+                    "ttft": {k: (round(v, 1) if isinstance(v, float) else v) for k, v in ttft_block.items()},
                     "headless_peak_rss_mb": round(rss, 1) if rss is not None else None,
                 }
-                print(f"fox extra: {fox_extra}")
+                print(f"fox extra: {fox_extra}", flush=True)
             finally:
                 fake.kill()
         else:
-            print("fox extra: fake provider unavailable")
-    fox_extra["method"] = "headless `fox -p … --json` vs scripted local provider; RSS via /usr/bin/time -v; TUI bytes via PTY; TUI input = spawn→quiet→typed→echo on screen (log marker where echo is suppressed); input latency = ready (alive+quiet)→500ms→typed→echo, timing the keystroke round-trip only"
+            print("fox extra: fake provider unavailable", flush=True)
+    fox_extra["method"] = (
+        "headless `fox -p ... --json` against the repo's scripted local provider (no key, no network); "
+        "TTFT = spawn to the first parsed {\"type\":\"text\"} event; peak RSS via /usr/bin/time -v"
+    )
 
     import platform
+
+    # Recorded because it changes the numbers: on a contended box the same
+    # tool measured 2.9s and 10.3s for first byte in two runs 40 minutes
+    # apart (load average 4.1 on 4 cores versus idle). Without this a reader
+    # cannot tell a slow tool from a busy machine.
+    try:
+        load1, load5, load15 = os.getloadavg()
+    except (OSError, AttributeError):
+        load1 = load5 = load15 = None
+
 
     payload = {
         "generated": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "machine": f"{platform.system()} {platform.machine()} ({platform.release()})",
-        "method": (
-            "best of 4 `--version` runs; best of 5 PTY launches (no args) to first output byte; "
-            "best of 3 PTY launches measuring time-to-interactive since spawn (TUI alive+quiet, then "
-            "probe typed → the probe TEXT rendered on screen after ANSI stripping; log marker where a "
-            "tool suppresses echo); "
-            "best of 3 PTY launches measuring input latency (ready = alive+quiet, then a 500ms "
-            "settle, probe typed → probe TEXT rendered; the clock starts at the keystroke, so startup "
-            "cost is removed). Both input metrics wait for the probe text itself, never for the first "
-            "byte: a TUI emits cursor-control bytes before compositing its frame, and a periodic status "
-            "repaint can land after a keystroke, so 'first output' measured neither. Each row carries "
-            "input_signal: termios ECHO is read through the PTY master to say whether the tty echoed for "
-            "the tool (kernel-echo — no UI required, `cat` times ~0.3ms) or the tool disabled echo and "
-            "had to render the cell itself (render). Kernel-echo and render numbers are NOT comparable "
-            "and are ranked separately. "
-            "PSS after 1.5s idle from /proc smaps_rollup; bundle = the binary itself, a launcher's "
-            "exec target where a wrapper hands off, or the package "
-            "dir for script CLIs (entry shims alone would pretend node_modules are free); "
-            "fox TTFT = spawn to first text event of `fox -p … --json` vs the repo's scripted local "
-            "provider (no key, no network); fox peak RSS of that turn via /usr/bin/time -v. "
-            "Missing tools are n/a, never estimated."
-        ),
+        "cpu_count": os.cpu_count(),
+        "load_avg": [round(v, 2) if v is not None else None for v in (load1, load5, load15)],
+        "method": {
+            "timings": (
+                "Every duration comes from a forkless byte stream: the tool is launched in a detached "
+                "tmux session behind a gate FIFO, `pipe-pane` is attached before the gate is released, "
+                "and bytes are timestamped as they are read. t0 is the gate release (the exec), so "
+                "tmux's own spawn cost is not charged to the tool and no early byte can be missed. "
+                "The predecessor polled `tmux capture-pane`, which forks tmux: measured 9.2ms p50 / "
+                "32.2ms p95 per sample, a ~22ms poll cadence and a floor under every number it published "
+                "(it reported 4.2ms input latency -- below the cost of one observation)."
+            ),
+            "metrics": (
+                "first_byte = exec to first byte on the wire; first_paint = exec to first printable "
+                "glyph (a TUI's first byte is often only cursor bookkeeping, e.g. fox's `\\e[?25l`); "
+                "ttfi = exec to probe rendered, where the probe is typed as soon as the app owns the "
+                "tty (termios ECHO off) and has stopped writing; key_latency = keystroke to probe "
+                "rendered after a settle, with startup removed and the settle wait explicitly outside "
+                "the clock."
+            ),
+            "statistics": (
+                "p50 of successful launches is published, with min and p95 beside it. The predecessor "
+                "published min, which hid the spread: the shipped opencode first-byte row was 101ms min "
+                "against 1539ms p95. Rows with fewer than "
+                f"{MIN_RANK_N} successful samples are reported but not ranked."
+            ),
+            "timeouts": (
+                "A timeout is recorded as a failure and excluded from the statistics, never published as "
+                "a duration. The predecessor's 15s probe timeout appeared in the table as measurement "
+                "(opencode 15203.1ms, amp 15053.7ms, kilo 16476.3ms) and was RANKED."
+            ),
+            "probe": (
+                "Two letters not already present on the captured screen are typed; the match is made "
+                "against joined bytes since the keystroke (so a cell-diffing TUI that emits the probe in "
+                "pieces is still counted) AND verified against the rendered screen afterwards, so a "
+                "stream false positive cannot become a number."
+            ),
+            "signal": (
+                "termios ECHO is read from the pane's own pty. 'kernel-echo' means the line discipline "
+                "echoed the byte before the app woke (measured: `cat` in a pty times ~0.3ms with no UI), "
+                "so it describes the kernel; 'render' means the app disabled echo and repainted a cell "
+                "itself. Latency is ranked within 'render' only."
+            ),
+            "bundle": (
+                "the binary itself; a launcher's exec target where a wrapper hands off by path; or the "
+                "package dir for script CLIs, minus any bundled node/bun runtime (weighing a 2KB shim "
+                "would pretend node_modules are free; counting the interpreter would make every "
+                "JS tool report the same ~140MB)."
+            ),
+            "memory": (
+                "PSS of the whole process tree (children included: a node CLI's workers hold real "
+                "memory), floored over launches because extra processes only ever add, read after the "
+                "app settles and before the latency probe perturbs it."
+            ),
+            "missing": "A tool that is not installed is an n/a row and is excluded from rank counts, never estimated.",
+        },
         "rows": rows,
         "fox": fox_extra,
     }
@@ -1465,222 +2156,7 @@ def main():
         json.dump(payload, f, indent=2)
 
     render_outputs(out, rows, fox_extra, payload)
-    print("wrote", out)
-
-
-# One entry per metric lane: (key, column label, unit, formatter). Order is the
-# order the README summary lists them in — the headline metric first. The
-# optional 5th item restricts the ranking pool to a comparable signal class;
-# input latency needs it because kernel-echo tools are not racing the same
-# event as a raw-mode TUI (see _echo_mode).
-METRICS = [
-    ("tui_first_byte_ms", "TUI 1st byte", "ms", lambda v: f"{v:.0f} ms", None),
-    ("tui_first_input_ms", "TUI 1st input", "ms", lambda v: f"{v:.0f} ms", None),
-    ("tui_input_latency_ms", "input latency", "ms", lambda v: f"{v:.0f} ms", "render"),
-    ("disk_mb", "bundle", "MB", lambda v: f"{v:.0f} MB", None),
-    ("idle_pss_mb", "idle PSS", "MB", lambda v: f"{v:.0f} MB", None),
-    ("startup_ms", "`--version`", "ms", lambda v: f"{v:.0f} ms", None),
-]
-
-
-def rank_of(rows, key, fox_name="fox-agent", only=None):
-    """fox's position for one metric plus how many tools the field has.
-
-    Ties count as the same rank (1 + number of strictly better tools), which
-    matters for the metrics where several tools report 0 ms. Anything not
-    installed or not measured is excluded rather than ranked last — an n/a row
-    is not a slow one.
-
-    `only` restricts the field to rows whose `input_signal` matches. Input
-    latency needs it: a tool whose tty echoes for it (kernel-echo) is not
-    racing the same event as a raw-mode TUI, so ranking them together is
-    meaningless — see _echo_mode().
-    """
-    pool = [r for r in rows if only is None or r.get("input_signal") == only]
-    vals = [(r["agent"], r[key]) for r in pool if r.get(key) is not None]
-    fox = next((v for a, v in vals if a == fox_name), None)
-    if fox is None:
-        return None, len(vals)
-    return 1 + sum(1 for _, v in vals if v < fox), len(vals)
-
-
-def render_outputs(out, rows, fox_extra, payload):
-    """Write every generated artifact from already-measured rows.
-
-    Split out of main() so the generated artifacts are one pure function of
-    the measured rows: results.json is written first, then every rendered
-    artifact derives from it — nothing is ever rendered from a number that was
-    not just measured.
-    """
-    # expandable dashboard: 3 columns x 2 rows of metric lanes, one <details>
-    # per lane so the README can show the headline graphs and tuck the rest
-    # behind a click. Full numbers live in table.md regardless.
-    is_fox = lambda r: r["agent"] == "fox-agent"  # noqa: E731
-    # Input latency is only comparable between tools that had to RENDER their
-    # echo. A cooked-mode tool has the tty line discipline echo the byte before
-    # it wakes (measured: `cat` in a PTY times ~0.3ms with no UI whatsoever), so
-    # its number describes the kernel, not the tool. Putting both kinds in one
-    # ranked column is what made a pile of CLI wrappers look an order of
-    # magnitude faster than a hand-tuned TUI. Only "render" rows are charted;
-    # the rest stay in the JSON with their signal labelled.
-    render_only = [r for r in rows if r.get("input_signal") == "render"]
-    excluded = len(rows) - len(render_only)
-
-    dashboard_svg(
-        [
-            (
-                "time to first char — TUI launch",
-                "PTY launch, no args, to first output byte · best of 5 · lower is better",
-                [(r["agent"], r.get("tui_first_byte_ms"), is_fox(r)) for r in rows],
-                "ms",
-                fmt_ms,
-            ),
-            (
-                "time to first input (since startup)",
-                "spawn → TUI quiet → probe typed → echo on screen · best of 3 · lower is better",
-                [(r["agent"], r.get("tui_first_input_ms"), is_fox(r)) for r in rows],
-                "ms",
-                fmt_ms,
-            ),
-            (
-                "input latency (render only)",
-                f"launch, wait ready, 500ms, type probe, time until probe text is on screen · best of 3 · lower is better · {excluded} tool(s) excluded: their tty echoes for them (kernel-echo, not a render)",
-                [(r["agent"], r.get("tui_input_latency_ms"), is_fox(r)) for r in render_only],
-                "ms",
-                fmt_ms,
-            ),
-            (
-                "bundle size",
-                "binary, or package dir for script CLIs · lower is better",
-                [(r["agent"], r.get("disk_mb"), is_fox(r)) for r in rows],
-                "MB",
-                lambda v: f"{v:.0f}",
-            ),
-            (
-                "idle memory — TUI at rest",
-                "PSS after 1.5s idle, before any model traffic · lower is better",
-                [(r["agent"], r.get("idle_pss_mb"), is_fox(r)) for r in rows],
-                "MB",
-                lambda v: f"{v:.0f}",
-            ),
-            (
-                "`--version` (harness floor)",
-                "best of 4 · reference only, several tools short-circuit this before loading their bundle",
-                [(r["agent"], r.get("startup_ms"), is_fox(r)) for r in rows],
-                "ms",
-                fmt_ms,
-            ),
-        ],
-        os.path.join(out, "bench.svg"),
-    )
-
-    # markdown table — EVERY collected field at full precision. The README
-    # snapshot trims to a headline subset; this is the complete record.
-    def cell(v, unit="", nd=1):
-        if v is None:
-            return "—"
-        return f"{v:.{nd}f}{unit}"
-
-    T = [
-        "| agent | version | bin | bundle (MB) | bundle kind | `--version` (ms) | TUI 1st byte (ms) | TUI 1st input (ms) | input latency (ms) | signal | idle PSS (MB) |",
-        "|---|---|---|---|---|---|---|---|---|---|---|",
-    ]
-    for r in rows:
-        if not r.get("installed"):
-            T.append(f"| {r['agent']} | n/a (not installed) | — | — | — | — | — | — | — | — | — |")
-            continue
-        name = f"**{r['agent']}**" if r["agent"] == "fox-agent" else r["agent"]
-        T.append(
-            f"| {name} | {r['version']} | `{r['bin']}` | {cell(r.get('disk_mb'))} | {r.get('disk_kind','—')} | "
-            f"{cell(r.get('startup_ms'))} | {cell(r.get('tui_first_byte_ms'))} | {cell(r.get('tui_first_input_ms'))} | "
-            f"{cell(r.get('tui_input_latency_ms'))} | {r.get('input_signal') or '—'} | {cell(r.get('idle_pss_mb'))} |"
-        )
-    table_md = "\n".join(T) + "\n"
-    with open(os.path.join(out, "table.md"), "w") as f:
-        f.write(table_md)
-
-    # README snapshot block: the bench workflow splices this between
-    # <!-- bench:start --> and <!-- bench:end --> so the top-of-README numbers
-    # refresh with every run instead of going stale.
-    #
-    # Default view = one row per metric: fox-agent's absolute score and its
-    # rank in the field. Anything a reader has to do arithmetic on (or scroll
-    # sideways through 23 competitor rows to interpret) is behind a fold. The
-    # per-agent grid, the dashboard SVG and the full-precision record are all
-    # still generated and still one click away.
-    HT = [
-        "| metric | fox-agent | rank |",
-        "|---|---|---|",
-    ]
-    for key, label, unit, fmt, only in METRICS:
-        fox_row = next((r for r in rows if r["agent"] == "fox-agent"), None)
-        val = fox_row.get(key) if fox_row else None
-        rank, field = rank_of(rows, key, only=only)
-        if val is None:
-            HT.append(f"| {label} | — | — |")
-            continue
-        rank_s = f"**#{rank}** of {field}" if rank is not None else f"of {field}"
-        HT.append(f"| {label} | **{fmt(val)}** | {rank_s} |")
-    summary_md = "\n".join(HT)
-
-    # Rounded per-agent grid, folded: the reference view for "where does tool X
-    # land", which nobody needs before they have decided to care.
-    GT = [
-        "| agent | bundle | `--version` | TUI 1st byte | TUI 1st input | input latency | signal | idle PSS |",
-        "|---|---|---|---|---|---|---|---|",
-    ]
-    for r in rows:
-        if not r.get("installed"):
-            GT.append(f"| {r['agent']} | — | — | — | — | — | — | — |")
-            continue
-        name = f"**{r['agent']}**" if r["agent"] == "fox-agent" else r["agent"]
-        disk = f"{r['disk_mb']:.0f} MB" if r.get("disk_mb") is not None else "—"
-        st = f"{r['startup_ms']:.0f} ms" if r.get("startup_ms") is not None else "—"
-        tb = f"{r['tui_first_byte_ms']:.0f} ms" if r.get("tui_first_byte_ms") is not None else "—"
-        ti = f"{r['tui_first_input_ms']:.0f} ms" if r.get("tui_first_input_ms") is not None else "—"
-        la = f"{r['tui_input_latency_ms']:.0f} ms" if r.get("tui_input_latency_ms") is not None else "—"
-        # kernel-echo rows are marked so nobody compares them to a render number
-        sig = r.get("input_signal") or "—"
-        if sig == "kernel-echo":
-            sig = "kernel-echo (tty)"
-        pss = f"{r['idle_pss_mb']:.0f} MB" if r.get("idle_pss_mb") is not None else "—"
-        GT.append(f"| {name} | {disk} | {st} | {tb} | {ti} | {la} | {sig} | {pss} |")
-    grid_md = "\n".join(GT)
-
-    S = [
-        summary_md,
-        "",
-    ]
-    if fox_extra.get("ttft_ms") is not None:
-        rss = fox_extra.get("headless_peak_rss_mb")
-        rss_s = f"{rss:.0f} MB" if rss is not None else "n/a on this machine (/usr/bin/time missing)"
-        S.append(
-            f"fox-agent headless vs scripted local provider: time to first token **{fox_extra['ttft_ms']:.0f} ms**, "
-            f"peak RSS **{rss_s}**."
-        )
-        S.append("")
-    S += [
-        f"<details><summary>every tool, every metric</summary>",
-        "",
-        "![harness bench dashboard](bench/bench.svg)",
-        "",
-        grid_md,
-        "",
-        "</details>",
-        "",
-        "<details><summary>full precision · all collected fields</summary>",
-        "",
-        table_md.rstrip(),
-        "",
-        "</details>",
-        "",
-    ]
-    S.append(
-        f"_Generated {payload['generated']} on {payload['machine']}. "
-        f"[Method and caveats](#benchmarks) · [raw JSON](bench/results.json)_"
-    )
-    with open(os.path.join(out, "snippet.md"), "w") as f:
-        f.write("\n".join(S) + "\n")
+    print("wrote", out, flush=True)
 
 
 if __name__ == "__main__":
