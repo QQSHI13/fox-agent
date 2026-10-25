@@ -16,6 +16,7 @@ import * as acp from "@agentclientprotocol/sdk/unstable";
 import { RequestError } from "@agentclientprotocol/sdk/unstable";
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
+import { killTree } from "../tools/exec.ts";
 
 export interface AcpAgentSpec {
   command: string;
@@ -29,10 +30,6 @@ export interface RunAcpAgentOptions extends AcpAgentSpec {
   signal?: AbortSignal;
   /** every update the child sends, in order, before the turn stops */
   onUpdate?: (u: acp.SessionUpdate) => void;
-  /** the child's MCP servers, passed on `session/new` (rarely needed) */
-  mcpServers?: acp.McpServer[];
-  /** appended to the child's project instructions for this session */
-  systemPrompt?: string;
 }
 
 export interface AcpAgentResult {
@@ -73,11 +70,21 @@ function resolvePath(cwd: string, path: string): string {
 /** One live terminal, from `terminal/create` until `terminal/release`. */
 interface LiveTerminal {
   proc: Bun.Subprocess<"ignore", "pipe", "pipe">;
-  /** stdout+stderr appended as they arrive, capped at outputByteLimit */
-  output: string;
+  /** stdout+stderr as they arrived, still raw: bytes, not text */
+  chunks: Uint8Array[];
   truncated: boolean;
   limit: number;
+  /** pending SIGKILL from `killTree`, dropped when the child exits on its own */
+  cancelKill: (() => void) | null;
   exited: Promise<acp.TerminalExitStatus>;
+}
+
+/** The exit status of a terminal's process, or undefined while it still runs. */
+function exitStatusOf(p: LiveTerminal["proc"]): acp.TerminalExitStatus | undefined {
+  if (p.exitCode === null && p.signalCode === null) return undefined;
+  // `signal` must be a string per the protocol, but Bun reports a number or a
+  // Signals name — String() covers both without a mapping table.
+  return { exitCode: p.exitCode, signal: p.signalCode == null ? null : String(p.signalCode) };
 }
 
 /**
@@ -108,32 +115,28 @@ class TerminalHost {
       stdin: "ignore",
       stdout: "pipe",
       stderr: "pipe",
+      // `detached` puts the child in its own process group, which is what
+      // killTree targets — without it `sh -c "bun test"` survives the kill and
+      // keeps running (and holding the pipes) after the editor closed it.
+      detached: true,
     });
     const id = `term-${this.nextId++}`;
-    const limit = params.outputByteLimit && params.outputByteLimit > 0 ? params.outputByteLimit : 1_000_000;
     const term: LiveTerminal = {
       proc,
-      output: "",
+      chunks: [],
       truncated: false,
-      limit,
-      // `exited` is awaited by waitForExit; Bun's promise resolves to the code
-      exited: proc.exited.then((exitCode) => ({ exitCode, signal: null })),
+      limit: params.outputByteLimit && params.outputByteLimit > 0 ? params.outputByteLimit : 1_000_000,
+      cancelKill: null,
+      exited: proc.exited.then(() => exitStatusOf(proc) ?? { exitCode: proc.exitCode, signal: null }),
     };
     this.terminals.set(id, term);
 
-    // drain both pipes, appending as it arrives: a `waitForExit` that only
-    // returned the tail would lose the reason a build failed
+    // Drain both pipes as bytes. Truncation happens at read time, not here:
+    // the protocol says to keep the TAIL of the output, and dropping from the
+    // front means deciding what a character boundary is, which needs the
+    // decoding context a per-chunk append throws away.
     const append = (chunk: Uint8Array) => {
-      if (term.output.length >= term.limit) {
-        term.truncated = true;
-        return;
-      }
-      let text = new TextDecoder().decode(chunk);
-      if (term.output.length + text.length > term.limit) {
-        text = text.slice(0, term.limit - term.output.length);
-        term.truncated = true;
-      }
-      term.output += text;
+      term.chunks.push(chunk);
     };
     void (async () => {
       for await (const chunk of proc.stdout as ReadableStream<Uint8Array>) append(chunk);
@@ -153,13 +156,24 @@ class TerminalHost {
 
   output(params: acp.TerminalOutputRequest): acp.TerminalOutputResponse {
     const t = this.get(params.terminalId);
-    // a completed terminal reports its exit status inline; a running one has none.
-    // `signal` must be a string per the protocol, but Bun reports a number or a
-    // Signals name — String() covers both without a mapping table.
-    const exited = (t.proc.exitCode !== null || t.proc.signalCode !== null)
-      ? { exitCode: t.proc.exitCode, signal: t.proc.signalCode == null ? null : String(t.proc.signalCode) }
-      : undefined;
-    return { output: t.output, truncated: t.truncated, exitStatus: exited };
+    return { output: this.textOf(t), truncated: t.truncated, exitStatus: exitStatusOf(t.proc) };
+  }
+
+  /** The retained tail of a terminal's output, decoded as one stream. */
+  private textOf(t: LiveTerminal): string {
+    let bytes = t.chunks.length === 1 ? t.chunks[0]! : Buffer.concat(t.chunks);
+    if (bytes.byteLength > t.limit) {
+      // keep the tail: a build's failure reason is the last thing it printed
+      bytes = bytes.subarray(bytes.byteLength - t.limit);
+      t.truncated = true;
+      // never start inside a multi-byte character: 0b10xxxxxx is a continuation
+      let i = 0;
+      while (i < bytes.byteLength && i < 3 && (bytes[i]! & 0xc0) === 0x80) i++;
+      if (i) bytes = bytes.subarray(i);
+    }
+    // one decoder for the whole retained buffer, so a character split across
+    // two chunks is still decoded correctly
+    return new TextDecoder().decode(bytes);
   }
 
   async waitForExit(params: acp.WaitForTerminalExitRequest): Promise<acp.WaitForTerminalExitResponse> {
@@ -167,12 +181,7 @@ class TerminalHost {
   }
 
   kill(params: acp.KillTerminalRequest): acp.KillTerminalResponse {
-    const t = this.get(params.terminalId);
-    try {
-      t.proc.kill();
-    } catch {
-      /* already gone */
-    }
+    this.stop(this.get(params.terminalId));
     return {};
   }
 
@@ -181,11 +190,7 @@ class TerminalHost {
     // releasing an unknown id is not an error: the agent may be cleaning up
     // after a failure and cannot know whether its own create succeeded
     if (t) {
-      try {
-        t.proc.kill();
-      } catch {
-        /* already gone */
-      }
+      this.stop(t);
       this.terminals.delete(params.terminalId);
     }
     return {};
@@ -193,14 +198,17 @@ class TerminalHost {
 
   /** Kill every terminal an exiting connection left behind. */
   closeAll(): void {
-    for (const t of this.terminals.values()) {
-      try {
-        t.proc.kill();
-      } catch {
-        /* already gone */
-      }
-    }
+    for (const t of this.terminals.values()) this.stop(t);
     this.terminals.clear();
+  }
+
+  /** TERM then KILL the whole process group, reusing exec's `killTree`. */
+  private stop(t: LiveTerminal): void {
+    if (t.proc.pid && exitStatusOf(t.proc) === undefined) {
+      t.cancelKill?.();
+      t.cancelKill = killTree(t.proc.pid);
+      void t.exited.then(() => t.cancelKill?.());
+    }
   }
 }
 

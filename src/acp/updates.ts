@@ -57,15 +57,14 @@ function titleFor(name: string, args: string): string {
  * `size` for `usage_update` is the model's context window, which the mapper
  * cannot know — the caller passes it in. `used` is prompt+completion of the last
  * step, matching what fox-agent's own status bar reports.
+ *
+ * `notices` is whether the client advertised `ClientSessionCapabilities.notices`.
+ * The spec forbids sending a `notice` to a client that did not, so a warning on
+ * such a connection is dropped rather than being smuggled in as agent text.
  */
 export interface MapOptions {
   contextWindow: number;
-  /**
-   * The session's todo list, when the caller has one, so `plan` can be emitted
-   * after a `todo` tool call. ACP's Plan and fox-agent's todos describe the same
-   * thing — the agent's checklist — so this is a rename, not an invention.
-   */
-  todos?: TodoItem[] | null;
+  notices?: boolean;
 }
 
 /**
@@ -101,24 +100,6 @@ export function planUpdate(todos: TodoItem[]): SessionUpdate {
  */
 export function noticeUpdate(message: string): SessionUpdate {
   return { sessionUpdate: "notice", severity: "warning", title: message };
-}
-
-/**
- * The session's slash commands, so a client can offer them as a menu.
- *
- * ACP names them without the leading `/` (the client renders its own); fox-agent
- * keeps the slash in `CommandSpec` because the TUI input parses it. `hint` is
- * the only input shape ACP 1.x stable has, so `usage` maps straight onto it.
- */
-export function commandsUpdate(cmds: { name: string; description: string; hint?: string }[]): SessionUpdate {
-  return {
-    sessionUpdate: "available_commands_update",
-    availableCommands: cmds.map((c) => ({
-      name: c.name,
-      description: c.description,
-      input: c.hint ? { hint: c.hint } : null,
-    })),
-  };
 }
 
 /**
@@ -185,8 +166,9 @@ export function toSessionUpdate(ev: AgentEvent, opts: MapOptions): SessionUpdate
       // prompt's own `user` event is still skipped below: the client sent it.)
       return { sessionUpdate: "user_message_chunk", content: { type: "text", text: ev.text } };
     case "warn":
-      // ACP has a vocabulary for harness chatter that is not the model speaking
-      return noticeUpdate(ev.message);
+      // ACP has a vocabulary for harness chatter that is not the model speaking,
+      // but only a client that advertised `notices` may receive it
+      return opts.notices ? noticeUpdate(ev.message) : null;
     case "step":
     case "retry":
     case "user": // the client sent the prompt; echoing its seq back adds nothing

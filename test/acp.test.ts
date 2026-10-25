@@ -676,12 +676,15 @@ describe("event mapping", () => {
     expect(map({ type: "child_tool", session: "sub", name: "read", done: true, ok: true })).toBeNull();
 
     // a warning is chrome, not a message: ACP's `notice` carries it without
-    // putting harness text into the assistant's reply
-    expect(map({ type: "warn", message: "hm" })).toEqual({
+    // putting harness text into the assistant's reply — but ONLY to a client
+    // that advertised `notices`; the spec forbids it otherwise
+    const withNotices = (ev: AgentEvent) => toSessionUpdate(ev, { contextWindow: 128_000, notices: true });
+    expect(withNotices({ type: "warn", message: "hm" })).toEqual({
       sessionUpdate: "notice",
       severity: "warning",
       title: "hm",
     });
+    expect(map({ type: "warn", message: "hm" })).toBeNull();
   });
 
   test("tool_start args arrive whole, so streaming and settled views match", async () => {
@@ -958,7 +961,7 @@ describe("acp client: terminal host", () => {
     expect(text).toBe("0|hello-terminal|0");
   });
 
-  test("outputByteLimit truncates and says so", async () => {
+  test("outputByteLimit keeps the tail and says so", async () => {
     const text = await drive(async (client) => {
       const { terminalId } = await client.request(acp.methods.client.terminal.create, {
         sessionId: "s1",
@@ -970,7 +973,8 @@ describe("acp client: terminal host", () => {
       const out = await client.request(acp.methods.client.terminal.output, { sessionId: "s1", terminalId });
       return `${out.output}|${out.truncated}`;
     });
-    expect(text).toBe("0123|true");
+    // the tail, not the head: a build's failure reason is the last thing it printed
+    expect(text).toBe("6789|true");
   });
 
   test("kill stops a long-running command", async () => {
@@ -1009,5 +1013,165 @@ describe("acp client: terminal host", () => {
       return res.action;
     });
     expect(text).toBe("decline");
+  });
+});
+
+describe("acp: the guarantees the modes and overrides claim", () => {
+  /** A chat mock that records what the turn was handed: provider cfg and tool names. */
+  function spyChat() {
+    const seen: { baseUrl: string; tools: string[] }[] = [];
+    let system = "";
+    const fn = async function* (cfg: { baseUrl: string }, msgs: { role: string; content: string }[], tools: { name: string }[]): AsyncGenerator<StreamEvent> {
+      seen.push({ baseUrl: cfg.baseUrl, tools: tools.map((t) => t.name) });
+      system = msgs.find((m) => m.role === "system")?.content ?? "";
+      yield { type: "text", delta: "ok" };
+      yield { type: "done", reason: "stop" };
+    };
+    return {
+      seen,
+      get system() {
+        return system;
+      },
+      chat: fn as never,
+    };
+  }
+
+  test("read-only withholds repl and task, not just the editor tools", async () => {
+    const { buildAgent } = await import("../src/acp/server.ts");
+    const spy = spyChat();
+    const app = buildAgent({ config: cfg(), provider: provider(), chat: spy.chat });
+
+    await withAgent(app, async (agent) => {
+      const session = await agent.buildSession(work).withSession((s) => s.sessionId);
+      await agent.request(acp.methods.agent.session.setMode, { sessionId: session, modeId: "read-only" });
+      await promptTurnOn(agent, session);
+      return null;
+    });
+
+    const tools = spy.seen.at(-1)!.tools;
+    // the four the mode advertises, plus the two that were the leak: repl runs
+    // arbitrary code on the real `process`, task starts an unrestricted child
+    for (const name of ["write", "edit", "exec", "pty", "repl", "task"]) expect(tools).not.toContain(name);
+    // inspection still works
+    expect(tools).toContain("read");
+    expect(tools).toContain("grep");
+  });
+
+  async function promptTurnOn(agent: acp.ClientContext, sessionId: string): Promise<void> {
+    await agent.request(acp.methods.agent.session.prompt, { sessionId, prompt: [{ type: "text", text: "go" }] });
+  }
+
+  test("a successful todo emits a plan update alongside its tool result", async () => {
+    const { buildAgent } = await import("../src/acp/server.ts");
+    const chat = mockChat([
+      [{ type: "tool_call", call: { id: "t1", name: "todo", arguments: JSON.stringify({ todos: [{ content: "ship it", status: "pending" }] }) } }, { type: "done", reason: "tool_use" }],
+      textTurn("done"),
+    ]) as never;
+    const app = buildAgent({ config: cfg(), provider: provider(), chat });
+    const updates: acp.SessionUpdate[] = [];
+    await acp
+      .client({ name: "test" })
+      .onNotification(acp.methods.client.session.update, async ({ params }) => {
+        updates.push(params.update);
+      })
+      .connectWith(app, async (agent) => {
+        await agent.request(acp.methods.agent.initialize, { protocolVersion: acp.PROTOCOL_VERSION, clientCapabilities: {} });
+        const { sessionId } = await agent.request(acp.methods.agent.session.new, { cwd: work, mcpServers: [] });
+        await promptTurnOn(agent, sessionId);
+      });
+    const plan = updates.find((u) => u.sessionUpdate === "plan");
+    expect(plan).toMatchObject({ entries: [{ content: "ship it", status: "pending" }] });
+  });
+
+  test("systemPrompt appends, and refuses a mode it cannot honour", async () => {
+    const { buildAgent } = await import("../src/acp/server.ts");
+    const spy = spyChat();
+    const app = buildAgent({ config: cfg(), provider: provider(), chat: spy.chat });
+    await withAgent(app, async (agent) => {
+      const { sessionId } = await agent.request(acp.methods.agent.session.new, {
+        cwd: work,
+        mcpServers: [],
+        systemPrompt: { mode: "append", content: [{ type: "text", text: "EXTRA-INSTRUCTION" }] },
+      });
+      await promptTurnOn(agent, sessionId);
+      return null;
+    });
+    expect(spy.system).toContain("EXTRA-INSTRUCTION");
+    // an override would have to replace fox-agent's own instructions: refused, not silently appended
+    await expect(
+      withAgent(app, (agent) =>
+        agent.request(acp.methods.agent.session.new, {
+          cwd: work,
+          mcpServers: [],
+          systemPrompt: { mode: "override", content: [{ type: "text", text: "REPLACE" }] },
+        }),
+      ),
+    ).rejects.toThrow(/appends only/);
+  });
+
+  test("a non-stdio mcp server is refused by name, not dropped", async () => {
+    const { buildAgent } = await import("../src/acp/server.ts");
+    const app = buildAgent({ config: cfg(), provider: provider(), chat: mockChat([]) as never });
+    await expect(
+      withAgent(app, (agent) =>
+        agent.request(acp.methods.agent.session.new, {
+          cwd: work,
+          mcpServers: [{ type: "http", name: "remote", url: "https://example.test/mcp", headers: [] } as never],
+        }),
+      ),
+    ).rejects.toThrow(/mcp server 'remote'/);
+  });
+
+  test("providers/set moves the endpoint, and the required provider cannot be disabled", async () => {
+    const { buildAgent } = await import("../src/acp/server.ts");
+    const spy = spyChat();
+    const app = buildAgent({
+      config: { ...cfg(), provider: "work", providers: { work: { format: "openai-compatible", baseUrl: "http://127.0.0.1:1", models: [] }, spare: { format: "openai-compatible", baseUrl: "http://127.0.0.1:9", models: [] } } },
+      provider: provider(),
+      chat: spy.chat,
+    });
+    await withAgent(app, async (agent) => {
+      const { sessionId } = await agent.request(acp.methods.agent.session.new, { cwd: work, mcpServers: [] });
+      await agent.request(acp.methods.agent.providers.set, { providerId: "work", apiType: "openai", baseUrl: "http://127.0.0.1:2/v1" });
+      await promptTurnOn(agent, sessionId);
+      const listed = await agent.request(acp.methods.agent.providers.list, {});
+      expect(listed.providers.find((p) => p.providerId === "work")?.current?.baseUrl).toBe("http://127.0.0.1:2/v1");
+
+      // disabling clears the override and reports `current: null`
+      await agent.request(acp.methods.agent.providers.disable, { providerId: "spare" });
+      const after = await agent.request(acp.methods.agent.providers.list, {});
+      expect(after.providers.find((p) => p.providerId === "spare")?.current ?? null).toBeNull();
+
+      // the provider in use is `required`, so the spec forbids disabling it
+      await expect(agent.request(acp.methods.agent.providers.disable, { providerId: "work" })).rejects.toThrow(/required/);
+      return null;
+    });
+    expect(spy.seen.at(-1)!.baseUrl).toBe("http://127.0.0.1:2/v1");
+  });
+
+  test("a notice goes only to a client that advertised notices", async () => {
+    const { buildAgent } = await import("../src/acp/server.ts");
+    const app = buildAgent({
+      config: { ...cfg(), warnings: ["plugin x failed"] },
+      provider: provider(),
+      chat: mockChat([textTurn("hi")]) as never,
+    });
+    const collect = async (capabilities: acp.ClientCapabilities) => {
+      const seen: acp.SessionUpdate[] = [];
+      await acp
+        .client({ name: "test" })
+        .onNotification(acp.methods.client.session.update, async ({ params }) => {
+          seen.push(params.update);
+        })
+        .connectWith(app, async (agent) => {
+          await agent.request(acp.methods.agent.initialize, { protocolVersion: acp.PROTOCOL_VERSION, clientCapabilities: capabilities });
+          const { sessionId } = await agent.request(acp.methods.agent.session.new, { cwd: work, mcpServers: [] });
+          await promptTurnOn(agent, sessionId);
+        });
+      return seen;
+    };
+    expect((await collect({ session: { notices: {} } })).some((u) => u.sessionUpdate === "notice")).toBe(true);
+    // the spec: an agent MUST only send notices when the client advertised them
+    expect((await collect({})).some((u) => u.sessionUpdate === "notice")).toBe(false);
   });
 });

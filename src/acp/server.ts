@@ -38,10 +38,9 @@ import { attachHost, detachHost, abortTurn, turnRunning, releaseSteer, waitQuies
 import { shutdownTools } from "../tools/index.ts";
 import { lookupModel } from "../providers/models.ts";
 import { VERSION } from "../core/version.ts";
-import { COMMANDS } from "../commands.ts";
 import { REASONING_EFFORTS, type ReasoningEffort } from "../core/reasoning.ts";
 import { getTodos } from "../tools/todo.ts";
-import { stopReasonFor, toolKind, toSessionUpdate, planForToolEnd, commandsUpdate, modeUpdate } from "./updates.ts";
+import { stopReasonFor, toolKind, toSessionUpdate, planForToolEnd, modeUpdate } from "./updates.ts";
 
 export interface AcpServerOptions {
   config: Config;
@@ -66,10 +65,18 @@ function checkId(id: string): void {
  */
 const MODES = [
   { id: "agent", name: "Agent", description: "Full tool access — read, write, edit, exec." },
-  { id: "read-only", name: "Read-only", description: "Inspect only: write, edit, exec and pty are withheld." },
+  { id: "read-only", name: "Read-only", description: "Inspect only: the mutating tools and the two that could run them anyway are withheld." },
 ] as const;
-/** Tools a `read-only` session may not call. `ctx` stays: it edits the window, not the disk. */
-const READ_ONLY_EXCLUDED = ["write", "edit", "exec", "pty"];
+/**
+ * Tools a `read-only` session may not call.
+ *
+ * `write`/`edit`/`exec`/`pty` are the obvious ones. `repl` and `task` are here
+ * for the same reason and were the leak: a vm context seeded with the real
+ * `process` can spawn a child or `import("node:fs")`, and `task` starts another
+ * agent with the full registry — either is a one-line way around the mode.
+ * `ctx` stays: it edits the window, not the disk.
+ */
+const READ_ONLY_EXCLUDED = ["write", "edit", "exec", "pty", "repl", "task"];
 
 /**
  * Text content of one ACP prompt request, flattened for fox-agent's single-string turn API.
@@ -154,25 +161,45 @@ function parseCalls(raw: string | null): Array<{ id: string; name: string; argum
  * ACP `mcpServers` -> fox-agent's `[mcpServers.*]` table.
  *
  * Only stdio maps: fox-agent's MCP bridge spawns a child and speaks stdio, so an
- * `http`/`sse`/`acp` server has nowhere to go. Those are reported rather than
- * dropped in silence — a client that passed its own servers and saw no tools
- * appear would have no way to know why.
+ * `http`/`sse`/`acp` server has nowhere to go. `initialize` advertises
+ * `mcpCapabilities: {http: false, sse: false}`, so a conforming client never
+ * sends one; one that does gets a refusal naming the server rather than a
+ * session missing the tools it asked for.
  */
-function mcpServersFrom(list: acp.McpServer[] | undefined): { servers: Record<string, McpServerConfig>; warnings: string[] } {
+function mcpServersFrom(list: acp.McpServer[] | undefined): Record<string, McpServerConfig> {
   const servers: Record<string, McpServerConfig> = {};
-  const warnings: string[] = [];
   for (const s of list ?? []) {
     // `McpServerStdio` carries no `type` discriminant, so presence of `command`
     // is what distinguishes it from the http/sse/acp variants.
     if (!("command" in s)) {
-      warnings.push(`mcp server '${s.name}' skipped: fox-agent supports stdio MCP servers only, not '${s.type}'`);
-      continue;
+      throw RequestError.invalidParams(undefined, `mcp server '${s.name}': fox-agent supports stdio MCP servers only, not '${s.type}'`);
     }
     const env: Record<string, string> = {};
     for (const e of s.env ?? []) env[e.name] = e.value;
     servers[s.name] = { command: s.command, args: s.args ?? [], env };
   }
-  return { servers, warnings };
+  return servers;
+}
+
+/**
+ * ACP `systemPrompt` -> text appended to the project instructions.
+ *
+ * `append` is the only mode advertising `sessionCapabilities.systemPrompt`
+ * implies. `override` would have to replace fox-agent's own project
+ * instructions, which is a different promise, so it is refused instead of being
+ * silently treated as append — the spec requires the error.
+ */
+function systemPromptText(p: acp.SystemPrompt | null | undefined): string {
+  if (!p) return "";
+  if (p.mode !== "append") {
+    throw RequestError.invalidParams(undefined, `unsupported systemPrompt mode ${JSON.stringify(p.mode)}: this agent appends only`);
+  }
+  const parts: string[] = [];
+  for (const b of p.content ?? []) {
+    if (b.type !== "text") throw RequestError.invalidParams(undefined, `unsupported systemPrompt content '${b.type}'`);
+    parts.push(b.text);
+  }
+  return parts.join("\n");
 }
 
 /**
@@ -197,8 +224,23 @@ export function buildAgent(opts: AcpServerOptions): acp.AgentApp {
   const sessionMcp = new Map<string, Record<string, McpServerConfig>>();
   /** `providers/set` overrides, keyed by provider id. */
   const providerOverrides = new Map<string, { apiType: string; baseUrl: string; headers?: Record<string, string> }>();
+  /** `providers/disable` ids: reported as `current: null`, so a client sees it worked. */
+  const disabledProviders = new Set<string>();
   /** `logout` clears the in-memory key; a restart re-reads it from the config. */
   let loggedOut = false;
+  /** `initialize` records whether the client can render `notice`; the spec forbids
+   *  sending one to a client that did not advertise it. */
+  let clientNotices = false;
+
+  /**
+   * The provider id `providers/*` addresses.
+   *
+   * `provider.label` is absent for a bare wire format, and both sides of the
+   * `providers/set` / `providerFor` pair must agree on the key — the earlier
+   * `label ?? provider.provider` lookup could never match an override stored
+   * under the id the client sent, so the call reported success and did nothing.
+   */
+  const providerId = provider.label ?? config.provider;
 
   const modeOf = (sessionId: string) => sessionModes.get(sessionId) ?? "agent";
   const modesFor = (sessionId: string) => ({ currentModeId: modeOf(sessionId), availableModes: MODES.map((m) => ({ id: m.id, name: m.name, description: m.description })) });
@@ -242,7 +284,7 @@ export function buildAgent(opts: AcpServerOptions): acp.AgentApp {
     // override was set — it was inside the override branch, so a session with
     // no override kept prompting with the key it had just logged out of
     if (loggedOut) base.apiKey = "";
-    const ov = providerOverrides.get(provider.label ?? provider.provider ?? "");
+    const ov = providerOverrides.get(providerId);
     if (!ov) return base;
     return {
       ...base,
@@ -262,6 +304,17 @@ export function buildAgent(opts: AcpServerOptions): acp.AgentApp {
       mcpServers: extra ? { ...config.mcpServers, ...extra } : config.mcpServers,
       projectInstructions: instructions ? `${config.projectInstructions}\n\n${instructions}`.trim() : config.projectInstructions,
     };
+  }
+
+  /** Drop the per-session state. `session/delete` and `session/close` both end a
+   *  session's life for this process, so both must leave nothing behind. */
+  function forget(sessionId: string): void {
+    sessionModels.delete(sessionId);
+    sessionEffort.delete(sessionId);
+    sessionModes.delete(sessionId);
+    sessionInstructions.delete(sessionId);
+    sessionMcp.delete(sessionId);
+    sessionClients.delete(sessionId);
   }
 
   /**
@@ -300,11 +353,14 @@ export function buildAgent(opts: AcpServerOptions): acp.AgentApp {
         // about each call — see MODES
         excludeTools: modeOf(sessionId) === "read-only" ? READ_ONLY_EXCLUDED : undefined,
       })) {
-        const todos = getTodos(sessionId);
-        const update = ev.type === "done" ? null : toSessionUpdate(ev, { contextWindow: turnContextWindow, todos });
+        const update = ev.type === "done" ? null : toSessionUpdate(ev, { contextWindow: turnContextWindow, notices: clientNotices });
         if (update) await client.notify(acp.methods.client.session.update, { sessionId, update });
-        const plan = planForToolEnd(ev, todos);
-        if (plan) await client.notify(acp.methods.client.session.update, { sessionId, update: plan });
+        // the checklist is a SECOND update for one event, and only a successful
+        // `todo` produces it — read the list here rather than on every token
+        if (ev.type === "tool_end" && ev.name === "todo" && ev.ok) {
+          const plan = planForToolEnd(ev, getTodos(sessionId));
+          if (plan) await client.notify(acp.methods.client.session.update, { sessionId, update: plan });
+        }
         yield ev;
       }
     } finally {
@@ -335,34 +391,40 @@ export function buildAgent(opts: AcpServerOptions): acp.AgentApp {
 
   /** Announce the per-session state a client renders as chrome, not as messages. */
   async function announce(sessionId: string, client: { notify: (method: string, params: unknown) => Promise<unknown> }) {
-    const send = (update: acp.SessionUpdate) => client.notify(acp.methods.client.session.update, { sessionId, update });
-    await send(commandsUpdate(COMMANDS.map((c) => ({ name: c.name.replace(/^\//, ""), description: c.desc, hint: c.usage }))));
-    await send(modeUpdate(modeOf(sessionId)));
+    // No `available_commands_update`: the ACP prompt path feeds the text straight
+    // to the turn loop, and slash commands are parsed by the TUI only, so a menu
+    // here would send "/new" to the model as prose.
+    await client.notify(acp.methods.client.session.update, { sessionId, update: modeUpdate(modeOf(sessionId)) });
   }
 
   return acp
     .agent({ name: "fox-agent" })
-    .onRequest(acp.methods.agent.initialize, async () => ({
-      protocolVersion: acp.PROTOCOL_VERSION,
-      agentInfo: { name: "fox-agent", version: VERSION },
-      agentCapabilities: {
-        loadSession: true,
-        // text and embedded resources only: fox-agent's turn API takes one
-        // string, so an image block would have nowhere to go
-        promptCapabilities: { embeddedContext: true, image: false, audio: false },
-        mcpCapabilities: { http: false, sse: false },
-        // each `{}` advertises support; omitted means unsupported
-        sessionCapabilities: { list: {}, delete: {}, fork: {}, resume: {}, close: {}, additionalDirectories: {}, systemPrompt: {} },
-        // `logout` is the only auth op with a meaning here: it drops the API
-        // key for this process. There is no login flow — the key comes from the
-        // config or the environment.
-        auth: { logout: {} },
-        providers: {},
-      },
-      // No `authMethods`: there is no interactive login an editor could drive.
-      // Advertising one would make every client offer a button that cannot work.
-      authMethods: [],
-    }))
+    .onRequest(acp.methods.agent.initialize, async ({ params }) => {
+      clientNotices = !!params.clientCapabilities?.session?.notices;
+      return {
+        protocolVersion: acp.PROTOCOL_VERSION,
+        agentInfo: { name: "fox-agent", version: VERSION },
+        agentCapabilities: {
+          loadSession: true,
+          // text and embedded resources only: fox-agent's turn API takes one
+          // string, so an image block would have nowhere to go
+          promptCapabilities: { embeddedContext: true, image: false, audio: false },
+          mcpCapabilities: { http: false, sse: false },
+          // each `{}` advertises support; omitted means unsupported. No
+          // `additionalDirectories`: no handler reads the field, and advertising
+          // it would tell a client its extra roots were accepted.
+          sessionCapabilities: { list: {}, delete: {}, fork: {}, resume: {}, close: {}, systemPrompt: {} },
+          // `logout` is the only auth op with a meaning here: it drops the API
+          // key for this process. There is no login flow — the key comes from the
+          // config or the environment.
+          auth: { logout: {} },
+          providers: {},
+        },
+        // No `authMethods`: there is no interactive login an editor could drive.
+        // Advertising one would make every client offer a button that cannot work.
+        authMethods: [],
+      };
+    })
     .onRequest(acp.methods.agent.authenticate, async ({ params }) => {
       // Nothing to do: fox-agent's credential is the configured API key, and no
       // method it could advertise would change that. Accepted rather than
@@ -385,14 +447,25 @@ export function buildAgent(opts: AcpServerOptions): acp.AgentApp {
             supported: [p.format ?? "openai-compatible"],
             // in use by this process right now — the one an editor must show as active
             required: config.provider === id,
-            current: { apiType: ov?.apiType ?? p.format ?? "openai-compatible", baseUrl: ov?.baseUrl ?? p.baseUrl ?? config.baseUrl },
+            current: disabledProviders.has(id)
+              ? null
+              : { apiType: ov?.apiType ?? p.format ?? "openai-compatible", baseUrl: ov?.baseUrl ?? p.baseUrl ?? config.baseUrl },
           };
         }),
         // wire formats with no profile behind them, so a client can still show
         // what the process could route to
         ...availableProviders()
           .filter((f) => !config.providers[f])
-          .map((f) => ({ providerId: f, supported: [f], required: config.provider === f, current: config.provider === f ? { apiType: f, baseUrl: config.baseUrl } : null })),
+          .map((f) => ({
+            providerId: f,
+            supported: [f],
+            required: config.provider === f,
+            current: disabledProviders.has(f)
+              ? null
+              : config.provider === f || providerOverrides.has(f)
+                ? { apiType: providerOverrides.get(f)?.apiType ?? f, baseUrl: providerOverrides.get(f)?.baseUrl ?? config.baseUrl }
+                : null,
+          })),
       ],
     }))
     .onRequest(acp.methods.agent.providers.set, async ({ params }) => {
@@ -400,11 +473,21 @@ export function buildAgent(opts: AcpServerOptions): acp.AgentApp {
       if (!/^https?:\/\//.test(params.baseUrl ?? "")) {
         throw RequestError.invalidParams(undefined, `baseUrl must be an http(s) URL`);
       }
+      // An id this process cannot route to would be an override nothing reads.
+      if (params.providerId !== providerId && !config.providers[params.providerId] && !availableProviders().includes(params.providerId)) {
+        throw RequestError.invalidParams(undefined, `unknown provider ${JSON.stringify(params.providerId)} — see providers/list`);
+      }
       providerOverrides.set(params.providerId, { apiType: params.apiType, baseUrl: params.baseUrl.replace(/\/$/, ""), headers: params.headers });
+      disabledProviders.delete(params.providerId);
       return {};
     })
     .onRequest(acp.methods.agent.providers.disable, async ({ params }) => {
+      if (!params.providerId) throw RequestError.invalidParams(undefined, "providerId is required");
+      if (params.providerId === providerId) {
+        throw RequestError.invalidParams(undefined, `provider ${JSON.stringify(params.providerId)} is required and cannot be disabled`);
+      }
       providerOverrides.delete(params.providerId);
+      disabledProviders.add(params.providerId);
       return {};
     })
     .onRequest(acp.methods.agent.session.setConfigOption, async ({ params }) => {
@@ -442,10 +525,10 @@ export function buildAgent(opts: AcpServerOptions): acp.AgentApp {
       return {};
     })
     .onRequest(acp.methods.agent.session.new, async ({ params, client }) => {
-      const s = createSession(params.cwd, sessionModels.get("") ?? provider.model);
+      const s = createSession(params.cwd, provider.model);
       acquireLock(s.id, "acp");
       const mcp = mcpServersFrom(params.mcpServers);
-      if (Object.keys(mcp.servers).length) sessionMcp.set(s.id, mcp.servers);
+      if (Object.keys(mcp).length) sessionMcp.set(s.id, mcp);
       if (params.systemPrompt) sessionInstructions.set(s.id, systemPromptText(params.systemPrompt));
       await announce(s.id, client);
       return { sessionId: s.id, modes: modesFor(s.id), configOptions: configOptionsFor(s.id) };
@@ -473,20 +556,20 @@ export function buildAgent(opts: AcpServerOptions): acp.AgentApp {
       if (!getSession(params.sessionId)) throw RequestError.resourceNotFound(params.sessionId);
       acquireLock(params.sessionId, "acp");
       const mcp = mcpServersFrom(params.mcpServers);
-      if (Object.keys(mcp.servers).length) sessionMcp.set(params.sessionId, mcp.servers);
+      if (Object.keys(mcp).length) sessionMcp.set(params.sessionId, mcp);
       if (params.systemPrompt) sessionInstructions.set(params.sessionId, systemPromptText(params.systemPrompt));
       await replay(params.sessionId, config.acpHistory, (update) =>
         client.notify(acp.methods.client.session.update, { sessionId: params.sessionId, update }),
       );
       await announce(params.sessionId, client);
-      return {};
+      return { modes: modesFor(params.sessionId), configOptions: configOptionsFor(params.sessionId) };
     })
     .onRequest(acp.methods.agent.session.resume, async ({ params, client }) => {
       checkId(params.sessionId);
       if (!getSession(params.sessionId)) throw RequestError.resourceNotFound(params.sessionId);
       acquireLock(params.sessionId, "acp");
       await announce(params.sessionId, client);
-      return {};
+      return { modes: modesFor(params.sessionId), configOptions: configOptionsFor(params.sessionId) };
     })
     .onRequest(acp.methods.agent.session.fork, async ({ params, client }) => {
       checkId(params.sessionId);
@@ -494,10 +577,10 @@ export function buildAgent(opts: AcpServerOptions): acp.AgentApp {
       if (!forked) throw RequestError.resourceNotFound(params.sessionId);
       acquireLock(forked.id, "acp");
       const mcp = mcpServersFrom(params.mcpServers);
-      if (Object.keys(mcp.servers).length) sessionMcp.set(forked.id, mcp.servers);
+      if (Object.keys(mcp).length) sessionMcp.set(forked.id, mcp);
       if (params.systemPrompt) sessionInstructions.set(forked.id, systemPromptText(params.systemPrompt));
       await announce(forked.id, client);
-      return { sessionId: forked.id };
+      return { sessionId: forked.id, modes: modesFor(forked.id), configOptions: configOptionsFor(forked.id) };
     })
     .onRequest(acp.methods.agent.session.delete, async ({ params }) => {
       checkId(params.sessionId);
@@ -508,11 +591,7 @@ export function buildAgent(opts: AcpServerOptions): acp.AgentApp {
       await shutdownTools(params.sessionId);
       releaseLock(params.sessionId);
       if (!deleteSession(params.sessionId)) throw RequestError.resourceNotFound(params.sessionId);
-      sessionModels.delete(params.sessionId);
-      sessionEffort.delete(params.sessionId);
-      sessionModes.delete(params.sessionId);
-      sessionInstructions.delete(params.sessionId);
-      sessionMcp.delete(params.sessionId);
+      forget(params.sessionId);
       return {};
     })
     .onRequest(acp.methods.agent.session.close, async ({ params }) => {
@@ -522,6 +601,7 @@ export function buildAgent(opts: AcpServerOptions): acp.AgentApp {
       releaseSteer(params.sessionId);
       await shutdownTools(params.sessionId);
       releaseLock(params.sessionId);
+      forget(params.sessionId);
       return {};
     })
     .onNotification(acp.methods.agent.session.cancel, async ({ params }) => {
@@ -602,13 +682,6 @@ export function buildAgent(opts: AcpServerOptions): acp.AgentApp {
       if (failed) throw failed;
       return { stopReason: stop };
     });
-}
-
-/** ACP `systemPrompt` is a block or nothing; fox-agent appends it to the instructions. */
-function systemPromptText(p: acp.SystemPrompt | null | undefined): string {
-  if (typeof p === "string") return p;
-  if (Array.isArray(p)) return p.map((b) => ("text" in b ? b.text : "")).join("\n");
-  return "";
 }
 
 /**
