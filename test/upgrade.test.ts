@@ -67,3 +67,30 @@ describe("platformAsset", () => {
     expect(platformAsset()).toBe(expected);
   });
 });
+
+describe("promoteBinary: the swap must be undoable", () => {
+  test("a failed promotion puts the working binary back instead of losing it", async () => {
+    const { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync: rm } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { promoteBinary } = await import("../src/core/upgrade.ts");
+    const dir = mkdtempSync(join(tmpdir(), "fox-upg-"));
+    const target = join(dir, "fox");
+    const tmp = join(dir, ".fox-upgrade-1");
+    writeFileSync(target, "OLD");
+    // the promotion fails after the old binary has already been renamed away:
+    // the temp file is gone (a cleaner, a full disk, an EXDEV mount). This is
+    // the window in which the old code left the user with no `fox` at all.
+    let err = "";
+    try {
+      promoteBinary(target, tmp, "v9.9.9");
+    } catch (e) {
+      err = (e as Error).message;
+    }
+    expect(err).toContain("previous binary restored");
+    // the old binary is back where the user's shell finds it
+    expect(existsSync(target)).toBe(true);
+    expect(readFileSync(target, "utf8")).toBe("OLD");
+    rm(dir, { recursive: true, force: true });
+  });
+});

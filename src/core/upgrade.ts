@@ -135,6 +135,40 @@ export function ensureAlias(): void {
   }
 }
 
+/**
+ * Swap a downloaded binary into place, keeping the old one as `.fox-previous`.
+ *
+ * Two renames are not one step: if the second fails (EXDEV on a mount, ENOSPC,
+ * the process dying in that window) the old binary is already renamed away and
+ * `target` does not exist — `fox` is gone, and every retry then fails on a
+ * missing target. So a failed promotion puts the backup back before the error
+ * travels to the retry loop. Exported for a test that can make the second
+ * rename fail for real (a directory in the way); the download path cannot.
+ */
+export function promoteBinary(target: string, tmp: string, tag: string): void {
+  const backup = join(dirname(target), ".fox-previous");
+  try {
+    if (existsSync(backup)) unlinkSync(backup);
+  } catch {
+    /* a stale backup we can't delete doesn't block the upgrade */
+  }
+  renameSync(target, backup);
+  try {
+    renameSync(tmp, target);
+  } catch (e) {
+    try {
+      renameSync(backup, target); // put the working binary back
+    } catch (restoreErr) {
+      throw new Error(
+        `upgrade could not install ${tag} (${(e as Error).message}) AND could not restore the previous binary ` +
+          `(${(restoreErr as Error).message}) — it is preserved at ${backup}; move it back to ${target} by hand`,
+      );
+    }
+    try { unlinkSync(tmp); } catch { /* the next attempt writes a fresh one */ }
+    throw new Error(`upgrade could not install ${tag}: ${(e as Error).message} — previous binary restored`);
+  }
+}
+
 /** Ordering-safe semver compare: positive when a > b. Prereleases rank below their release. */
 export function versionCmp(a: string, b: string): number {
   const [ra, preA] = a.replace(/^v/, "").split("-");
@@ -315,15 +349,13 @@ export async function upgrade(
         );
       }
 
-      // atomic swap: rename current → backup, temp → current
-      const backup = join(targetDir, ".fox-previous");
-      try {
-        if (existsSync(backup)) unlinkSync(backup);
-      } catch {
-        /* a stale backup we can't delete doesn't block the upgrade */
-      }
-      renameSync(target, backup);
-      renameSync(tmp, target);
+      // atomic swap: rename current → backup, temp → current.
+      // Two renames are not one step: if the second fails (EXDEV on a mount,
+      // ENOSPC, the process dying in that window) the old binary is already at
+      // `.fox-previous` and `target` does not exist — `fox` is gone, and every
+      // retry then fails on a missing target. So a failed promotion puts the
+      // backup back before the error travels to the retry loop.
+      promoteBinary(target, tmp, rel.tag);
       ensureAlias();
       onLog(`installed ${rel.tag} → ${target} (previous kept as .fox-previous)`);
       return { changed: true, version: rel.version };
