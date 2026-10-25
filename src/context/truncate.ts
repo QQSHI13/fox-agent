@@ -63,27 +63,41 @@ export function truncateToolResult(name: string, text: string, cap: number): Tru
   if (NEVER_TRUNCATE.has(name)) return null;
   // a non-positive cap means "no presentation cap"
   if (cap <= 0 || text.length <= cap) return null;
-  // the marker itself must fit, or a tiny cap would produce more marker than
-  // content and the truncation would be a net loss
-  const markerReserve = 120;
-  if (cap <= markerReserve * 2) return null;
 
-  const budget = cap - markerReserve;
   // 60/40 head/tail: the head identifies the call and the tail holds the
   // conclusion, but a diff or a stack trace is mostly front-loaded, so the
   // head gets the larger share.
-  const headLen = Math.floor(budget * 0.6);
-  const tailLen = budget - headLen;
-  const dropped = text.length - headLen - tailLen;
-
-  const marker =
-    `\n\n… (${dropped} chars truncated for display: showing the first ${headLen} ` +
-    `and last ${tailLen} of ${text.length}. The full result is stored — ` +
-    `"ctx restore" brings it back, or re-run with a narrower request.)\n\n`;
-
-  return {
-    text: text.slice(0, headLen) + marker + text.slice(text.length - tailLen),
-    dropped,
-    version: TRUNCATE_VERSION,
+  const markerFor = (headLen: number, tailLen: number): string => {
+    const dropped = text.length - headLen - tailLen;
+    return (
+      `\n\n… (${dropped} chars truncated for display: showing the first ${headLen} ` +
+      `and last ${tailLen} of ${text.length}. The full result is stored — ` +
+      `"ctx restore" brings it back, or re-run with a narrower request.)\n\n`
+    );
   };
+
+  // The marker is part of the budget, and its LENGTH depends on the numbers it
+  // states (digit counts), so a fixed reserve was both too small (the marker is
+  // ~190 chars, the old reserve 120) and unable to account for itself. Solve
+  // head+tail = cap - marker.length by iteration; it settles in a pass or two.
+  // A cap too small to hold the marker returns null: more marker than content
+  // would make the truncation a net loss.
+  let budget = cap;
+  for (let i = 0; i < 8; i++) {
+    const headLen = Math.floor(budget * 0.6);
+    const tailLen = budget - headLen;
+    const marker = markerFor(headLen, tailLen);
+    const next = cap - marker.length;
+    if (next <= 0) return null;
+    if (next === budget) {
+      return {
+        text: text.slice(0, headLen) + marker + text.slice(text.length - tailLen),
+        dropped: text.length - headLen - tailLen,
+        version: TRUNCATE_VERSION,
+      };
+    }
+    budget = next;
+  }
+  // The digit counts never settled; refuse rather than emit an over-cap excerpt.
+  return null;
 }

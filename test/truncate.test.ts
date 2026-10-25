@@ -64,6 +64,18 @@ describe("truncateToolResult", () => {
     // alone would exceed the budget
     expect(truncateToolResult("exec", "w".repeat(10_000), 50)).toBeNull();
   });
+
+  test("the excerpt never exceeds the cap at any cap that can hold the marker", () => {
+    // The old fixed reserve (120) was smaller than the ~190-char marker, so
+    // every excerpt overshot its stated cap by ~70 chars.
+    const text = "q".repeat(100_000);
+    for (const cap of [400, 500, 617, 1000, 2000, 5000, 60_000]) {
+      const t = truncateToolResult("exec", text, cap);
+      expect(t).not.toBeNull();
+      expect(t!.text.length).toBeLessThanOrEqual(cap);
+      expect(t!.text).toContain("chars truncated");
+    }
+  });
 });
 
 describe("truncation as a view op end to end", () => {
