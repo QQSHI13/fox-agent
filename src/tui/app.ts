@@ -32,7 +32,7 @@ import { Picker, type PickerAction, type PickerRow } from "./picker.ts";
 import { sessionRows, setPickerWheelStep } from "./pickerui.ts";
 import { VERSION } from "../core/version.ts";
 import type { AgentEvent } from "../core/events.ts";
-import { steer, peekSteer, withdrawSteer, attachHost, detachHost, abortTurn } from "../loop/steer.ts";
+import { steer, peekSteer, withdrawSteer, attachHost, detachHost, abortTurn, adoptTurnController } from "../loop/steer.ts";
 import { projectView } from "../context/view.ts";
 import { sessionContextTokens } from "../context/budget.ts";
 import { lookupModel } from "../providers/models.ts";
@@ -1365,7 +1365,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
    * message IS a normal user message. This is a generator because core consumes
    * it: it yields the raw stream and does the painting as a side effect.
    */
-  async function* turnStream(raw: string, signal: AbortSignal): AsyncGenerator<AgentEvent> {
+  async function* turnStream(raw: string, signal: AbortSignal, ctl: AbortController): AsyncGenerator<AgentEvent> {
     // the pending session becomes real exactly here — first message, not before
     if (!state.sessionId) {
       const s = createSession(state.cwd, state.provider.model);
@@ -1378,6 +1378,12 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       // header. Chrome stays welcome-only.
       push("info", `session ${s.id} · ${state.cwd}`, { ephemeral: true });
     }
+    // Hand core the SAME controller this turn runs under. The abort key paths
+    // (esc, ctrl+c, graceful exit) all call abortTurn(sessionId), which reads
+    // the controller core holds — and nothing registered a typed turn's
+    // controller, so those keys did nothing at all. ACP does the same for
+    // session/prompt (loop/steer.ts adoptTurnController).
+    adoptTurnController(state.sessionId, ctl);
     setBusy(true);
     const userItem = push("user", `❯ ${raw}`);
     let md = "";
@@ -1700,7 +1706,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     const ctl = new AbortController();
     ac = ctl;
     try {
-      for await (const _ev of turnStream(text, ctl.signal)) {
+      for await (const _ev of turnStream(text, ctl.signal, ctl)) {
         // rendering happens inside turnStream; nothing to do with the events here
       }
     } finally {
@@ -1725,7 +1731,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       turn: (text, ctl) => {
         ac = ctl; // esc interrupts a steered turn exactly like a typed one
         markDirty(); // the steering float disappears as the text is claimed
-        return turnStream(text, ctl.signal);
+        return turnStream(text, ctl.signal, ctl);
       },
     });
   }

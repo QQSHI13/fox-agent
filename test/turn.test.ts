@@ -292,6 +292,41 @@ describe("turn manager", () => {
     expect(msgs.some((m: any) => m.role === "assistant" && m.content === "partial answ")).toBe(true);
   });
 
+  test("abortTurn reaches a controller the client adopted for its own turn", async () => {
+    // The path a typed TUI turn takes: the client creates the controller,
+    // runs the turn with its signal, and hands the SAME controller to core.
+    // Esc/ctrl+c/graceful-exit all call abortTurn, which reads that registry;
+    // without the adoption the keys did nothing while the model streamed.
+    const t = await setup();
+    const s = t.createSession("/w", "m1");
+    const { adoptTurnController, abortTurn } = await import("../src/loop/steer.ts");
+    const ac = new AbortController();
+    adoptTurnController(s.id, ac);
+
+    const hanging = async function* (_cfg: any, _messages: any, _tools: any, signal?: AbortSignal) {
+      yield { type: "text", delta: "streaming" };
+      // hold the stream open until the abort reaches us, like a real provider
+      await new Promise<void>((resolve) => signal!.addEventListener("abort", () => resolve(), { once: true }));
+      const e = new Error("aborted");
+      e.name = "AbortError";
+      throw e;
+    };
+
+    const eventsP = collect(
+      t.runTurnCore(s.id, cfg(), "hi", ac.signal, { chat: hanging as any, quiet: true, registryOverride: new Map() }),
+    );
+    await new Promise((r) => setTimeout(r, 20));
+    expect(abortTurn(s.id, "test")).toBe(true);
+    expect(ac.signal.aborted).toBe(true);
+
+    const events = await eventsP;
+    expect((events.at(-1) as any).reason).toBe("aborted");
+    // the partial reply survives, exactly like any other interrupt
+    expect(t.allMessages(s.id).some((m: any) => m.role === "assistant" && m.content === "streaming")).toBe(true);
+    // the controller is released with the turn, so a later abort is a no-op
+    expect(abortTurn(s.id, "late")).toBe(false);
+  });
+
   test("a steer parked mid-call persists as a user message when the turn is interrupted", async () => {
     const t = await setup();
     const s = t.createSession("/w", "m1");
