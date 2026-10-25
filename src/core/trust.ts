@@ -3,6 +3,7 @@ import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { agentHome } from "./paths.ts";
 import { PROJECT_CONFIG_NAME, findUp } from "./config.ts";
+import { isDir } from "./fs.ts";
 
 export function trustFilePath(): string {
   return join(agentHome(), "trusted_dirs");
@@ -155,14 +156,6 @@ async function readTrustKey(prompt: string): Promise<string> {
     return ((await rl.question("")) ?? "").slice(0, 1);
   } finally {
     rl.close();
-  }
-}
-
-function isDir(p: string): boolean {
-  try {
-    return statSync(p).isDirectory();
-  } catch {
-    return false;
   }
 }
 

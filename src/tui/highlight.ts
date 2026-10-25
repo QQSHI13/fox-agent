@@ -16,10 +16,6 @@ const R = liveTheme<"KW" | "STR" | "COM" | "NUM" | "DADD" | "DDEL" | "DHUNK">({
   DHUNK: "info",
 });
 
-export function richColors() {
-  return { kw: R.KW, str: R.STR, com: R.COM, num: R.NUM, add: R.DADD, del: R.DDEL, hunk: R.DHUNK };
-}
-
 // ---- real grammar highlighting via @speed-highlight/core ----
 //
 // speed-highlight is a compact regex tokenizer: no WASM engine, no TextMate

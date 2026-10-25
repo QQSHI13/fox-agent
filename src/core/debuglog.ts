@@ -29,7 +29,7 @@
  *   GET https://api.example.com/v1/chat/completions -> 400
  * Entries are greppable by level (`grep 'ERROR provider:'`).
  */
-import { appendFileSync, mkdirSync, renameSync, statSync } from "node:fs";
+import { appendFileSync, mkdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { agentHome } from "./paths.ts";
 
@@ -135,17 +135,8 @@ const CATEGORIES: Record<DebugCategory, true> = {
   core: true,
 };
 
-export function allDebugCategories(): DebugCategory[] {
-  return Object.keys(CATEGORIES) as DebugCategory[];
-}
-
-/** The live level. */
-export function debugLevel(): DebugLevel {
-  return level;
-}
-
 /** The live category filter (empty = all categories). */
-export function debugCategories(): DebugCategory[] {
+function debugCategories(): DebugCategory[] {
   return [...categories];
 }
 
@@ -160,19 +151,9 @@ export function debugLevelIsExplicit(): boolean {
   return explicitLevel;
 }
 
-/** Restrict to these categories (empty = all). */
-export function setDebugCategories(cats: DebugCategory[]): void {
-  categories = new Set(cats);
-}
-
 /** Also print entries to stderr (headless runs: `fox -p ... 2>&1 | grep`). */
 export function setDebugMirrorStderr(on: boolean): void {
   mirrorStderr = on;
-}
-
-/** Is ANY entry currently being kept? The cheapest possible question. */
-export function debugEnabled(): boolean {
-  return level !== "off";
 }
 
 /** Would an entry at this level/category be kept? The hot-path check. */
@@ -187,7 +168,13 @@ function write(label: string, detail?: unknown): void {
     mkdirSync(agentHome(), { recursive: true });
     const p = debugLogPath();
     try {
-      if (statSync(p).size > CAP) renameSync(p, `${p}.old`);
+      // `.old` is the only rotation slot, so rotating by rename means the NEXT
+      // session's log inherits a file that may already be at CAP and every
+      // rotation after it renames it again — the old content is what gets
+      // thrown away, which is the opposite of what a crash investigation wants.
+      // Truncate instead: bounded size, and the current run always keeps its
+      // own entries.
+      if (statSync(p).size > CAP) writeFileSync(p, "");
     } catch {}
     const body = detail === undefined ? "" : detail instanceof Error ? (detail.stack ?? detail.message) : String(detail);
     const line = `[${new Date().toISOString()}] ${label}${body ? `\n${body}\n` : "\n"}`;
@@ -217,21 +204,6 @@ export function debugAt(l: DebugLevel, cat: DebugCategory, message: string, deta
 }
 
 /** Shorthands for the common levels. */
-export const debugTrace = (cat: DebugCategory, msg: string, detail?: unknown) => debugAt("trace", cat, msg, detail);
 export const debugInfo = (cat: DebugCategory, msg: string, detail?: unknown) => debugAt("info", cat, msg, detail);
 export const debugWarn = (cat: DebugCategory, msg: string, detail?: unknown) => debugAt("warn", cat, msg, detail);
 export const debugError = (cat: DebugCategory, msg: string, detail?: unknown) => debugAt("error", cat, msg, detail);
-
-/** Debug verbosity for a level (used by `/debug` to explain the current state). */
-export function debugLevelName(): string {
-  const cats = debugCategories();
-  return cats.length ? `${level} (${cats.join(",")})` : level;
-}
-
-/**
- * Read the environment for a debug spec at startup: FOX_AGENT_DEBUG=provider,turn
- * or FOX_AGENT_DEBUG=warn. Returns the level applied, or null.
- */
-export function debugFromEnv(): DebugLevel | null {
-  return applyDebugSpec(process.env.FOX_AGENT_DEBUG ?? "");
-}

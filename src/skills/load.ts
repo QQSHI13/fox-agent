@@ -23,6 +23,7 @@
  */
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { isDir } from "../core/fs.ts";
 
 export interface SkillInfo {
   /** from frontmatter, else the containing directory's name */
@@ -105,14 +106,6 @@ function readSkill(file: string, dirName: string): { skill: SkillInfo } | { erro
   const description =
     capText(flat || firstProseLine(body)) || `Skill at ${file} (no description given)`;
   return { skill: { name, description, path: file } };
-}
-
-function isDir(p: string): boolean {
-  try {
-    return statSync(p).isDirectory();
-  } catch {
-    return false;
-  }
 }
 
 /**

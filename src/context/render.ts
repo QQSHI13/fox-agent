@@ -251,7 +251,3 @@ export function nodeTokenEstimate(n: ViewNode): number {
   }
   return total;
 }
-
-export function sessionViewEstimate(sessionId: string): number {
-  return viewTokenEstimate(projectView(sessionId));
-}

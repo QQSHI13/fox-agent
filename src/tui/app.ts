@@ -186,10 +186,6 @@ export function setDebug(on: boolean): void {
   // not silently downgrade a level the user asked for.
   if (!debugLevelIsExplicit()) setDebugLevel(on ? "debug" : "off");
 }
-export function debugVerbose(): boolean {
-  return DEBUG_VERBOSE;
-}
-
 export function setTuiScrollbar(on: boolean): void {
   if (SCROLLBAR === on) return;
   SCROLLBAR = on;

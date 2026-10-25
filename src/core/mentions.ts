@@ -12,6 +12,7 @@
 import { readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
+import { sniffBinary } from "./fs.ts";
 
 const MAX_FILE_BYTES = 64_000;
 const MAX_TOTAL_BYTES = 200_000;
@@ -35,10 +36,6 @@ export function droppedPath(tok: string, cwd: string): string | null {
   } catch {
     return null;
   }
-}
-
-function sniffBinary(buf: Buffer): boolean {
-  return buf.subarray(0, 8192).includes(0);
 }
 
 /**

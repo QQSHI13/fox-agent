@@ -23,6 +23,7 @@ import { resolveChat } from "../providers/index.ts";
 import { lookupModel } from "../providers/models.ts";
 import type { Config } from "../core/config.ts";
 import type { ProviderConfig } from "../providers/types.ts";
+import { partsText } from "./parts.ts";
 
 export interface A2aServerOptions {
   config: Config;
@@ -40,14 +41,6 @@ interface TaskState {
   statusText: string;
   artifacts: Map<string, string>;
   done: boolean;
-}
-
-/** Text out of a part list (text parts only), mirroring the client's parser. */
-function partsText(parts: any[] | undefined): string {
-  return (parts ?? [])
-    .filter((p) => p?.kind === "text" && typeof p.text === "string")
-    .map((p) => p.text)
-    .join("\n");
 }
 
 /** Task view for `tasks/get` and the terminal result of send/stream. */

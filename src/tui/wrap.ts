@@ -63,10 +63,6 @@ export interface WrapOpts {
   exactWidth?: boolean;
 }
 
-export function segWidth(s: string): number {
-  return Bun.stringWidth(s);
-}
-
 const strWidth = (t: string): number => {
   let n = 0;
   for (const ch of t) n += charWidth(ch.codePointAt(0)!);

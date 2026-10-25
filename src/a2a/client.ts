@@ -15,6 +15,7 @@
  * failure.
  */
 import { VERSION } from "../core/version.ts";
+import { partsText } from "./parts.ts";
 
 export interface A2aOptions {
   signal?: AbortSignal;
@@ -50,14 +51,6 @@ async function rpc(base: string, method: string, params: unknown, opts: A2aOptio
   const body = (await res.json()) as JsonRpc;
   if (body.error) throw new Error(`A2A ${method} failed: ${body.error.message} (code ${body.error.code})`);
   return body.result;
-}
-
-/** Text out of a part list (text parts only; file/data parts are not extracted). */
-function partsText(parts: any[] | undefined): string {
-  return (parts ?? [])
-    .filter((p) => p?.kind === "text" && typeof p.text === "string")
-    .map((p) => p.text)
-    .join("\n");
 }
 
 /** Result text of a task: artifacts first (the work product), status message second. */
