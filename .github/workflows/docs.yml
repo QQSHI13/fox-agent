@@ -83,16 +83,24 @@ jobs:
           # (docsforge emits site/search/ and hashed asset dirs).
           touch site/.nojekyll
 
-      - uses: actions/configure-pages@v5
+      - uses: actions/configure-pages@v6
         # NOT `enablement: true`. Creating the Pages site needs admin rights
         # that the workflow's GITHUB_TOKEN does not have — that option fails
         # with "Resource not accessible by integration". The site is created
         # once, out of band (Settings -> Pages -> Source: GitHub Actions), and
         # this step only reads its config from then on.
 
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: site
+          # v4.0.0 began excluding dotfiles from the artifact by default, which
+          # would drop the .nojekyll written a step above — and with it the
+          # reason Pages stops running the output through Jekyll, whose silence
+          # about underscore-prefixed dirs would take half the site down. The
+          # build job's own assertion cannot catch this: the file exists on disk
+          # right up until the tar step refuses to pack it, and `deploy` is
+          # skipped on PR runs, so nothing fails until the live site is wrong.
+          include-hidden-files: true
 
   deploy:
     needs: build
