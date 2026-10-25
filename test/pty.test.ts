@@ -313,3 +313,33 @@ describe("literal keys", () => {
     expect(second.output).toContain("STILL_PENDING");
   }, 20_000);
 });
+
+// The stale-session sweep exists for a crashed fox, but its old rule ("kill
+// every fox-agent-* session except mine") also killed a SECOND live fox's
+// shell — a tmux session is only per-process-property when one process is
+// running. Staleness is now decided by the owning pid encoded in the name.
+describe("the stale-session sweep", () => {
+  liveTest("reaps a dead owner's shell and leaves a live peer's alone", async () => {
+    const { drivePty, ptySessionName } = await import("../src/tools/pty.ts");
+
+    // a peer owned by a process that has exited (spawnSync reaps it, so the
+    // pid is gone by the time the sweep looks)
+    const dead = Bun.spawnSync(["true"]);
+    const deadPeer = `fox-agent-${dead.pid}-ghost`;
+    // a peer owned by THIS process under a different session id — live
+    const livePeer = ptySessionName("someoneelse");
+    for (const name of [deadPeer, livePeer]) {
+      Bun.spawnSync(["tmux", "new-session", "-d", "-s", name], { stdout: "ignore", stderr: "ignore" });
+      spawned.push(name);
+    }
+
+    // touching pty spawns our own session, which runs the sweep first
+    const c = ctx(sid("sweep"), workdir);
+    const res = await drivePty({ keys: "echo SWEPT_OK\n", quiet_ms: 400 }, c);
+    expect(res.output).toContain("SWEPT_OK");
+
+    const list = Bun.spawnSync(["tmux", "list-sessions", "-F", "#{session_name}"], { stdout: "pipe", stderr: "ignore" }).stdout.toString();
+    expect(list).toContain(livePeer); // a live peer survives
+    expect(list).not.toContain(deadPeer); // the dead owner's shell is reaped
+  }, 25_000);
+});

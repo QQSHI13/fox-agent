@@ -60,7 +60,14 @@ export function ptySessionName(sessionId: string): string {
   // Full id, no truncation: ids are timestamp+8 random hex (~16 chars), and a
   // 12-char prefix once collided two sessions created in the same millisecond
   // — spawnSession's kill-session then murdered the other live shell.
-  return `fox-agent-${sessionId}`;
+  //
+  // The owning PROCESS id rides in the name so the stale-session sweep can
+  // tell "left behind by a dead fox" from "a shell a second fox instance is
+  // using right now" without any tmux metadata. Rules that needed one looked
+  // right and were not: the sweep used to kill every other `fox-agent-*`
+  // session, so opening a second fox and touching pty murdered the first
+  // one's live shell.
+  return `fox-agent-${process.pid}-${sessionId}`;
 }
 
 /**
@@ -78,6 +85,22 @@ async function hasSession(name: string): Promise<boolean> {
   return code === 0;
 }
 
+/** The owning pid encoded in a `fox-agent-<pid>-<sessionId>` name, if any. */
+function ownerPid(name: string): number | null {
+  const m = /^fox-agent-(\d+)-/.exec(name);
+  return m ? Number(m[1]) : null;
+}
+
+/** Is that pid still running? EPERM means it exists but is not ours. */
+function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return (e as { code?: string }).code === "EPERM";
+  }
+}
+
 /**
  * Kill fox-agent tmux sessions left behind by a crashed process.
  *
@@ -87,6 +110,13 @@ async function hasSession(name: string): Promise<boolean> {
  * use of a live session): kill every `fox-agent-*` session EXCEPT the one about
  * to be (re)created — tmux sessions are strictly per-process-property here, so
  * anything stale belongs to a dead fox.
+ *
+ * "Belongs to a dead fox" is decided by the pid in the name, NOT by the name
+ * prefix. The old rule killed every other `fox-agent-*` session, which took
+ * out a live shell whenever a second fox instance was running or a test suite
+ * spawned one concurrently. A name with no pid segment (a session from before
+ * this scheme) cannot be proven stale, so it is left alone: leaking one tmux
+ * session is recoverable, killing someone's working shell is not.
  */
 async function sweepStalePtys(keep: string): Promise<void> {
   if (!tmuxPath()) return;
@@ -94,9 +124,10 @@ async function sweepStalePtys(keep: string): Promise<void> {
   if (code !== 0) return;
   for (const line of out.split("\n")) {
     const name = line.trim();
-    if (name.startsWith("fox-agent-") && name !== keep) {
-      await tmux("kill-session", "-t", sessionTarget(name)).catch(() => {});
-    }
+    if (!name.startsWith("fox-agent-") || name === keep) continue;
+    const pid = ownerPid(name);
+    if (pid === null || pid === process.pid || pidAlive(pid)) continue; // not provably stale
+    await tmux("kill-session", "-t", sessionTarget(name)).catch(() => {});
   }
 }
 
