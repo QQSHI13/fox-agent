@@ -241,6 +241,31 @@ describe("repl background jobs", () => {
     expect(p.output).toContain("cross-call-value");
   }, 30_000);
 
+  test("a live background job does not steal a foreground eval's console lines", async () => {
+    // The job is parked on an await, so it is still "active" while the next
+    // call runs. Console capture used to route through one module-global
+    // activeJob: the foreground line went into the JOB's log (and vanished
+    // from the foreground result), and the job's own line was later reported
+    // as the foreground's.
+    const r0 = await replRun(
+      { code: 'globalThis.go = new Promise((r) => (globalThis.release = r)); await go; console.log("JOB_LINE"); "job done"', background: true, label: "console" },
+      ctx,
+    );
+    const id = /job (r\d+) started/.exec(r0.output)![1];
+
+    const fg = await replRun({ code: 'console.log("FOREGROUND"); return "fg-done";' }, ctx);
+    expect(fg.output).toBe("FOREGROUND\nfg-done");
+
+    await replRun({ code: "release()" }, ctx);
+    let poll = await replRun({ job: id }, ctx);
+    for (let i = 0; i < 50 && poll.output.includes("running"); i++) {
+      await new Promise((r) => setTimeout(r, 20));
+      poll = await replRun({ job: id }, ctx);
+    }
+    expect(poll.output).toContain("JOB_LINE");
+    expect(poll.output).not.toContain("FOREGROUND"); // it belongs to the other eval
+  }, 30_000);
+
   test("poll with no code but no job errors cleanly", async () => {
     const r = await replRun({ job: "r999" }, ctx);
     expect(r.ok).toBe(false);

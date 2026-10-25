@@ -52,7 +52,6 @@ const depths = new Map<string, number>();
 
 interface ReplSession {
   context: vm.Context;
-  log: string[];
 }
 
 const sessions = new Map<string, ReplSession>();
@@ -95,7 +94,7 @@ function seed(): Record<string, unknown> {
 function sessionState(sessionId: string): ReplSession {
   let s = sessions.get(sessionId);
   if (!s) {
-    s = { context: vm.createContext(seed()), log: [] };
+    s = { context: vm.createContext(seed()) };
     sessions.set(sessionId, s);
   }
   return s;
@@ -209,8 +208,20 @@ function readJobLogTail(job: ReplJob): string {
   return fresh.join("\n");
 }
 
-/** Run `code` as an async IIFE in the session's vm context, resolving to its value. */
-function evalInContext(state: ReplSession, code: string, timeout: number): Promise<unknown> {
+/**
+ * Run `code` as an async IIFE in the session's vm context, resolving to its
+ * value, with `console` bound to THIS eval's sink.
+ *
+ * The context is shared by every eval in a session, so a single global
+ * `console` cannot say which eval a `console.log` belongs to: it used to be
+ * routed by a module-global `activeJob`, which meant one background job
+ * hijacked every other eval's output (including a foreground call's, whose
+ * lines then vanished from its result) and two sessions' jobs cross-talked.
+ * Passing the collected object in as the IIFE's `console` parameter binds it
+ * per call — the argument is read synchronously during `runInContext`, before
+ * any other eval can interleave, and the async body carries it in its closure.
+ */
+function evalInContext(state: ReplSession, code: string, timeout: number, consoleObj: Record<string, unknown>): Promise<unknown> {
   // timeout 0 = no bound at all: vm's sync `timeout` is omitted (it means
   // "infinite" when 0, but leaving it out is explicit) and the hang timer is
   // never armed. vm's own `timeout` is a plain setTimeout value, so it shares
@@ -240,14 +251,24 @@ function evalInContext(state: ReplSession, code: string, timeout: number): Promi
       timer = setLongTimeout(() => rej(new Error(`eval exceeded timeout_ms (${timeout}ms) — likely a hung await; the eval keeps running detached and cannot be killed`)), timeout);
       timer.unref();
     });
+    // The argument is evaluated synchronously by runInContext, so the binding
+    // is captured before this call returns and the temporary global can be
+    // removed again without affecting the running eval.
+    const sandbox = state.context as Record<string, unknown>;
+    let ran: Promise<unknown>;
+    sandbox.__fox_repl_console = consoleObj;
     try {
-      // a SYNCHRONOUS infinite loop throws straight out of runInContext — clear
-      // the timer there too, or it fires later into a promise nobody is awaiting
-      return Promise.race([vm.runInContext(`(async () => ${body})()`, state.context, runOptions), hang]).finally(() => timer?.clear());
+      ran = vm.runInContext(`(async (console) => ${body})(__fox_repl_console)`, state.context, runOptions);
     } catch (e) {
+      // a SYNCHRONOUS infinite loop (or a parse error) throws straight out of
+      // runInContext — clear the timer there too, or it fires later into a
+      // promise nobody is awaiting
       timer?.clear();
       throw e;
+    } finally {
+      delete sandbox.__fox_repl_console;
     }
+    return Promise.race([ran, hang]).finally(() => timer?.clear());
   };
   return (async () => {
     try {
@@ -339,7 +360,6 @@ export async function replRun(
   if (!Number.isFinite(rawTimeout) || rawTimeout < 0) return fail("error: timeout_ms must be a non-negative number (0 = no timeout)");
   const timeout = rawTimeout === 0 ? 0 : Math.max(1, Math.floor(rawTimeout));
   const state = sessionState(sessionId);
-  state.log.length = 0;
 
   const tools = ctx.tools;
   const bridge = {
@@ -380,21 +400,17 @@ export async function replRun(
 
   const sandbox = state.context as Record<string, unknown>;
   sandbox.tools = bridge;
-  // A line-collecting console: `console.log` (and warn/error/info/debug) land in
-  // the result. For a background job they accumulate into job.log so a poll
-  // returns only what is new.
-  const capture = (level: string) => (...a: unknown[]) => {
-    const line = a.map((x) => (typeof x === "string" ? x : fmt(x))).join(" ");
-    if (activeJob) activeJob.log.push(line);
-    else state.log.push(line);
+  /** A line-collecting console whose output goes to exactly one eval's sink. */
+  const makeConsole = (sink: (line: string) => void): Record<string, unknown> => {
+    const capture = () => (...a: unknown[]) => {
+      sink(a.map((x) => (typeof x === "string" ? x : fmt(x))).join(" "));
+    };
+    return { log: capture(), info: capture(), warn: capture(), error: capture(), debug: capture() };
   };
-  sandbox.console = {
-    log: capture("log"),
-    info: capture("info"),
-    warn: capture("warn"),
-    error: capture("error"),
-    debug: capture("debug"),
-  };
+  // The eval wrapper below shadows this with its own binding; the global is the
+  // fallback for code that reaches `globalThis.console` explicitly. Each branch
+  // replaces it with that eval's own console before running anything.
+  sandbox.console = makeConsole(() => {});
 
   // ---- background: run the eval detached, return the job id ----
   if (args.background) {
@@ -411,12 +427,16 @@ export async function replRun(
     // the session. Counted BEFORE the eval starts, so there is no window where
     // the session looks idle.
     backgroundStarted(sessionId);
-    activeJob = job;
+    // Per-job sink: a background eval's console lines belong to that job, no
+    // matter what else runs in the session meanwhile (the old module-global
+    // "active job" made the newest job swallow every other eval's output).
+    const jobConsole = makeConsole((line) => job.log.push(line));
+    sandbox.console = jobConsole;
     // The job's lifetime is the SESSION's, not the turn's — it keeps running
     // while the agent moves on, and ends only when the session does
     // (cleanupRepl) or a kill asks it to. vm has no way to preempt a running
     // eval, so abort reaches a job only when it awaits.
-    void evalInContext(state, args.code, timeout)
+    void evalInContext(state, args.code, timeout, jobConsole)
       .then((v) => {
         job.result = capJobResult(fmt(v));
         job.done = true;
@@ -435,17 +455,19 @@ export async function replRun(
         notifyDone(sessionId, job);
         scheduleReap(sessionId, job);
         endBackground(sessionId, job);
-      })
-      .finally(() => {
-        if (activeJob === job) activeJob = null;
       });
     return ok(`job ${id} started (${label}) — poll with repl({job:"${id}"}), stop with repl({job:"${id}", signal:"kill"})`);
   }
 
   // ---- foreground eval ----
+  // A per-call sink: two foreground calls (tools run in parallel within a step)
+  // cannot steal each other's console lines either.
+  const lines: string[] = [];
+  const evalConsole = makeConsole((line) => lines.push(line));
+  sandbox.console = evalConsole;
   try {
-    const value = await evalInContext(state, args.code, timeout);
-    const body = [state.log.join("\n"), fmt(value)].filter(Boolean).join("\n").trimEnd() || "(no output)";
+    const value = await evalInContext(state, args.code, timeout, evalConsole);
+    const body = [lines.join("\n"), fmt(value)].filter(Boolean).join("\n").trimEnd() || "(no output)";
     return ok(body.length > outCap() ? body.slice(-outCap()) + "\n… (head truncated)" : body);
   } catch (e) {
     const msg = (e as Error).message ?? String(e);
@@ -453,6 +475,3 @@ export async function replRun(
     return fail(`error: ${msg}${stack && !msg.includes("\n") ? `\n${stack}` : ""}`);
   }
 }
-
-/** The job currently owning console capture, so background logs accumulate into it. */
-let activeJob: ReplJob | null = null;
