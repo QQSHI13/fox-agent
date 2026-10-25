@@ -161,8 +161,18 @@ export async function readRun(args: { path: string; offset?: number; limit?: num
 
   const raw = buf.toString("utf8");
   let lines = raw.split("\n");
+  // A trailing newline splits into a final empty element. It is not a line:
+  // counting it made "N lines total" one too high and offered a continuation
+  // offset past the last real line.
+  if (lines.length > 1 && lines[lines.length - 1] === "") lines.pop();
   const total = lines.length;
-  const off = Math.max(1, args.offset ?? 1);
+  const requested = args.offset ?? 1;
+  const off = Math.max(1, Number.isFinite(requested) ? Math.floor(requested) : 1);
+  if (off > total) {
+    // "offset past the end" used to return "(empty file)", which reads as a
+    // zero-byte file and sends the caller looking for a bug that is not there
+    return ok(`${args.path}: offset ${off} is past the end (${total} line${total === 1 ? "" : "s"} in the file)`);
+  }
   lines = lines.slice(off - 1);
   // The caller's limit is the budget; it used to be silently re-capped at 2000
   // lines, so `limit: 5000` returned 2000 and looked complete. Keep a guard

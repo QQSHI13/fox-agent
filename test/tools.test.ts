@@ -75,6 +75,24 @@ describe("read", () => {
     expect(r.output).toContain("offset/limit");
   });
 
+  test("an offset past the end reports the real line count, not an empty file", async () => {
+    write("e.txt", "one\ntwo\nthree\n");
+    const r = await F.readRun({ path: "e.txt", offset: 10 }, ctx);
+    expect(r.ok).toBe(true);
+    expect(r.output).toContain("past the end");
+    expect(r.output).toContain("3 lines");
+    expect(r.output).not.toContain("(empty file)");
+  });
+
+  test("a trailing newline is not counted as an extra line", async () => {
+    // split("\n") on "one\ntwo\nthree\n" yields a final empty element; the old
+    // count said 4 lines and offered "offset: 4" for a 3-line file
+    write("f.txt", "one\ntwo\nthree\n");
+    const r = await F.readRun({ path: "f.txt" }, ctx);
+    expect(r.output).not.toContain("4 lines");
+    expect(r.output).not.toContain("offset: 4");
+  });
+
   test("missing file is a failure, not a throw", async () => {
     const r = await F.readRun({ path: "nope.txt" }, ctx);
     expect(r.ok).toBe(false);
