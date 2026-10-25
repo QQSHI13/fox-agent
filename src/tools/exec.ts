@@ -6,6 +6,7 @@ import { setLongTimeout } from "../core/timers.ts";
 import { childEnv } from "../core/childenv.ts";
 import { shellName, shellPath } from "../core/shell.ts";
 import { outCap } from "./files.ts";
+import { cutTail } from "../core/text.ts";
 
 export const execDef: ToolDef = {
   name: "exec",
@@ -137,7 +138,7 @@ export async function execRun(
     if (next.length <= MAX_FG_BYTES) return next;
     // keep the tail (most recent output is what the model needs), count the drop
     dropped += next.length - MAX_FG_BYTES;
-    return next.slice(-MAX_FG_BYTES);
+    return cutTail(next, MAX_FG_BYTES);
   };
   const read = async (stream: ReadableStream, sink: (s: string) => void) => {
     const dec = new TextDecoder();
@@ -184,7 +185,7 @@ export async function execRun(
   if (dropped > 0) s = `… (${dropped} chars dropped, output too chatty)\n${s}`;
   // full:true lifts the per-result cap for this call — the 5MB in-memory guard
   // above still bounds it, and says so when it bites
-  const truncated = !args.full && s.length > outCap() ? s.slice(-outCap()) + "\n… (head truncated)" : s;
+  const truncated = !args.full && s.length > outCap() ? cutTail(s, outCap()) + "\n… (head truncated)" : s;
   let head = `exit ${code}`;
   if (killedBy) head += ` (${killedBy})`;
   const body = `${head}\n${truncated || "(no output)"}`;

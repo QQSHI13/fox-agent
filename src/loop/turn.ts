@@ -19,6 +19,7 @@ import { buildSystemPrompt, buildRuntimeHeader } from "./prompt.ts";
 import { renderContext, stripEchoedMarkers } from "../context/render.ts";
 import { truncateToolResult, DEFAULT_PRESENTATION_CAP } from "../context/truncate.ts";
 import { checkBudget, sessionContextTokens, type BudgetThresholds } from "../context/budget.ts";
+import { cutHead, cutTail } from "../core/text.ts";
 
 export interface TurnOptions {
   maxSteps?: number;
@@ -268,8 +269,8 @@ async function* drainStep(
         delay_ms: delay,
         error: resume ? `${pe.message} — resuming the answer from where it stopped` : pe.message,
       };
-      // abort-aware sleep: ESC during a 4-8s backoff must not wait out the
-      // whole delay before the interrupt is honored
+      // abort-aware sleep: ESC during a long backoff (anything up to the 60s
+      // ceiling) must not wait the whole delay out before the interrupt lands
       if (signal) {
         await new Promise<void>((resolve) => {
           const onAbort = () => {
@@ -342,7 +343,7 @@ async function execToolCall(call: ToolCall, tools: Map<string, Tool>, tctx: Tool
     // full:true) skips it — otherwise the harness silently re-imposed the cap
     // the caller had just asked to lift.
     const cap = result.uncapped ? Infinity : outCap() * 2;
-    const output = result.output.length > cap ? result.output.slice(-cap) : result.output;
+    const output = result.output.length > cap ? cutTail(result.output, cap) : result.output;
     debugInfo("tools", `← ${call.name}`, `ok=${result.ok} ms=${Date.now() - t0} bytes=${result.output.length}`);
     return { ok: result.ok, output, media: result.media };
   } catch (e) {
@@ -902,7 +903,11 @@ async function* turnBody(
           // media is billed at a flat estimate: chars/4 of base64 would report
           // ~3/4 of the raw file size as "tokens", drowning the real figure
           tokens: estTok(res.output) + (res.media?.length ?? 0) * 1500,
-          error: res.ok ? null : res.output.slice(0, 200),
+          // 200 chars is enough for every UI that shows a failed call, and the
+          // cut is surrogate-safe: a lone half is stored as U+FFFD and never
+          // comes back. An empty output stays "" — a failure must not read as
+          // a success just because the command printed nothing.
+          error: res.ok ? null : cutHead(res.output, 200),
         });
 
         // Presentation truncation, as a VIEW op rather than a rewrite: the row

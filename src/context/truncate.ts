@@ -1,3 +1,5 @@
+import { cutHead, cutTail } from "../core/text.ts";
+
 /**
  * Presentation truncation for tool results.
  *
@@ -91,7 +93,7 @@ export function truncateToolResult(name: string, text: string, cap: number): Tru
     if (next <= 0) return null;
     if (next === budget) {
       return {
-        text: text.slice(0, headLen) + marker + text.slice(text.length - tailLen),
+        text: cutHead(text, headLen) + marker + cutTail(text, tailLen),
         dropped: text.length - headLen - tailLen,
         version: TRUNCATE_VERSION,
       };

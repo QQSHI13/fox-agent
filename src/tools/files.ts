@@ -6,6 +6,8 @@ import type { ToolDef } from "../providers/types.ts";
 import { lookupModel } from "../providers/models.ts";
 import type { ToolContext, ToolResult } from "./types.ts";
 import { fail, ok } from "./types.ts";
+import { cutHead } from "../core/text.ts";
+import { sniffBinary } from "../core/fs.ts";
 import { applyEdits, syntaxWarning, type EditOp } from "./patch.ts";
 import { diagnose } from "../lsp/client.ts";
 
@@ -61,12 +63,7 @@ async function afterWrite(path: string, absPath: string, content: string, ctx: T
 }
 
 function cap(s: string, note = "… (truncated)"): string {
-  return s.length > OUT_CAP ? s.slice(0, OUT_CAP) + note : s;
-}
-function sniffBinary(buf: Buffer): boolean {
-  const n = Math.min(buf.length, 8000);
-  for (let i = 0; i < n; i++) if (buf[i] === 0) return true;
-  return false;
+  return s.length > OUT_CAP ? cutHead(s, OUT_CAP) + note : s;
 }
 
 /** Media files `read` can attach for a capable model, by extension -> [kind, IANA type]. */
