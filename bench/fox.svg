@@ -28,7 +28,7 @@
 <path d="M 347 398 h 9 M 347 398 v -9" stroke="#2e2b25" stroke-width="1.5" fill="none"/>
 <path d="M 612 398 h -9 M 612 398 v -9" stroke="#2e2b25" stroke-width="1.5" fill="none"/>
 <text x="361" y="198" fill="#8a8578" font-size="14" letter-spacing="1.6">IDLE MEMORY (PSS)</text>
-<text x="361" y="290" fill="#e6e1d8" font-size="66" font-weight="bold" letter-spacing="-2">45</text>
+<text x="361" y="290" fill="#e6e1d8" font-size="66" font-weight="bold" letter-spacing="-2">46</text>
 <text x="442" y="290" fill="#8a8578" font-size="21">MB</text>
 <rect x="361" y="310" width="93" height="30" rx="15" fill="#e0803c" fill-opacity="0.16" stroke="#e0803c" stroke-opacity="0.5"/>
 <text x="408" y="331" text-anchor="middle" fill="#e0803c" font-size="15" font-weight="bold">#2 of 22</text>
