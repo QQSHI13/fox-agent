@@ -106,6 +106,8 @@ export async function execRun(
     kill.cancel = killTree(proc.pid);
   };
   ctx.signal?.addEventListener("abort", onAbort, { once: true });
+  // an already-aborted signal never fires the listener above
+  if (ctx.signal?.aborted) onAbort();
 
   // Live-stream output to the host (the TUI paints it under the in-flight call),
   // throttled so a chatty command costs a repaint, not a flood. The agent still
@@ -138,24 +140,42 @@ export async function execRun(
     return next.slice(-MAX_FG_BYTES);
   };
   const read = async (stream: ReadableStream, sink: (s: string) => void) => {
+    const dec = new TextDecoder();
     try {
-      const dec = new TextDecoder();
       for await (const chunk of stream as any) {
         const s = dec.decode(chunk as Uint8Array, { stream: true });
         sink(s);
         streamOut(s);
       }
     } catch {}
+    // Flush the decoder: a stream that ends mid-character holds those bytes in
+    // its internal buffer, and without this they were dropped rather than
+    // surfaced as the replacement character. Same reasoning as the pty cursor.
+    try {
+      const tail = dec.decode();
+      if (tail) {
+        sink(tail);
+        streamOut(tail);
+      }
+    } catch {}
   };
-  await Promise.all([
-    read(proc.stdout as ReadableStream, (s) => (stdout = capAppend(stdout, s))),
-    read(proc.stderr as ReadableStream, (s) => (stderr = capAppend(stderr, s))),
-  ]);
-  flushStream();
-  timer?.clear();
-  ctx.signal?.removeEventListener("abort", onAbort);
-  const code = await proc.exited;
-  kill.cancel?.(); // child is gone; don't leave a SIGKILL timer pending
+  let code: number;
+  try {
+    await Promise.all([
+      read(proc.stdout as ReadableStream, (s) => (stdout = capAppend(stdout, s))),
+      read(proc.stderr as ReadableStream, (s) => (stderr = capAppend(stderr, s))),
+    ]);
+    flushStream();
+    timer?.clear();
+    // The listener stays attached through this wait. A command can close its
+    // own stdout/stderr and then keep running, so the reads finish while the
+    // process is still alive; removing the listener here made an ESC during
+    // that window unable to kill it, and the tool sat until the child exited.
+    code = await proc.exited;
+    kill.cancel?.(); // child is gone; don't leave a SIGKILL timer pending
+  } finally {
+    ctx.signal?.removeEventListener("abort", onAbort);
+  }
 
   let s = "";
   if (stdout.trim()) s += stdout;

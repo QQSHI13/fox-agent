@@ -106,3 +106,32 @@ describe("exec vs pty: the contrast is deliberate", () => {
     }
   }, 30_000);
 });
+
+// Interrupting a command that has stopped producing output but has not exited:
+// the read loops end when the child closes its own fds, and the tool then waits
+// on `proc.exited`. The abort listener used to be removed just before that
+// wait, so ESC in that window could not kill the child and the call sat until
+// it exited on its own.
+describe("exec interrupt and encoding", () => {
+  test("an abort after the pipes close still kills the child", async () => {
+    const { execRun } = await import("../src/tools/exec.ts");
+    const ac = new AbortController();
+    const c = { ...ctx(), signal: ac.signal } as ToolContext;
+    const t0 = Date.now();
+    setTimeout(() => ac.abort(), 300);
+    // closes fd 1 and 2 (so both read loops finish immediately), then keeps
+    // running for far longer than the assertion window
+    const r = await execRun({ cmd: "exec 1>&- 2>&-; sleep 30" }, c);
+    expect(Date.now() - t0).toBeLessThan(10_000);
+    expect(r.ok).toBe(false);
+    expect(r.output).toContain("interrupted");
+  }, 20_000);
+
+  test("an incomplete trailing UTF-8 sequence is surfaced, not dropped", async () => {
+    // the stream ends mid-character; without a decoder flush those bytes were
+    // silently discarded and the output looked empty
+    const { execRun } = await import("../src/tools/exec.ts");
+    const r = await execRun({ cmd: "printf '\\xe6\\x97'" }, ctx());
+    expect(r.output).toContain("\uFFFD");
+  });
+});
