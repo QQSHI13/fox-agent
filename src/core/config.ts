@@ -1,6 +1,6 @@
 import { dirname, isAbsolute, join } from "node:path";
 import { homedir } from "node:os";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { ConfigError } from "./errors.ts";
 import { debugInfo } from "./debuglog.ts";
 import { setConfiguredModels } from "../providers/models.ts";
@@ -710,12 +710,24 @@ function editConfigFile(path: string, edit: (doc: Record<string, unknown>) => vo
   const doc = (text === null ? {} : parseTomlDocument(text, path)) as Record<string, unknown>;
   edit(doc);
   mkdirSync(dirname(path), { recursive: true });
+  // 0600: this file holds provider apiKeys and headers, and the `.bak` keeps the
+  // PREVIOUS key after a rotation. Every other secret-adjacent file in the repo
+  // is 0600 (locks, clipboard temp, imported db); the config was the one file
+  // left at the umask, which is world-readable on a default 022.
+  const secret = { mode: 0o600 };
   if (text !== null) {
     try {
-      writeFileSync(`${path}.bak`, text);
+      writeFileSync(`${path}.bak`, text, secret);
+      chmodSync(`${path}.bak`, 0o600); // an older 0644 .bak stays 0644 otherwise
     } catch {}
   }
-  writeFileSync(path, Bun.TOML.stringify(doc) ?? "");
+  writeFileSync(path, Bun.TOML.stringify(doc) ?? "", secret);
+  // mode only applies at CREATE, so repair a config a previous version wrote 0644
+  try {
+    chmodSync(path, 0o600);
+  } catch {
+    /* a config we can write but not chmod is still better written than not */
+  }
 }
 
 /** Parse TOML text, throwing ConfigError naming the file. */

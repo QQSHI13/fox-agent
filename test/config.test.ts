@@ -46,6 +46,20 @@ describe("saveGlobalConfig", () => {
     expect(readFileSync(join(dir, "global3.toml"), "utf8")).toContain('theme = "nord"');
   });
 
+  test("the file it writes is 0600 — it holds apiKeys, and the .bak holds the previous one", async () => {
+    const { saveGlobalConfig } = await import("../src/core/config.ts");
+    const { statSync } = await import("node:fs");
+    const path = join(dir, "secret.toml");
+    saveGlobalConfig({ apiKey: "sk-live" }, path);
+    expect(statSync(path).mode & 0o777).toBe(0o600);
+    // and an existing world-readable config is repaired, not left readable
+    const { chmodSync } = await import("node:fs");
+    chmodSync(path, 0o644);
+    saveGlobalConfig({ model: "m2" }, path);
+    expect(statSync(path).mode & 0o777).toBe(0o600);
+    expect(statSync(`${path}.bak`).mode & 0o777).toBe(0o600);
+  });
+
   test("writers default to the effective config file, never the real home", async () => {
     // regression: saveGlobalConfig/saveProviderProfile defaulted to the real
     // global path, so a process that read FOX_AGENT_CONFIG wrote home instead
