@@ -331,10 +331,15 @@ export function renderMarkdown(src: string, state?: MdState, width?: number): Se
       // line to the column width per the alignment — padding lands on plain
       // space segs so cell styling never bleeds into the gutter
       const cellLines = (cell: string, c: number, base?: Partial<Seg>): Seg[][] => {
-        // +1: wrapSegs soft-wraps at width-1 (its width includes a
-        // continuation affordance), so a cell exactly as wide as its column
-        // would drop its last char onto a second line
-        const lines = wrapSegs(inline(cell, base), widths[c] + 1);
+        // exactWidth: the cell must never exceed its column. Plain wrapSegs
+        // soft-wraps one column short (its width includes a continuation
+        // affordance) UNLESS a trailing space lands exactly on the boundary —
+        // then the line fills to the full `widths[c] + 1` and the composed row
+        // is one cell over budget. The caller re-wraps the whole table at
+        // `width`, so that one overflowed row gets shredded and its trailing
+        // `│` disappears — the reported "missing pipes". Measured: a 7-wide
+        // column wrapped "aaa bbb " to 8 cells without this.
+        const lines = wrapSegs(inline(cell, base), widths[c], undefined, { exactWidth: true });
         return lines.map((line) => {
           const pad = Math.max(0, widths[c] - lineWidth(line));
           const a = aligns[c] ?? "left";

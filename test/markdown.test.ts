@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { renderMarkdown, wrapCodeAware, codeGutterRow, type MdState } from "../src/tui/markdown.ts";
+import { charWidth } from "../src/tui/screen.ts";
 
 /** Parse text as the TUI's incremental stream cache does: settled prefix once, tail with carried state. */
 function splitParse(text: string, cutAt: number) {
@@ -105,6 +106,37 @@ describe("tables", () => {
     // two-dash separators too (`-- | --`), another common model spelling
     const short = renderMarkdown("Name | Qty\n-- | --\nfoo | 3");
     expect(short.map((r) => r.map((s) => s.t).join(""))[0]).toBe("│ Name │ Qty │");
+  });
+
+  test("every composed row fits the caller's width — no shredded gutters", () => {
+    // A cell used to be wrapped with plain `wrapSegs(cell, colW + 1)`, which
+    // soft-wraps one column short EXCEPT when a trailing space lands exactly on
+    // the boundary: then the line filled to colW + 1, the cell padding computed
+    // max(0, -1) = 0, and the composed row was one cell over the table's own
+    // width. The caller re-wraps the whole table at `width`, so that single
+    // over-wide row got shredded and its trailing `│` vanished — the reported
+    // "tables sometimes have missing pipes".
+    const src = [
+      "| Real question | Was it in my prep? |",
+      "|---|---|",
+      "| Q1 T/F x4, 5 marks each | ✅ Format predicted exactly. 3 of 4 themes overlapped: (2) conv params vs input size, (3) freezing, (4) Hessian ⇒ descent |",
+    ].join("\n");
+    const width = (row: { t?: string }[]) =>
+      row.reduce((n, s) => n + [...(s.t ?? "")].reduce((m, ch) => m + charWidth(ch.codePointAt(0)!), 0), 0);
+
+    for (let W = 60; W <= 160; W++) {
+      const rows = renderMarkdown(src, undefined, W);
+      const widths = rows.map(width);
+      // one box width across the whole table, and it must fit the caller's width
+      expect(new Set(widths).size).toBe(1);
+      expect(widths[0]).toBeLessThanOrEqual(W);
+      // every physical row is a closed box
+      for (const r of rows) {
+        const t = r.map((s) => s.t ?? "").join("");
+        expect(t.startsWith("│") || t.startsWith("├")).toBe(true);
+        expect(t.endsWith("│") || t.endsWith("┤")).toBe(true);
+      }
+    }
   });
 
   test("prose that merely contains a pipe stays prose", () => {
