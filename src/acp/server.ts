@@ -7,21 +7,17 @@
  * `session/prompt` is one `runTurnCore` generator piped through
  * `toSessionUpdate`. Anything that looks like turn logic in here is a bug.
  *
- * Two deliberate non-implementations:
+ * One deliberate non-implementation:
  *
  * - **fox-agent never calls `session/request_permission`.** fox-agent is a no-prompt harness
  *   by design (see the security model in the README); tools just run. A client
  *   connecting to fox-agent will never be asked to approve anything, which it must know
- *   before pointing fox-agent at code it doesn't trust.
- * - **fox-agent does not route its own tools through the client's `fs/*` and
- *   `terminal/*`.** `read`/`write`/`exec`/`pty` must behave identically with no
- *   ACP client present at all (TUI, `-p`), and the exec-never-drifts /
- *   pty-keeps-its-shell contracts are fox-agent's own, pinned by `test/execcwd.test.ts`
- *   and `test/pty.test.ts`. Delegating them to a host would make those contracts
- *   depend on whoever is driving. Do not "fix" this later.
+ *   before pointing fox-agent at code it doesn't trust. The nearest real control
+ *   is the `read-only` session mode below, which withholds the mutating tools
+ *   instead of asking about each call.
  */
-import * as acp from "@agentclientprotocol/sdk";
-import { RequestError } from "@agentclientprotocol/sdk";
+import * as acp from "@agentclientprotocol/sdk/unstable";
+import { RequestError } from "@agentclientprotocol/sdk/unstable";
 import {
   createSession,
   deleteSession,
@@ -34,15 +30,18 @@ import {
 } from "../store/db.ts";
 import { projectView } from "../context/view.ts";
 import { acquireLock, releaseLock, lockHolder } from "../store/lock.ts";
-import type { Config } from "../core/config.ts";
+import type { Config, McpServerConfig } from "../core/config.ts";
 import type { ProviderConfig, ChatFn } from "../providers/types.ts";
-import { resolveChat } from "../providers/index.ts";
+import { availableProviders, resolveChat } from "../providers/index.ts";
 import { runTurnCore } from "../loop/turn.ts";
 import { attachHost, detachHost, abortTurn, turnRunning, releaseSteer, waitQuiescent, adoptTurnController } from "../loop/steer.ts";
 import { shutdownTools } from "../tools/index.ts";
 import { lookupModel } from "../providers/models.ts";
 import { VERSION } from "../core/version.ts";
-import { stopReasonFor, toolKind, toSessionUpdate } from "./updates.ts";
+import { COMMANDS } from "../commands.ts";
+import { REASONING_EFFORTS, type ReasoningEffort } from "../core/reasoning.ts";
+import { getTodos } from "../tools/todo.ts";
+import { stopReasonFor, toolKind, toSessionUpdate, planForToolEnd, commandsUpdate, modeUpdate } from "./updates.ts";
 
 export interface AcpServerOptions {
   config: Config;
@@ -57,7 +56,27 @@ function checkId(id: string): void {
   if (!SAFE_ID.test(id)) throw RequestError.invalidParams(undefined, `invalid session id`);
 }
 
-/** Text content of one ACP prompt request, flattened for fox-agent's single-string turn API. */
+/**
+ * Session modes, backed by the one tool distinction fox-agent actually has.
+ *
+ * ACP clients render these as a per-session picker (Zed calls them "modes" and
+ * puts them next to the model). `read-only` withholds the tools that mutate the
+ * machine — the same set a reviewer would want withheld — rather than prompting
+ * per call, which this harness never does.
+ */
+const MODES = [
+  { id: "agent", name: "Agent", description: "Full tool access — read, write, edit, exec." },
+  { id: "read-only", name: "Read-only", description: "Inspect only: write, edit, exec and pty are withheld." },
+] as const;
+/** Tools a `read-only` session may not call. `ctx` stays: it edits the window, not the disk. */
+const READ_ONLY_EXCLUDED = ["write", "edit", "exec", "pty"];
+
+/**
+ * Text content of one ACP prompt request, flattened for fox-agent's single-string turn API.
+ *
+ * `resource_link` keeps its `@` form (that is how fox-agent's own prompt parser
+ * recognises one); an embedded `resource` becomes uri + text.
+ */
 function promptText(blocks: acp.ContentBlock[]): string {
   const parts: string[] = [];
   for (const b of blocks) {
@@ -70,14 +89,6 @@ function promptText(blocks: acp.ContentBlock[]): string {
   return parts.join("\n").trim();
 }
 
-/**
- * Replay a stored transcript as session updates for `session/load`.
- *
- * Uses `projectView`, not `allMessages`, so a loading client sees exactly what
- * the model sees: compacted and ctx-deleted spans stay hidden. Tool calls
- * replay as already-`completed` — they ran in a previous process, so there is no
- * in-flight state to report.
- */
 /**
  * Which replayed nodes a loading client gets, per `config.acpHistory`.
  * "last" keeps the final user message and everything after it — the exchange
@@ -140,6 +151,31 @@ function parseCalls(raw: string | null): Array<{ id: string; name: string; argum
 }
 
 /**
+ * ACP `mcpServers` -> fox-agent's `[mcpServers.*]` table.
+ *
+ * Only stdio maps: fox-agent's MCP bridge spawns a child and speaks stdio, so an
+ * `http`/`sse`/`acp` server has nowhere to go. Those are reported rather than
+ * dropped in silence — a client that passed its own servers and saw no tools
+ * appear would have no way to know why.
+ */
+function mcpServersFrom(list: acp.McpServer[] | undefined): { servers: Record<string, McpServerConfig>; warnings: string[] } {
+  const servers: Record<string, McpServerConfig> = {};
+  const warnings: string[] = [];
+  for (const s of list ?? []) {
+    // `McpServerStdio` carries no `type` discriminant, so presence of `command`
+    // is what distinguishes it from the http/sse/acp variants.
+    if (!("command" in s)) {
+      warnings.push(`mcp server '${s.name}' skipped: fox-agent supports stdio MCP servers only, not '${s.type}'`);
+      continue;
+    }
+    const env: Record<string, string> = {};
+    for (const e of s.env ?? []) env[e.name] = e.value;
+    servers[s.name] = { command: s.command, args: s.args ?? [], env };
+  }
+  return { servers, warnings };
+}
+
+/**
  * Build the agent app. Exported separately from `runAcpServer` so tests can pair
  * it to a client in-process — `client().connectWith(buildAgent(...), …)` — with
  * no subprocess and no stdio.
@@ -147,11 +183,86 @@ function parseCalls(raw: string | null): Array<{ id: string; name: string; argum
 export function buildAgent(opts: AcpServerOptions): acp.AgentApp {
   const { config, provider } = opts;
   const chat = opts.chat ?? resolveChat;
-  const contextWindow = lookupModel(provider.model).contextWindow;
 
   /** per-session model override, set by `session/set_config_option`; a session
    * without an entry uses the process's configured provider.model. */
   const sessionModels = new Map<string, string>();
+  /** per-session reasoning effort (`thought_level` config option). */
+  const sessionEffort = new Map<string, ReasoningEffort>();
+  /** per-session mode id, defaulting to `agent`. */
+  const sessionModes = new Map<string, string>();
+  /** per-session system prompt appended to the project instructions. */
+  const sessionInstructions = new Map<string, string>();
+  /** per-session MCP servers the client passed, merged over the config's. */
+  const sessionMcp = new Map<string, Record<string, McpServerConfig>>();
+  /** `providers/set` overrides, keyed by provider id. */
+  const providerOverrides = new Map<string, { apiType: string; baseUrl: string; headers?: Record<string, string> }>();
+  /** `logout` clears the in-memory key; a restart re-reads it from the config. */
+  let loggedOut = false;
+
+  const modeOf = (sessionId: string) => sessionModes.get(sessionId) ?? "agent";
+  const modesFor = (sessionId: string) => ({ currentModeId: modeOf(sessionId), availableModes: MODES.map((m) => ({ id: m.id, name: m.name, description: m.description })) });
+
+  /** The option set a client renders for one session. */
+  function configOptionsFor(sessionId: string) {
+    const model = sessionModels.get(sessionId) ?? provider.model;
+    const effort = sessionEffort.get(sessionId);
+    return [
+      {
+        id: "model",
+        name: "Model",
+        description: "The model this session routes its turns to.",
+        category: "model",
+        type: "select" as const,
+        currentValue: model,
+        // The configured model plus whatever the endpoint is known to serve
+        // would be a network call per initialize; one honest entry is better
+        // than a list the server cannot back up.
+        options: [{ value: provider.model, name: provider.model }],
+      },
+      {
+        id: "thought_level",
+        name: "Reasoning effort",
+        description: "How much the model is asked to reason before answering.",
+        category: "thought_level",
+        type: "select" as const,
+        currentValue: effort ?? "default",
+        options: [{ value: "default", name: "Provider default" }, ...REASONING_EFFORTS.map((e) => ({ value: e, name: e }))],
+      },
+    ];
+  }
+
+  /** The provider a session's turns use: overrides, then the session's model. */
+  function providerFor(sessionId: string): ProviderConfig {
+    const model = sessionModels.get(sessionId) ?? provider.model;
+    const base: ProviderConfig = { ...provider, model };
+    const effort = sessionEffort.get(sessionId);
+    if (effort) base.sampling = { ...base.sampling, reasoningEffort: effort };
+    // logout drops the key for this process regardless of whether an endpoint
+    // override was set — it was inside the override branch, so a session with
+    // no override kept prompting with the key it had just logged out of
+    if (loggedOut) base.apiKey = "";
+    const ov = providerOverrides.get(provider.label ?? provider.provider ?? "");
+    if (!ov) return base;
+    return {
+      ...base,
+      baseUrl: ov.baseUrl,
+      provider: ov.apiType === "openai" ? "openai-compatible" : ov.apiType,
+      headers: { ...base.headers, ...ov.headers },
+    };
+  }
+
+  /** The config a session's turns use: per-session MCP servers merged over the global table. */
+  function configFor(sessionId: string): Config {
+    const extra = sessionMcp.get(sessionId);
+    const instructions = sessionInstructions.get(sessionId);
+    if (!extra && !instructions) return config;
+    return {
+      ...config,
+      mcpServers: extra ? { ...config.mcpServers, ...extra } : config.mcpServers,
+      projectInstructions: instructions ? `${config.projectInstructions}\n\n${instructions}`.trim() : config.projectInstructions,
+    };
+  }
 
   /**
    * Run one turn and stream it to the client.
@@ -168,8 +279,7 @@ export function buildAgent(opts: AcpServerOptions): acp.AgentApp {
     signal: AbortSignal,
     client: { notify: (method: string, params: unknown) => Promise<unknown> },
   ): AsyncGenerator<import("../core/events.ts").AgentEvent> {
-    const modelOverride = sessionModels.get(sessionId);
-    const turnProvider = modelOverride ? { ...provider, model: modelOverride } : provider;
+    const turnProvider = providerFor(sessionId);
     const turnContextWindow = lookupModel(turnProvider.model).contextWindow;
     // Pin the handle for the turn's lifetime, exactly as the TUI does: the
     // client may interleave session/list / session/load / session/fork (each
@@ -183,12 +293,18 @@ export function buildAgent(opts: AcpServerOptions): acp.AgentApp {
         retryLimit: config.retryLimit,
         compactWarnAt: config.compactWarnAt,
         compactCtxOnlyAt: config.compactCtxOnlyAt,
-        projectInstructions: config.projectInstructions,
-        config,
+        projectInstructions: configFor(sessionId).projectInstructions,
+        config: configFor(sessionId),
         chat,
+        // a read-only session withholds the mutating tools instead of asking
+        // about each call — see MODES
+        excludeTools: modeOf(sessionId) === "read-only" ? READ_ONLY_EXCLUDED : undefined,
       })) {
-        const update = ev.type === "done" ? null : toSessionUpdate(ev, { contextWindow: turnContextWindow });
+        const todos = getTodos(sessionId);
+        const update = ev.type === "done" ? null : toSessionUpdate(ev, { contextWindow: turnContextWindow, todos });
         if (update) await client.notify(acp.methods.client.session.update, { sessionId, update });
+        const plan = planForToolEnd(ev, todos);
+        if (plan) await client.notify(acp.methods.client.session.update, { sessionId, update: plan });
         yield ev;
       }
     } finally {
@@ -210,14 +326,18 @@ export function buildAgent(opts: AcpServerOptions): acp.AgentApp {
   function attachSteer(sessionId: string, client: { notify: (method: string, params: unknown) => Promise<unknown> }): void {
     sessionClients.set(sessionId, client);
     attachHost(sessionId, {
-      provider: () => {
-        const m = sessionModels.get(sessionId);
-        return m ? { ...provider, model: m } : provider;
-      },
-      config: () => config,
+      provider: () => providerFor(sessionId),
+      config: () => configFor(sessionId),
       chat,
       turn: (text, ctl) => turnEvents(sessionId, text, ctl.signal, sessionClients.get(sessionId) ?? client),
     });
+  }
+
+  /** Announce the per-session state a client renders as chrome, not as messages. */
+  async function announce(sessionId: string, client: { notify: (method: string, params: unknown) => Promise<unknown> }) {
+    const send = (update: acp.SessionUpdate) => client.notify(acp.methods.client.session.update, { sessionId, update });
+    await send(commandsUpdate(COMMANDS.map((c) => ({ name: c.name.replace(/^\//, ""), description: c.desc, hint: c.usage }))));
+    await send(modeUpdate(modeOf(sessionId)));
   }
 
   return acp
@@ -227,84 +347,156 @@ export function buildAgent(opts: AcpServerOptions): acp.AgentApp {
       agentInfo: { name: "fox-agent", version: VERSION },
       agentCapabilities: {
         loadSession: true,
-        promptCapabilities: { embeddedContext: true },
+        // text and embedded resources only: fox-agent's turn API takes one
+        // string, so an image block would have nowhere to go
+        promptCapabilities: { embeddedContext: true, image: false, audio: false },
         mcpCapabilities: { http: false, sse: false },
         // each `{}` advertises support; omitted means unsupported
-        sessionCapabilities: { list: {}, delete: {}, fork: {}, resume: {}, close: {} },
+        sessionCapabilities: { list: {}, delete: {}, fork: {}, resume: {}, close: {}, additionalDirectories: {}, systemPrompt: {} },
+        // `logout` is the only auth op with a meaning here: it drops the API
+        // key for this process. There is no login flow — the key comes from the
+        // config or the environment.
+        auth: { logout: {} },
+        providers: {},
       },
-      // A model selector so a client (e.g. the gateway plugin) can route a
-      // session to a specific model via `session/set_config_option`. The list
-      // is the process's configured model; the current one is preselected.
-      configOptions: [{
-        id: "model",
-        name: "Model",
-        description: "The model this session routes its turns to.",
-        category: "model",
-        type: "select",
-        currentValue: provider.model,
-        options: [{ value: provider.model, name: provider.model }],
-      }],
+      // No `authMethods`: there is no interactive login an editor could drive.
+      // Advertising one would make every client offer a button that cannot work.
+      authMethods: [],
     }))
+    .onRequest(acp.methods.agent.authenticate, async ({ params }) => {
+      // Nothing to do: fox-agent's credential is the configured API key, and no
+      // method it could advertise would change that. Accepted rather than
+      // refused so a client that calls it anyway is not left with an error it
+      // cannot act on.
+      if (!params.methodId) throw RequestError.invalidParams(undefined, "methodId is required");
+      return {};
+    })
+    .onRequest(acp.methods.agent.logout, async () => {
+      loggedOut = true;
+      return {};
+    })
+    .onRequest(acp.methods.agent.providers.list, async () => ({
+      providers: [
+        ...Object.keys(config.providers).map((id) => {
+          const p = config.providers[id]!;
+          const ov = providerOverrides.get(id);
+          return {
+            providerId: id,
+            supported: [p.format ?? "openai-compatible"],
+            // in use by this process right now — the one an editor must show as active
+            required: config.provider === id,
+            current: { apiType: ov?.apiType ?? p.format ?? "openai-compatible", baseUrl: ov?.baseUrl ?? p.baseUrl ?? config.baseUrl },
+          };
+        }),
+        // wire formats with no profile behind them, so a client can still show
+        // what the process could route to
+        ...availableProviders()
+          .filter((f) => !config.providers[f])
+          .map((f) => ({ providerId: f, supported: [f], required: config.provider === f, current: config.provider === f ? { apiType: f, baseUrl: config.baseUrl } : null })),
+      ],
+    }))
+    .onRequest(acp.methods.agent.providers.set, async ({ params }) => {
+      if (!params.providerId) throw RequestError.invalidParams(undefined, "providerId is required");
+      if (!/^https?:\/\//.test(params.baseUrl ?? "")) {
+        throw RequestError.invalidParams(undefined, `baseUrl must be an http(s) URL`);
+      }
+      providerOverrides.set(params.providerId, { apiType: params.apiType, baseUrl: params.baseUrl.replace(/\/$/, ""), headers: params.headers });
+      return {};
+    })
+    .onRequest(acp.methods.agent.providers.disable, async ({ params }) => {
+      providerOverrides.delete(params.providerId);
+      return {};
+    })
     .onRequest(acp.methods.agent.session.setConfigOption, async ({ params }) => {
       checkId(params.sessionId);
       if (!getSession(params.sessionId)) throw RequestError.resourceNotFound(params.sessionId);
-      if (params.configId !== "model") {
+      if (params.configId === "model") {
+        // A select option sends the value id; boolean options send a boolean.
+        if (typeof params.value === "boolean") {
+          throw RequestError.invalidParams(undefined, "model config expects a value id, not a boolean");
+        }
+        const model = String(params.value);
+        if (!lookupModel(model)) throw RequestError.invalidParams(undefined, `unknown model ${JSON.stringify(model)}`);
+        sessionModels.set(params.sessionId, model);
+      } else if (params.configId === "thought_level") {
+        if (typeof params.value === "boolean") {
+          throw RequestError.invalidParams(undefined, "thought_level config expects a value id, not a boolean");
+        }
+        const v = String(params.value);
+        if (v === "default") sessionEffort.delete(params.sessionId);
+        else if ((REASONING_EFFORTS as readonly string[]).includes(v)) sessionEffort.set(params.sessionId, v as ReasoningEffort);
+        else throw RequestError.invalidParams(undefined, `unknown reasoning effort ${JSON.stringify(v)}`);
+      } else {
         throw RequestError.invalidParams(undefined, `unknown config option ${JSON.stringify(params.configId)}`);
       }
-      // A select option sends the value id; boolean options send a boolean. The
-      // model selector is a select, so a boolean here is a malformed request.
-      if (typeof params.value === "boolean") {
-        throw RequestError.invalidParams(undefined, "model config expects a value id, not a boolean");
-      }
-      const model = String(params.value);
-      if (!lookupModel(model)) throw RequestError.invalidParams(undefined, `unknown model ${JSON.stringify(model)}`);
-      sessionModels.set(params.sessionId, model);
-      // The response echoes the full option set with the new current value.
-      return {
-        configOptions: [{
-          id: "model",
-          name: "Model",
-          description: "The model this session routes its turns to.",
-          category: "model",
-          type: "select",
-          currentValue: model,
-          options: [{ value: provider.model, name: provider.model }],
-        }],
-      };
+      return { configOptions: configOptionsFor(params.sessionId) };
     })
-    .onRequest(acp.methods.agent.session.new, async ({ params }) => {
+    .onRequest(acp.methods.agent.session.setMode, async ({ params, client }) => {
+      checkId(params.sessionId);
+      if (!getSession(params.sessionId)) throw RequestError.resourceNotFound(params.sessionId);
+      if (!MODES.some((m) => m.id === params.modeId)) {
+        throw RequestError.invalidParams(undefined, `unknown mode ${JSON.stringify(params.modeId)}`);
+      }
+      sessionModes.set(params.sessionId, params.modeId);
+      await client.notify(acp.methods.client.session.update, { sessionId: params.sessionId, update: modeUpdate(params.modeId) });
+      return {};
+    })
+    .onRequest(acp.methods.agent.session.new, async ({ params, client }) => {
       const s = createSession(params.cwd, sessionModels.get("") ?? provider.model);
       acquireLock(s.id, "acp");
-      return { sessionId: s.id };
+      const mcp = mcpServersFrom(params.mcpServers);
+      if (Object.keys(mcp.servers).length) sessionMcp.set(s.id, mcp.servers);
+      if (params.systemPrompt) sessionInstructions.set(s.id, systemPromptText(params.systemPrompt));
+      await announce(s.id, client);
+      return { sessionId: s.id, modes: modesFor(s.id), configOptions: configOptionsFor(s.id) };
     })
-    .onRequest(acp.methods.agent.session.list, async () => ({
-      sessions: listSessions(100).map((s) => ({
-        sessionId: s.id,
-        cwd: s.cwd,
-        title: s.title ?? undefined,
-        updatedAt: new Date(s.updated_at).toISOString(),
-      })),
-    }))
+    .onRequest(acp.methods.agent.session.list, async ({ params }) => {
+      // `cursor` is an opaque offset into the same ordered list; a client pages
+      // by echoing nextCursor back. Absent cursor = first page.
+      const limit = 50;
+      const offset = params.cursor ? Number(params.cursor) : 0;
+      if (!Number.isInteger(offset) || offset < 0) throw RequestError.invalidParams(undefined, "invalid cursor");
+      const all = listSessions(0, params.cwd ?? undefined);
+      const page = all.slice(offset, offset + limit);
+      return {
+        sessions: page.map((s) => ({
+          sessionId: s.id,
+          cwd: s.cwd,
+          title: s.title ?? undefined,
+          updatedAt: new Date(s.updated_at).toISOString(),
+        })),
+        nextCursor: offset + limit < all.length ? String(offset + limit) : undefined,
+      };
+    })
     .onRequest(acp.methods.agent.session.load, async ({ params, client }) => {
       checkId(params.sessionId);
       if (!getSession(params.sessionId)) throw RequestError.resourceNotFound(params.sessionId);
       acquireLock(params.sessionId, "acp");
+      const mcp = mcpServersFrom(params.mcpServers);
+      if (Object.keys(mcp.servers).length) sessionMcp.set(params.sessionId, mcp.servers);
+      if (params.systemPrompt) sessionInstructions.set(params.sessionId, systemPromptText(params.systemPrompt));
       await replay(params.sessionId, config.acpHistory, (update) =>
         client.notify(acp.methods.client.session.update, { sessionId: params.sessionId, update }),
       );
+      await announce(params.sessionId, client);
       return {};
     })
-    .onRequest(acp.methods.agent.session.resume, async ({ params }) => {
+    .onRequest(acp.methods.agent.session.resume, async ({ params, client }) => {
       checkId(params.sessionId);
       if (!getSession(params.sessionId)) throw RequestError.resourceNotFound(params.sessionId);
       acquireLock(params.sessionId, "acp");
+      await announce(params.sessionId, client);
       return {};
     })
-    .onRequest(acp.methods.agent.session.fork, async ({ params }) => {
+    .onRequest(acp.methods.agent.session.fork, async ({ params, client }) => {
       checkId(params.sessionId);
       const forked = forkSession(params.sessionId);
       if (!forked) throw RequestError.resourceNotFound(params.sessionId);
       acquireLock(forked.id, "acp");
+      const mcp = mcpServersFrom(params.mcpServers);
+      if (Object.keys(mcp.servers).length) sessionMcp.set(forked.id, mcp.servers);
+      if (params.systemPrompt) sessionInstructions.set(forked.id, systemPromptText(params.systemPrompt));
+      await announce(forked.id, client);
       return { sessionId: forked.id };
     })
     .onRequest(acp.methods.agent.session.delete, async ({ params }) => {
@@ -316,6 +508,11 @@ export function buildAgent(opts: AcpServerOptions): acp.AgentApp {
       await shutdownTools(params.sessionId);
       releaseLock(params.sessionId);
       if (!deleteSession(params.sessionId)) throw RequestError.resourceNotFound(params.sessionId);
+      sessionModels.delete(params.sessionId);
+      sessionEffort.delete(params.sessionId);
+      sessionModes.delete(params.sessionId);
+      sessionInstructions.delete(params.sessionId);
+      sessionMcp.delete(params.sessionId);
       return {};
     })
     .onRequest(acp.methods.agent.session.close, async ({ params }) => {
@@ -359,7 +556,7 @@ export function buildAgent(opts: AcpServerOptions): acp.AgentApp {
       // a keyless install reaches here. Say so in the protocol's own terms — an
       // editor renders `auth_required` as an actionable message, whereas the
       // provider's 401 arrives as unexplained turn failure.
-      if (!provider.apiKey) {
+      if (!providerFor(params.sessionId).apiKey) {
         throw RequestError.authRequired(undefined, "no API key: set FOX_AGENT_API_KEY / OPENAI_API_KEY / ANTHROPIC_API_KEY");
       }
       const text = promptText(params.prompt);
@@ -405,6 +602,13 @@ export function buildAgent(opts: AcpServerOptions): acp.AgentApp {
       if (failed) throw failed;
       return { stopReason: stop };
     });
+}
+
+/** ACP `systemPrompt` is a block or nothing; fox-agent appends it to the instructions. */
+function systemPromptText(p: acp.SystemPrompt | null | undefined): string {
+  if (typeof p === "string") return p;
+  if (Array.isArray(p)) return p.map((b) => ("text" in b ? b.text : "")).join("\n");
+  return "";
 }
 
 /**

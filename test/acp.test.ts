@@ -13,7 +13,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import * as acp from "@agentclientprotocol/sdk";
+import * as acp from "@agentclientprotocol/sdk/unstable";
 import type { AgentEvent } from "../src/core/events.ts";
 import type { Config } from "../src/core/config.ts";
 import type { StreamEvent } from "../src/providers/types.ts";
@@ -669,12 +669,19 @@ describe("event mapping", () => {
       size: 128_000,
     });
 
-    // the five that must produce nothing at all
+    // the four that must produce nothing at all
     expect(map({ type: "step", n: 1 })).toBeNull();
     expect(map({ type: "retry", attempt: 1, delay_ms: 500, error: "429" })).toBeNull();
-    expect(map({ type: "warn", message: "hm" })).toBeNull();
     expect(map({ type: "done", reason: "stop" })).toBeNull();
     expect(map({ type: "child_tool", session: "sub", name: "read", done: true, ok: true })).toBeNull();
+
+    // a warning is chrome, not a message: ACP's `notice` carries it without
+    // putting harness text into the assistant's reply
+    expect(map({ type: "warn", message: "hm" })).toEqual({
+      sessionUpdate: "notice",
+      severity: "warning",
+      title: "hm",
+    });
   });
 
   test("tool_start args arrive whole, so streaming and settled views match", async () => {
@@ -787,5 +794,220 @@ describe("selectHistory", () => {
     const { selectHistory } = await import("../src/acp/server.ts");
     const ns = [node("user"), node("assistant"), node("user"), node("assistant")];
     expect(selectHistory(ns, 3).length).toBe(3);
+  });
+});
+
+// The ACP 1.x surface beyond the original five session methods. Each case pairs
+// a client app to an agent app in process, like the rest of this file.
+describe("acp: modes, providers, auth", () => {
+  test("initialize advertises the capabilities the implementation actually has", async () => {
+    const res = await withAgent(await build([textTurn("x")]), (agent) =>
+      agent.request(acp.methods.agent.initialize, { protocolVersion: acp.PROTOCOL_VERSION, clientCapabilities: {} }),
+    );
+    expect(res.agentCapabilities?.loadSession).toBe(true);
+    // no image/audio: the turn API takes one string, so a media block has nowhere to go
+    expect(res.agentCapabilities?.promptCapabilities?.image).toBe(false);
+    expect(res.agentCapabilities?.sessionCapabilities?.fork).toEqual({});
+    expect(res.agentCapabilities?.sessionCapabilities?.systemPrompt).toEqual({});
+    // logout yes, no login flow: there is no interactive auth an editor could drive
+    expect(res.agentCapabilities?.auth?.logout).toEqual({});
+    expect(res.authMethods).toEqual([]);
+  });
+
+  test("session/new returns modes and config options the client can render", async () => {
+    const res = await withAgent(await build([textTurn("x")]), (agent) =>
+      agent.request(acp.methods.agent.session.new, { cwd: work, mcpServers: [] }),
+    );
+    expect(res.modes?.currentModeId).toBe("agent");
+    expect(res.modes?.availableModes.map((m) => m.id)).toEqual(["agent", "read-only"]);
+    expect(res.configOptions?.map((o) => o.id).sort()).toEqual(["model", "thought_level"]);
+  });
+
+  test("set_mode switches the session and notifies the client", async () => {
+    const { buildAgent } = await import("../src/acp/server.ts");
+    const app = buildAgent({ config: cfg(), provider: provider(), chat: mockChat([textTurn("x")]) as never });
+    const seen: acp.SessionUpdate[] = [];
+    await acp.client({ name: "test" })
+      .onNotification(acp.methods.client.session.update, async ({ params }) => {
+        seen.push(params.update);
+      })
+      .connectWith(app, async (agent) => {
+        await agent.request(acp.methods.agent.initialize, { protocolVersion: acp.PROTOCOL_VERSION, clientCapabilities: {} });
+        const { sessionId } = await agent.request(acp.methods.agent.session.new, { cwd: work, mcpServers: [] });
+        await agent.request(acp.methods.agent.session.setMode, { sessionId, modeId: "read-only" });
+      });
+    expect(seen.some((u) => u.sessionUpdate === "current_mode_update" && u.currentModeId === "read-only")).toBe(true);
+  });
+
+  test("an unknown mode is refused rather than silently ignored", async () => {
+    await expect(
+      withAgent(await build([textTurn("x")]), async (agent) => {
+        const { sessionId } = await agent.request(acp.methods.agent.session.new, { cwd: work, mcpServers: [] });
+        return agent.request(acp.methods.agent.session.setMode, { sessionId, modeId: "nope" });
+      }),
+    ).rejects.toThrow(/unknown mode/);
+  });
+
+  test("thought_level accepts a real effort and rejects a made-up one", async () => {
+    await withAgent(await build([textTurn("x")]), async (agent) => {
+      const { sessionId } = await agent.request(acp.methods.agent.session.new, { cwd: work, mcpServers: [] });
+      const ok = await agent.request(acp.methods.agent.session.setConfigOption, { sessionId, configId: "thought_level", value: "high" });
+      expect(ok.configOptions.find((o) => o.id === "thought_level")?.currentValue).toBe("high");
+      await expect(
+        agent.request(acp.methods.agent.session.setConfigOption, { sessionId, configId: "thought_level", value: "nope" }),
+      ).rejects.toThrow(/unknown reasoning effort/);
+    });
+  });
+
+  test("providers/list reports the configured profiles and the active one", async () => {
+    const res = await withAgent(
+      await build([textTurn("x")], {
+        provider: "anthropic",
+        providers: { anthropic: { format: "anthropic", baseUrl: "https://api.anthropic.com", models: [] } },
+      }),
+      (agent) => agent.request(acp.methods.agent.providers.list, {}),
+    );
+    const anthropic = res.providers.find((p) => p.providerId === "anthropic");
+    expect(anthropic?.required).toBe(true);
+    expect(anthropic?.current?.baseUrl).toBe("https://api.anthropic.com");
+  });
+
+  test("providers/set validates the baseUrl before accepting it", async () => {
+    await expect(
+      withAgent(await build([textTurn("x")]), (agent) =>
+        agent.request(acp.methods.agent.providers.set, { providerId: "p", apiType: "openai", baseUrl: "not-a-url" }),
+      ),
+    ).rejects.toThrow(/http/);
+  });
+
+  test("logout makes the next prompt fail as auth_required, not as a provider 401", async () => {
+    await withAgent(await build([textTurn("x")]), async (agent) => {
+      await agent.request(acp.methods.agent.logout, {});
+      const { sessionId } = await agent.request(acp.methods.agent.session.new, { cwd: work, mcpServers: [] });
+      await expect(
+        agent.request(acp.methods.agent.session.prompt, { sessionId, prompt: [{ type: "text", text: "hi" }] }),
+      ).rejects.toThrow(/API key/);
+    });
+  });
+});
+
+describe("acp: session list paging and systemPrompt", () => {
+  test("nextCursor pages through the list and then stops", async () => {
+    await withAgent(await build([textTurn("x")]), async (agent) => {
+      // 51 sessions so the first page (50) leaves exactly one behind
+      for (let i = 0; i < 51; i++) await agent.request(acp.methods.agent.session.new, { cwd: work, mcpServers: [] });
+      const first = await agent.request(acp.methods.agent.session.list, {});
+      expect(first.sessions).toHaveLength(50);
+      expect(first.nextCursor).toBe("50");
+      const rest = await agent.request(acp.methods.agent.session.list, { cursor: first.nextCursor! });
+      expect(rest.sessions).toHaveLength(1);
+      expect(rest.nextCursor).toBeUndefined();
+    });
+  });
+
+  test("a cursor that is not a non-negative integer is refused", async () => {
+    await expect(
+      withAgent(await build([textTurn("x")]), (agent) => agent.request(acp.methods.agent.session.list, { cursor: "-1" })),
+    ).rejects.toThrow(/cursor/);
+  });
+});
+
+describe("acp client: terminal host", () => {
+  // Same pattern as the fs/* cases above: a minimal agent whose prompt handler
+  // calls back into fox-agent's client half. `buildClient` IS the client, so it
+  // needs an agent peer — connecting it to another client is not a round trip.
+  const drive = async (fn: (client: acp.AgentContext) => Promise<string>): Promise<string> => {
+    const { buildClient } = await import("../src/acp/client.ts");
+    const app = acp
+      .agent({ name: "probe" })
+      .onRequest(acp.methods.agent.initialize, async () => ({ protocolVersion: acp.PROTOCOL_VERSION }))
+      .onRequest(acp.methods.agent.session.new, async () => ({ sessionId: "s1" }))
+      .onRequest(acp.methods.agent.session.prompt, async ({ client }) => {
+        const text = await fn(client);
+        await client.notify(acp.methods.client.session.update, {
+          sessionId: "s1",
+          update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text } },
+        });
+        return { stopReason: "end_turn" as const };
+      });
+    return buildClient(work).connectWith(app, async (agent) => {
+      await agent.request(acp.methods.agent.initialize, { protocolVersion: acp.PROTOCOL_VERSION, clientCapabilities: {} });
+      return agent.buildSession(work).withSession(async (s) => {
+        void s.prompt("go").catch(() => {});
+        for (;;) {
+          const msg = await s.nextUpdate();
+          if (msg.kind === "stop") return "";
+          if (msg.update.sessionUpdate === "agent_message_chunk" && msg.update.content.type === "text") return msg.update.content.text;
+        }
+      });
+    });
+  };
+
+  test("create/output/wait_for_exit/release run a real command", async () => {
+    const text = await drive(async (client) => {
+      const { terminalId } = await client.request(acp.methods.client.terminal.create, {
+        sessionId: "s1",
+        command: "sh",
+        args: ["-c", "printf hello-terminal"],
+      });
+      const exit = await client.request(acp.methods.client.terminal.waitForExit, { sessionId: "s1", terminalId });
+      const out = await client.request(acp.methods.client.terminal.output, { sessionId: "s1", terminalId });
+      await client.request(acp.methods.client.terminal.release, { sessionId: "s1", terminalId });
+      return `${exit.exitCode}|${out.output}|${out.exitStatus?.exitCode}`;
+    });
+    expect(text).toBe("0|hello-terminal|0");
+  });
+
+  test("outputByteLimit truncates and says so", async () => {
+    const text = await drive(async (client) => {
+      const { terminalId } = await client.request(acp.methods.client.terminal.create, {
+        sessionId: "s1",
+        command: "sh",
+        args: ["-c", "printf '0123456789'"],
+        outputByteLimit: 4,
+      });
+      await client.request(acp.methods.client.terminal.waitForExit, { sessionId: "s1", terminalId });
+      const out = await client.request(acp.methods.client.terminal.output, { sessionId: "s1", terminalId });
+      return `${out.output}|${out.truncated}`;
+    });
+    expect(text).toBe("0123|true");
+  });
+
+  test("kill stops a long-running command", async () => {
+    const text = await drive(async (client) => {
+      const { terminalId } = await client.request(acp.methods.client.terminal.create, {
+        sessionId: "s1",
+        command: "sh",
+        args: ["-c", "sleep 30"],
+      });
+      await client.request(acp.methods.client.terminal.kill, { sessionId: "s1", terminalId });
+      const exit = await client.request(acp.methods.client.terminal.waitForExit, { sessionId: "s1", terminalId });
+      // killed, so not a clean exit
+      return exit.exitCode === 0 ? "clean" : "killed";
+    });
+    expect(text).toBe("killed");
+  });
+
+  test("releasing an unknown terminal is not an error", async () => {
+    // the agent may be cleaning up after a failure and cannot know whether its
+    // own create ever landed
+    const text = await drive(async (client) => {
+      const res = await client.request(acp.methods.client.terminal.release, { sessionId: "s1", terminalId: "ghost" });
+      return JSON.stringify(res);
+    });
+    expect(text).toBe("{}");
+  });
+
+  test("elicitation is declined, not accepted with invented consent", async () => {
+    const text = await drive(async (client) => {
+      const res = await client.request(acp.methods.client.elicitation.create, {
+        sessionId: "s1",
+        message: "your password?",
+        mode: "form",
+        requestedSchema: { type: "object", properties: {} },
+      });
+      return res.action;
+    });
+    expect(text).toBe("decline");
   });
 });

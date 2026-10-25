@@ -8,12 +8,12 @@
  *
  * The client handlers here reflect fox-agent's own posture rather than a generic host's:
  * `fs/*` is honored (fox-agent has full disk access anyway, so refusing would be
- * theater), `session/request_permission` auto-approves, and `terminal/*` is left
- * unimplemented — a child that wants a terminal should run its own, and a
- * half-built terminal host is worse than a clear "unsupported".
+ * theater), `session/request_permission` auto-approves, `terminal/*` runs a real
+ * child process, and `elicitation/*` is answered with a decline — see the
+ * per-handler comments.
  */
-import * as acp from "@agentclientprotocol/sdk";
-import { RequestError } from "@agentclientprotocol/sdk";
+import * as acp from "@agentclientprotocol/sdk/unstable";
+import { RequestError } from "@agentclientprotocol/sdk/unstable";
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
 
@@ -29,6 +29,10 @@ export interface RunAcpAgentOptions extends AcpAgentSpec {
   signal?: AbortSignal;
   /** every update the child sends, in order, before the turn stops */
   onUpdate?: (u: acp.SessionUpdate) => void;
+  /** the child's MCP servers, passed on `session/new` (rarely needed) */
+  mcpServers?: acp.McpServer[];
+  /** appended to the child's project instructions for this session */
+  systemPrompt?: string;
 }
 
 export interface AcpAgentResult {
@@ -66,11 +70,163 @@ function resolvePath(cwd: string, path: string): string {
   return isAbsolute(path) ? path : resolve(cwd, path);
 }
 
+/** One live terminal, from `terminal/create` until `terminal/release`. */
+interface LiveTerminal {
+  proc: Bun.Subprocess<"ignore", "pipe", "pipe">;
+  /** stdout+stderr appended as they arrive, capped at outputByteLimit */
+  output: string;
+  truncated: boolean;
+  limit: number;
+  exited: Promise<acp.TerminalExitStatus>;
+}
+
+/**
+ * The terminal host.
+ *
+ * ACP's `terminal/*` is how an agent asks the *client* to run a command —
+ * the point being that the client owns the sandbox, the environment and the
+ * user's visibility. fox-agent runs it for real, in the session cwd, because
+ * the alternative (a half-built host that fakes output) is worse than a clear
+ * refusal. Output is accumulated with the requested byte limit honoured, since
+ * a chatty build can otherwise put megabytes through the protocol.
+ */
+class TerminalHost {
+  private terminals = new Map<string, LiveTerminal>();
+  private nextId = 1;
+
+  constructor(private cwd: string) {}
+
+  create(params: acp.CreateTerminalRequest): acp.CreateTerminalResponse {
+    const cwd = params.cwd ? resolvePath(this.cwd, params.cwd) : this.cwd;
+    const env: Record<string, string> = {};
+    for (const [k, v] of Object.entries(process.env)) if (v !== undefined) env[k] = v;
+    for (const e of params.env ?? []) env[e.name] = e.value;
+
+    const proc = Bun.spawn([params.command, ...(params.args ?? [])], {
+      cwd,
+      env,
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const id = `term-${this.nextId++}`;
+    const limit = params.outputByteLimit && params.outputByteLimit > 0 ? params.outputByteLimit : 1_000_000;
+    const term: LiveTerminal = {
+      proc,
+      output: "",
+      truncated: false,
+      limit,
+      // `exited` is awaited by waitForExit; Bun's promise resolves to the code
+      exited: proc.exited.then((exitCode) => ({ exitCode, signal: null })),
+    };
+    this.terminals.set(id, term);
+
+    // drain both pipes, appending as it arrives: a `waitForExit` that only
+    // returned the tail would lose the reason a build failed
+    const append = (chunk: Uint8Array) => {
+      if (term.output.length >= term.limit) {
+        term.truncated = true;
+        return;
+      }
+      let text = new TextDecoder().decode(chunk);
+      if (term.output.length + text.length > term.limit) {
+        text = text.slice(0, term.limit - term.output.length);
+        term.truncated = true;
+      }
+      term.output += text;
+    };
+    void (async () => {
+      for await (const chunk of proc.stdout as ReadableStream<Uint8Array>) append(chunk);
+    })();
+    void (async () => {
+      for await (const chunk of proc.stderr as ReadableStream<Uint8Array>) append(chunk);
+    })();
+
+    return { terminalId: id };
+  }
+
+  private get(terminalId: string): LiveTerminal {
+    const t = this.terminals.get(terminalId);
+    if (!t) throw RequestError.invalidParams(undefined, `unknown terminal ${JSON.stringify(terminalId)}`);
+    return t;
+  }
+
+  output(params: acp.TerminalOutputRequest): acp.TerminalOutputResponse {
+    const t = this.get(params.terminalId);
+    // a completed terminal reports its exit status inline; a running one has none.
+    // `signal` must be a string per the protocol, but Bun reports a number or a
+    // Signals name — String() covers both without a mapping table.
+    const exited = (t.proc.exitCode !== null || t.proc.signalCode !== null)
+      ? { exitCode: t.proc.exitCode, signal: t.proc.signalCode == null ? null : String(t.proc.signalCode) }
+      : undefined;
+    return { output: t.output, truncated: t.truncated, exitStatus: exited };
+  }
+
+  async waitForExit(params: acp.WaitForTerminalExitRequest): Promise<acp.WaitForTerminalExitResponse> {
+    return await this.get(params.terminalId).exited;
+  }
+
+  kill(params: acp.KillTerminalRequest): acp.KillTerminalResponse {
+    const t = this.get(params.terminalId);
+    try {
+      t.proc.kill();
+    } catch {
+      /* already gone */
+    }
+    return {};
+  }
+
+  release(params: acp.ReleaseTerminalRequest): acp.ReleaseTerminalResponse {
+    const t = this.terminals.get(params.terminalId);
+    // releasing an unknown id is not an error: the agent may be cleaning up
+    // after a failure and cannot know whether its own create succeeded
+    if (t) {
+      try {
+        t.proc.kill();
+      } catch {
+        /* already gone */
+      }
+      this.terminals.delete(params.terminalId);
+    }
+    return {};
+  }
+
+  /** Kill every terminal an exiting connection left behind. */
+  closeAll(): void {
+    for (const t of this.terminals.values()) {
+      try {
+        t.proc.kill();
+      } catch {
+        /* already gone */
+      }
+    }
+    this.terminals.clear();
+  }
+}
+
+/**
+ * Live terminal hosts, so an exiting connection can kill what it spawned.
+ *
+ * `ClientApp` has no close hook, and `connectWith` resolving is the only signal
+ * that the connection is done — so `runAcpAgent` calls `closeAllTerminals()` in
+ * its finally rather than this module inventing a lifecycle the SDK lacks.
+ */
+const liveHosts = new Set<TerminalHost>();
+
+/** Kill every terminal every host is still running. Idempotent. */
+export function closeAllTerminals(): void {
+  for (const h of liveHosts) h.closeAll();
+  liveHosts.clear();
+}
+
 /**
  * The client half fox-agent presents to a child agent. Exported so tests can pair it
  * against an in-process agent app with no subprocess.
  */
 export function buildClient(cwd: string): acp.ClientApp {
+  const terminals = new TerminalHost(cwd);
+  liveHosts.add(terminals);
+
   return acp
     .client({ name: "fox-agent" })
     .onRequest(acp.methods.client.fs.readTextFile, async ({ params }) => {
@@ -105,6 +261,28 @@ export function buildClient(cwd: string): acp.ClientApp {
         params.options.find((o) => o.kind === "allow_always") ?? params.options.find((o) => o.kind === "allow_once");
       if (!opt) return { outcome: { outcome: "cancelled" } };
       return { outcome: { outcome: "selected", optionId: opt.optionId } };
+    })
+    .onRequest(acp.methods.client.terminal.create, async ({ params }) => terminals.create(params))
+    .onRequest(acp.methods.client.terminal.output, async ({ params }) => terminals.output(params))
+    .onRequest(acp.methods.client.terminal.waitForExit, async ({ params }) => terminals.waitForExit(params))
+    .onRequest(acp.methods.client.terminal.kill, async ({ params }) => terminals.kill(params))
+    .onRequest(acp.methods.client.terminal.release, async ({ params }) => terminals.release(params))
+    .onRequest(acp.methods.client.elicitation.create, async ({ params }) => {
+      // `elicitation/create` exists so an agent can ask the *human* a question
+      // mid-turn. fox-agent's whole posture is that no human is watching — it
+      // is a no-prompt harness, and a delegating parent answering on the user's
+      // behalf would be inventing consent for a form it cannot read.
+      //
+      // `decline` is the protocol's own word for "the user was asked and said
+      // no"; `cancel` means "could not ask". Neither is true, so the honest
+      // choice is `decline` with no content, which a conforming agent treats as
+      // "proceed without this input" rather than as an error to retry.
+      void params;
+      return { action: "decline" as const };
+    })
+    .onNotification(acp.methods.client.elicitation.complete, async () => {
+      // A completion notice for an elicitation we already declined — nothing to
+      // do, and throwing here would break the child's stream for no reason.
     });
 }
 
@@ -158,7 +336,16 @@ export async function runAcpAgent(opts: RunAcpAgentOptions): Promise<AcpAgentRes
     return await buildClient(opts.cwd).connectWith(childStream(proc), async (agent) => {
       await agent.request(acp.methods.agent.initialize, {
         protocolVersion: acp.PROTOCOL_VERSION,
-        clientCapabilities: { fs: { readTextFile: true, writeTextFile: true }, terminal: false },
+        clientCapabilities: {
+          fs: { readTextFile: true, writeTextFile: true },
+          // advertised because `buildClient` implements all five terminal
+          // methods — a false here would make a conforming child run its own
+          // commands, which is the behaviour this host exists to avoid
+          terminal: true,
+          // no form host: `elicitation/create` is declined, so advertising it
+          // would promise an interaction that never comes
+          elicitation: { form: false, url: false },
+        },
       });
 
       return await agent.buildSession(opts.cwd).withSession(async (session) => {
@@ -199,6 +386,8 @@ export async function runAcpAgent(opts: RunAcpAgentOptions): Promise<AcpAgentRes
       });
     });
   } finally {
+    // the child is gone, so anything it asked this host to run dies with it
+    closeAllTerminals();
     kill();
   }
 }

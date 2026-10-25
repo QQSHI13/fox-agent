@@ -42,6 +42,15 @@ export interface TurnOptions {
   /** full config enables MCP tool merging */
   config?: Config;
   /**
+   * Tool names to withhold from the registry for this turn.
+   *
+   * ACP's `read-only` session mode is the only caller: it drops the tools that
+   * mutate the machine rather than prompting per call, which this harness does
+   * not do. Applied at registry build, so the withheld tools are absent from
+   * both the tool list the model sees and the system prompt's roster.
+   */
+  excludeTools?: string[];
+  /**
    * Interactive host's question bridge, handed to tools as `ctx.ui`. Absent on
    * headless hosts — a tool must not expect it.
    */
@@ -483,7 +492,7 @@ async function* turnBody(
     // Deferring this one edge keeps turn.ts from eagerly pulling the tool
     // registry (and through it every bundled plugin) into its own load.
     const { buildRegistry } = await import("../tools/index.ts");
-    const built = await buildRegistry(effCfg);
+    const built = await buildRegistry(effCfg, opts.excludeTools ? new Set(opts.excludeTools) : undefined);
     tools = built.tools;
     setupWarnings = built.warnings;
     // plugin-packed delegation targets ride along: `task` reads this table,

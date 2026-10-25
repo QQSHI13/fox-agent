@@ -13,9 +13,10 @@
  * - `done` is not an update at all; it becomes `PromptResponse.stopReason`,
  *   which is what `stopReasonFor` below is for.
  */
-import type { SessionUpdate, StopReason, ToolKind } from "@agentclientprotocol/sdk";
+import type { SessionUpdate, StopReason, ToolKind, PlanEntry, PlanEntryStatus } from "@agentclientprotocol/sdk/unstable";
 import type { AgentEvent } from "../core/events.ts";
 import { assertNever } from "../core/events.ts";
+import type { TodoItem } from "../tools/todo.ts";
 
 /**
  * fox-agent tool -> ACP ToolKind. Clients pick icons and UI affordances from this, so
@@ -59,6 +60,89 @@ function titleFor(name: string, args: string): string {
  */
 export interface MapOptions {
   contextWindow: number;
+  /**
+   * The session's todo list, when the caller has one, so `plan` can be emitted
+   * after a `todo` tool call. ACP's Plan and fox-agent's todos describe the same
+   * thing — the agent's checklist — so this is a rename, not an invention.
+   */
+  todos?: TodoItem[] | null;
+}
+
+/**
+ * fox-agent todo -> ACP PlanEntry.
+ *
+ * `priority` is not something fox-agent tracks, and ACP requires the field, so
+ * every entry is `medium`: a uniform value says "no opinion", where defaulting
+ * to `high` would make every plan look urgent.
+ *
+ * The status vocabularies line up exactly (pending / in_progress / completed),
+ * so this is a straight pass-through rather than a mapping table.
+ */
+export function planUpdate(todos: TodoItem[]): SessionUpdate {
+  return {
+    sessionUpdate: "plan",
+    entries: todos.map((t) => ({
+      content: t.content,
+      priority: "medium",
+      status: (t.status === "done" ? "completed" : t.status === "in_progress" ? "in_progress" : "pending") as PlanEntryStatus,
+    })),
+  };
+}
+
+/**
+ * A harness warning as an ACP `notice`.
+ *
+ * These were previously dropped: a warn event had no SessionUpdate that fit and
+ * inventing a text chunk would have put "429, backing off 2s" into the
+ * assistant's message. ACP 1.x added `notice` for exactly this — a non-message
+ * line the client renders as chrome — so the warnings now arrive without
+ * impersonating the model. Severity is `warning`, the only honest choice: these
+ * are degradations (a plugin failed, a tool was cap-truncated), not failures.
+ */
+export function noticeUpdate(message: string): SessionUpdate {
+  return { sessionUpdate: "notice", severity: "warning", title: message };
+}
+
+/**
+ * The session's slash commands, so a client can offer them as a menu.
+ *
+ * ACP names them without the leading `/` (the client renders its own); fox-agent
+ * keeps the slash in `CommandSpec` because the TUI input parses it. `hint` is
+ * the only input shape ACP 1.x stable has, so `usage` maps straight onto it.
+ */
+export function commandsUpdate(cmds: { name: string; description: string; hint?: string }[]): SessionUpdate {
+  return {
+    sessionUpdate: "available_commands_update",
+    availableCommands: cmds.map((c) => ({
+      name: c.name,
+      description: c.description,
+      input: c.hint ? { hint: c.hint } : null,
+    })),
+  };
+}
+
+/**
+ * The session's mode changed (or its initial value), so a client re-renders its
+ * picker. Only the id travels; the available list came with `session/new`.
+ */
+export function modeUpdate(currentModeId: string): SessionUpdate {
+  return { sessionUpdate: "current_mode_update", currentModeId };
+}
+
+/**
+ * The second update a finished `todo` call produces, or null.
+ *
+ * Separate from `toSessionUpdate` because it is a SECOND update for one event:
+ * the tool result still goes out as `tool_call_update`, and the checklist rides
+ * as `plan`. Making one event return two updates would mean every caller
+ * flattening an array it usually does not need.
+ *
+ * Only a successful `todo` produces it: the tool's whole purpose is to replace
+ * the checklist, so a failed call left the previous plan standing.
+ */
+export function planForToolEnd(ev: AgentEvent, todos: TodoItem[] | null | undefined): SessionUpdate | null {
+  if (ev.type !== "tool_end" || ev.name !== "todo" || !ev.ok || !todos?.length) return null;
+  return planUpdate(todos);
 }
 
 export function toSessionUpdate(ev: AgentEvent, opts: MapOptions): SessionUpdate | null {
@@ -100,9 +184,11 @@ export function toSessionUpdate(ev: AgentEvent, opts: MapOptions): SessionUpdate
       // has a vocabulary for exactly that, so the editor can render it. (The
       // prompt's own `user` event is still skipped below: the client sent it.)
       return { sessionUpdate: "user_message_chunk", content: { type: "text", text: ev.text } };
+    case "warn":
+      // ACP has a vocabulary for harness chatter that is not the model speaking
+      return noticeUpdate(ev.message);
     case "step":
     case "retry":
-    case "warn":
     case "user": // the client sent the prompt; echoing its seq back adds nothing
     case "assistant": // UI-only marker correction; ACP clients render from their own session load
     case "done":
