@@ -81,6 +81,16 @@ export interface ReplaceOp {
   kind: "replace";
   id: number; // message seq
   content: string;
+  /**
+   * Which presentation policy produced `content`.
+   *
+   * Absent means a human/agent authored the text through the `ctx` tool (a
+   * deliberate edit). A number means the harness derived it automatically from
+   * the stored original (see context/truncate.ts), so a replay can tell the two
+   * apart and re-derive when the policy changes. Without this, a truncated view
+   * is indistinguishable from a tool that genuinely returned that text.
+   */
+  version?: number;
 }
 /** Host-only op appended by /undo — restores nodes hidden by a delete. */
 export interface RestoreOp {

@@ -108,6 +108,10 @@ export function liveSettingFor(spec: SettingSpec, state: HarnessState): number |
       // READ_CAP_VALUE is a module-level value `read` reads through readCap();
       // buildRegistry is the only other writer
       return typeof v === "number" ? v : d.readCap;
+    case "toolPresentationCap":
+      // read fresh per turn from config (see turn.ts), so there is no module
+      // state to push into — the running turn picks it up on the next step
+      return typeof v === "number" ? v : d.toolPresentationCap;
     case "tuiScrollbar":
       return typeof v === "boolean" ? v : d.tuiScrollbar;
     case "tuiScrollStep":

@@ -46,13 +46,27 @@ export interface ViewNode {
   hidden?: boolean;
   summary?: string;
   orphan?: boolean; // hidden because its parent assistant is hidden
+  /**
+   * Set by a replace op the harness derived (presentation truncation), holding
+   * the policy version that produced `content`. Absent for a `ctx`-authored
+   * replace (a deliberate edit) and for an untouched node.
+   *
+   * The distinction matters to every consumer: a host may show the STORED
+   * original behind an explicit reveal when this is set, and a replay can
+   * re-derive the text when the policy changes — neither is safe on an
+   * agent-authored edit, which must never be second-guessed.
+   */
+  replaceVersion?: number;
 }
 
 function applyOp(c: ViewCache, op: ViewOp): void {
   if (op.kind === "replace") {
-    const { id, content } = op as ReplaceOp;
+    const { id, content, version } = op as ReplaceOp;
     const n = c.bySeq.get(id);
-    if (n) n.content = content;
+    if (n) {
+      n.content = content;
+      n.replaceVersion = version;
+    }
   } else if (op.kind === "restore") {
     const { ids } = op as RestoreOp;
     for (const id of ids) {

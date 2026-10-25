@@ -1,4 +1,4 @@
-import { appendMessage, getSession, recordUsage } from "../store/db.ts";
+import { appendMessage, appendOps, getSession, recordUsage } from "../store/db.ts";
 import { estimateTokens } from "../providers/models.ts";
 import type { ProviderConfig, ChatMessage, ToolDef, ToolCall, ChatFn } from "../providers/types.ts";
 import { resolveChat } from "../providers/index.ts";
@@ -18,6 +18,7 @@ import { loadPlugins } from "../plugins/load.ts";
 import type { UiBridge } from "../core/ui.ts";
 import { buildSystemPrompt, buildRuntimeHeader } from "./prompt.ts";
 import { renderContext, stripEchoedMarkers } from "../context/render.ts";
+import { truncateToolResult, DEFAULT_PRESENTATION_CAP } from "../context/truncate.ts";
 import { checkBudget, sessionContextTokens, type BudgetThresholds } from "../context/budget.ts";
 
 export interface TurnOptions {
@@ -411,6 +412,10 @@ async function* turnBody(
   // 0 means no cap — a turn ends when the model stops calling tools, not when
   // a counter runs out. The guard below only fires for a positive limit.
   const maxSteps = opts.maxSteps ?? 0;
+  // Presentation budget for one tool result in the VIEW. 0 disables the
+  // truncation op entirely; the stored row is whole either way, so this only
+  // decides how much of it the model and transcript read by default.
+  const presentationCap = effCfg.toolPresentationCap ?? DEFAULT_PRESENTATION_CAP;
   const quiet = opts.quiet ?? false;
   // Compaction policy resolves config-first, option-second, so a host that
   // passes `config` (every host does) cannot silently lose a threshold by
@@ -787,6 +792,28 @@ async function* turnBody(
           tokens: estTok(res.output) + (res.media?.length ?? 0) * 1500,
           error: res.ok ? null : res.output.slice(0, 200),
         });
+
+        // Presentation truncation, as a VIEW op rather than a rewrite: the row
+        // above keeps `res.output` whole, and this op makes the model (and the
+        // transcript) read a head+tail excerpt of it. The original is never
+        // lost — `ctx restore` re-exposes it, and so does /undo.
+        //
+        // An op, not a smaller stored string, for three reasons: storage stays
+        // append-only and replay stays deterministic; the budget is config, so
+        // changing it must not require rewriting history; and the model needs
+        // to be able to UNDO it, which is exactly what the existing op log
+        // already supports for the ctx tool.
+        //
+        // `version` records which policy produced the text, so a session
+        // truncated by an older policy is identifiable (and re-derivable).
+        const trunc = truncateToolResult(call.name, res.output, presentationCap);
+        if (trunc) {
+          appendOps(sessionId, [{ kind: "replace", id: node.seq, content: trunc.text, version: trunc.version }]);
+          // the model reads the view, not the row, so the truncated text is
+          // what must ALSO ride tool_end — otherwise the live UI shows the
+          // full body while the next step sees the excerpt
+          res.output = trunc.text;
+        }
         return { call, node, res };
       }),
     );

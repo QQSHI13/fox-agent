@@ -93,6 +93,64 @@ describe("turn manager", () => {
     expect(secondCall.some((m: any) => m.role === "tool" && m.content.includes("yo"))).toBe(true);
   });
 
+  test("a huge tool result is stored whole but presented truncated, as a reversible op", async () => {
+    const t = await setup();
+    const s = t.createSession("/w", "m1");
+    const registry = new Map([bigEchoTool()]);
+    const huge = "Q".repeat(30_000);
+    const mock = mockChat([
+      [{ type: "tool_call", call: { id: "t1", name: "bigecho", arguments: JSON.stringify({ say: huge }) } }, { type: "done", reason: "tool_calls" }],
+      textDone("done"),
+    ]);
+
+    const { defaultConfig } = await import("../src/core/config.ts");
+    const config = defaultConfig({
+      model: "test-model",
+      baseUrl: "http://localhost:9",
+      apiKey: "test",
+      toolPresentationCap: 4_000, // force the cap well under the 30k result
+    });
+    const events = await collect(
+      t.runTurnCore(s.id, cfg(), "go", undefined, { chat: mock.fn as any, registryOverride: registry, quiet: true, config }),
+    );
+
+    // 1. STORAGE keeps every byte — the redesign's whole premise
+    const stored = t.allMessages(s.id).find((m: any) => m.role === "tool")!;
+    expect(stored.content.length).toBe(huge.length);
+    expect(stored.content).toBe(huge);
+
+    // 2. an op was appended, versioned so a replay can identify it
+    const ops = t.allOps(s.id).map((o: any) => JSON.parse(o.payload));
+    const rep = ops.find((o: any) => o.kind === "replace" && o.id === stored.seq);
+    expect(rep).toBeDefined();
+    expect(typeof rep.version).toBe("number");
+    expect(rep.content.length).toBeLessThan(6_000);
+    expect(rep.content).toContain("chars truncated");
+
+    // 3. the VIEW the model reads is the excerpt, not the row
+    const { projectView, dropViewCache } = await import("../src/context/view.ts");
+    dropViewCache(s.id);
+    const node = projectView(s.id).find((n) => n.msg.seq === stored.seq)!;
+    expect(node.content.length).toBeLessThan(huge.length);
+    expect(node.replaceVersion).toBeDefined();
+
+    // 4. and what the next step was actually sent matches the view
+    const second: any = mock.calls[1].messages;
+    const toolMsg = second.find((m: any) => m.role === "tool");
+    expect(toolMsg.content.length).toBeLessThan(huge.length);
+    expect(toolMsg.content).toContain("chars truncated");
+
+    // 5. tool_end carried the same text the model will read — the live UI must
+    // not show a body the next step never saw
+    const end: any = events.find((e) => e.type === "tool_end");
+    expect(end.output.length).toBeLessThan(huge.length);
+
+    // 6. undo puts the original back through the ordinary path
+    t.undoLastOp(s.id);
+    dropViewCache(s.id);
+    expect(projectView(s.id).find((n) => n.msg.seq === stored.seq)!.content).toBe(huge);
+  });
+
   test("malformed JSON args produce an error result, not silent {}", async () => {
     const t = await setup();
     const s = t.createSession("/w", "m1");
@@ -400,6 +458,17 @@ function echoTool(): [string, any] {
     {
       def: { name: "echo", description: "echo back", parameters: { type: "object", properties: { say: { type: "string" } }, required: ["say"] } },
       run: async (args: any) => `echo: ${args.say}`,
+    },
+  ];
+}
+
+/** Echoes whatever `say` holds, unclamped — for presentation-truncation tests. */
+function bigEchoTool(): [string, any] {
+  return [
+    "bigecho",
+    {
+      def: { name: "bigecho", description: "echo back verbatim", parameters: { type: "object", properties: { say: { type: "string" } }, required: ["say"] } },
+      run: async (args: any) => String(args.say),
     },
   ];
 }

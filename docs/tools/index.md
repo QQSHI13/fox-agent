@@ -53,6 +53,17 @@ consume the context window in one step:
 - `readCap` (default 50 000 chars) — `read` refuses larger files and asks for
   `offset`/`limit` instead of silently truncating.
 
+A third key bounds what you and the model *read* without touching what a tool
+may produce:
+
+- `toolPresentationCap` (default 60 000 chars, `0` = never) — when a stored
+  result exceeds it, the harness appends a `replace` view op holding a head+tail
+  excerpt. The row in `messages` keeps every byte, so `/undo` or
+  `ctx restore` brings the whole thing back, and the transcript's expand key
+  re-reads it from SQLite. `ctx` and `todo` are never truncated. Each such op
+  records a policy `version`, so a replay can tell a harness excerpt apart from
+  a `ctx`-authored edit.
+
 `exec` additionally takes `full: true` to lift the per-result cap for one call.
 
 ## `todo`

@@ -62,6 +62,7 @@ const cfg = (): Config => ({
   providers: {},
   toolOutputCap: 30_000,
   readCap: 50_000,
+  toolPresentationCap: 60_000,
   sessionListLimit: 50,
   tuiCollapsedChars: 240,
   tuiKeptChars: 4_000,

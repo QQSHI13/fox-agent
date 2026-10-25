@@ -93,6 +93,14 @@ interface Item {
    *  render/expand — pretty-printing every call in history at load was 416ms
    *  on a 4k-message session for data only an expanded head ever shows */
   argsRaw?: string;
+  /**
+   * The view holds a PRESENTATION-TRUNCATED body for this tool result (a
+   * harness-authored replace op, see context/truncate.ts) while storage holds
+   * the whole original. Expanding such a body re-reads `ref` from SQLite so the
+   * user sees everything the tool actually returned — the excerpt is a default
+   * view, never a ceiling on what can be inspected.
+   */
+  truncated?: boolean;
   /** storage seq rendered as the leading [N] gutter marker. Settled items get
    *  it from loadItems; a live item gets it as soon as the turn assigns one
    *  (the user message's seq, a tool_end's seq) so the marker appears in-flight
@@ -792,7 +800,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
    * uses it to reconcile a just-settled node against the SAME construction, so
    * the live view and the store rebuild can never drift. `callMaps` is the
    * assistant→tool lookup (label/raw/name per tool_call id). */
-  function nodeToItems(m: MessageRow, callMaps: { label: Map<string, string>; raw: Map<string, string>; name: Map<string, string> }, hidden?: boolean): Item[] {
+  function nodeToItems(m: MessageRow, callMaps: { label: Map<string, string>; raw: Map<string, string>; name: Map<string, string> }, hidden?: boolean, modelTruncated?: boolean): Item[] {
     // the [N] marker is not baked into text — it rides `it.seq` as a gutter
     // chip (see itemRows/withMarker). Text here is the bare content.
     // `hidden` (a revert hid this node from the model's context) marks every
@@ -808,6 +816,12 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       const isCtx = name === "ctx";
       const pinned = isTodo || isCtx;
       const failed = m.error != null;
+      // The TRANSCRIPT shows the whole stored body. Truncation is a model-facing
+      // presentation (see context/truncate.ts, which appends a replace op); the
+      // row itself is never cut, so a reader who wants the full output should
+      // get it. `keepTail` here is only a memory guard for pathological bodies;
+      // expanding re-reads the row from SQLite (see fullBody) and shows it all.
+      const shown = isTodo || isCtx ? m.content : keepTail(m.content, KEPT_TOOL_CHARS * 4);
       return [
         { k: seqKey(m.seq, 1), kind: "toolhead", seq: m.seq, text: `» ${callMaps.label.get(m.tool_call_id ?? "") ?? "tool"}${failed ? " — failed" : ""}`, argsRaw: callMaps.raw.get(m.tool_call_id ?? ""), hidden },
         {
@@ -815,12 +829,15 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           kind: "toolbody",
           seq: m.seq,
           markerCont: true, // indents under the head's [N]; a tool pair shows ONE chip
-          text: keepTail(m.content, KEPT_TOOL_CHARS * 4),
+          text: shown,
           ref: m.seq,
           toolResult: true,
           mdBody: isTodo || undefined,
           expanded: pinned || expandedRefs.has(m.seq),
           hidden,
+          // the model read an excerpt while the row holds everything: say so on
+          // the head line, so "the assistant missed X" has a visible reason
+          truncated: modelTruncated || shown.length < m.content.length,
         },
       ];
     }
@@ -882,8 +899,26 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         } catch {}
       }
     }
-    for (const m of msgs) out.push(...nodeToItems(m, callMaps, false));
+    // Iterate NODES, not msgs: a node carries `replaceVersion`, which is how the
+    // transcript learns that the model is reading a harness-truncated excerpt of
+    // this row rather than the row itself. Passing only the message would lose
+    // that and silently claim the assistant saw the full output.
+    for (const n of nodes) out.push(...nodeToItems(n.msg, callMaps, false, n.replaceVersion !== undefined));
     return out;
+  }
+
+  /**
+   * The untruncated body of a tool result, read straight from SQLite.
+   *
+   * The transcript's `text` is memory-guarded (`keepTail`) and the MODEL may be
+   * reading a presentation excerpt, but the stored row is the ground truth the
+   * user is entitled to inspect. Expanding a cut body backfills from here, so
+   * "expand" always means "show me everything that was returned".
+   */
+  function fullBody(seq: number): string | null {
+    if (!state.sessionId) return null;
+    const row = getMessage(state.sessionId, seq);
+    return row?.content ?? null;
   }
 
   // ---- dispatch ----
@@ -1937,7 +1972,19 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     // when argsFull produced a detail, and without this branch clicking it did
     // nothing — the reported "tool call content doesn't display" bug
     if (it.kind !== "think" && it.kind !== "toolbody" && it.kind !== "toolhead") return;
-    if (!it.expanded) fillDetail(it); // first expand pays the pretty-print, not the load
+    if (!it.expanded) {
+      fillDetail(it); // first expand pays the pretty-print, not the load
+      // a body whose text was cut for display (or whose model-facing view is a
+      // truncated excerpt) backfills from the stored row here: expanding must
+      // reveal everything the tool returned, not a longer slice of the same cut
+      if (it.toolResult && it.truncated && it.ref != null) {
+        const full = fullBody(it.ref);
+        if (full != null && full.length > it.text.length) {
+          it.text = full;
+          it.truncated = false; // now showing the stored original: no longer cut
+        }
+      }
+    }
     it.expanded = !it.expanded;
     if (it.ref != null) {
       if (it.expanded) expandedRefs.add(it.ref);
@@ -3077,6 +3124,10 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           {
             segs: [
               { t: `  ▸ output (${lines > 1 ? `${lines} lines` : `${chars} chars`})`, fg: C.chrome },
+              // Say when the model read an EXCERPT of this row: otherwise a reply
+              // that ignored the middle of a long output looks like a model
+              // failure rather than the display budget it actually was.
+              ...(it.truncated ? [{ t: " · model saw an excerpt", fg: C.chrome }] : []),
             ],
           },
         ];

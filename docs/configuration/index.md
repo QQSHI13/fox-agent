@@ -27,7 +27,7 @@ against the file that named them, not against your cwd.
 ```
 
 Covers `maxSteps`, `retryLimit`, `compactWarnAt`, `compactCtxOnlyAt`,
-`requestTimeoutMs`, `toolOutputCap`, `readCap`, `sessionListLimit`,
+`requestTimeoutMs`, `toolOutputCap`, `readCap`, `toolPresentationCap`, `sessionListLimit`,
 `tuiCollapsedChars`, `tuiKeptChars`, `tuiScrollStep`, `statusBar`, `debug`,
 `tuiFrameMs`, `contextMarkers` and `acpHistory`.
 
@@ -57,6 +57,7 @@ Model, theme and reasoning effort have their own commands (`/model`, `/theme`,
 | `compactCtxOnlyAt` | `0.9` | Context fraction at which every tool except `ctx` is disabled |
 | `toolOutputCap` | `30000` | Per-tool-result character cap |
 | `readCap` | `50000` | `read` ceiling before it refuses and asks for `offset`/`limit` |
+| `toolPresentationCap` | `60000` | Chars of one tool result the **view** shows; `0` = never truncate. The stored row is always whole — exceeding this appends a reversible `replace` op carrying a head+tail excerpt |
 
 ### Sessions
 

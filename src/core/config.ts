@@ -141,6 +141,14 @@ export interface Config {
   toolOutputCap: number;
   /** cap on one `read` result's text in chars (default 50000, min 1000) */
   readCap: number;
+  /**
+   * How much of one tool result the VIEW shows, in chars (default 60000,
+   * 0 = no truncation). The stored row is always whole: exceeding this cap
+   * appends a `replace` view op carrying a head+tail excerpt, which `/undo` and
+   * `ctx restore` can undo. Distinct from `toolOutputCap`, which decides what a
+   * TOOL may put in its result in the first place.
+   */
+  toolPresentationCap: number;
   /** how many sessions /sessions, `fox ls` and the picker list (default 50) */
   sessionListLimit: number;
   /** TUI: collapsed tool output preview length (default 240) */
@@ -250,6 +258,7 @@ const DEFAULTS: Omit<Config, "projectInstructions"> = {
   diagnostics: true,
   toolOutputCap: 30_000,
   readCap: 50_000,
+  toolPresentationCap: 60_000,
   sessionListLimit: 0,
   tuiCollapsedChars: 240,
   tuiKeptChars: 4_000,
@@ -434,7 +443,7 @@ const REMOVED_KEYS: Record<string, string> = {
 const KNOWN_KEYS = new Set([
   "model", "baseUrl", "apiKey", "provider", "maxSteps", "retryLimit", "compactWarnAt", "compactCtxOnlyAt",
   "requestTimeoutMs", "diagnostics", "mcpServers", "agents", "lsp", "plugins",
-  "providers", "disabledPlugins", "toolOutputCap", "readCap", "sessionListLimit",
+  "providers", "disabledPlugins", "toolOutputCap", "readCap", "toolPresentationCap", "sessionListLimit",
   "tuiCollapsedChars", "tuiKeptChars", "tuiScrollbar", "tuiScrollStep", "statusBar", "debug", "tuiFrameMs", "theme", "contextMarkers", "acpHistory",
   "reasoningEffort",
 ]);
@@ -518,6 +527,9 @@ function applyTable(cfg: Config, t: Record<string, unknown> | null, scope: "glob
   if (typeof t.diagnostics === "boolean") cfg.diagnostics = t.diagnostics;
   if (typeof t.toolOutputCap === "number" && t.toolOutputCap >= 1000) cfg.toolOutputCap = Math.floor(t.toolOutputCap);
   if (typeof t.readCap === "number" && t.readCap >= 1000) cfg.readCap = Math.floor(t.readCap);
+  // 0 is meaningful here (no presentation truncation), so it must pass
+  if (typeof t.toolPresentationCap === "number" && t.toolPresentationCap >= 0)
+    cfg.toolPresentationCap = Math.floor(t.toolPresentationCap);
   // 0 = unlimited (every session on disk); a positive value caps the page
   if (typeof t.sessionListLimit === "number" && t.sessionListLimit >= 0) cfg.sessionListLimit = Math.floor(t.sessionListLimit);
   if (typeof t.tuiCollapsedChars === "number" && t.tuiCollapsedChars >= 40) cfg.tuiCollapsedChars = Math.floor(t.tuiCollapsedChars);
@@ -882,6 +894,13 @@ export const SETTINGS: SettingSpec[] = [
     def: "50000",
     validate: num(1000),
     fmt: (v) => (v === undefined ? "50000" : String(v)),
+  },
+  {
+    key: "toolPresentationCap",
+    desc: "chars of a tool result the view shows (0 = never truncate)",
+    def: "60000",
+    validate: num(0),
+    fmt: (v) => (v === undefined ? "60000" : String(v)),
   },
   {
     key: "sessionListLimit",
