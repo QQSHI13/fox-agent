@@ -8,7 +8,6 @@ import type { AgentEvent } from "../core/events.ts";
 import type { Tool, ToolContext, ToolResult, PtyState } from "../tools/types.ts";
 import { validateArgs } from "../tools/types.ts";
 import { outCap } from "../tools/files.ts";
-import { buildRegistry } from "../tools/index.ts";
 import { drainSteer, peekSteer, turnEnded, turnStarted } from "./steer.ts";
 import { VERSION } from "../core/version.ts";
 import type { Config } from "../core/config.ts";
@@ -385,6 +384,21 @@ async function* turnBody(
       setupWarnings = [...(effCfg.warnings ?? [])];
     }
   } else {
+    // DYNAMIC, and that is load-bearing. A static import here closes a cycle:
+    //
+    //   repl.ts -> steer.ts -> turn.ts -> tools/index.ts -> plugins/bundled.ts -> repl.ts
+    //
+    // Import repl first (as test/repl.test.ts and any `import {replRun}` caller
+    // does) and the chain re-enters repl.ts while it is still evaluating, so
+    // bundled.ts's `{ def: replDef }` hits the TDZ:
+    // "Cannot access 'replDef' before initialization". The binary never saw it
+    // because it loads cli.ts first, which reaches tools/index.ts from the other
+    // direction — so every bundled-plugin unit test was broken while the product
+    // worked, which is the worst way for a cycle to fail.
+    //
+    // Deferring this one edge keeps turn.ts from eagerly pulling the tool
+    // registry (and through it every bundled plugin) into its own load.
+    const { buildRegistry } = await import("../tools/index.ts");
     const built = await buildRegistry(effCfg);
     tools = built.tools;
     setupWarnings = built.warnings;
