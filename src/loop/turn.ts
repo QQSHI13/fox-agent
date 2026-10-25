@@ -389,10 +389,24 @@ async function runHook<T>(
  * tool batch so an interrupt is not held hostage by a tool that never checks
  * `ctx.signal`.
  */
-function whenAborted(signal: AbortSignal | undefined): Promise<void> {
-  if (!signal) return new Promise<void>(() => {});
-  if (signal.aborted) return Promise.resolve();
-  return new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+function whenAborted(signal: AbortSignal | undefined): { promise: Promise<void>; dispose: () => void } {
+  if (!signal) return { promise: new Promise<void>(() => {}), dispose: () => {} };
+  if (signal.aborted) return { promise: Promise.resolve(), dispose: () => {} };
+  let onAbort: (() => void) | undefined;
+  const promise = new Promise<void>((resolve) => {
+    onAbort = () => resolve();
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+  return {
+    promise,
+    // The tools usually win the race, and the listener used to stay attached
+    // until the turn's signal died: one leak per step, for the whole turn.
+    dispose: () => {
+      if (!onAbort) return;
+      signal.removeEventListener("abort", onAbort);
+      onAbort = undefined;
+    },
+  };
 }
 
 /**
@@ -919,15 +933,20 @@ async function* turnBody(
       // raced by VALUE, not by mutating a flag: assigning inside a .then()
       // defeats control-flow analysis, so a `winner` variable would be typed
       // as the literal "tools" at the read and the comparison would not compile
-      const outcome = await Promise.race([
-        finished.then(() => "tools" as const),
-        whenAborted(signal).then(() => "abort" as const),
-      ]);
-      if (outcome === "abort") {
-        liveEvents.close();
-        persistParkedSteers(asstNode.id);
-        yield await endTurn("aborted", step);
-        return;
+      const aborted = whenAborted(signal);
+      try {
+        const outcome = await Promise.race([
+          finished.then(() => "tools" as const),
+          aborted.promise.then(() => "abort" as const),
+        ]);
+        if (outcome === "abort") {
+          liveEvents.close();
+          persistParkedSteers(asstNode.id);
+          yield await endTurn("aborted", step);
+          return;
+        }
+      } finally {
+        aborted.dispose();
       }
     }
 
