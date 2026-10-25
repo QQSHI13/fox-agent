@@ -40,6 +40,32 @@ describe("applyEdits", () => {
     expect(r.content).toContain("done = true;");
   });
 
+  test("fuzzy fallback keeps the target line's indentation when oldString is dedented", () => {
+    // The common fuzzy case: the model strips the indentation of oldString. The
+    // match consumes the file's leading whitespace, and the old reindent helper
+    // only re-indented lines 2..n, so the FIRST replacement line landed at
+    // column 0 and produced code that no longer parsed.
+    const code = "function f() {\n  const a = 1;\n  return a;\n}\n";
+    const r = applyEdits(code, [{ oldString: "const a = 1;\nreturn a;", newString: "const a = 2;\nreturn a * 2;" }]);
+    expect(r.fuzzy).toBe(1);
+    expect(r.content).toBe("function f() {\n  const a = 2;\n  return a * 2;\n}\n");
+  });
+
+  test("fuzzy fallback restores a deeper first-line indent", () => {
+    const code = "class A {\n  m() {\n    const a = 1;\n  }\n}\n";
+    // trailing whitespace makes the exact match miss (fuzzy tolerates it), so
+    // this really goes through the fuzzy path while the body still matches
+    const r = applyEdits(code, [{ oldString: "const a = 1;   ", newString: "const a = 2;" }]);
+    expect(r.fuzzy).toBe(1);
+    expect(r.content).toContain("    const a = 2;");
+  });
+
+  test("fuzzy fallback is anchored to a line start, not the tail of a token", () => {
+    const code = "  xfoo\n  y = 2\n";
+    // "foo\ny = 2" only occurs inside "xfoo"; matching there rewrote "x" away
+    expect(() => applyEdits(code, [{ oldString: "foo\ny = 2", newString: "BAR" }])).toThrow(/not found/);
+  });
+
   test("multi-edit batch applies in order", () => {
     const r = applyEdits(SRC, [
       { oldString: "add", newString: "plus" },
