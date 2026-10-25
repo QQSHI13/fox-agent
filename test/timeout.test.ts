@@ -7,12 +7,13 @@
 //   4. a timeout must be retriable
 import { afterEach, describe, expect, test } from "bun:test";
 import { startWatchdog } from "../src/providers/watchdog.ts";
-import { isTimeout } from "../src/core/errors.ts";
+import { isTimeout, isTruncated } from "../src/core/errors.ts";
 import { runTurnCore } from "../src/loop/turn.ts";
 import { ProviderTimeoutError } from "../src/core/errors.ts";
 import type { ChatFn, ProviderConfig } from "../src/providers/types.ts";
 import type { AgentEvent } from "../src/core/events.ts";
 import { mkdtempSync } from "node:fs";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -163,6 +164,57 @@ describe("black-hole provider", () => {
   }, 15_000);
 });
 
+describe("provider stream cut off mid-answer", () => {
+  test("openai-compatible: a dropped connection after text is a resumable error", async () => {
+    // The exact shape of the report: 200 + SSE headers, a text chunk, then the
+    // socket dies before any finish_reason. The partial answer already reached
+    // the user, so this must be marked truncatable/resumable — not reported as
+    // an ordinary provider failure that strands the half answer.
+    const server = createServer((_req, res) => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.flushHeaders();
+      res.write(
+        `data: ${JSON.stringify({
+          id: "1",
+          object: "chat.completion.chunk",
+          created: 0,
+          model: "m",
+          choices: [{ index: 0, delta: { role: "assistant", content: "half an ans" } }],
+        })}\n\n`,
+      );
+      // long enough for the chunk to reach the client's parser, short enough
+      // that the stream is still open when the socket dies
+      setTimeout(() => res.destroy(), 50);
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    const port = (server.address() as { port: number }).port;
+    try {
+      const { streamChat } = await import("../src/providers/openai-compatible.ts");
+      const deltas: string[] = [];
+      let caught: unknown;
+      try {
+        for await (const ev of streamChat(
+          { model: "m", baseUrl: `http://127.0.0.1:${port}/v1`, apiKey: "k", requestTimeoutMs: 10_000 },
+          [{ role: "user", content: "hi" }],
+          [],
+        )) {
+          if (ev.type === "text") deltas.push(ev.delta);
+        }
+        throw new Error("the stream ended cleanly — a cut-off must not look like a stop");
+      } catch (e) {
+        caught = e;
+      }
+      expect(deltas).toEqual(["half an ans"]); // the partial answer is real output
+      expect(isTruncated(caught)).toBe(true); // the marker the loop resumes on
+      expect((caught as Error).message).toMatch(/cut off mid-answer/);
+      expect((caught as Error).message).toMatch(/ECONNRESET|socket/i); // the cause rides along
+      expect((caught as Error).message).not.toMatch(/HTTP 200/); // not a "success" prefix
+    } finally {
+      server.close();
+    }
+  }, 15_000);
+});
+
 describe("runTurnCore with a timing-out provider", () => {
   const cfg: ProviderConfig = { model: "m", baseUrl: "http://127.0.0.1:9/v1", apiKey: "k" };
 
@@ -302,6 +354,126 @@ describe("runTurnCore with a timing-out provider", () => {
     expect(retries.length).toBe(2);
     expect(calls).toBe(3);
     for (const r of retries) expect((r as { error: string }).error).toMatch(/no finish reason/);
+  }, 30_000);
+
+  test("a cut-off answer is RESUMED from where it stopped, not regenerated", async () => {
+    session();
+    const { createSession, allMessages } = await import("../src/store/db.ts");
+    const { TruncatedStreamError } = await import("../src/core/errors.ts");
+    const s = createSession(process.cwd(), "m");
+
+    const requests: import("../src/providers/types.ts").ChatMessage[][] = [];
+    let calls = 0;
+    const chat: ChatFn = async function* (_cfg, messages) {
+      requests.push(messages);
+      calls++;
+      if (calls === 1) {
+        // the socket dies mid-answer: text arrived, then the stream ended with
+        // no finish part (the openai-compatible/anthropic/google shape)
+        yield { type: "text", delta: "Half an answer" };
+        throw new TruncatedStreamError("m");
+      }
+      // the resumed request is expected to continue, not start over
+      yield { type: "text", delta: ", finished by the resumed stream." };
+      yield { type: "done", reason: "stop" };
+    };
+
+    const events: AgentEvent[] = [];
+    for await (const ev of runTurnCore(s.id, cfg, "hello", undefined, {
+      chat,
+      retryLimit: 2,
+      registryOverride: new Map(),
+    })) {
+      events.push(ev);
+    }
+
+    expect(calls).toBe(2); // one resume, not a restart loop
+    // The second request feeds the partial answer back as an ASSISTANT prefill
+    // and asks for the continuation — that is what makes a resume a resume.
+    const second = requests[1]!;
+    expect(second[second.length - 2]).toMatchObject({ role: "assistant", content: "Half an answer" });
+    expect(second[second.length - 1]!.role).toBe("user");
+    expect(second[second.length - 1]!.content).toMatch(/continue the same answer/i);
+
+    // ONE assistant node holding the whole answer, and no duplicated prefix
+    const replies = allMessages(s.id).filter((m) => m.role === "assistant" && m.content);
+    expect(replies).toHaveLength(1);
+    expect(replies[0].content).toBe("Half an answer, finished by the resumed stream.");
+
+    const retries = events.filter((e) => e.type === "retry") as { error: string; delay_ms: number }[];
+    expect(retries).toHaveLength(1);
+    expect(retries[0].error).toMatch(/resuming/); // the UI says what happened
+  }, 30_000);
+
+  test("a mid-stream transport failure is resumed too, not just a no-finish stream", async () => {
+    session();
+    const { createSession, allMessages } = await import("../src/store/db.ts");
+    const s = createSession(process.cwd(), "m");
+
+    let calls = 0;
+    const chat: ChatFn = async function* () {
+      calls++;
+      if (calls === 1) {
+        yield { type: "text", delta: "Progress: 1 " };
+        // what a plugin ChatFn (or a provider SDK that throws instead of
+        // ending) produces when the socket resets mid-answer
+        throw new Error("ECONNRESET: The socket connection was closed unexpectedly.");
+      }
+      yield { type: "text", delta: "Progress: 2." };
+      yield { type: "done", reason: "stop" };
+    };
+
+    const events: AgentEvent[] = [];
+    for await (const ev of runTurnCore(s.id, cfg, "hello", undefined, {
+      chat,
+      retryLimit: 2,
+      registryOverride: new Map(),
+    })) {
+      events.push(ev);
+    }
+
+    expect(calls).toBe(2);
+    const replies = allMessages(s.id).filter((m) => m.role === "assistant" && m.content);
+    expect(replies).toHaveLength(1);
+    expect(replies[0].content).toBe("Progress: 1 Progress: 2.");
+    expect((events.at(-1) as { type: string; reason: string }).reason).toBe("stop");
+  }, 30_000);
+
+  test("a tool call cut off mid-stream restarts instead of being continued", async () => {
+    session();
+    const { createSession, allMessages } = await import("../src/store/db.ts");
+    const { TruncatedStreamError } = await import("../src/core/errors.ts");
+    const s = createSession(process.cwd(), "m");
+
+    const requests: import("../src/providers/types.ts").ChatMessage[][] = [];
+    let calls = 0;
+    const chat: ChatFn = async function* (_cfg, messages) {
+      requests.push(messages);
+      calls++;
+      if (calls === 1) {
+        yield { type: "text", delta: "Let me look. " };
+        yield { type: "tool_call", call: { id: "c1", name: "unknown_tool", arguments: '{"path":' } };
+        throw new TruncatedStreamError("m");
+      }
+      yield { type: "text", delta: "Done." };
+      yield { type: "done", reason: "stop" };
+    };
+
+    for await (const _ of runTurnCore(s.id, cfg, "hello", undefined, {
+      chat,
+      retryLimit: 2,
+      registryOverride: new Map(),
+    })) {
+      /* drain */
+    }
+
+    expect(calls).toBe(2);
+    // a restart: the partial text and the half-received call are dropped, and
+    // the request is the original one — NOT an assistant prefill
+    expect(requests[1]!.some((m) => m.role === "assistant")).toBe(false);
+    const replies = allMessages(s.id).filter((m) => m.role === "assistant" && m.content);
+    expect(replies).toHaveLength(1);
+    expect(replies[0].content).toBe("Done.");
   }, 30_000);
 
   test("a provider Retry-After is honored instead of the local backoff", async () => {

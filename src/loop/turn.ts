@@ -118,10 +118,41 @@ class EventQueue {
 }
 
 /**
+ * Sent as the final user message when a cut-off answer is resumed.
+ *
+ * The partial text goes back as an assistant prefill, so the model is already
+ * standing where it stopped; this says what to do about it. Without it models
+ * tend to restart the answer or open with an apology for the interruption,
+ * which reads as a brand-new reply glued onto a stopped one.
+ *
+ * Every bundled format accepts the shape (assistant content + user follow-up),
+ * which is why resuming is implemented here in the loop rather than once per
+ * provider: a plugin `ChatFn` gets the same behaviour for free.
+ */
+const RESUME_PROMPT =
+  "(the provider connection dropped mid-answer — continue the same answer from exactly where it stopped. " +
+  "Do not repeat, rephrase, or summarize what you already wrote, and do not mention the interruption.)";
+
+/**
  * Drain one model step, streaming text/reasoning through to the consumer,
- * accumulating everything, and retrying retriable provider errors — but
- * only while nothing has been emitted yet (a mid-stream failure keeps its
- * partials and ends the step with an error finish).
+ * accumulating everything, and retrying retriable provider errors.
+ *
+ * Two failure shapes are handled differently, because they need different
+ * recovery:
+ *
+ * - Nothing streamed yet, or a tool call was already in flight: the request is
+ *   retried from zero. Replaying a half-received tool call would hand the model
+ *   arguments that were never sent.
+ * - Text streamed and the stream was then CUT OFF (a `TruncatedStreamError`,
+ *   or any retriable transport failure after output): the request is RESUMED
+ *   instead of restarted. The partial answer is fed back as an assistant
+ *   prefill and the model continues from its last character, so the user keeps
+ *   the work already done and does not pay to re-read it. A restart used to be
+ *   the only recovery, which silently threw away a long answer and regenerated
+ *   it — the "it just starts over / never continues" report.
+ *
+ * Retries and resumes share one budget (`retryLimit`): `n` counts attempts, so
+ * two retries are two recoveries, whichever shape they take.
  */
 async function* drainStep(
   chat: ChatFn,
@@ -133,8 +164,14 @@ async function* drainStep(
 ): AsyncGenerator<AgentEvent, StepOutcome> {
   const acc: StepOutcome = { text: "", calls: [], usage: null, finish: "", reasoning: "" };
 
+  // The request body for the next attempt. A resume appends the partial answer
+  // plus RESUME_PROMPT; a restart goes back to the caller's own messages.
+  let attemptMessages: ChatMessage[] = messages;
+  /** the current attempt continues `acc` rather than replacing it */
+  let continuing = false;
+
   const attempt = async function* (): AsyncGenerator<AgentEvent> {
-    for await (const ev of chat(cfg, messages, toolDefs, signal)) {
+    for await (const ev of chat(cfg, attemptMessages, toolDefs, signal)) {
       if (ev.type === "reasoning") {
         acc.reasoning += ev.delta;
         yield { type: "reasoning", delta: ev.delta };
@@ -142,20 +179,29 @@ async function* drainStep(
         acc.text += ev.delta;
         yield { type: "text", delta: ev.delta };
       } else if (ev.type === "tool_call") acc.calls.push(ev.call);
-      else if (ev.type === "usage")
+      else if (ev.type === "usage") {
+        // A continuation is billed separately, and its completion tokens are
+        // ADDITIONAL to the ones the cut-off attempt already produced. Prompt
+        // tokens are the last request's window (which is what the status bar
+        // and the budget mean), so only completion sums.
+        const priorCompletion = continuing ? (acc.usage?.completion_tokens ?? 0) : 0;
         acc.usage = {
           prompt_tokens: ev.prompt_tokens,
-          completion_tokens: ev.completion_tokens,
+          completion_tokens: ev.completion_tokens + priorCompletion,
           cached_tokens: ev.cached_tokens ?? 0,
         };
-      else if (ev.type === "done") acc.finish = ev.reason;
+      } else if (ev.type === "done") acc.finish = ev.reason;
     }
   };
 
   for (let n = 0; ; n++) {
     try {
-      if (n > 0) acc.text = "", (acc.calls = []), (acc.usage = null), (acc.finish = ""), (acc.reasoning = ""); // a retry re-streams from zero — a kept accumulator duplicated reasoning into the persisted think node
-      debugInfo("turn", `provider attempt ${n + 1}`, `model=${cfg.model} messages=${messages.length} tools=${toolDefs.length}`);
+      if (n > 0 && !continuing) {
+        // a RESTART re-streams from zero — a kept accumulator duplicated
+        // reasoning into the persisted think node
+        (acc.text = ""), (acc.calls = []), (acc.usage = null), (acc.finish = ""), (acc.reasoning = "");
+      }
+      debugInfo("turn", `provider attempt ${n + 1}`, `model=${cfg.model} messages=${attemptMessages.length} tools=${toolDefs.length}${continuing ? " [resume]" : ""}`);
       for await (const ev of attempt()) yield ev;
       return acc;
     } catch (e) {
@@ -170,30 +216,49 @@ async function* drainStep(
         return { ...acc, finish: "aborted" };
       }
       const pe = classifyProviderError(e);
-      // `emitted` normally blocks a retry once text has streamed: re-streaming
-      // would duplicate what the user already watched. A TRUNCATED stream is the
-      // exception, and the reason is the opposite: what streamed was cut off
-      // mid-sentence, so keeping it means keeping a broken answer. Replacing it
-      // is strictly better, so truncation retries even after text.
       const truncated = isTruncated(e);
       const emitted = acc.text.length > 0 || acc.calls.length > 0;
-      if (!pe.retriable || n >= retryLimit || (emitted && !truncated)) {
+      // A partial answer with no tool call in flight is RESUMED from its last
+      // character. Tool calls disqualify it: their arguments arrive as one JSON
+      // blob, and a cut-off blob is not something to "continue".
+      //
+      // This is also why the old `emitted` guard is gone. Its rule — never retry
+      // after text, because re-streaming duplicates what the user watched — was
+      // about RESTARTING. A resume appends to the partial answer instead, so
+      // there is nothing to duplicate; blocking it would strand a half-written
+      // answer. A cut-off stream that carried a tool call is the one case that
+      // still restarts (hence `truncated` in the guard), because that call's
+      // arguments were never fully delivered.
+      const canContinue = acc.text.length > 0 && acc.calls.length === 0;
+      if (!pe.retriable || n >= retryLimit || (emitted && !canContinue && !truncated)) {
         if (emitted) return { ...acc, finish: `error: ${pe.message}` }; // keep partials
         throw pe;
       }
+      const resume = emitted && canContinue;
+      continuing = resume;
+      attemptMessages = resume
+        ? [...messages, { role: "assistant", content: acc.text }, { role: "user", content: RESUME_PROMPT }]
+        : messages;
       // Backoff: honor the provider's own Retry-After when it sent one, else
       // exponential with a LONG ceiling. The old ceiling was 8s, which is far
       // too short for the failures that actually need waiting — a quota window
       // resetting, a gateway shedding load — so the retries burned out inside a
-      // few seconds and reported a permanent failure.
+      // few seconds and reported a permanent failure. A resume waits the same
+      // way: a socket that just dropped may need a moment before the endpoint
+      // will take the connection again.
       const backoff = Math.min(60_000, 1_000 * 2 ** n) + Math.floor(Math.random() * 500);
       const delay = pe.retryAfterMs ?? backoff;
       debugWarn(
         "turn",
-        `provider retry ${n + 1}/${retryLimit}`,
+        `provider ${resume ? "resume" : "retry"} ${n + 1}/${retryLimit}`,
         `in ${delay}ms${pe.retryAfterMs !== undefined ? " (provider Retry-After)" : ""}${truncated ? " [truncated stream]" : ""}: ${pe.message}`,
       );
-      yield { type: "retry", attempt: n + 1, delay_ms: delay, error: pe.message };
+      yield {
+        type: "retry",
+        attempt: n + 1,
+        delay_ms: delay,
+        error: resume ? `${pe.message} — resuming the answer from where it stopped` : pe.message,
+      };
       // abort-aware sleep: ESC during a 4-8s backoff must not wait out the
       // whole delay before the interrupt is honored
       if (signal) {

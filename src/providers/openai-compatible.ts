@@ -5,7 +5,7 @@
 import { streamText, jsonSchema, type ToolSet } from "ai";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import type { ChatMessage, ProviderConfig, StreamEvent, ToolDef } from "./types.ts";
-import { classifyProviderError, TruncatedStreamError } from "../core/errors.ts";
+import { streamFailure, TruncatedStreamError } from "../core/errors.ts";
 import { debugInfo, debugError } from "../core/debuglog.ts";
 import { startWatchdog } from "./watchdog.ts";
 import { providerOptionsFor, samplingOptions, outputTokenOptions, cacheKeyFor } from "./index.ts";
@@ -47,6 +47,9 @@ export async function* streamChat(
 
   const wd = startWatchdog(cfg.requestTimeoutMs, signal);
   const started = Date.now();
+  // true once any part has arrived: a failure after that point cut off an
+  // answer that has already streamed, which the turn can resume
+  let sawPart = false;
   debugInfo("provider", `request → ${cfg.baseUrl}`, `model=${cfg.model} format=${cfg.provider ?? "openai-compatible"} messages=${messages.length} tools=${tools.length} maxTokens=${outputTokenOptions(cfg).maxOutputTokens ?? "(provider default)"}`);
   try {
     // ai v7 requires system content via the dedicated option, not in messages[]
@@ -87,6 +90,7 @@ export async function* streamChat(
         const { done, value: part } = await Promise.race([iter.next(), abortPromise]);
         if (done) break;
         wd.progress(); // any part counts as progress: rearm the idle clock
+        if (part.type !== "error") sawPart = true;
         switch (part.type) {
         case "text-delta":
           if (part.text) yield { type: "text", delta: part.text };
@@ -105,7 +109,9 @@ export async function* streamChat(
           };
           break;
         case "error":
-          throw classifyProviderError(part.error);
+          // retriable + already streaming = a cut-off answer, not a refusal:
+          // mark it so the loop resumes instead of dropping what streamed
+          throw streamFailure(cfg.model, part.error, sawPart);
         case "finish":
           finish = part.finishReason;
           if (part.totalUsage)
@@ -151,7 +157,7 @@ export async function* streamChat(
       err.name = "AbortError";
       throw err;
     }
-    const pe = classifyProviderError(e);
+    const pe = streamFailure(cfg.model, e, sawPart);
     // the full truth about a failed call: endpoint, model, status, the provider's
     // own message, and the raw body. This is where a "400 Invalid max_tokens"
     // becomes legible instead of a bare upstream string.

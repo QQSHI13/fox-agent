@@ -4,7 +4,7 @@
 import { streamText, jsonSchema, type ToolSet } from "ai";
 import { createOpenAI } from "@ai-sdk/openai";
 import type { ChatMessage, ProviderConfig, StreamEvent, ToolDef } from "./types.ts";
-import { classifyProviderError, TruncatedStreamError } from "../core/errors.ts";
+import { streamFailure, TruncatedStreamError } from "../core/errors.ts";
 import { startWatchdog } from "./watchdog.ts";
 import { providerOptionsFor, samplingOptions, outputTokenOptions } from "./index.ts";
 import { toModelMessages } from "./convert.ts";
@@ -28,6 +28,9 @@ export async function* streamChat(
   for (const t of tools) toolSet[t.name] = { description: t.description, inputSchema: jsonSchema(t.parameters as never) };
 
   const wd = startWatchdog(cfg.requestTimeoutMs, signal);
+  // true once any part has arrived: a later failure cut off a streamed answer,
+  // which is resumable rather than a fresh request that just failed
+  let sawPart = false;
   try {
     const sys = messages
       .filter((m) => m.role === "system")
@@ -52,6 +55,7 @@ export async function* streamChat(
     let finish = "";
     for await (const part of result.fullStream) {
       wd.progress();
+      if (part.type !== "error") sawPart = true;
       switch (part.type) {
         case "text-delta":
           if (part.text) yield { type: "text", delta: part.text };
@@ -70,7 +74,7 @@ export async function* streamChat(
           };
           break;
         case "error":
-          throw classifyProviderError(part.error);
+          throw streamFailure(cfg.model, part.error, sawPart);
         case "finish":
           finish = part.finishReason;
           if (part.totalUsage)
@@ -103,7 +107,7 @@ export async function* streamChat(
       err.name = "AbortError";
       throw err;
     }
-    throw classifyProviderError(e);
+    throw streamFailure(cfg.model, e, sawPart);
   } finally {
     wd.done();
   }

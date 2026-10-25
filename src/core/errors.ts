@@ -59,12 +59,48 @@ export const isTimeout = (e: unknown): e is ProviderTimeoutError => e instanceof
  */
 export class TruncatedStreamError extends ProviderError {
   readonly truncated = true;
-  constructor(model: string) {
-    super(`the stream ended with no finish reason (${model}) — the connection dropped mid-answer`, undefined, true);
+  /**
+   * `cause` is the failure the transport raised AFTER the response had started
+   * (a reset socket, a gateway closing the body). The "no finish reason" case
+   * has none — the stream simply ended. Keeping the cause in the message is
+   * what makes the retry/resume line actionable instead of generic.
+   */
+  constructor(model: string, cause?: ProviderError) {
+    super(
+      cause
+        ? `the stream was cut off mid-answer (${model}): ${cause.message}`
+        : `the stream ended with no finish reason (${model}) — the connection dropped mid-answer`,
+      cause?.status,
+      true,
+      cause?.detail,
+      cause?.retryAfterMs,
+    );
   }
 }
 
 export const isTruncated = (e: unknown): e is TruncatedStreamError => e instanceof TruncatedStreamError;
+
+/**
+ * Classify a failure raised after the stream had already started.
+ *
+ * A connection that drops mid-answer is the one failure the turn MUST act on
+ * rather than report: output has streamed, so the answer is half-written and
+ * the user is looking at it. `TruncatedStreamError` is the marker for "this
+ * ended early, and the loop may continue from where it stopped". Only
+ * retriable failures qualify — a 400/401 mid-stream is a real refusal, and
+ * replaying it would only repeat the same error.
+ *
+ * `started` is false when the failure arrived before any part did: nothing was
+ * shown, so the ordinary classification (and an ordinary retry from zero) is
+ * the correct handling.
+ */
+export function streamFailure(model: string, e: unknown, started: boolean): ProviderError {
+  const pe = classifyProviderError(e);
+  // already wrapped (an `error` part thrown inside the loop, or the no-finish
+  // check): wrapping again would nest the message once per layer
+  if (pe instanceof TruncatedStreamError || !started || !pe.retriable) return pe;
+  return new TruncatedStreamError(model, pe);
+}
 
 /** Read a `Retry-After` header (seconds or an HTTP date) into ms, if present. */
 export function retryAfterMs(headers: unknown): number | undefined {
@@ -169,8 +205,11 @@ export function classifyProviderError(e: unknown): ProviderError {
   let finalMsg = msg || name || "unknown provider error";
   // The HTTP status is the first thing a provider error needs to say — a bare
   // "预扣费额度失败" or "Unauthorized" hides whether it's auth, quota, or rate
-  // limiting. Prefix it unless the message already carries it.
-  if (typeof status === "number" && !new RegExp(`\\b${status}\\b`).test(finalMsg)) {
+  // limiting. Prefix it unless the message already carries it. Only FAILURE
+  // statuses: SDKs also attach `statusCode: 200` to "failed to process the
+  // successful response" (a body that died mid-stream), and "HTTP 200: …"
+  // reads as a contradiction.
+  if (typeof status === "number" && status >= 400 && !new RegExp(`\\b${status}\\b`).test(finalMsg)) {
     finalMsg = `HTTP ${status}: ${finalMsg}`;
   }
   const retriable =
