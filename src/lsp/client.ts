@@ -173,6 +173,35 @@ function wake(s: Session) {
   for (const w of [...s.waiters]) w();
 }
 
+/** True when the child exits within `ms`. */
+function exitedWithin(proc: ReturnType<typeof Bun.spawn>, ms: number): Promise<boolean> {
+  return Promise.race([proc.exited.then(() => true), Bun.sleep(ms).then(() => false)]);
+}
+
+/**
+ * Kill a server that is already dead to us, outright.
+ *
+ * A session is marked `dead` the moment its `initialize` request comes back as
+ * an error (typescript-language-server does exactly that when it cannot resolve
+ * a workspace `typescript`), but the PROCESS is still running. The old code
+ * skipped every dead session — neither `sessionFor`'s cleanup nor `shutdownLsp`
+ * touched it — so the orphan's stdio pipes kept fox-agent's event loop alive and
+ * a headless `fox -p` never exited after a successful turn. Measured: a 2s
+ * turn, then still alive at 150s.
+ *
+ * SIGKILL, not SIGTERM: this server never completed a handshake, so there is no
+ * state to flush, and the one guarantee needed is that it is gone. `unref` is
+ * belt-and-braces for a platform where the kill is asynchronous.
+ */
+function killSession(s: Session): void {
+  try {
+    s.proc.kill(9);
+  } catch {}
+  try {
+    s.proc.unref();
+  } catch {}
+}
+
 function send(s: Session, msg: unknown): boolean {
   if (s.dead) return false;
   try {
@@ -213,6 +242,8 @@ async function sessionFor(
   let s = sessions.get(k);
   if (s?.dead) {
     sessions.delete(k);
+    // a dead session can still own a live process; see killSession
+    killSession(s);
     s = undefined;
   }
   if (!s) {
@@ -224,13 +255,12 @@ async function sessionFor(
   if (!started) {
     // It may still answer later, but this call is over. Drop it so the next
     // edit starts a fresh one rather than inheriting a process we gave up on.
-    if (!s.dead) {
-      sessions.delete(k);
-      s.dead = true;
-      try {
-        s.proc.kill();
-      } catch {}
-    }
+    // The guard used to be `if (!s.dead)`, which skipped the kill in exactly
+    // the case that matters: `initialize` FAILED, so the handler had already
+    // set dead — and the process lived on. Always drop and reap.
+    sessions.delete(k);
+    s.dead = true;
+    killSession(s);
     return null;
   }
   return { s, k, found, root };
@@ -389,13 +419,23 @@ export async function shutdownLsp(): Promise<void> {
   sessions.clear();
   await Promise.all(
     all.map(async (s) => {
-      if (s.dead) return;
+      // Dead sessions are NOT skipped: see killSession. A server that rejected
+      // `initialize` is `dead` while its process is very much alive, and that
+      // leak is what hung `fox -p` at exit.
+      if (s.dead) {
+        killSession(s);
+        return;
+      }
       // Ask politely first: a server killed mid-write can leave a stale lock or
       // cache. Then stop waiting.
       send(s, { jsonrpc: "2.0", id: s.nextId++, method: "shutdown", params: null });
       send(s, { jsonrpc: "2.0", method: "exit", params: null });
-      const exited = await Promise.race([s.proc.exited.then(() => true), Bun.sleep(1_000).then(() => false)]);
-      if (!exited) s.proc.kill();
+      if (await exitedWithin(s.proc, 1_000)) return;
+      try {
+        s.proc.kill();
+      } catch {}
+      if (await exitedWithin(s.proc, 500)) return;
+      killSession(s);
     }),
   );
 }

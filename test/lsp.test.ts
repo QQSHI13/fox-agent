@@ -10,7 +10,7 @@
  * server is installed, because whether one exists is a property of the machine.
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { encode, FrameReader } from "../src/lsp/codec.ts";
@@ -295,6 +295,62 @@ describe("diagnose: the paths that must never break an edit", () => {
     expect(await diagnose(f, "const z = 3;\n", { servers, cwd: dir, timeoutMs: 1_500 })).toBeNull();
     expect(Date.now() - t0).toBeLessThan(10_000);
   }, 20_000);
+
+  test("a server that REJECTS initialize is killed, not left holding the process", async () => {
+    // typescript-language-server without a workspace `typescript` answers
+    // initialize with -32603 and then keeps running. The session was marked
+    // dead, and both cleanup paths skipped dead sessions — so the orphan's
+    // stdio pipes kept fox-agent's event loop alive and a headless `fox -p`
+    // never exited (measured: a 2s turn, still alive at 150s). This server
+    // reproduces that shape exactly and must be gone when diagnose returns.
+    const { diagnose, shutdownLsp } = await import("../src/lsp/client.ts");
+    const f = join(dir, "d.ts");
+    writeFileSync(f, "const q = 4;\n");
+    const pidFile = join(dir, "server.pid");
+    const script = join(dir, "reject-init.mjs");
+    writeFileSync(
+      script,
+      `
+import { writeFileSync } from "node:fs";
+writeFileSync(process.env.FOX_TEST_PID_FILE, String(process.pid));
+process.stdin.setEncoding("utf8");
+let buf = "";
+process.stdin.on("data", (c) => {
+  buf += c;
+  if (!/"id":\\s*0/.test(buf)) return;
+  const body = JSON.stringify({ jsonrpc: "2.0", id: 0, error: { code: -32603, message: "no workspace typescript" } });
+  process.stdout.write("Content-Length: " + Buffer.byteLength(body) + "\\r\\n\\r\\n" + body);
+  buf = "";
+});
+// stay alive after the rejection — that is the leak
+setInterval(() => {}, 1000);
+`,
+    );
+    const servers = {
+      reject: { command: process.execPath, args: [script], extensions: [".ts"], env: { FOX_TEST_PID_FILE: pidFile } },
+    };
+    expect(await diagnose(f, "const q = 4;\n", { servers, cwd: dir, timeoutMs: 5_000 })).toBeNull();
+
+    let pid = 0;
+    for (let i = 0; i < 100 && !pid; i++) {
+      try {
+        pid = Number(readFileSync(pidFile, "utf8")) || 0;
+      } catch {}
+      if (!pid) await new Promise((r) => setTimeout(r, 20));
+    }
+    expect(pid).toBeGreaterThan(0);
+    const alive = () => {
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    for (let i = 0; i < 100 && alive(); i++) await new Promise((r) => setTimeout(r, 30));
+    expect(alive()).toBe(false);
+    await shutdownLsp();
+  }, 15_000);
 });
 
 // The real thing, once, against a real server. Everything above is a stand-in for
