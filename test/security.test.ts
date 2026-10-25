@@ -134,6 +134,26 @@ describe("fetch SSRF gate", () => {
     expect(checkUrl(new URL("https://example.com/"))).toBeNull();
   });
 
+  test("refuses CGNAT, benchmarking, protocol-assignment, multicast and broadcast", async () => {
+    const { checkUrl } = await import("../src/tools/fetch.ts");
+    for (const u of [
+      "http://100.64.0.1/", // CGNAT, fronts internal services on some clouds
+      "http://100.127.255.254/",
+      "http://198.18.0.1/", // benchmarking / overlay networks
+      "http://198.19.255.1/",
+      "http://192.0.0.170/", // IETF protocol assignments (NAT64 discovery)
+      "http://224.0.0.1/", // multicast
+      "http://255.255.255.255/", // broadcast
+      "http://[ff02::1]/", // IPv6 multicast
+    ]) {
+      expect(`${u} -> ${checkUrl(new URL(u))}`).toMatch(/private\/local/);
+    }
+    // the boundaries of the CGNAT block are not blocked
+    expect(checkUrl(new URL("http://100.63.255.255/"))).toBeNull();
+    expect(checkUrl(new URL("http://100.128.0.0/"))).toBeNull();
+    expect(checkUrl(new URL("http://93.184.216.34/"))).toBeNull();
+  });
+
   /**
    * `checkUrl` reads `URL.hostname`, which is only authoritative for literals.
    * A public name resolving inward reached the private network unchecked —
