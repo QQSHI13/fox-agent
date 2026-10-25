@@ -225,6 +225,26 @@ describe("grep", () => {
     expect(whole.output.split("\n").filter((l) => l.includes("needle"))).toHaveLength(4);
     expect(whole.output).not.toContain("truncated");
   });
+
+  test("include globs match the path relative to the search root, and basenames", async () => {
+    write("nest/deep/a.ts", "needle a");
+    write("nest/b.ts", "needle b");
+    write("root.ts", "needle root");
+    // the walker is the offline fallback; rg's globs are passed through, so the
+    // matching rule is pinned here
+    const { walkGrep } = await import("../src/tools/files.ts");
+    const re = /needle/;
+    const nested = walkGrep(re, dir, "nest/**/*.ts", 50);
+    expect(nested).toContain("nest/deep/a.ts");
+    expect(nested).toContain("nest/b.ts"); // ** matches zero directories too
+    expect(nested).not.toContain("root.ts");
+
+    // a glob without ** still means "this basename at any depth"
+    const base = walkGrep(re, dir, "*.ts", 50);
+    expect(base).toContain("root.ts");
+    expect(base).toContain("nest/b.ts");
+    expect(base).toContain("nest/deep/a.ts"); // basename fallback, any depth
+  });
 });
 
 describe("exec", () => {

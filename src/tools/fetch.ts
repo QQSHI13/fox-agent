@@ -32,14 +32,28 @@ function parseIpv4(h: string): [number, number, number, number] | null {
   return parts.every((n) => n <= 255) ? (parts as [number, number, number, number]) : null;
 }
 
-/** Loopback / RFC1918 / link-local-metadata / "this network". */
-function privateIpv4(a: number, b: number, _c: number, _d: number): boolean {
-  if (a === 127) return true;
-  if (a === 0) return true;
+/**
+ * Every IPv4 range that must not be reachable by a model-supplied URL.
+ *
+ * Beyond loopback/RFC1918/metadata, three ranges matter operationally:
+ * 100.64/10 (CGNAT, which on some clouds fronts internal services),
+ * 198.18/15 (benchmarking, used by some overlay networks) and 192.0.0/24
+ * (IETF protocol assignments, including NAT64 discovery). 224/4 and above are
+ * multicast/reserved/broadcast: nothing a fetch should ever connect to.
+ * 2001:db8::/32 is deliberately NOT blocked — it is documentation space and
+ * the offline gate tests use it as the "public v6 literal" control.
+ */
+function privateIpv4(a: number, b: number, c: number, _d: number): boolean {
+  if (a === 0) return true; // "this network"
   if (a === 10) return true;
+  if (a === 127) return true; // loopback
+  if (a === 100 && b >= 64 && b <= 127) return true; // CGNAT 100.64/10
+  if (a === 169 && b === 254) return true; // link-local / cloud metadata
   if (a === 172 && b >= 16 && b <= 31) return true;
   if (a === 192 && b === 168) return true;
-  if (a === 169 && b === 254) return true;
+  if (a === 192 && b === 0 && c === 0) return true; // 192.0.0/24
+  if (a === 198 && (b === 18 || b === 19)) return true; // 198.18/15 benchmarking
+  if (a >= 224) return true; // multicast (224/4), reserved (240/4), broadcast
   return false;
 }
 
@@ -94,6 +108,7 @@ function privateIpv6(h: string): boolean {
   if ((g0 & 0xffc0) === 0xfe80) return true; // link-local /10
   if ((g0 & 0xffc0) === 0xfec0) return true; // site-local /10 (deprecated)
   if ((g0 & 0xfe00) === 0xfc00) return true; // unique-local /7
+  if ((g0 & 0xff00) === 0xff00) return true; // multicast /8
   return false;
 }
 
