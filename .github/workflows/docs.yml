@@ -83,7 +83,7 @@ jobs:
           # (docsforge emits site/search/ and hashed asset dirs).
           touch site/.nojekyll
 
-      - uses: actions/configure-pages@v5
+      - uses: actions/configure-pages@v6
         # NOT `enablement: true`. Creating the Pages site needs admin rights
         # that the workflow's GITHUB_TOKEN does not have — that option fails
         # with "Resource not accessible by integration". The site is created
