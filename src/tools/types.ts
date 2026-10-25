@@ -65,6 +65,15 @@ export interface ToolResult {
   output: string;
   /** binary attachments (e.g. an image `read` returns for a vision-capable model) */
   media?: MediaPart[];
+  /**
+   * The tool already applied its own, caller-chosen output budget — so the
+   * harness must not apply its per-result tail cap on top (`exec` sets this
+   * for `full: true`). Without it, the cap `full` exists to lift was silently
+   * re-applied in the turn loop, and the "whole output" came back tail-cut
+   * with no marker saying so. Presentation truncation (a view op, reversible
+   * and labelled) still applies.
+   */
+  uncapped?: boolean;
 }
 
 export interface Tool {

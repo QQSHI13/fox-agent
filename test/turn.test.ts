@@ -151,6 +151,45 @@ describe("turn manager", () => {
     expect(projectView(s.id).find((n) => n.msg.seq === stored.seq)!.content).toBe(huge);
   });
 
+  test("a tool that returns uncapped output is not silently tail-cut by the harness", async () => {
+    // exec's `full: true` sets `uncapped`: the tool already applied the
+    // caller's budget, and the turn loop's own tail cap used to re-apply the
+    // very cap full:true had just lifted (the whole output arrived tail-cut,
+    // with no marker). This pins both halves of the contract.
+    const t = await setup();
+    const { outCap, setOutputCap } = await import("../src/tools/files.ts");
+    const { defaultConfig } = await import("../src/core/config.ts");
+    setOutputCap(30_000); // isolate this test from any earlier config
+    const harnessCap = outCap() * 2;
+    const huge = "Z".repeat(harnessCap + 25_000);
+    // presentation truncation off (0), so only the turn tail-cap is in play
+    const config = defaultConfig({ model: "test-model", baseUrl: "http://localhost:9", apiKey: "test", toolPresentationCap: 0 });
+
+    const run = async (uncapped: boolean) => {
+      const s = t.createSession("/w", "m1");
+      const registry = new Map([
+        [
+          "bigecho",
+          {
+            def: { name: "bigecho", description: "x", parameters: { type: "object", properties: {} } },
+            run: async () => (uncapped ? { ok: true, output: huge, uncapped: true } : huge),
+          },
+        ],
+      ]) as any;
+      const mock = mockChat([
+        [{ type: "tool_call", call: { id: "t1", name: "bigecho", arguments: "{}" } }, { type: "done", reason: "tool_calls" }],
+        textDone("done"),
+      ]);
+      await collect(
+        t.runTurnCore(s.id, cfg(), "go", undefined, { chat: mock.fn as any, registryOverride: registry, quiet: true, config }),
+      );
+      return t.allMessages(s.id).find((m: any) => m.role === "tool")!;
+    };
+
+    expect((await run(false)).content).toBe(huge.slice(-harnessCap)); // capped, silently
+    expect((await run(true)).content).toBe(huge); // uncapped: whole, as asked
+  });
+
   test("malformed JSON args produce an error result, not silent {}", async () => {
     const t = await setup();
     const s = t.createSession("/w", "m1");

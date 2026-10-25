@@ -10,7 +10,7 @@ import { outCap } from "./files.ts";
 export const execDef: ToolDef = {
   name: "exec",
   description:
-    "Run a shell command (" + shellName() + ") starting from the session's directory. Each call is independent: the working directory NEVER carries over from a previous exec, so a `cd` has no effect on the next call — use the workdir argument (or `cd x && cmd` within one call) instead. For an interactive shell that keeps its directory, use pty. For background work, long-running jobs, and polling, use the repl tool's `jobs` API. Foreground runs return exit code + merged output (tail-capped, unless full:true). `full: true` lifts the per-result output cap for this call so you receive the whole output — use it when the capped tail is not enough; the hard memory guards still apply. Runs with full machine access.",
+    "Run a shell command (" + shellName() + ") starting from the session's directory. Each call is independent: the working directory NEVER carries over from a previous exec, so a `cd` has no effect on the next call — use the workdir argument (or `cd x && cmd` within one call) instead. For an interactive shell that keeps its directory, use pty. For background work, long-running jobs, and polling, use the repl tool's `jobs` API. Foreground runs return exit code + merged output (tail-capped, unless full:true). `full: true` lifts the per-result output cap for this call so you receive the whole output — use it when the capped tail is not enough; the hard memory guards and the display budget still apply (a gigantic result is excerpted head+tail with a note saying so, and `ctx restore` brings it back). Runs with full machine access.",
   parameters: {
     type: "object",
     properties: {
@@ -169,5 +169,8 @@ export async function execRun(
   if (killedBy) head += ` (${killedBy})`;
   const body = `${head}\n${truncated || "(no output)"}`;
   // a non-zero exit is a tool failure — the model (and the TUI's ✗) need to know
-  return code === 0 && !killedBy ? ok(body) : fail(body);
+  const result = code === 0 && !killedBy ? ok(body) : fail(body);
+  // full:true also tells the turn loop to skip ITS per-result tail cap; the
+  // local cap above is already conditional on the same flag (see `truncated`)
+  return args.full ? { ...result, uncapped: true } : result;
 }

@@ -328,7 +328,12 @@ async function execToolCall(call: ToolCall, tools: Map<string, Tool>, tctx: Tool
   try {
     const r = await tool.run(args, tctx);
     const result = typeof r === "string" ? { ok: true, output: r } : r;
-    const output = result.output.length > outCap() * 2 ? result.output.slice(-outCap() * 2) : result.output; // tail-cap
+    // Tail-cap: a runaway tool must not put megabytes into one node. A tool
+    // that already applied its caller's own budget (`uncapped`, e.g. exec with
+    // full:true) skips it — otherwise the harness silently re-imposed the cap
+    // the caller had just asked to lift.
+    const cap = result.uncapped ? Infinity : outCap() * 2;
+    const output = result.output.length > cap ? result.output.slice(-cap) : result.output;
     debugInfo("tools", `← ${call.name}`, `ok=${result.ok} ms=${Date.now() - t0} bytes=${result.output.length}`);
     return { ok: result.ok, output, media: result.media };
   } catch (e) {
