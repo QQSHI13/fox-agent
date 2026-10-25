@@ -986,6 +986,10 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       // plugins re-import on the next turn's buildRegistry — /reload exists so
       // editing a plugin file takes effect without restarting fox-agent
       void import("../plugins/load.ts").then((m) => m.reloadPlugins()).catch(() => {});
+      // the skill list is cached on the configured directory list, so an edited
+      // SKILL.md under the same `skills` key would otherwise serve the old
+      // description until a restart
+      void import("../skills/load.ts").then((m) => m.resetSkills()).catch(() => {});
       applyRuntimeConfig();
       // the "reloaded" state is transient and self-describing — float it in the
       // command-output plane like /todo so it dies on the next keypress and

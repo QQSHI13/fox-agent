@@ -94,6 +94,7 @@ Model, theme and reasoning effort have their own commands (`/model`, `/theme`,
 |---|---|
 | `plugins` | Plugin file paths. **Global config only** — see below |
 | `disabledPlugins` | Names switched off entirely, bundled or user (`"pty"`, `"bundled:pty"`, `"mcp"`, `"anthropic"`, …) |
+| `skills` | Directories to discover `SKILL.md` skills in. See [Skills](#skills) |
 
 ### Diagnostics
 
@@ -125,6 +126,46 @@ the filesystem root down to your cwd, each labeled with its own path so relative
 paths inside it resolve against the right directory. `/init` analyzes the repo
 and writes or updates an `AGENTS.md` for you.
 
+## Skills
+
+`skills` is an array of directories searched for `SKILL.md`. Two layouts work:
+
+```
+<dir>/SKILL.md          the directory IS one skill
+<dir>/<name>/SKILL.md   a collection of skills
+```
+
+Only two frontmatter fields are read, `name` and `description`:
+
+```markdown
+---
+name: scrapling
+description: Adaptive web scraping with anti-bot bypass.
+---
+
+# Scrapling
+… the body …
+```
+
+No frontmatter is fine — the name falls back to the directory name and the
+description to the first prose line. Other frontmatter fields (`version`,
+`metadata`, …) are ignored. `~` expands; a relative entry resolves against the
+config file that named it.
+
+What reaches the model is a **routing table** — one line per skill with its name,
+description and path — never the body. The agent reads a `SKILL.md` with its
+ordinary `read` tool when a task matches, so an unused skill costs one line
+instead of a whole document. The section only appears when `read` is in the live
+tool registry.
+
+A project `fox-agent.toml` may set `skills` only in a **trusted** directory — a
+`SKILL.md` is instructions the model is told to follow, the same injection
+surface `[mcpServers.*]` is gated for. Elsewhere the entry is ignored with a
+warning.
+
+Malformed YAML, an unreadable file, a missing directory, and two skills sharing
+one name are warnings, never fatal.
+
 ## Trusted vs untrusted directories
 
 On interactive TUI start, fox-agent shows the working directory and asks whether
@@ -133,7 +174,7 @@ recorded in `$FOX_AGENT_HOME/trusted_dirs`; `--trust` skips the prompt.
 
 In an **untrusted** directory, the project config's executable sections —
 `[mcpServers.*]`, `[agents.*]`, `[lsp.*]`, `[providers.*]` (including `!cmd`
-values) — plus project `baseUrl`/`apiKey` are ignored with warnings. Safe keys
+values) — plus `skills` and project `baseUrl`/`apiKey` are ignored with warnings. Safe keys
 (model, theme, caps) still apply. Headless and ACP runs never prompt; they run
 restricted instead. `FOX_AGENT_NO_TRUST_CHECK=1` skips the check for scripts.
 
@@ -153,6 +194,9 @@ diagnostics = true
 # Plugins are read from the GLOBAL config only (see above). In
 # ~/.config/fox-agent/config.toml; ignored with a warning here.
 # plugins = ["~/my-fox-plugin.ts"]
+
+# Skill directories. Discovered once at config load; /reload re-reads them.
+skills = ["~/.openclaw/workspace/skills"]
 
 [providers.openrouter]
 format = "openai-compatible"

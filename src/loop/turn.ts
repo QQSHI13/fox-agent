@@ -658,6 +658,11 @@ async function* turnBody(
     const sysPrompt = buildSystemPrompt({
       tools: callableTools,
       projectInstructions: opts.projectInstructions ?? "",
+      // read off the config, not a TurnOptions field: every host (ACP, gateway,
+      // A2A, SDK, CLI) already passes the whole config, and a skill list is not
+      // per-turn state the way maxSteps is — threading it would have meant the
+      // same line added to nine call sites that already forward `config`.
+      skills: effCfg.skillList,
     });
     const messages = renderContext(sessionId, sysPrompt, {
       markers: effCfg.contextMarkers !== false,

@@ -6,6 +6,8 @@ import { debugInfo } from "./debuglog.ts";
 import { setConfiguredModels } from "../providers/models.ts";
 import { presetById } from "../providers/modelsdev.ts";
 import { isReasoningEffort, type ReasoningEffort } from "./reasoning.ts";
+import type { SkillInfo } from "../skills/load.ts";
+import { loadSkills } from "../skills/load.ts";
 
 export interface McpServerConfig {
   command: string;
@@ -226,6 +228,18 @@ export interface Config {
   /** every AGENTS.md / CLAUDE.md on the path from root to cwd, each labeled with its source path ("" if none) */
   projectInstructions: string;
   /**
+   * Directories to discover `SKILL.md` skills in, as configured (tilde-expanded,
+   * relative entries resolved against the config file that named them).
+   *
+   * A skill is a doc the agent reads on demand, never prompt content, so this is
+   * a *routing* table rather than an injection. Even so, a project file may only
+   * set it in a trusted directory: a SKILL.md is instructions the model will be
+   * told to follow, which is exactly what `trusted` exists to gate.
+   */
+  skills: string[];
+  /** the skills discovered from `skills` at load time; what the prompt lists */
+  skillList: SkillInfo[];
+  /**
    * Whether the cwd was trusted at load time. When false, project-scope
    * executable sections ([mcpServers.*], [agents.*], [lsp.*], [providers.*])
    * are skipped with warnings — "clone a repo, cd in, run fox" must not
@@ -274,6 +288,8 @@ const DEFAULTS: Omit<Config, "projectInstructions"> = {
   disabledPlugins: [],
   providers: {},
   acpHistory: "full",
+  skills: [],
+  skillList: [],
   warnings: [],
 };
 
@@ -291,6 +307,8 @@ export function defaultConfig(partial: Partial<Config> = {}): Config {
     plugins: [],
     disabledPlugins: [],
     providers: {},
+    skills: [],
+    skillList: [],
     ...partial,
     projectInstructions: partial.projectInstructions ?? "",
   };
@@ -442,7 +460,7 @@ const REMOVED_KEYS: Record<string, string> = {
 
 const KNOWN_KEYS = new Set([
   "model", "baseUrl", "apiKey", "provider", "maxSteps", "retryLimit", "compactWarnAt", "compactCtxOnlyAt",
-  "requestTimeoutMs", "diagnostics", "mcpServers", "agents", "lsp", "plugins",
+  "requestTimeoutMs", "diagnostics", "mcpServers", "agents", "lsp", "plugins", "skills",
   "providers", "disabledPlugins", "toolOutputCap", "readCap", "toolPresentationCap", "sessionListLimit",
   "tuiCollapsedChars", "tuiKeptChars", "tuiScrollbar", "tuiScrollStep", "statusBar", "debug", "tuiFrameMs", "theme", "contextMarkers", "acpHistory",
   "reasoningEffort",
@@ -487,7 +505,7 @@ function parseProfile(v: unknown): ProviderProfile | null {
   return out;
 }
 
-function applyTable(cfg: Config, t: Record<string, unknown> | null, scope: "global" | "project", opts: { trusted?: boolean } = {}) {
+function applyTable(cfg: Config, t: Record<string, unknown> | null, scope: "global" | "project", opts: { trusted?: boolean; configPath?: string } = {}) {
   if (!t) return;
   const untrustedProject = scope === "project" && opts.trusted === false;
   // a typo'd key used to vanish silently, leaving the user on defaults with no
@@ -620,6 +638,25 @@ function applyTable(cfg: Config, t: Record<string, unknown> | null, scope: "glob
       for (const p of entries) cfg.plugins.push(p.trim());
     }
   }
+  if (Array.isArray(t.skills)) {
+    const entries = t.skills.filter((p): p is string => typeof p === "string" && p.trim().length > 0);
+    if (scope === "project" && untrustedProject) {
+      // A SKILL.md is a document the prompt tells the model to follow — the same
+      // class of instruction a trusted directory exists to gate. Not because
+      // reading a file is dangerous, but because "clone a repo, cd in, run fox"
+      // must not be able to hand the agent a repo-authored playbook.
+      if (entries.length) {
+        cfg.warnings.push(
+          `project config: ${entries.length} 'skills' entr${entries.length === 1 ? "y" : "ies"} ignored in untrusted directory — trust this folder to enable`,
+        );
+      }
+    } else {
+      // Resolved against the file that named them, the rule this project already
+      // documents for every relative path inside a config file. Tilde expansion
+      // first, so `~/x` means $HOME rather than a directory literally named `~`.
+      for (const entry of entries) cfg.skills.push(expandConfigPath(entry.trim(), opts.configPath));
+    }
+  }
 }
 
 export const GLOBAL_CONFIG_NAME = join("fox-agent", "config.toml");
@@ -710,6 +747,22 @@ function expandPluginEntry(raw: string, configPath: string): string {
   if (out === "~") out = homedir();
   else if (out.startsWith("~/")) out = `${homedir()}/${out.slice(2)}`;
   if (!isAbsolute(out)) out = join(dirname(configPath), out);
+  return out;
+}
+
+/**
+ * The same resolution for any other path-valued *list* key (`skills`).
+ *
+ * Shared shape with `expandPluginEntry` but not the same function: the plugin
+ * loader re-expands at import time because it also accepts paths typed at
+ * `/plugin add`, while a config key is expanded once at load and the absolute
+ * result is what `loadSkills` sees.
+ */
+function expandConfigPath(raw: string, configPath: string | undefined): string {
+  let out = raw;
+  if (out === "~") out = homedir();
+  else if (out.startsWith("~/")) out = `${homedir()}/${out.slice(2)}`;
+  if (!isAbsolute(out)) out = join(dirname(configPath ?? globalConfigPath()), out);
   return out;
 }
 
@@ -1009,19 +1062,19 @@ export function loadConfig(
   }
 
   // merge order: defaults <- global <- project <- env <- explicit overrides
-  // `mcpServers`, `agents`, `lsp`, `plugins` and `warnings` are re-initialized,
+  // `mcpServers`, `agents`, `lsp`, `plugins`, `skills` and `warnings` are re-initialized,
   // not spread: DEFAULTS holds one shared object for each, and applyTable writes
   // into them, so reusing the reference would leak one config's entries into
   // every later load in the same process (the ACP server loads config per run,
   // so this is reachable).
-  const merged: Config = { ...DEFAULTS, mcpServers: {}, agents: {}, lsp: {}, plugins: [], disabledPlugins: [], providers: {}, warnings: [], projectInstructions: "", trusted };
+  const merged: Config = { ...DEFAULTS, mcpServers: {}, agents: {}, lsp: {}, plugins: [], disabledPlugins: [], providers: {}, warnings: [], skills: [], skillList: [], projectInstructions: "", trusted };
   // An explicit --config that does not exist is a mistake worth surfacing; the
   // default global path being absent is normal and stays silent.
   if (overrides.configPath && !existsSync(overrides.configPath)) {
     throw new ConfigError(`config file not found: ${overrides.configPath}`);
   }
-  applyTable(merged, readToml(globalPath), "global", { trusted });
-  applyTable(merged, readToml(projectPath), "project", { trusted });
+  applyTable(merged, readToml(globalPath), "global", { trusted, configPath: globalPath });
+  applyTable(merged, readToml(projectPath), "project", { trusted, configPath: projectPath ?? undefined });
   applyEnv(merged, env);
 
   if (overrides.model) merged.model = overrides.model;
@@ -1036,6 +1089,14 @@ export function loadConfig(
 
   merged.maxSteps = Math.max(0, Math.floor(merged.maxSteps));
   merged.projectInstructions = loadProjectInstructions(cwd);
+
+  // Discovery happens once, here, so the prompt can list skills without
+  // touching the filesystem on every step — `loadSkills` caches on the resolved
+  // directory list, and this call is what makes that list the config's.
+  const discovered = loadSkills(merged.skills);
+  merged.skillList = discovered.skills;
+  merged.warnings.push(...discovered.warnings);
+
 
   // config model entries feed the context-window/modality lookup — registered
   // here so every later lookupModel call sees them without threading cfg around

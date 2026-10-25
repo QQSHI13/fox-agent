@@ -56,6 +56,8 @@ export interface RuntimeBudget {
  */
 import { agentDocsDir, ensureAgentDocs } from "../core/selfdocs.ts";
 
+import type { SkillInfo } from "../skills/load.ts";
+
 /** Wrap one prompt section in a tag of the same name. */
 function section(name: string, ...lines: string[]): string {
   return `<${name}>\n${lines.join("\n")}\n</${name}>`;
@@ -65,6 +67,7 @@ export function buildSystemPrompt(
   opts: {
     tools: ToolDef[];
     projectInstructions?: string;
+    skills?: readonly SkillInfo[];
   },
 ): string {
   const have = toolNames(opts.tools);
@@ -76,6 +79,23 @@ export function buildSystemPrompt(
   );
 
   if (opts.projectInstructions) sections.push(section("project_instructions", opts.projectInstructions));
+
+  // Routing, never content — same mechanism as self_documentation below, and
+  // for the same reason: a skill body read on demand costs nothing per turn,
+  // while four of them inlined would ride in the cache prefix of EVERY request.
+  // Gated on `read` because a table of paths with no tool to follow it is a
+  // dead end; the roster is derived from the live registry, so a reduced
+  // subagent that cannot read gets no list to chase.
+  if (opts.skills?.length && have.has("read")) {
+    sections.push(
+      section(
+        "skills",
+        `Skills available to this session. When a task matches one's description, read its SKILL.md with the read tool FIRST and follow it; do not read them otherwise.`,
+        ...opts.skills.map((s) => `- ${s.name}: ${s.description} (${s.path})`),
+      ),
+    );
+  }
+
 
   // Names only, no per-tool restatement: every behavioral contract lives in the
   // tool's own description (exec's "working directory never carries over", pty's

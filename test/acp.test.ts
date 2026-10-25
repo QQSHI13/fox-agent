@@ -74,6 +74,8 @@ const cfg = (): Config => ({
   theme: "default",
   contextMarkers: true,
   acpHistory: "full",
+  skills: [],
+  skillList: [],
   warnings: [],
   projectInstructions: "",
 });

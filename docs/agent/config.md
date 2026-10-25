@@ -49,6 +49,7 @@ diagnostics = true                     # post-edit LSP diagnostics
 
 plugins = ["~/my-plugin.ts"]           # ARRAY of file paths — GLOBAL config only
 disabledPlugins = ["pty", "mcp"]       # bundled or user names, short or bundled:-prefixed
+skills = ["~/.openclaw/workspace/skills"]  # ARRAY of skill directories (see Skills)
 
 [providers.<name>]                     # named profiles; `provider = "<name>"` selects
 format = "openai-compatible"           # | openai-responses | anthropic | google
@@ -73,9 +74,52 @@ command = "..."                        # spawn an ACP child
 
 There is no `[plugins]` table — `plugins` is a plain array of paths.
 
+## Skills
+
+`skills` is an array of directories. Each directory is searched for `SKILL.md`;
+two layouts are accepted:
+
+```
+<dir>/SKILL.md          the directory IS one skill
+<dir>/<name>/SKILL.md   a collection of skills
+```
+
+Only two frontmatter fields are read — `name` and `description` (YAML between
+`---` fences at the top of the file):
+
+```markdown
+---
+name: scrapling
+description: Adaptive web scraping with anti-bot bypass.
+---
+
+# Scrapling
+… the body …
+```
+
+A file with no frontmatter still works: the name falls back to the containing
+directory and the description to the first prose line. Other frontmatter fields
+(`version`, `metadata`, …) are ignored. `~` expands, and a relative entry
+resolves against the config file that named it.
+
+What reaches the model is a **routing table** — one line per skill with its
+name, description and the path to its `SKILL.md` — never the body. The agent
+reads a skill with its ordinary `read` tool when a task matches, so an unused
+skill costs a line, not a document. The section only appears when `read` is in
+the live tool registry.
+
+A project `fox-agent.toml` may set `skills` only in a **trusted** directory: a
+`SKILL.md` is instructions the model is told to follow, which is the same
+injection surface `[mcpServers.*]` is gated for. In an untrusted directory the
+entry is ignored with a warning.
+
+Malformed YAML, an unreadable file, a missing directory and two skills sharing a
+a name are all warnings, never fatal — a broken skill must not stop a turn.
+
+
 ## Trust
 
-On interactive TUI start the working directory is confirmed (`y`/`n`/`c`, one keypress) and recorded in `$FOX_AGENT_HOME/trusted_dirs`; `--trust` skips it. In an **untrusted** directory a project config's `[mcpServers.*]`, `[agents.*]`, `[lsp.*]`, `[providers.*]` (incl. `!cmd`) and project `baseUrl`/`apiKey` are ignored with warnings; safe keys still apply. Headless/ACP never prompt — they run restricted. `FOX_AGENT_NO_TRUST_CHECK=1` skips the prompt for scripts.
+On interactive TUI start the working directory is confirmed (`y`/`n`/`c`, one keypress) and recorded in `$FOX_AGENT_HOME/trusted_dirs`; `--trust` skips it. In an **untrusted** directory a project config's `[mcpServers.*]`, `[agents.*]`, `[lsp.*]`, `[providers.*]` (incl. `!cmd`), `skills` and project `baseUrl`/`apiKey` are ignored with warnings; safe keys still apply. Headless/ACP never prompt — they run restricted. `FOX_AGENT_NO_TRUST_CHECK=1` skips the prompt for scripts.
 
 ## Environment variables
 
