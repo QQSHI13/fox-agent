@@ -117,6 +117,8 @@ interface ReplJob {
   result: string;
   log: string[]; // console lines captured since the last poll
   logCursor: number; // how many of `log` the caller has already seen
+  /** lines dropped by the retention cap before the caller ever polled them */
+  lostLines: number;
   ac: AbortController; // cancelling aborts a job awaiting a fetch/timeout
   killed?: boolean; // suppresses the completion steer for a deliberately-killed job
   /** The session's background count was already decremented for this job.
@@ -132,6 +134,18 @@ let jobSeq = 0;
 const MAX_JOBS_PER_SESSION = 16;
 const JOB_REAP_MS = 10 * 60_000;
 const MAX_JOB_RESULT = 50_000;
+/**
+ * Bounded console retention for one background job.
+ *
+ * A long-lived chatty job (a watch loop, a server) used to grow `log` for its
+ * whole lifetime — the RESULT was capped at 50k, the log was not. Keep the
+ * newest lines: a poll is about recent progress, and 2000 lines is far more
+ * than any realistic poll interval produces. Dropping unpolled lines is
+ * reported once, so a poll never silently skips ahead.
+ */
+const MAX_JOB_LOG_LINES = 2_000;
+/** One line's ceiling: an object dump can put megabytes on a single line. */
+const MAX_JOB_LOG_LINE = 2_000;
 
 function sessionJobs(sessionId: string): Map<string, ReplJob> {
   let m = jobs.get(sessionId);
@@ -205,7 +219,22 @@ export function cleanupRepl(sessionId: string): void {
 function readJobLogTail(job: ReplJob): string {
   const fresh = job.log.slice(job.logCursor);
   job.logCursor = job.log.length;
-  return fresh.join("\n");
+  const note =
+    job.lostLines > 0 ? `… (${job.lostLines} earlier line(s) dropped — a job keeps the last ${MAX_JOB_LOG_LINES})` : "";
+  job.lostLines = 0;
+  return (note ? [note, ...fresh] : fresh).join("\n");
+}
+
+/** Append to a job's log, keeping it bounded in both lines and line length. */
+function pushJobLine(job: ReplJob, raw: string): void {
+  job.log.push(raw.length > MAX_JOB_LOG_LINE ? `${raw.slice(0, MAX_JOB_LOG_LINE)} …` : raw);
+  const over = job.log.length - MAX_JOB_LOG_LINES;
+  if (over <= 0) return;
+  job.log.splice(0, over);
+  // a line the caller had not polled yet is gone for good; a line it already
+  // saw just shifts the cursor
+  job.lostLines += Math.max(0, over - job.logCursor);
+  job.logCursor = Math.max(0, job.logCursor - over);
 }
 
 /**
@@ -420,7 +449,7 @@ export async function replRun(
     const label = (args.label ?? args.code.split("\n")[0]).slice(0, 60);
     const id = `r${++jobSeq}`;
     const ac = new AbortController();
-    const job: ReplJob = { id, label, startedAt: Date.now(), done: false, ok: false, result: "", log: [], logCursor: 0, ac };
+    const job: ReplJob = { id, label, startedAt: Date.now(), done: false, ok: false, result: "", log: [], logCursor: 0, lostLines: 0, ac };
     sessionJobs(sessionId).set(id, job);
     // A live job is outstanding work: a one-shot client (fox -p, an ACP prompt,
     // an A2A task) must not report "done" while this can still steer more into
@@ -430,7 +459,7 @@ export async function replRun(
     // Per-job sink: a background eval's console lines belong to that job, no
     // matter what else runs in the session meanwhile (the old module-global
     // "active job" made the newest job swallow every other eval's output).
-    const jobConsole = makeConsole((line) => job.log.push(line));
+    const jobConsole = makeConsole((line) => pushJobLine(job, line));
     sandbox.console = jobConsole;
     // The job's lifetime is the SESSION's, not the turn's — it keeps running
     // while the agent moves on, and ends only when the session does

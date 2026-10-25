@@ -266,6 +266,48 @@ describe("repl background jobs", () => {
     expect(poll.output).not.toContain("FOREGROUND"); // it belongs to the other eval
   }, 30_000);
 
+  test("a chatty job keeps its newest lines and reports what it dropped", async () => {
+    // 2500 lines against a 2000-line cap: the oldest 500 are gone before the
+    // first poll, and the poll has to SAY so rather than silently skipping
+    const r0 = await replRun(
+      { code: 'for (let i = 0; i < 2500; i++) console.log("LINE" + i); return "done";', background: true, label: "chatty" },
+      ctx,
+    );
+    const id = /job (r\d+) started/.exec(r0.output)![1];
+    // a poll consumes what it returns, so a job that finishes between two
+    // polls has its log in the FIRST one: accumulate rather than assert on the
+    // last response only
+    let seen = "";
+    for (let i = 0; i < 100; i++) {
+      const poll = await replRun({ job: id }, ctx);
+      seen += `\n${poll.output}`;
+      if (!poll.output.includes("running")) break;
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    const lines = seen.split("\n");
+    expect(seen).toContain("earlier line(s) dropped");
+    expect(lines).toContain("LINE500"); // first retained
+    expect(lines).toContain("LINE2499");
+    expect(lines).not.toContain("LINE0");
+    expect(lines).not.toContain("LINE499");
+  }, 30_000);
+
+  test("a single gigantic console line is capped too", async () => {
+    const r0 = await replRun({ code: 'console.log("X".repeat(5000)); return "done";', background: true, label: "wide" }, ctx);
+    const id = /job (r\d+) started/.exec(r0.output)![1];
+    let seen = "";
+    for (let i = 0; i < 100; i++) {
+      const poll = await replRun({ job: id }, ctx);
+      seen += `\n${poll.output}`;
+      if (!poll.output.includes("running")) break;
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    const wide = seen.split("\n").find((l) => l.startsWith("XXX"))!;
+    expect(wide).toBeTruthy();
+    expect(wide.length).toBeLessThan(2_100);
+    expect(wide.endsWith("…")).toBe(true);
+  }, 30_000);
+
   test("poll with no code but no job errors cleanly", async () => {
     const r = await replRun({ job: "r999" }, ctx);
     expect(r.ok).toBe(false);
