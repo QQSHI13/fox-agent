@@ -48,6 +48,22 @@ describe("session lock", () => {
     expect(acquireLock("s3", "tui")).toBeNull();
   });
 
+  test("an unreadable lock file is cleaned, never read as 'free while still there'", async () => {
+    const { acquireLock, lockHolder } = await import("../src/store/lock.ts");
+    mkdirSync(join(dir, "locks"), { recursive: true });
+    // a crash between the O_EXCL create and the write leaves it empty
+    writeFileSync(join(dir, "locks", "s5.json"), "");
+    expect(lockHolder("s5")).toBeNull();
+    // and the empty file must be GONE, so the create below really succeeds
+    expect(acquireLock("s5", "tui")).toBeNull();
+    expect(lockHolder("s5")?.pid).toBe(process.pid);
+    // a file that parses but is not a lock is not a holder either
+    writeFileSync(join(dir, "locks", "s6.json"), JSON.stringify({ kind: "tui" }));
+    expect(lockHolder("s6")).toBeNull();
+    expect(acquireLock("s6", "tui")).toBeNull();
+    expect(lockHolder("s6")?.pid).toBe(process.pid);
+  });
+
   test("release removes our own lock", async () => {
     const { acquireLock, releaseLock, lockHolder } = await import("../src/store/lock.ts");
     acquireLock("s4", "tui");

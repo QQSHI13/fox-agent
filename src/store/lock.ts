@@ -15,6 +15,7 @@
 import { mkdirSync, openSync, readFileSync, rmSync, writeFileSync, closeSync } from "node:fs";
 import { join } from "node:path";
 import { agentHome, assertSafeSessionId } from "../core/paths.ts";
+import { pidAlive } from "../core/proc.ts";
 
 export interface SessionLock {
   pid: number;
@@ -28,26 +29,25 @@ function lockPath(id: string): string {
   return join(agentHome(), "locks", `${id}.json`);
 }
 
-function pidAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (e) {
-    // EPERM means the pid exists but isn't ours to signal (e.g. pid 1 in a
-    // container); only ESRCH means gone
-    return (e as NodeJS.ErrnoException).code === "EPERM";
-  }
-}
-
 /** The live holder of this session's lock, or null (stale files are cleaned up). */
 export function lockHolder(id: string): SessionLock | null {
   let l: SessionLock;
   try {
     l = JSON.parse(readFileSync(lockPath(id), "utf8"));
-  } catch {
+  } catch (e) {
+    // ENOENT is simply "no lock". Anything else is an unusable file — a crash
+    // between the O_EXCL create and the write leaves it empty, and a file we
+    // cannot read is not evidence of a holder. Removing it matters: left in
+    // place it is immortal, and every later opener would ALSO be told the lock
+    // is free while never owning it (two writers on one session).
+    if ((e as NodeJS.ErrnoException)?.code !== "ENOENT") rmSync(lockPath(id), { force: true });
     return null;
   }
-  if (typeof l?.pid !== "number") return null;
+  if (typeof l?.pid !== "number") {
+    // parses, but is not a lock (truncated write, a foreign file)
+    rmSync(lockPath(id), { force: true });
+    return null;
+  }
   if (l.pid === process.pid) return l;
   if (!pidAlive(l.pid)) {
     rmSync(lockPath(id), { force: true });

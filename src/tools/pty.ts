@@ -17,6 +17,7 @@ import { fail, ok } from "./types.ts";
 import { childEnv } from "../core/childenv.ts";
 import { ptyDir } from "../core/paths.ts";
 import { outCap } from "./files.ts";
+import { pidAlive } from "../core/proc.ts";
 
 export const ptyDef: ToolDef = {
   name: "pty",
@@ -89,16 +90,6 @@ async function hasSession(name: string): Promise<boolean> {
 function ownerPid(name: string): number | null {
   const m = /^fox-agent-(\d+)-/.exec(name);
   return m ? Number(m[1]) : null;
-}
-
-/** Is that pid still running? EPERM means it exists but is not ours. */
-function pidAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (e) {
-    return (e as { code?: string }).code === "EPERM";
-  }
 }
 
 /**
