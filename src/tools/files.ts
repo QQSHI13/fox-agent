@@ -1,5 +1,5 @@
 import { mkdirSync, readFileSync, readdirSync, statSync, lstatSync, realpathSync, writeFileSync } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { ToolDef } from "../providers/types.ts";
@@ -367,7 +367,8 @@ export async function grepRun(args: { pattern: string; path?: string; include?: 
   const rg = Bun.which("rg");
   if (rg) {
     const argv = ["--line-number", "--no-heading", "--color", "never", "--max-count", "5", "--glob", "!.git"];
-    if (!args.include) argv.push("--glob", "!node_modules");
+    // node_modules is never interesting, with or without an include glob
+    argv.push("--glob", "!node_modules");
     if (args.include) argv.push("--glob", args.include);
     // `--` so a pattern like `--files` is searched, not parsed as a flag.
     // `-e` so a pattern starting with `-` is always a pattern.
@@ -392,7 +393,8 @@ export async function grepRun(args: { pattern: string; path?: string; include?: 
 
 const SKIP_DIRS = new Set([".git", "node_modules", ".venv", "venv", "__pycache__", "dist", "build", ".next"]);
 
-function walkGrep(re: RegExp, root: string, include: string | undefined, limit: number): string {
+/** Exported for tests: the offline fallback's include-glob semantics. */
+export function walkGrep(re: RegExp, root: string, include: string | undefined, limit: number): string {
   const out: string[] = [];
   let truncated = false; // a further match existed past `limit` — say so, like the rg path
   const includeRe = include ? new Bun.Glob(include) : null;
@@ -444,7 +446,11 @@ function walkGrep(re: RegExp, root: string, include: string | undefined, limit: 
       } else if (!st.isFile() || st.size > 2_000_000) {
         continue;
       }
-      if (includeRe && !includeRe.match(name)) continue;
+      // Match the include glob against the path RELATIVE to the search root
+      // (so `src/**/*.ts` works), with the basename as the fallback (so the
+      // common `*.ts` does too — a glob without `**` does not match a path).
+      const rel = relative(root, full).split("\\").join("/");
+      if (includeRe && !includeRe.match(rel) && !includeRe.match(name)) continue;
       try {
         const buf = readFileSync(full);
         if (sniffBinary(buf.subarray(0, 4000))) continue;
