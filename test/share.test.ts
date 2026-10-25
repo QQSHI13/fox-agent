@@ -98,6 +98,35 @@ describe("/share: a self-contained offline page", () => {
     rmSync(d, { recursive: true, force: true });
   });
 
+  // The page's whole purpose is fidelity: a tool result's image lives in `media`
+  // and its failure lives in `error`, so a projection that drops those columns
+  // would show a picture-less page and call a failed command a success.
+  test("images ride along and a failed tool is not shown as a success", () => {
+    const d = fresh();
+    const s = createSession("/tmp/p", "m");
+    appendMessage(s.id, {
+      role: "assistant",
+      content: "",
+      tokens: 1,
+      tool_calls: JSON.stringify([{ id: "t1", name: "read", arguments: '{"path":"x.png"}' }]),
+    });
+    appendMessage(s.id, {
+      role: "tool",
+      tool_call_id: "t1",
+      content: "error: read x.png: permission denied",
+      tokens: 3,
+      media: JSON.stringify([{ mimeType: "image/png", data: "iVBORw0KGgo=" }]),
+      error: "error: read x.png: permission denied",
+    });
+    const out = join(d, "s.html");
+    shareSession(s.id, out);
+    const html = readFileSync(out, "utf8");
+    expect(html).toContain('<img src="data:image/png;base64,iVBORw0KGgo="');
+    expect(html).toContain("permission denied");
+    expect(html).toContain("· 1 image");
+    rmSync(d, { recursive: true, force: true });
+  });
+
   test("an unknown session is refused, not an empty page", () => {
     const d = fresh();
     expect(() => shareSession("nope123", join(d, "s.html"))).toThrow(/no session/);

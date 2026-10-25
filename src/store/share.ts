@@ -22,7 +22,7 @@
  * they already are in the store.
  */
 import { writeFileSync } from "node:fs";
-import { allMessagesLite, getSession, type MessageRow } from "./db.ts";
+import { allMessages, getSession, type MessageRow } from "./db.ts";
 import { renderMarkdown } from "../tui/markdown.ts";
 import { theme } from "../tui/themes.ts";
 import type { Seg } from "../tui/wrap.ts";
@@ -146,7 +146,7 @@ interface Media { mimeType: string; data: string; filename?: string }
 type Piece =
   | { kind: "msg"; role: string; seq: number; text: string; media?: Media[] }
   | { kind: "think"; seq: number; text: string }
-  | { kind: "tool"; seq: number; call: ToolCall; result?: { ok: boolean; output: string } }
+  | { kind: "tool"; seq: number; call: ToolCall; result?: { ok: boolean; output: string; media?: Media[] } }
   | { kind: "result"; seq: number; ok: boolean; output: string; toolCallId: string; media?: Media[] };
 
 function safeParseMedia(raw: string): Media[] {
@@ -166,10 +166,14 @@ function safeParseMedia(raw: string): Media[] {
  * but a reader of the page expects one linear transcript, which is what this is.
  */
 function pieces(rows: MessageRow[]): Piece[] {
-  const resultOf = new Map<string, { ok: boolean; output: string }>();
+  const resultOf = new Map<string, { ok: boolean; output: string; media?: Media[] }>();
   for (const m of rows) {
     if (m.role === "tool" && m.tool_call_id) {
-      resultOf.set(m.tool_call_id, { ok: !m.error, output: m.error ?? m.content });
+      resultOf.set(m.tool_call_id, {
+        ok: !m.error,
+        output: m.error ?? m.content,
+        media: m.media ? safeParseMedia(m.media) : undefined,
+      });
     }
   }
   const out: Piece[] = [];
@@ -231,7 +235,11 @@ export interface ShareResult {
 export function shareSession(sessionId: string, outPath: string): ShareResult {
   const s = getSession(sessionId);
   if (!s) throw new Error(`no session ${sessionId}`);
-  const rows = allMessagesLite(sessionId);
+  // `allMessages`, not the lite projection: the page shows images (which live in
+  // `media`) and must not render a failed tool as a clean one (which needs
+  // `error`). The lite select exists to keep transcript REPLAY cheap; a share is
+  // one session, one call, and its whole point is fidelity.
+  const rows = allMessages(sessionId);
   if (!rows.length) throw new Error(`session ${sessionId} has no messages`);
 
   const ps = pieces(rows);
@@ -268,7 +276,8 @@ export function shareSession(sessionId: string, outPath: string): ShareResult {
         `<article class="msg tool"><header>${anchor}<span class="who">${esc(p.call?.name ?? "tool")}</span></header>` +
           (args ? `<details><summary>input</summary><pre class="code">${esc(args)}</pre></details>` : "") +
           (p.result
-            ? `<details class="out"><summary>output</summary><div class="body">${mdHtml(p.result.output)}</div></details>`
+            ? `<details class="out"${p.result.ok ? "" : " open"}><summary>output${p.result.ok ? "" : " (failed)"}</summary><div class="body">${mdHtml(p.result.output)}</div></details>` +
+              (p.result.media?.length ? `<div class="media">${mediaHtml(p.result.media)}</div>` : "")
             : `<p class="pending">no output</p>`) +
           `</article>`,
       );
