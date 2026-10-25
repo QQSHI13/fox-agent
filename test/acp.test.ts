@@ -382,6 +382,28 @@ describe("acp server: session lifecycle", () => {
     expect(db.allMessages(out.id).length).toBe(0);
   });
 
+  test("a session another process holds is refused at LOAD, not only at prompt", async () => {
+    // refusals must happen when the client adopts the session: finding out on
+    // the first message means the client already believes it owns it.
+    const { writeFileSync, mkdirSync } = await import("node:fs");
+    mkdirSync(join(home, "locks"), { recursive: true });
+    const app = await build([textTurn("unused")]);
+    const out = await withAgent(app, async (agent) => {
+      const s = await agent.request(acp.methods.agent.session.new, { cwd: work, mcpServers: [] });
+      // released first, so the file below is unambiguously a foreign holder
+      await agent.request(acp.methods.agent.session.close, { sessionId: s.sessionId });
+      writeFileSync(join(home, "locks", `${s.sessionId}.json`), JSON.stringify({ pid: 1, kind: "tui", ts: Date.now() }));
+      let loadErr = "";
+      try {
+        await agent.request(acp.methods.agent.session.load, { sessionId: s.sessionId, cwd: work, mcpServers: [] });
+      } catch (e) {
+        loadErr = (e as Error).message;
+      }
+      return loadErr;
+    });
+    expect(out).toContain("open in another fox-agent process");
+  });
+
   test("new/list/fork/resume/delete all run against the real store", async () => {
     const app = await build([textTurn("first answer")]);
     const out = await withAgent(app, async (agent) => {

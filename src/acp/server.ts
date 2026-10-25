@@ -318,6 +318,28 @@ export function buildAgent(opts: AcpServerOptions): acp.AgentApp {
   }
 
   /**
+   * Take this session's write lock, or refuse the request that needs it.
+   *
+   * The TUI degrades to a read-only viewer when another process holds a session;
+   * ACP has no viewer mode, so the honest answer is an error naming the holder.
+   * Throwing HERE (not at prompt time) is what stops a client from adopting a
+   * session another fox is writing and only finding out on its first message —
+   * and it is the only way the lock's return value is worth anything: the
+   * `acquireLock` call used to be discarded at every site below, so ACP never
+   * actually excluded anyone.
+   */
+  function takeLock(sessionId: string): void {
+    const holder = acquireLock(sessionId, "acp");
+    if (!holder) return; // null from acquireLock means "we hold it"
+    if (holder.pid === process.pid) return; // same process, re-taken
+    throw RequestError.invalidParams(
+      undefined,
+      `session is open in another fox-agent process (${holder.kind}, pid ${holder.pid}) — close it there first, or fork this session`,
+    );
+  }
+
+
+  /**
    * Run one turn and stream it to the client.
    *
    * Which turn runs, and when, is core's decision (src/loop/steer.ts) — this
@@ -526,7 +548,7 @@ export function buildAgent(opts: AcpServerOptions): acp.AgentApp {
     })
     .onRequest(acp.methods.agent.session.new, async ({ params, client }) => {
       const s = createSession(params.cwd, provider.model);
-      acquireLock(s.id, "acp");
+      takeLock(s.id);
       const mcp = mcpServersFrom(params.mcpServers);
       if (Object.keys(mcp).length) sessionMcp.set(s.id, mcp);
       if (params.systemPrompt) sessionInstructions.set(s.id, systemPromptText(params.systemPrompt));
@@ -554,7 +576,7 @@ export function buildAgent(opts: AcpServerOptions): acp.AgentApp {
     .onRequest(acp.methods.agent.session.load, async ({ params, client }) => {
       checkId(params.sessionId);
       if (!getSession(params.sessionId)) throw RequestError.resourceNotFound(params.sessionId);
-      acquireLock(params.sessionId, "acp");
+      takeLock(params.sessionId);
       const mcp = mcpServersFrom(params.mcpServers);
       if (Object.keys(mcp).length) sessionMcp.set(params.sessionId, mcp);
       if (params.systemPrompt) sessionInstructions.set(params.sessionId, systemPromptText(params.systemPrompt));
@@ -567,7 +589,7 @@ export function buildAgent(opts: AcpServerOptions): acp.AgentApp {
     .onRequest(acp.methods.agent.session.resume, async ({ params, client }) => {
       checkId(params.sessionId);
       if (!getSession(params.sessionId)) throw RequestError.resourceNotFound(params.sessionId);
-      acquireLock(params.sessionId, "acp");
+      takeLock(params.sessionId);
       await announce(params.sessionId, client);
       return { modes: modesFor(params.sessionId), configOptions: configOptionsFor(params.sessionId) };
     })
@@ -575,7 +597,7 @@ export function buildAgent(opts: AcpServerOptions): acp.AgentApp {
       checkId(params.sessionId);
       const forked = forkSession(params.sessionId);
       if (!forked) throw RequestError.resourceNotFound(params.sessionId);
-      acquireLock(forked.id, "acp");
+      takeLock(forked.id);
       const mcp = mcpServersFrom(params.mcpServers);
       if (Object.keys(mcp).length) sessionMcp.set(forked.id, mcp);
       if (params.systemPrompt) sessionInstructions.set(forked.id, systemPromptText(params.systemPrompt));
