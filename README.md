@@ -320,7 +320,7 @@ fox-agent is a **trusted-workspace** tool. Read this before pointing it at code 
 - **Session data is local and unencrypted**: full transcripts and tool output in SQLite under `FOX_AGENT_HOME`; `pty/` holds raw shell logs.
 - **A plugin is code inside fox-agent**, not a child -- which is why `plugins` is read from the global config only.
 - **Trust gate.** On TUI start fox-agent shows the working directory and asks whether the folder is trusted (one keypress). In an **untrusted** directory, project executable sections (`[mcpServers.*]` / `[agents.*]` / `[lsp.*]` / `[providers.*]` incl. `!cmd`) plus project `baseUrl`/`apiKey` are ignored with warnings; safe keys still apply. Headless/ACP never prompt -- they run restricted instead. `AGENTS.md`/`CLAUDE.md` and any file the agent reads can still steer it.
-- **`fetch` cannot reach the local network.** Loopback/private/link-local hosts and cloud metadata are refused, every redirect hop is re-checked. Set `FOX_AGENT_ALLOW_PRIVATE_FETCH=1` to fetch local URLs deliberately.
+- **`fetch` cannot reach the local network.** Loopback/private/link-local hosts and cloud metadata are refused, hostnames are resolved and every answer is re-checked against the same rules, and every redirect hop is re-validated. Set `FOX_AGENT_ALLOW_PRIVATE_FETCH=1` to fetch local URLs deliberately.
 
 Run it in a container or VM for anything you don't trust.
 

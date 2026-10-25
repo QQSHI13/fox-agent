@@ -134,6 +134,53 @@ describe("fetch SSRF gate", () => {
     expect(checkUrl(new URL("https://example.com/"))).toBeNull();
   });
 
+  /**
+   * `checkUrl` reads `URL.hostname`, which is only authoritative for literals.
+   * A public name resolving inward reached the private network unchecked —
+   * exactly what a prompt-injected agent would be pointed at. The resolution
+   * pass is injected here so the decision is testable without any DNS.
+   */
+  test("a public name that RESOLVES to a private address is refused", async () => {
+    const { checkResolved } = await import("../src/tools/fetch.ts");
+    type Answer = [string, number];
+    const answers = (list: Answer[]) => async () => list.map(([address, family]) => ({ address, family }));
+
+    // one private answer among public ones is enough to refuse
+    const mixed = answers([["93.184.216.34", 4], ["127.0.0.1", 4]]);
+    expect(await checkResolved(new URL("https://updates.example.com/"), mixed)).toMatch(
+      /resolves to the private\/local address 127\.0\.0\.1/,
+    );
+    // metadata, RFC1918 and IPv6 ULA go through the same rules as literals
+    expect(await checkResolved(new URL("https://updates.example.com/"), answers([["169.254.169.254", 4]]))).toMatch(/169\.254\.169\.254/);
+    expect(await checkResolved(new URL("https://updates.example.com/"), answers([["10.2.3.4", 4]]))).toMatch(/10\.2\.3\.4/);
+    expect(await checkResolved(new URL("https://updates.example.com/"), answers([["fd00::1", 6]]))).toMatch(/private\/local/);
+    // a genuinely public answer is allowed
+    expect(await checkResolved(new URL("https://updates.example.com/"), answers([["93.184.216.34", 4]]))).toBeNull();
+  });
+
+  test("resolution checks skip IP literals, tolerate lookup failure, honor the allow switch", async () => {
+    const { checkResolved } = await import("../src/tools/fetch.ts");
+    let called = false;
+    const spy = async () => {
+      called = true;
+      return [{ address: "127.0.0.1", family: 4 }];
+    };
+    expect(await checkResolved(new URL("http://93.184.216.34/"), spy)).toBeNull();
+    expect(await checkResolved(new URL("http://[2606:4700::1111]/"), spy)).toBeNull();
+    expect(called).toBe(false); // literals were already judged by checkUrl
+
+    // a DNS failure is the fetch's error to report, not a security message
+    const boom = async () => {
+      throw new Error("ENOTFOUND");
+    };
+    expect(await checkResolved(new URL("https://does-not-exist.example/"), boom)).toBeNull();
+
+    // the escape hatch applies before any lookup happens
+    process.env.FOX_AGENT_ALLOW_PRIVATE_FETCH = "1";
+    expect(await checkResolved(new URL("https://updates.example.com/"), spy)).toBeNull();
+    expect(called).toBe(false);
+  });
+
 
   test("FOX_AGENT_ALLOW_PRIVATE_FETCH=1 re-allows local (tests rely on this)", async () => {
     process.env.FOX_AGENT_ALLOW_PRIVATE_FETCH = "1";

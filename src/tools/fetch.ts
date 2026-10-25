@@ -3,6 +3,7 @@ import type { ToolContext, ToolResult } from "./types.ts";
 import { fail, ok } from "./types.ts";
 import { MAX_READ_BYTES, modelAcceptsMedia } from "./files.ts";
 import { VERSION } from "../core/version.ts";
+import { lookup } from "node:dns/promises";
 
 export const fetchDef: ToolDef = {
   name: "fetch",
@@ -120,6 +121,50 @@ export function checkUrl(u: URL): string | null {
   return null;
 }
 
+/** One DNS answer for a hostname. Injected in tests so the gate stays offline. */
+export type ResolveHost = (hostname: string) => Promise<{ address: string; family: number }[]>;
+
+const resolveHost: ResolveHost = (hostname) => lookup(hostname, { all: true });
+
+/**
+ * The half of the SSRF gate a literal check cannot see: where the NAME points.
+ *
+ * `checkUrl` reads `URL.hostname`, which is authoritative only for IP literals.
+ * A perfectly public name — `internal.example.com`, or any attacker-controlled
+ * record — can resolve to 127.0.0.1, 10.0.0.0/8 or 169.254.169.254, and fetch
+ * would connect to exactly that. So every hop is resolved and every returned
+ * address is judged by the same rules the literals get.
+ *
+ * Deliberately best-effort, not a proof: there is a window between this lookup
+ * and fetch's own resolution (classic DNS rebinding), and pinning the address
+ * would require replacing fetch's connector and its TLS verification. The gate
+ * exists to stop ordinary "public URL, private target" requests — the kind a
+ * prompt-injected agent is steered toward — not a determined attacker who
+ * controls the resolver.
+ *
+ * A resolution failure is NOT a refusal: `fetch` will fail on its own and its
+ * error is the useful one.
+ */
+export async function checkResolved(
+  u: URL,
+  resolve: ResolveHost = resolveHost,
+): Promise<string | null> {
+  if (process.env.FOX_AGENT_ALLOW_PRIVATE_FETCH === "1") return null;
+  const host = u.hostname.toLowerCase();
+  // IP literals were already judged by checkUrl; there is nothing to resolve.
+  const bare = host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
+  if (bare.includes(":") || parseIpv4(bare.replace(/\.$/, ""))) return null;
+  let answers: { address: string; family: number }[];
+  try {
+    answers = await resolve(bare);
+  } catch {
+    return null;
+  }
+  const bad = answers.find((a) => privateHostname(a.address));
+  if (!bad) return null;
+  return `error: refusing ${bare} — it resolves to the private/local address ${bad.address} (set FOX_AGENT_ALLOW_PRIVATE_FETCH=1 to allow)`;
+}
+
 /** Read a body stream with a byte cap; returns { bytes, truncated }. */
 async function readCapped(body: ReadableStream<Uint8Array> | null, maxBytes: number, signal: AbortSignal): Promise<{ bytes: Uint8Array; truncated: boolean }> {
   if (!body) return { bytes: new Uint8Array(0), truncated: false };
@@ -233,7 +278,7 @@ export async function fetchRun(args: { url?: string }, ctx: ToolContext): Promis
     return fail("error: fetch needs a valid absolute http(s) URL");
   }
   {
-    const blocked = checkUrl(url);
+    const blocked = checkUrl(url) ?? (await checkResolved(url));
     if (blocked) return fail(blocked);
   }
 
@@ -253,7 +298,8 @@ export async function fetchRun(args: { url?: string }, ctx: ToolContext): Promis
         try {
           await r.body?.cancel();
         } catch {}
-        const blocked = checkUrl(next);
+        // every hop is re-validated, including where its NAME resolves
+        const blocked = checkUrl(next) ?? (await checkResolved(next));
         if (blocked) return fail(blocked);
         current = next;
         continue;

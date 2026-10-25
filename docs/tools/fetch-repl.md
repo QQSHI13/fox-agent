@@ -26,6 +26,12 @@ That is because this tool takes a URL *from the model*, and the machine under it
 has a metadata endpoint, a router admin page, and whatever you are running on
 localhost. `FOX_AGENT_ALLOW_PRIVATE_FETCH=1` re-enables them deliberately.
 
+Names are resolved before the request, and every address a name answers with is
+judged by the same rules — a public-looking host that points at `127.0.0.1` or
+the metadata range is refused too. (Best-effort: the gate is a lookup, not IP
+pinning, so a resolver that changes its answer between the check and the
+connection is out of scope.)
+
 `fetch` is a bundled plugin (`bundled:fetch`), so it can be switched off entirely.
 
 ## `repl`

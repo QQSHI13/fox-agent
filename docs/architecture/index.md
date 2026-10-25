@@ -122,8 +122,9 @@ you did not write.
   prompt; they run restricted instead. `AGENTS.md`/`CLAUDE.md` instructions and any
   file the agent reads can still steer it — only trust a directory you verified.
 - **`fetch` cannot reach the local network.** Loopback/private/link-local hosts
-  and cloud metadata (`169.254.169.254`) are refused, every redirect hop is
-  re-checked, and bodies are stream-capped before truncation.
+  and cloud metadata (`169.254.169.254`) are refused, hostnames are resolved and
+  every answer is judged by the same rules, every redirect hop is re-checked, and
+  bodies are stream-capped before truncation.
   `FOX_AGENT_ALLOW_PRIVATE_FETCH=1` re-enables local URLs deliberately.
 - **`--a2a` and `fox gateway` bind local-only by default**: they run tools with
   full machine access and have no auth layer.
