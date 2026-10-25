@@ -30,13 +30,13 @@ import { steer, backgroundStarted, backgroundEnded } from "../loop/steer.ts";
 export const replDef: ToolDef = {
   name: "repl",
   description:
-    "In-process JavaScript environment (no shell, no subprocess — works in the compiled binary with no bun on PATH). Full environment: `process`, timers, `fetch`, and dynamic `import()` all work. State persists across calls in this session: assign once (`rows = ...`), reuse for twenty turns. `return` (or a trailing expression) becomes the result; `console.log` lines are captured alongside it. Reach your tools from code as `await tools.call(name, args)` (shell included: `await tools.call(\"exec\", {cmd})`); `tools.list()` and `tools.search(\"...\")` discover them. Direct tool calls bypass the turn loop's beforeTool/afterTool hooks. A hanging eval is killed at timeout_ms (any value you pass; 0 = no timeout). `background: true` runs the eval detached and returns a job id immediately — poll its incremental output/status with `job`, stop it with `signal:\"kill\"`; it notifies you on completion and reaps after a grace window.",
+    "In-process JavaScript environment (no shell, no subprocess — works in the compiled binary with no bun on PATH). Full environment: `process`, timers, `fetch`, and dynamic `import()` all work. State persists across calls in this session: assign once (`rows = ...`), reuse for twenty turns. `return` (or a trailing expression) becomes the result; `console.log` lines are captured alongside it. Reach your tools from code as `await tools.call(name, args)` (shell included: `await tools.call(\"exec\", {cmd})`); `tools.list()` and `tools.search(\"...\")` discover them. Direct tool calls bypass the turn loop's beforeTool/afterTool hooks. There is NO default timeout: an eval runs as long as it needs, so pass `timeout_ms` when you want a bound (omit it, or 0, for none). `background: true` runs the eval detached and returns a job id immediately — poll its incremental output/status with `job`, stop it with `signal:\"kill\"`; it notifies you on completion and reaps after a grace window.",
   parameters: {
     type: "object",
     properties: {
       code: { type: "string", description: "JavaScript to evaluate: a bare expression (or await) completes to its value; multi-statement blocks need an explicit return. Not needed when polling or killing a job." },
       reset: { type: "boolean", description: "Drop the session's scratchpad state before evaluating" },
-      timeout_ms: { type: "number", description: "Kill a hanging eval after this many milliseconds; default 30000, no upper bound, 0 = run until it finishes with no timeout at all (foreground only — background jobs run until they exit or you kill them)" },
+      timeout_ms: { type: "number", description: "Optional bound in milliseconds; there is NO default — omit it (or pass 0) to run for as long as the eval needs, with no upper bound. vm cannot preempt a running eval, so an omitted bound on a hung eval blocks the call until the turn is interrupted (foreground only — background jobs always run until they exit or you kill them)" },
       label: { type: "string", description: "A short label for a background job (shown in poll output). Defaults to the first line of code." },
       background: { type: "boolean", description: "Run the eval detached: returns a job id immediately. The eval keeps running while you move on; you are notified when it finishes." },
       job: { type: "string", description: "Poll a background job: returns console output produced since your last poll plus its status (running/finished/exit). Omit code." },
@@ -324,10 +324,18 @@ export async function replRun(
     return fail(`error: repl nesting too deep (>${MAX_REPL_DEPTH}) — compute directly instead`);
   }
   if (args.reset) cleanupRepl(sessionId);
-  // timeout_ms is the agent's call: any positive value is honoured (no upper
-  // cap — the agent may legitimately wait on a long fetch), and 0 disables the
-  // timeout entirely for an eval the agent knows will outlast any default.
-  const rawTimeout = args.timeout_ms ?? 30_000;
+  // NO TIMEOUT BY DEFAULT (0 = unbounded). A silent default deadline was the
+  // wrong shape for this tool: an eval is the agent's own computation, so "how
+  // long may this take" is a question only the agent can answer, and a default
+  // killed long computations that would have finished. A caller that wants a
+  // bound passes one; nothing else is imposed.
+  //
+  // The cost is stated plainly because it is real: vm cannot preempt a running
+  // eval, so an unbounded eval that hangs hangs the tool call until ESC aborts
+  // the turn (the eval itself keeps running detached). That is a deliberate
+  // trade — the old 30s default fired on legitimate work far more often than it
+  // rescued anyone, and a user can always interrupt.
+  const rawTimeout = args.timeout_ms ?? 0;
   if (!Number.isFinite(rawTimeout) || rawTimeout < 0) return fail("error: timeout_ms must be a non-negative number (0 = no timeout)");
   const timeout = rawTimeout === 0 ? 0 : Math.max(1, Math.floor(rawTimeout));
   const state = sessionState(sessionId);

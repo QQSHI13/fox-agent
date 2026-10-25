@@ -91,13 +91,24 @@ describe("repl scratchpad", () => {
     expect(r.output).toContain("slow-ok");
   });
 
-  test("timeout_ms: 0 disables the timeout", async () => {
+  test("timeout_ms: 0 is the same as omitting it — both mean no bound", async () => {
     const t0 = Date.now();
     // would be killed at any positive timeout, but a no-timeout eval must run
     const r = await replRun({ code: 'await new Promise((res) => setTimeout(() => res("no-timeout-ok"), 1200))', timeout_ms: 0 }, ctx);
     expect(r.ok).toBe(true);
     expect(r.output).toContain("no-timeout-ok");
     expect(Date.now() - t0).toBeGreaterThanOrEqual(1000);
+  }, 30_000);
+
+  test("there is no default timeout: an omitted timeout_ms is unbounded", async () => {
+    // The default used to be 30s, which killed legitimate long computations.
+    // A 3.5s eval with no timeout_ms must NOT be cut — proving the deadline is
+    // absent rather than merely generous, since 3.5s would outlive a small one.
+    const t0 = Date.now();
+    const r = await replRun({ code: 'await new Promise((res) => setTimeout(() => res("ran-to-completion"), 3500))' }, ctx);
+    expect(r.ok).toBe(true);
+    expect(r.output).toContain("ran-to-completion");
+    expect(Date.now() - t0).toBeGreaterThanOrEqual(3400);
   }, 30_000);
 
   test("a negative timeout_ms is rejected, not silently clamped", async () => {
