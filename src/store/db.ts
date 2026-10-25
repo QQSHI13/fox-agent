@@ -504,13 +504,24 @@ function reapMissing(rows: SessionRow[]): SessionRow[] {
  * processes touching in the same ms; `id DESC` settles those.
  */
 export function latestSessionFor(cwd: string): SessionRow | null {
-  for (let i = 0; i < 2; i++) {
+  // The old version made exactly two attempts and then returned null. Two
+  // session files deleted by hand (or two prunes that removed files but left
+  // index rows) were enough to make `fox -c` say "no previous session" while
+  // live ones sat further down the list.
+  //
+  // reapMissing DELETES a ghost row, so each iteration advances to the next
+  // candidate. `lastId` is the safety net: if a row were somehow not removed,
+  // the same id would come back and the loop stops instead of spinning.
+  let lastId: string | null = null;
+  for (;;) {
     const row = prep(indexDb(), 
       `SELECT ${SESSION_COLS} FROM sessions WHERE cwd = ? ORDER BY updated_at DESC, id DESC LIMIT 1`)
       .get(cwd) as SessionRow | null;
-    if (!row || reapMissing([row]).length) return row; // live row, or nothing left
+    if (!row) return null; // nothing left for this directory
+    if (reapMissing([row]).length) return row; // live row
+    if (row.id === lastId) return null; // reap did not remove it; stop rather than spin
+    lastId = row.id;
   }
-  return null;
 }
 
 /**

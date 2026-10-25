@@ -177,6 +177,27 @@ describe("session recency", () => {
     expect(getSession(ghost.id)).toBeNull();
   });
 
+  test("more than one ghost in a row does not hide a live session from -c", async () => {
+    // `latestSessionFor` used to try exactly TWO rows and then give up, so two
+    // hand-deleted session files made `fox -c` report "no previous session"
+    // while live ones were still listed below them.
+    const { createSession, appendMessage, listSessions, latestSessionFor } = await import("../src/store/db.ts");
+    const { sessionDbPath } = await import("../src/core/paths.ts");
+    const { rmSync } = await import("node:fs");
+    const live = createSession("/w", "m1");
+    // work in the live one BEFORE the ghosts are created, so both ghosts sort
+    // above it and the lookup has to walk past them
+    appendMessage(live.id, { parent_id: null, role: "user", content: "latest work", tokens: 1 });
+    const ghost1 = createSession("/w", "m1");
+    const ghost2 = createSession("/w", "m1");
+    rmSync(sessionDbPath(ghost1.id));
+    rmSync(sessionDbPath(ghost2.id));
+
+    expect(latestSessionFor("/w")!.id).toBe(live.id);
+    // both ghosts were reaped along the way, not just skipped
+    expect(listSessions().map((r) => r.id)).toEqual([live.id]);
+  });
+
   test("the order is total, so -c cannot flip between runs", async () => {
     const { createSession, listSessions } = await import("../src/store/db.ts");
     // several sessions created inside the same millisecond tie on updated_at;
