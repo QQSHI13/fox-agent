@@ -578,7 +578,7 @@
       "p95": 40.2,
       "n": 4
     },
-    "headless_peak_rss_mb": 57.1,
+    "headless_peak_rss_mb": 57.4,
     "method": "headless `fox -p ... --json` against the repo's scripted local provider (no key, no network); TTFT = spawn to the first parsed {\"type\":\"text\"} event; peak RSS via /usr/bin/time -v"
   }
 }
