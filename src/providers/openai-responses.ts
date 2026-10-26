@@ -6,7 +6,7 @@ import { createOpenAI } from "@ai-sdk/openai";
 import type { ChatMessage, ProviderConfig, StreamEvent, ToolDef } from "./types.ts";
 import { streamFailure, TruncatedStreamError } from "../core/errors.ts";
 import { startWatchdog } from "./watchdog.ts";
-import { providerOptionsFor, samplingOptions, outputTokenOptions } from "./index.ts";
+import { providerOptionsFor, samplingOptions, outputTokenOptions, streamErrorSink } from "./index.ts";
 import { toModelMessages } from "./convert.ts";
 
 export * from "./types.ts";
@@ -49,6 +49,9 @@ export async function* streamChat(
       ...outputTokenOptions(cfg),
       ...samplingOptions(cfg.sampling),
       ...providerOptionsFor(cfg),
+      // the SDK's default onError is `console.error(error)`, which prints the
+      // response body and the prompt to stderr — see streamErrorSink
+      onError: streamErrorSink(cfg),
       abortSignal: wd.signal,
     });
 

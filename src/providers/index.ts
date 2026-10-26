@@ -7,6 +7,7 @@ import { lookupModel } from "./models.ts";
 import { FoxError } from "../core/errors.ts";
 import { BUNDLED_PROVIDER_NAMES, bundledProviderFns, isAnthropic } from "./bundled.ts";
 import { REASONING_EFFORTS, THINKING_BUDGET, isReasoningEffort, type ReasoningEffort } from "../core/reasoning.ts";
+import { debugError } from "../core/debuglog.ts";
 
 export { isAnthropic };
 export * from "./types.ts";
@@ -190,6 +191,30 @@ export function cacheAffinityOptions(cfg: ProviderConfig): { providerOptions: Re
     return { providerOptions: { openai: { promptCacheKey: key } } };
   }
   return undefined;
+}
+
+/**
+ * The AI SDK's `onError` sink — every `streamText` call passes this.
+ *
+ * `streamText` defaults `onError` to `console.error(error)`, and on an
+ * `APICallError` that prints the WHOLE error object: `responseBody` (a
+ * gateway's multi-KB HTML/JSON error page), `requestBodyValues` (the prompt),
+ * the nested retry chain, and a source excerpt per stack frame. Measured on one
+ * 429 whose body was 6 KB: 37 KB of stderr. Under the TUI that dump is painted
+ * by whoever flushes stderr next — and because the alternate screen has no
+ * scrollback and the grid's row-hash diff sees the scribble as "already
+ * painted", the frame never repairs itself: the input dock stays black.
+ *
+ * So the transcript keeps its one diagnosed line (see reportError in the TUI,
+ * and the turn loop's persisted message) and the dump goes to the log, which is
+ * the only surface that can hold it.
+ *
+ * `onError` is a NOTIFICATION, not a handler: the error still arrives as an
+ * `error` part on `fullStream`, which each provider throws on — so nothing is
+ * swallowed here, and retry/resume policy is untouched.
+ */
+export function streamErrorSink(cfg: ProviderConfig): (event: { error: unknown }) => void {
+  return ({ error }) => debugError("provider", `stream error (${cfg.model})`, error);
 }
 
 /**

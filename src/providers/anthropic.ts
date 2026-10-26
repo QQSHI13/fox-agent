@@ -6,7 +6,7 @@ import { createAnthropic } from "@ai-sdk/anthropic";
 import type { ChatMessage, ProviderConfig, StreamEvent, ToolDef } from "./types.ts";
 import { streamFailure, TruncatedStreamError } from "../core/errors.ts";
 import { startWatchdog } from "./watchdog.ts";
-import { reasoningProviderOptions, samplingOptions, outputTokenOptions } from "./index.ts";
+import { reasoningProviderOptions, samplingOptions, outputTokenOptions, streamErrorSink } from "./index.ts";
 import { toModelMessages } from "./convert.ts";
 
 const CACHE_OFF = process.env.FOX_AGENT_ANTHROPIC_CACHE === "0";
@@ -65,6 +65,9 @@ export async function* streamChat(
       ...outputTokenOptions(cfg),
       ...samplingOptions(cfg.sampling),
       ...reasoningProviderOptions(cfg),
+      // the SDK's default onError is `console.error(error)`, which prints the
+      // response body and the prompt to stderr — see streamErrorSink
+      onError: streamErrorSink(cfg),
       abortSignal: wd.signal,
     });
 

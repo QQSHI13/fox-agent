@@ -8,7 +8,7 @@ import type { ChatMessage, ProviderConfig, StreamEvent, ToolDef } from "./types.
 import { streamFailure, TruncatedStreamError } from "../core/errors.ts";
 import { debugInfo, debugError } from "../core/debuglog.ts";
 import { startWatchdog } from "./watchdog.ts";
-import { providerOptionsFor, samplingOptions, outputTokenOptions, cacheKeyFor } from "./index.ts";
+import { providerOptionsFor, samplingOptions, outputTokenOptions, cacheKeyFor, streamErrorSink } from "./index.ts";
 import { toModelMessages } from "./convert.ts";
 
 export * from "./types.ts";
@@ -70,6 +70,9 @@ export async function* streamChat(
       ...outputTokenOptions(cfg),
       ...samplingOptions(cfg.sampling),
       ...providerOptionsFor(cfg),
+      // the SDK's default onError is `console.error(error)`, which prints the
+      // response body and the prompt to stderr — see streamErrorSink
+      onError: streamErrorSink(cfg),
       abortSignal: wd.signal,
     });
 
