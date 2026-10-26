@@ -176,6 +176,19 @@ export interface TuiRegion {
    */
   rect: [number, number, number, number];
   /**
+   * Optional cheap probe: "would my paint output differ from last frame?"
+   * Return a string that changes when it would. When provided, the region is
+   * SKIPPED (painter not called, plane not wiped) on frames where the string
+   * plus the screen geometry is unchanged — so a panel that only changes when
+   * a number moves stops costing every frame.
+   *
+   * Omit it and the painter runs on every frame, which is what every region
+   * did before this existed. A region whose painter is cheap and always
+   * changing should omit it; one that reads files, calls out, or formats a lot
+   * of text should never omit it.
+   */
+  sig?: () => string;
+  /**
    * Stamp this frame's content. Return false to hide the region this frame.
    * Throwing is contained: the region is dropped for the frame and warned
    * once. Keep it cheap — it runs at frame rate while anything repaints.

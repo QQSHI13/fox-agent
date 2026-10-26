@@ -382,9 +382,20 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   // the region declares, so a plugin physically cannot paint outside its
   // region. Dropped regions just stop being created; their plane is removed
   // and the screen underneath shows through at the next composite.
-  type PluginRegion = { key: string; z: number; rect: [number, number, number, number]; paint: (p: TuiRegionPlane) => boolean | void; plane: Plane; owner: string };
+  type PluginRegion = {
+    key: string;
+    z: number;
+    rect: [number, number, number, number];
+    paint: (p: TuiRegionPlane) => boolean | void;
+    /** optional cheap "did my inputs change?" probe (see paintPluginRegions) */
+    sig?: () => string;
+    plane: Plane;
+    owner: string;
+  };
   let pluginRegionsRev = -1;
   let pluginRegions: PluginRegion[] = [];
+  /** last painted signature per region key — the repaint gate */
+  const lastRegionSig = new Map<string, string>();
   const regionWarned = new Set<string>();
   function resolvePluginRegions(): PluginRegion[] {
     if (pluginRegionsRev === statsRev) return pluginRegions;
@@ -395,7 +406,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         const key = `${p.name}/${name}`;
         const plane = screen.createPlane(`plugin:${key}`, r.z);
         plane.clip = r.rect;
-        pluginRegions.push({ key, z: r.z, rect: r.rect, paint: r.paint, plane, owner: p.name });
+        pluginRegions.push({ key, z: r.z, rect: r.rect, paint: r.paint, sig: r.sig, plane, owner: p.name });
       }
     }
     // drop planes whose region vanished this reload
@@ -403,8 +414,26 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     for (const name of screen.planeNames()) if (name.startsWith("plugin:") && !live.has(name)) screen.dropPlane(name);
     return pluginRegions;
   }
-  function paintPluginRegions(): void {
+  function paintPluginRegions(frameChanged: boolean, fullInvalidate: boolean): void {
     for (const r of resolvePluginRegions()) {
+      // A region's painter is arbitrary plugin code: it can walk a directory,
+      // hit the network, or tokenize a file. Running it on EVERY frame — which
+      // is what this loop used to do, unconditionally, spinner ticks included —
+      // means one slow painter taxes every other plane's frame, because paint,
+      // composite and flush are one synchronous transaction per tick.
+      //
+      // The gate: re-derive only when this region's own inputs may have moved.
+      // `sig` is the region's cheap "would my output differ?" probe, the same
+      // contract the built-in regions use (lastDockSig, lastStatusSig, …).
+      // Omitting it keeps the old always-repaint behaviour, so an existing
+      // plugin is unaffected.
+      const sig = r.sig ? r.sig() : "";
+      const key = `${W}x${H}|${r.rect.join(",")}|${sig}`;
+      const unchanged = r.sig !== undefined && !frameChanged && !fullInvalidate && lastRegionSig.get(r.key) === key;
+      if (unchanged) continue;
+      lastRegionSig.set(r.key, key);
+      // Only a region that is about to be redrawn needs its plane wiped; an
+      // unchanged one keeps last frame's cells (composite re-reads them).
       r.plane.clearRows(0, H);
       let ok = false;
       try {
@@ -4042,8 +4071,8 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       paintStatus();
     }
 
-    // ---- plugin regions (each decides its own repaint cost; cheap when idle) ----
-    paintPluginRegions();
+    // ---- plugin regions (gated by each region's own sig when it has one) ----
+    paintPluginRegions(frameChanged, fullInvalidate);
   }
 
   function paintDock() {
