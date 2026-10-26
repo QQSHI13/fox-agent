@@ -17,6 +17,7 @@ import { RequestError } from "@agentclientprotocol/sdk/unstable";
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { killTree } from "../tools/exec.ts";
+import { debugAt } from "../core/debuglog.ts";
 
 export interface AcpAgentSpec {
   command: string;
@@ -45,7 +46,7 @@ export interface AcpAgentResult {
  * cannot consume it directly. This and `bunStdout` in `./server.ts` are the only
  * two places that gap is bridged; if a third appears, one of them is wrong.
  */
-function childStream(proc: Bun.Subprocess<"pipe", "pipe", "inherit">): acp.Stream {
+function childStream(proc: Bun.Subprocess<"pipe", "pipe", "pipe">): acp.Stream {
   const sink = proc.stdin;
   const writable = new WritableStream<Uint8Array>({
     write(chunk) {
@@ -328,9 +329,44 @@ export async function runAcpAgent(opts: RunAcpAgentOptions): Promise<AcpAgentRes
     cwd: opts.cwd,
     stdin: "pipe",
     stdout: "pipe",
-    stderr: "inherit", // the child's diagnostics belong on the parent's stderr, never in the protocol stream
+    // PIPE, never "inherit". The child inheriting fd 2 writes PAST every one of
+    // the TUI's guards: those patch `process.stderr.write`, `console.error` and
+    // now `Bun.stderr.write` — all JS properties in THIS process — while an
+    // inherited fd is the terminal itself. A child agent that logs a warning
+    // then paints straight over the grid, and because the alt screen has no
+    // scrollback the row-hash diff sees the scribble as already painted, so
+    // the frame never repairs itself (the black input dock).
+    //
+    // The child's diagnostics are still wanted, so they are drained into the
+    // debug log below rather than discarded — the same policy MCP children and
+    // LSP servers get (src/tools/mcp.ts, src/lsp/client.ts).
+    stderr: "pipe",
     env: agentEnv(opts.env),
   });
+
+  // Drain stderr or the child blocks once the pipe buffer fills. Debug level
+  // only: a chatty agent must not turn a delegation into log spam.
+  if (proc.stderr && typeof (proc.stderr as ReadableStream<Uint8Array>).getReader === "function") {
+    void (async () => {
+      const dec = new TextDecoder();
+      let buf = "";
+      try {
+        const reader = (proc.stderr as ReadableStream<Uint8Array>).getReader();
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += dec.decode(value, { stream: true });
+          const lines = buf.split("\n");
+          buf = lines.pop() ?? "";
+          if (lines.length) debugAt("debug", "provider", `acp child stderr (${opts.command})`, lines.join("\n"));
+        }
+      } catch {
+        /* the child died mid-write; nothing to report */
+      }
+      if (buf.trim()) debugAt("debug", "provider", `acp child stderr (${opts.command})`, buf.trimEnd());
+    })();
+  }
+
 
   const kill = () => {
     try {
