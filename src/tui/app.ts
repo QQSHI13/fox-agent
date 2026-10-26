@@ -2,6 +2,7 @@
 // row-diffed flushing, explicit frame scheduling: keystrokes, stream deltas
 // and the spinner tick all just mark dirty; the frame loop owns the tty.
 import { openTerm, type Term } from "./term.ts";
+import { quietStderr, type QuietStderr } from "./quiet.ts";
 import { clipRead, clipWrite, osc52Encode } from "./clipboard.ts";
 export { osc52Encode };
 import { appendFileSync, unlinkSync, writeFileSync } from "node:fs";
@@ -536,6 +537,14 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   const itemSigs = new Map<number, string>();
   const itemSig = (it: Item): string => `${it.kind}|${it.text}|${it.expanded ? 1 : 0}|${it.mdBody ? 1 : 0}|${it.detail ?? ""}`;
   let dirty = true;
+  /**
+   * True while paint() is running. The stray-output swallow invalidates the
+   * row-hash diff so the next flush repaints over a scribble — but a plugin
+   * region that writes to stdout on every paint would re-arm the frame loop
+   * from inside a frame and spin. Inside a paint, the invalidation alone is
+   * enough: the flush for THIS frame is already coming.
+   */
+  let inPaint = false;
   /** spinner tick landed: only the status region needs re-deriving */
   let statusOnly = false;
   /**
@@ -3879,6 +3888,17 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   let lastOverlaySig = "";
 
   function paint() {
+    // any stray write from a region's painter must not re-arm the loop we are
+    // already inside (see inPaint / the stray swallow)
+    inPaint = true;
+    try {
+      paintRegions();
+    } finally {
+      inPaint = false;
+    }
+  }
+
+  function paintRegions() {
     const st = (seg: Seg, fallback: number): number => {
       if (!seg.fg && !seg.bg && !seg.bold && !seg.italic && !seg.strike && !seg.href) return fallback;
       return screen.sgr(seg);
@@ -4409,7 +4429,15 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       // as an error panel (so a broken plugin's output is still reachable, but
       // it never corrupts the running UI). The TUI's own painting goes through
       // Bun.stdout.writer() (term.ts), which none of this touches.
-      const stray: string[] = [];
+      // Bounded tail, not an unbounded array: a chatty plugin or MCP child can
+      // print for the whole session, and the old `stray.push(s)` grew without
+      // limit — then threw the last 40 lines of tens of thousands at exit.
+      // Keep the same policy keepTail() applies to tool output: retain the
+      // RECENT end (which is what the user is waiting on) and report what was
+      // dropped. Trim to a line boundary so the exit panel never opens mid-line.
+      const STRAY_CAP = 64_000; // chars retained for the exit panel
+      let stray = "";
+      let strayDropped = 0;
       const origOut = process.stdout.write.bind(process.stdout);
       const origErr = process.stderr.write.bind(process.stderr);
       const origConsole = { log: console.log, info: console.info, warn: console.warn, error: console.error };
@@ -4419,9 +4447,20 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       // Buffer the partial tail and log only COMPLETE lines, so one log entry
       // is one line of output.
       let partial = "";
+      const asText = (c: unknown): string => (c instanceof Uint8Array ? new TextDecoder().decode(c) : String(c));
       const capStray = (chunk: unknown) => {
-        const s = String(chunk);
-        stray.push(s);
+        const s = asText(chunk);
+        stray += s;
+        if (stray.length > STRAY_CAP) {
+          const cut = stray.length - STRAY_CAP;
+          strayDropped += cut;
+          stray = stray.slice(cut);
+          const nl = stray.indexOf("\n"); // drop the half line the cut landed in
+          if (nl >= 0) {
+            strayDropped += nl + 1;
+            stray = stray.slice(nl + 1);
+          }
+        }
         partial += s;
         const lines = partial.split("\n");
         partial = lines.pop() ?? ""; // the last piece has no newline yet
@@ -4429,17 +4468,110 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       };
       const swallow = (chunk: unknown, ...rest: unknown[]) => {
         capStray(chunk);
+        // The write DID reach the terminal — we cannot un-write it. Worse, it
+        // corrupted cells that `Screen`'s own buffers still believe are
+        // correct: `flush()` compares each row's hash against `prevHash`, finds
+        // them equal, writes nothing, and the scribble stays on screen
+        // forever. That is the black input dock that only a manual refresh
+        // healed.
+        //
+        // forceRepaintAll() is the fix: it invalidates every row's hash, so the
+        // NEXT flush re-emits the whole grid from the (intact) planes and
+        // paints over the scribble. Cheap — one fill of H floats.
+        //
+        // markDirty() schedules that flush, but NOT from inside a paint: a
+        // plugin region that writes every frame would otherwise re-arm the
+        // frame loop from within itself and spin forever.
+        screen.forceRepaintAll();
+        if (!inPaint) markDirty();
         (rest.find((x) => typeof x === "function") as (() => void) | undefined)?.();
         return true;
       };
       (process.stdout as { write: unknown }).write = swallow;
       (process.stderr as { write: unknown }).write = swallow;
+      // Bun also exposes fd 1/2 as `Bun.stdout` / `Bun.stderr`, and they are
+      // SEPARATE objects: a dependency calling `Bun.stderr.write(...)` reaches
+      // the terminal without touching the patched `process.*` properties, so it
+      // used to paint straight over the grid. Shadow the method on the objects
+      // themselves (an own property beats the prototype's) so that path is
+      // quarantined by the same buffer. `Bun.stdout.writer()` is still a way
+      // past this — the TUI's own painting uses it — which is why the provider
+      // layer also refuses to hand the SDK a dumping onError.
+      const origBunOut = Bun.stdout.write.bind(Bun.stdout);
+      const origBunErr = Bun.stderr.write.bind(Bun.stderr);
+      (Bun.stdout as unknown as { write: unknown }).write = swallow;
+      (Bun.stderr as unknown as { write: unknown }).write = swallow;
       console.log = console.info = (...a: unknown[]) => capStray(a.map(String).join(" "));
       console.warn = console.error = (...a: unknown[]) => capStray(a.map(String).join(" "));
+
+      /**
+       * The layer under the JS patches: fd 2 itself.
+       *
+       * Everything above intercepts function CALLS. A child spawned with
+       * `stderr: "inherit"`, a native library, or anything holding its own
+       * reference to fd 2 writes to the descriptor directly and never touches
+       * a patched property — which is exactly how output kept reaching the grid
+       * even with every JS channel covered, and why it could appear minutes
+       * later (a background child finally logging). Redirecting the descriptor
+       * catches all of them, because they all end up at fd 2.
+       *
+       * The TUI's own painting is unaffected: it goes to fd 1 through
+       * Bun.stdout.writer(). `quiet` is null on a platform without a usable
+       * libc, and the JS patches remain the only defence — a degradation, not
+       * a failure.
+       */
+      const quiet: QuietStderr | null = quietStderr();
+      let quietTimer: ReturnType<typeof setInterval> | null = null;
+      if (quiet) {
+        // Drain on a timer, not per frame: the capture is a file, reading it
+        // costs a stat + read, and a child's diagnostics are not urgent.
+        const drainQuiet = () => {
+          const text = quiet.drain();
+          if (text) capStray(text);
+        };
+        quietTimer = setInterval(drainQuiet, 1000);
+        quietTimer.unref?.();
+      }
+
+      /**
+       * A synchronous throw nobody caught. Bun's default handler prints the
+       * stack to fd 2 and exits — over the grid, with the alt screen still up
+       * and the terminal left in raw mode. That is the "black screen" variant
+       * of the same bug as the SDK dump: the user loses the UI, the session
+       * hint, and any explanation of what happened.
+       *
+       * Instead: log the truth, put ONE line in the transcript, and leave
+       * through the normal exit path so the terminal is restored.
+       */
+      function onUncaught(e: unknown) {
+        debugLog("uncaught exception", e);
+        try {
+          reportError(`internal error: ${(e as Error)?.message ?? String(e)}`, e);
+        } catch {}
+        try {
+          gracefulExit(1);
+        } catch {
+          process.exitCode = 1;
+        }
+      }
       const restoreOutput = () => {
         (process.stdout as { write: unknown }).write = origOut;
         (process.stderr as { write: unknown }).write = origErr;
+        (Bun.stdout as unknown as { write: unknown }).write = origBunOut;
+        (Bun.stderr as unknown as { write: unknown }).write = origBunErr;
         Object.assign(console, origConsole);
+        process.off("uncaughtException", onUncaught);
+        // fd-2 capture comes back LAST of the teardown steps but BEFORE the
+        // panel below, so the panel is written to the real terminal while the
+        // descriptor still points at it.
+        if (quietTimer) {
+          clearInterval(quietTimer);
+          quietTimer = null;
+        }
+        if (quiet) {
+          const tail = quiet.restore();
+          if (tail) capStray(tail);
+        }
         // flush the last partial line (no trailing newline) so it is not lost
         if (partial.trim()) {
           debugLog("stray output", partial.trimEnd());
@@ -4451,21 +4583,36 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         // instead of being lost (or smeared over the grid). The debug log has
         // the same text, plus the stack traces.
         if (stray.length) {
-          const text = stray.join("");
-          const lines = text.split("\n").filter((l) => l.trim().length > 0);
+          // Strip control characters: this text is about to be written to the
+          // real terminal AFTER the alt screen is gone, so an ESC in it would
+          // still move the cursor and recolor the user's shell prompt. Tab and
+          // newline stay; everything else non-printing goes.
+          const lines = stray
+            .split("\n")
+            .map((l) => l.replace(/[\x00-\x08\x0b-\x1f\x7f]/g, ""))
+            .filter((l) => l.trim().length > 0);
           const shown = lines.slice(-40);
+          const rule = "─".repeat(Math.min(78, term.size?.().width ?? 78));
+          const more = [
+            lines.length > shown.length ? `… ${lines.length - shown.length} more line(s)` : "",
+            strayDropped ? `… ${strayDropped} char(s) dropped past the ${STRAY_CAP}-char panel cap` : "",
+          ].filter(Boolean);
           origErr(
-            `\n${"─".repeat(Math.min(78, term.size?.().width ?? 78))}\n` +
+            `\n${rule}\n` +
               ` fox-agent: ${lines.length} line(s) of output were captured while the TUI was running\n` +
-              `${"─".repeat(Math.min(78, term.size?.().width ?? 78))}\n` +
+              `${rule}\n` +
               `${shown.join("\n")}\n` +
-              (lines.length > shown.length ? `… ${lines.length - shown.length} more line(s)\n` : "") +
+              (more.length ? `${more.join("\n")}\n` : "") +
               ` full log: ${debugLogPath()}\n` +
-              `${"─".repeat(Math.min(78, term.size?.().width ?? 78))}\n`,
+              `${rule}\n`,
           );
         }
       };
       restoreOutputRef = restoreOutput;
+
+      // Synchronous throws: Bun's default prints the stack over the grid and
+      // exits with the terminal in raw mode. Route it through the exit path.
+      process.on("uncaughtException", onUncaught);
 
       // Last-resort net: a floating promise that rejects must never leave the
       // spinner running forever with no way to submit. console.error would
