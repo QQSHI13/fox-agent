@@ -41,9 +41,13 @@ function fuzzyFind(raw: string, oldString: string): FuzzyMatch[] {
     "^" +
     lines
       .map((l) => {
-        const body = escapeRe(l.replace(/[ \t]+$/, ""));
-        if (body === "") return "[ \\t]*(?:\\n|$)";
-        return `[ \\t]*${body}[ \\t]*(?:\\n|$)`;
+        // a trailing \r is the file's line ending, not content: strip it so a
+        // needle written with CRLF matches an LF file and vice versa. The `\r?`
+        // in the terminator is the other half — without it a CRLF file never
+        // matched a \n-joined needle and EVERY multi-line edit to one failed.
+        const body = escapeRe(l.replace(/[ \t]+$/, "").replace(/\r$/, ""));
+        if (body === "") return "[ \\t]*\\r?(?:\\n|$)";
+        return `[ \\t]*${body}[ \\t]*\\r?(?:\\n|$)`;
       })
       .join("");
   let re: RegExp;
@@ -96,7 +100,21 @@ function reindent(newString: string, m: FuzzyMatch): string {
   return out.join("\n");
 }
 
-const stripTrailingNl = (s: string) => s.replace(/\n$/, "");
+const stripTrailingNl = (s: string) => s.replace(/\r?\n$/, "");
+
+/**
+ * The line ending a string uses, for re-spelling edited text to match its file.
+ *
+ * Only consulted when the caller's own needle spans more than one line: a
+ * single-line needle says nothing about line endings, so its replacement is
+ * inserted exactly as written.
+ */
+const eolOf = (s: string): string => (s.includes("\r\n") ? "\r\n" : "\n");
+
+/** Re-spell a multi-line replacement with the file's own line endings. */
+function matchEol(replacement: string, fileEol: string): string {
+  return replacement.replace(/\r?\n/g, fileEol);
+}
 
 export function applyEdits(raw: string, ops: EditOp[]): { content: string; applied: number; fuzzy: number } {
   let content = raw;
@@ -109,18 +127,25 @@ export function applyEdits(raw: string, ops: EditOp[]): { content: string; appli
 
     const needle = stripTrailingNl(op.oldString);
     const replacement = op.newString;
+    // The model writes the text it read, and `read` does not rewrite line
+    // endings, so a "}\n" needle must still find a file whose lines end "}\r\n".
+    // Try the needle as written, then its CRLF spelling.
+    const fileEol = eolOf(content);
+    const variants = needle.includes("\n") ? [...new Set([needle, needle.replace(/\r?\n/g, fileEol)])] : [needle];
+    const variant = variants.map((v) => ({ v, n: content.split(v).length - 1 })).find((h) => h.n > 0);
+    const count = variant?.n ?? 0;
+    // a multi-line replacement follows the file's line endings, not the caller's
+    const repl = replacement.includes("\n") ? matchEol(replacement, fileEol) : replacement;
 
     if (op.replaceAll) {
-      const n = content.split(needle).length - 1;
-      if (n === 0) throw new ToolError(`edit: oldString not found`);
-      content = content.split(needle).join(replacement);
-      applied += n;
+      if (!variant) throw new ToolError(`edit: oldString not found`);
+      content = content.split(variant.v).join(repl);
+      applied += count;
       continue;
     }
 
-    const count = content.split(needle).length - 1;
     if (count === 1) {
-      content = content.replace(needle, () => replacement);
+      content = content.replace(variant!.v, () => repl);
       applied++;
       continue;
     }
@@ -134,7 +159,7 @@ export function applyEdits(raw: string, ops: EditOp[]): { content: string; appli
     }
     const fm = matches[0];
     const matchedBody = stripTrailingNl(fm.text);
-    content = content.slice(0, fm.index) + reindent(replacement, fm) + content.slice(fm.index + matchedBody.length);
+    content = content.slice(0, fm.index) + reindent(repl, fm) + content.slice(fm.index + matchedBody.length);
     applied++;
     fuzzy++;
   }

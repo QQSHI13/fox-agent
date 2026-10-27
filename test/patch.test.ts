@@ -80,3 +80,73 @@ describe("applyEdits", () => {
     expect(() => applyEdits(SRC, [{ oldString: "add", newString: "add" }])).toThrow(/equals/);
   });
 });
+
+describe("applyEdits: CRLF files", () => {
+  const CRLF = "function f() {\r\n    const a = 1;\r\n    const b = 2;\r\n}\r\n";
+  const LF = CRLF.replace(/\r\n/g, "\n");
+  const mixed = (s: string) => /\r\n/.test(s) && /(?<!\r)\n/.test(s);
+
+  // The bug: both the exact path and the whitespace-tolerant path built their
+  // needle/pattern from a \n-joined string, so a \r\n file matched NEITHER and
+  // every multi-line edit failed with "oldString not found" — a message that
+  // blames the caller's text instead of the line endings.
+  test("multi-line needle written with LF matches a CRLF file", () => {
+    const r = applyEdits(CRLF, [{ oldString: "    const a = 1;\n    const b = 2;", newString: "    const a = 10;\n    const b = 20;" }]);
+    expect(r.applied).toBe(1);
+    expect(r.content).toBe("function f() {\r\n    const a = 10;\r\n    const b = 20;\r\n}\r\n");
+  });
+
+  test("the whitespace-tolerant fallback works on a CRLF file", () => {
+    const r = applyEdits(CRLF, [{ oldString: "const a = 1;\nconst b = 2;", newString: "const a = 10;\nconst b = 20;" }]);
+    expect(r.fuzzy).toBe(1);
+    expect(r.content).toContain("    const a = 10;\r\n");
+    expect(mixed(r.content)).toBe(false);
+  });
+
+  test("a CRLF needle matches an LF file", () => {
+    const r = applyEdits(LF, [{ oldString: "    const a = 1;\r\n    const b = 2;", newString: "    const a = 10;\r\n    const b = 20;" }]);
+    expect(r.content).toBe("function f() {\n    const a = 10;\n    const b = 20;\n}\n");
+  });
+
+  test("a CRLF file is never left with mixed line endings", () => {
+    // the replacement is written with LF and the file uses CRLF: the edited
+    // lines must follow the file, not the caller
+    const r = applyEdits(CRLF, [{ oldString: "    const a = 1;", newString: "    const a = 1;\n    const c = 3;" }]);
+    expect(mixed(r.content)).toBe(false);
+    expect(r.content).toBe("function f() {\r\n    const a = 1;\r\n    const c = 3;\r\n    const b = 2;\r\n}\r\n");
+  });
+
+  test("single-line edits keep their behavior, LF and CRLF", () => {
+    expect(applyEdits(LF, [{ oldString: "    const a = 1;", newString: "    const a = 7;" }]).content).toBe(
+      "function f() {\n    const a = 7;\n    const b = 2;\n}\n",
+    );
+    expect(applyEdits(CRLF, [{ oldString: "    const a = 1;", newString: "    const a = 7;", replaceAll: true }]).content).toBe(
+      "function f() {\r\n    const a = 7;\r\n    const b = 2;\r\n}\r\n",
+    );
+  });
+
+
+  test("CRLF matches where an equivalent LF file matches, and only there", () => {
+    // The failure mode to avoid is asymmetry: a needle must not be found in a
+    // CRLF file where the same needle in an LF file is not found (that is how
+    // "tolerate \r" turns into editing a different location than intended).
+    // Exact substring matching is not line-anchored in either spelling — only
+    // the fuzzy fallback is — so both must agree.
+    const op = (raw: string) => applyEdits(raw, [{ oldString: "foo\nbar", newString: "Z" }]);
+    const lf = op("xfoo\nbar\n");
+    const crlf = op("xfoo\r\nbar\r\n");
+    expect(lf.applied).toBe(1);
+    expect(crlf.applied).toBe(1);
+    expect(crlf.content).toBe("xZ\r\n");
+    // and where neither contains the needle, both refuse
+    expect(() => op("nothing\nhere\n")).toThrow(/not found/);
+    expect(() => op("nothing\r\nhere\r\n")).toThrow(/not found/);
+  });
+
+  test("the fuzzy fallback stays anchored to a line start on CRLF files", () => {
+    // the fuzzy pattern's `^` is what stops "foo" rewriting the tail of "xfoo";
+    // tolerating \r must not weaken it (here indentation also differs, so the
+    // exact path misses and the anchored fallback is the one that decides)
+    expect(() => applyEdits("xfoo\r\n  bar\r\n", [{ oldString: "foo\nbar", newString: "Z" }])).toThrow(/not found/);
+  });
+});
