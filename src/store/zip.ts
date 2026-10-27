@@ -277,20 +277,50 @@ export async function unzipEntryToFile(buf: Uint8Array, name: string, destPath: 
       try {
         let written = 0;
         let crc = 0xffffffff;
+        let failure: Error | null = null;
+        /** The inflater, so a failing guard can stop the stream from outside `emit`. */
+        let inflater: ReturnType<typeof createInflateRaw> | null = null;
+        /**
+         * Record the failure instead of throwing it.
+         *
+         * `emit` runs inside an inflate stream's `data` handler, where a throw
+         * is nobody's to catch: it does not reject `done`, it becomes an
+         * uncaught exception and takes the process down. Reproduced with an
+         * archive declaring 10 bytes that inflated to 100 KB — the process died
+         * instead of the import reporting a broken archive. So the guard records
+         * the error and stops the stream; the throw happens further down on a
+         * normal stack.
+         */
         const emit = (chunk: Uint8Array) => {
-          if (written + chunk.length > usize) throw new Error(`zip: ${name} produced more than its declared ${usize} bytes`);
-          crc = crc32Chunk(chunk, crc);
-          writeSync(fd, chunk);
-          written += chunk.length;
+          if (failure) return;
+          try {
+            if (written + chunk.length > usize) throw new Error(`zip: ${name} produced more than its declared ${usize} bytes`);
+            crc = crc32Chunk(chunk, crc);
+            writeSync(fd, chunk);
+            written += chunk.length;
+          } catch (e) {
+            failure = e as Error;
+            inflater?.destroy();
+          }
         };
         if (method === 0) emit(raw);
         else {
           const inf = createInflateRaw({ chunkSize: CHUNK });
+          inflater = inf;
           inf.on("data", (c: Buffer) => emit(new Uint8Array(c.buffer, c.byteOffset, c.byteLength)));
-          const done = new Promise<void>((r) => inf.on("end", () => r()));
-          inf.end(raw);
-          await done;
+          await new Promise<void>((res) => {
+            inf.on("end", () => res());
+            // destroy() emits 'error' with the original failure only sometimes;
+            // the close/error pair is what guarantees this promise settles
+            inf.on("error", (e) => {
+              failure ??= e;
+              res();
+            });
+            inf.on("close", () => res());
+            inf.end(raw);
+          });
         }
+        if (failure) throw failure;
         crc = (crc ^ 0xffffffff) >>> 0;
         if (written !== usize) throw new Error(`zip: ${name} produced ${written}, declared ${usize}`);
         if (crc !== wantCrc) throw new Error(`zip: corrupt entry ${name}`);
