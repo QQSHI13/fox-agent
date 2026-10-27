@@ -3,7 +3,6 @@ import { estimateTokens } from "../providers/models.ts";
 import type { ProviderConfig, ChatMessage, ToolDef, ToolCall, ChatFn } from "../providers/types.ts";
 import { resolveChat } from "../providers/index.ts";
 import { classifyProviderError, diagnoseProviderError, FoxError, isTimeout, isTruncated } from "../core/errors.ts";
-import { debugInfo, debugWarn, debugError } from "../core/debuglog.ts";
 import type { AgentEvent } from "../core/events.ts";
 import type { Tool, ToolContext, ToolResult, PtyState } from "../tools/types.ts";
 import { validateArgs } from "../tools/types.ts";
@@ -211,7 +210,6 @@ async function* drainStep(
         // reasoning into the persisted think node
         (acc.text = ""), (acc.calls = []), (acc.usage = null), (acc.finish = ""), (acc.reasoning = "");
       }
-      debugInfo("turn", `provider attempt ${n + 1}`, `model=${cfg.model} messages=${attemptMessages.length} tools=${toolDefs.length}${continuing ? " [resume]" : ""}`);
       for await (const ev of attempt()) yield ev;
       return acc;
     } catch (e) {
@@ -258,11 +256,6 @@ async function* drainStep(
       // will take the connection again.
       const backoff = Math.min(60_000, 1_000 * 2 ** n) + Math.floor(Math.random() * 500);
       const delay = pe.retryAfterMs ?? backoff;
-      debugWarn(
-        "turn",
-        `provider ${resume ? "resume" : "retry"} ${n + 1}/${retryLimit}`,
-        `in ${delay}ms${pe.retryAfterMs !== undefined ? " (provider Retry-After)" : ""}${truncated ? " [truncated stream]" : ""}: ${pe.message}`,
-      );
       yield {
         type: "retry",
         attempt: n + 1,
@@ -318,23 +311,18 @@ function eventArgs(args: string): string {
 async function execToolCall(call: ToolCall, tools: Map<string, Tool>, tctx: ToolContext): Promise<ToolResult> {
   const tool = tools.get(call.name);
   if (!tool) {
-    debugWarn("tools", `unknown tool ${call.name}`);
     return { ok: false, output: `error: unknown tool ${call.name}` };
   }
 
   const { args, error: parseErr } = safeParseArgs(call.arguments);
   if (parseErr) {
-    debugWarn("tools", `${call.name}: bad arguments`, parseErr);
     return { ok: false, output: `error: ${parseErr} for ${call.name}; send valid JSON matching the schema` };
   }
   const reqErr = missingRequired(tool.def, args);
   if (reqErr) {
-    debugWarn("tools", `${call.name}: missing required argument`, reqErr);
     return { ok: false, output: `error: ${reqErr}` };
   }
 
-  const t0 = Date.now();
-  debugInfo("tools", `→ ${call.name}`, `args=${JSON.stringify(args).slice(0, 400)}`);
   try {
     const r = await tool.run(args, tctx);
     const result = typeof r === "string" ? { ok: true, output: r } : r;
@@ -344,10 +332,8 @@ async function execToolCall(call: ToolCall, tools: Map<string, Tool>, tctx: Tool
     // the caller had just asked to lift.
     const cap = result.uncapped ? Infinity : outCap() * 2;
     const output = result.output.length > cap ? cutTail(result.output, cap) : result.output;
-    debugInfo("tools", `← ${call.name}`, `ok=${result.ok} ms=${Date.now() - t0} bytes=${result.output.length}`);
     return { ok: result.ok, output, media: result.media };
   } catch (e) {
-    debugError("tools", `${call.name} threw`, `${(e as Error).stack ?? (e as Error).message}`);
     return { ok: false, output: `error: ${(e as Error).message}` };
   }
 }

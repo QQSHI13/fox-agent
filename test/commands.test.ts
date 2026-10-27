@@ -861,7 +861,7 @@ describe("/settings", () => {
     const state = mkState(cfgPath, s.id, loadConfig({ cwd: "/w", configPath: cfgPath }, {}));
 
     const d = defaultConfig();
-    for (const key of ["tuiCollapsedChars", "tuiKeptChars", "toolOutputCap", "tuiScrollbar", "tuiScrollStep", "tuiFrameMs", "debug"]) {
+    for (const key of ["tuiCollapsedChars", "tuiKeptChars", "toolOutputCap", "tuiScrollbar", "tuiScrollStep", "tuiFrameMs"]) {
       expect(`${key}:${cmds.liveSettingFor(SETTINGS.find((x) => x.key === key)!, state)}`).toBe(`${key}:${(d as unknown as Record<string, unknown>)[key]}`);
     }
 

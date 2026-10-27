@@ -12,7 +12,6 @@ import { join } from "node:path";
 import { loadConfig, resolveProfile, type Config } from "./core/config.ts";
 import type { ProviderConfig } from "./providers/types.ts";
 import { ConfigError, errMsg } from "./core/errors.ts";
-import { debugLogPath } from "./core/debuglog.ts";
 import { assertNever } from "./core/events.ts";
 
 import { runTurnCore } from "./loop/turn.ts";
@@ -48,26 +47,6 @@ export async function run(parsed: Parsed): Promise<void> {
   if (parsed.flags.get("version")) return console.log(VERSION);
   // installed-binary housekeeping: keep a fox-agent alias beside `fox`
   void import("./core/upgrade.ts").then((m) => m.ensureAlias()).catch(() => {});
-
-  // ---- debug verbosity ----
-  // npm-style: -d (info) / -dd (debug) / -ddd (trace), plus --debug <spec> and
-  // FOX_AGENT_DEBUG. Applied BEFORE anything else so every mode (headless, TUI,
-  // a plugin subcommand) logs the same way. An explicit level wins over the
-  // config's `debug` key.
-  {
-    const { applyDebugSpec, setDebugLevel, setDebugMirrorStderr, debugLogPath } = await import("./core/debuglog.ts");
-    const n = Number(parsed.flags.get("verbosity") ?? 0);
-    if (n > 0) setDebugLevel(n >= 3 ? "trace" : n === 2 ? "debug" : "info", true);
-    const spec = parsed.flags.get("debug");
-    if (typeof spec === "string" && spec) applyDebugSpec(spec);
-    // headless modes mirror to stderr so `fox -p ... -d 2>&1 | grep` works
-    const headless = parsed.flags.has("print") || !process.stdout.isTTY;
-    if (headless) setDebugMirrorStderr(true);
-    // Say WHERE the log is, once, when debugging is on. The log lives in the
-    // DATA dir (~/.local/share/fox-agent), not the config dir (~/.config/fox-agent)
-    // — hunting for it in the wrong place cost a debugging round.
-    if (n > 0 || spec) note(`debug log: ${debugLogPath()}`);
-  }
 
 
   // ---- plugin CLI subcommands ----
@@ -126,9 +105,7 @@ export async function run(parsed: Parsed): Promise<void> {
           // reason the command cannot run, so say so instead of "unknown command"
           const detail = configError instanceof Error ? (configError.stack ?? configError.message) : String(configError);
           console.error(`fox-agent: '${firstArg}' needs a readable config: ${(configError as Error)?.message ?? detail}`);
-          console.error(`fox-agent: the full trace is in ${debugLogPath()}`);
-          const { debugLog } = await import("./core/debuglog.ts");
-          debugLog(`plugin command '${firstArg}' could not run: config error`, detail);
+          console.error(detail);
           process.exitCode = 1;
           return;
         }
@@ -155,9 +132,6 @@ export async function run(parsed: Parsed): Promise<void> {
           const detail = e instanceof Error ? (e.stack ?? e.message) : String(e);
           console.error(`fox-agent: plugin command '${pluginCmd.name}' failed: ${(e as Error)?.message ?? detail}`);
           console.error(detail);
-          console.error(`fox-agent: the full trace is in ${debugLogPath()}`);
-          const { debugLog } = await import("./core/debuglog.ts");
-          debugLog(`plugin command '${pluginCmd.name}' failed`, detail);
           process.exitCode = 1;
         }
           },
@@ -171,9 +145,6 @@ export async function run(parsed: Parsed): Promise<void> {
       const detail = e instanceof Error ? (e.stack ?? e.message) : String(e);
       console.error(`fox-agent: could not load plugins for '${firstArg}': ${(e as Error)?.message ?? detail}`);
       console.error(detail);
-      console.error(`fox-agent: the full trace is in ${debugLogPath()}`);
-      const { debugLog } = await import("./core/debuglog.ts");
-      debugLog(`plugin load failed for '${firstArg}'`, detail);
       process.exitCode = 1;
       return;
     }

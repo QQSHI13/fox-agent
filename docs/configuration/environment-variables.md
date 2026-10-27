@@ -35,9 +35,8 @@ These are also honored as **fallbacks** when the `FOX_AGENT_*` form is unset:
 | `FOX_AGENT_HOME` | State dir — sessions, index, pty logs, materialized docs. Default `~/.local/share/fox-agent` |
 | `FOX_AGENT_CONFIG` | Override the global config path. Tests and sandboxes use this; the writer always goes through it |
 | `FOX_AGENT_DIAGNOSTICS` | `0`/`false`/`no` turns off post-edit diagnostics |
-| `FOX_AGENT_DEBUG` | Verbose diagnostics without touching config |
-| `FOX_AGENT_TRACE` | Trace-level logging |
-| `FOX_AGENT_FRAMEPROFILE` | Log per-frame timing for TUI performance work |
+| `FOX_AGENT_TRACE` | Write the screen's frame dumps (`<path>.grid`) for TUI render bugs |
+| `FOX_AGENT_FRAMEPROFILE` | Write per-frame phase timings for TUI performance work |
 | `FOX_AGENT_NO_TRUST_CHECK` | `1` skips the trusted-directory prompt (scripts, CI). `0`/`false` also skips |
 | `FOX_AGENT_NO_RESUME_HINT` | Suppress the "resume this session" hint on exit |
 | `FOX_AGENT_MODELS_OFFLINE` | Never reach the network for the models.dev catalog |

@@ -7,7 +7,6 @@ import { lookupModel } from "./models.ts";
 import { FoxError } from "../core/errors.ts";
 import { BUNDLED_PROVIDER_NAMES, bundledProviderFns, isAnthropic } from "./bundled.ts";
 import { REASONING_EFFORTS, THINKING_BUDGET, isReasoningEffort, type ReasoningEffort } from "../core/reasoning.ts";
-import { debugError } from "../core/debuglog.ts";
 
 export { isAnthropic };
 export * from "./types.ts";
@@ -205,16 +204,16 @@ export function cacheAffinityOptions(cfg: ProviderConfig): { providerOptions: Re
  * scrollback and the grid's row-hash diff sees the scribble as "already
  * painted", the frame never repairs itself: the input dock stays black.
  *
- * So the transcript keeps its one diagnosed line (see reportError in the TUI,
- * and the turn loop's persisted message) and the dump goes to the log, which is
- * the only surface that can hold it.
+ * So the sink stays SILENT: the transcript keeps its one diagnosed line (see
+ * reportError in the TUI, and the turn loop's persisted message) and the raw
+ * body is dropped.
  *
  * `onError` is a NOTIFICATION, not a handler: the error still arrives as an
  * `error` part on `fullStream`, which each provider throws on — so nothing is
  * swallowed here, and retry/resume policy is untouched.
  */
-export function streamErrorSink(cfg: ProviderConfig): (event: { error: unknown }) => void {
-  return ({ error }) => debugError("provider", `stream error (${cfg.model})`, error);
+export function streamErrorSink(_cfg: ProviderConfig): (event: { error: unknown }) => void {
+  return () => {};
 }
 
 /**

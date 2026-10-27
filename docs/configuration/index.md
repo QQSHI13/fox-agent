@@ -28,8 +28,8 @@ against the file that named them, not against your cwd.
 
 Covers `maxSteps`, `retryLimit`, `compactWarnAt`, `compactCtxOnlyAt`,
 `requestTimeoutMs`, `toolOutputCap`, `readCap`, `toolPresentationCap`, `sessionListLimit`,
-`tuiCollapsedChars`, `tuiKeptChars`, `tuiScrollStep`, `statusBar`, `debug`,
-`tuiFrameMs`, `contextMarkers` and `acpHistory`.
+`tuiCollapsedChars`, `tuiKeptChars`, `tuiScrollStep`, `statusBar`, `tuiFrameMs`,
+`contextMarkers` and `acpHistory`.
 
 Model, theme and reasoning effort have their own commands (`/model`, `/theme`,
 `/thinking`) because each opens a chooser and saves globally.
@@ -72,12 +72,11 @@ Model, theme and reasoning effort have their own commands (`/model`, `/theme`,
 | `theme` | `"default"` | Preset name, or a plugin-registered theme |
 | `tuiScrollbar` | `true` | Dedicated scrollbar column |
 | `tuiScrollStep` | `2` | Rows per wheel notch |
-| `tuiFrameMs` | `16` | Frame budget; overruns are logged when `debug` is on |
+| `tuiFrameMs` | `16` | Frame budget (ms per frame-loop interval) |
 | `tuiCollapsedChars` | `240` | Folded tool output keeps this much |
 | `tuiKeptChars` | `4000` | Total character budget kept per collapsed block |
 | `statusBar` | `"cwd provider model ctx cost"` | Space-separated segment template; plugin names from `statusSegments` work here too. Narrow terminals drop whole segments left-to-right |
 | `contextMarkers` | `true` | Show `[N]` node markers in the transcript |
-| `debug` | `false` | Verbose diagnostics + slow-frame logging to `debug.log` (`/debug on\|off\|tail`) |
 
 ### Protocols and delegation
 

@@ -18,7 +18,7 @@ from a CDN (which breaks offline). The owner considers it a demo, not a product.
 | `plugins/gateway/ui.html` | **the file you are rewriting** — the whole UI (HTML + CSS + JS inline) |
 | `plugins/gateway/server.ts` | the WebSocket server (the protocol you speak) |
 | `plugins/gateway/index.ts` | the plugin entry: `fox gateway [--port N]` |
-| `src/gateway/host.ts` | the host API the server calls (sessions, turn, commands, debug) |
+| `src/gateway/host.ts` | the host API the server calls (sessions, turn, commands) |
 
 **Read all four completely before writing anything.** The server is the contract; do not
 change its behavior except where the brief says to.
@@ -53,7 +53,6 @@ Connect to `ws://<host>/ws`. Client → server:
 { id: number, method: "turn.cancel",    params: { sessionId: string } }
 { id: number, method: "command.list" }
 { id: number, method: "command.run",    params: { sessionId: string, input: string } }
-{ id: number, method: "debug.log",      params: { lines?: number } }
 ```
 
 Server → client: `{ id, result }` for a reply, `{ id, error: { message } }` for a failure,
@@ -74,7 +73,6 @@ Result shapes:
 - `session.new` → `{ id }`
 - `command.list` → `{ name, desc, usage?, arg? }[]` (the TUI's own slash commands)
 - `command.run` → `{ handled, output?, newSessionId? }`
-- `debug.log` → `{ path, lines }`
 
 `role` is one of `user` / `assistant` / `think` / `tool`. A message's `content` is the
 plain text (markdown for assistant messages).
@@ -116,8 +114,6 @@ Treat this as a **product**, not a page. Concretely, the finished UI should have
   session must not corrupt the current view).
 - **States**: no session selected, empty session, disconnected/reconnecting, request
   failed (with Retry), command output, and a run that failed.
-- **A debug view**: a panel showing `debug.log` (via `debug.log` RPC) — the same log the
-  harness writes, with the path shown.
 - **Theme**: light and dark, following the OS by default, with a manual override that
   persists in `localStorage`.
 - **Accessibility**: semantic elements, focus rings, `aria-live` for the streaming

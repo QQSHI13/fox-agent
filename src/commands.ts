@@ -11,8 +11,6 @@ import {
   setSessionModel,
   undoLastOp,
 } from "./store/db.ts";
-import { readFileSync } from "node:fs";
-import { debugLogPath } from "./core/debuglog.ts";
 import { REASONING_EFFORTS, isReasoningEffort, type ReasoningEffort } from "./core/reasoning.ts";
 import { projectView } from "./context/view.ts";
 import { formatPruneReport, pruneSession } from "./store/prune.ts";
@@ -118,8 +116,6 @@ export function liveSettingFor(spec: SettingSpec, state: HarnessState): number |
       return typeof v === "number" ? v : d.tuiScrollStep;
     case "tuiFrameMs":
       return typeof v === "number" ? v : d.tuiFrameMs;
-    case "debug":
-      return typeof v === "boolean" ? v : d.debug;
     default:
       return null;
   }
@@ -150,13 +146,11 @@ function applyResultLive(state: HarnessState, spec: SettingSpec): void {
           setReadCap(value as number);
           break;
         }
-        case "debug":
         case "tuiScrollbar":
         case "tuiScrollStep":
         case "tuiFrameMs": {
           const app = await import("./tui/app.ts");
-          if (spec.key === "debug") app.setDebug(value as boolean);
-          else if (spec.key === "tuiScrollbar") app.setTuiScrollbar(value as boolean);
+          if (spec.key === "tuiScrollbar") app.setTuiScrollbar(value as boolean);
           else if (spec.key === "tuiScrollStep") app.setTuiScrollStep(value as number);
           else app.setTuiFrameMs(value as number);
           break;
@@ -317,13 +311,6 @@ export const COMMANDS: CommandSpec[] = [
   { name: "/help", aliases: ["/?"], desc: "show commands" },
   { name: "/new", desc: "start a fresh session" },
   { name: "/init", desc: "guided AGENTS.md setup for this repo", usage: "[focus]", arg: true, mutates: true, help: "bare: analyzes the repo and writes/updates AGENTS.md; anything typed becomes the focus/constraints the agent honors" },
-  {
-    name: "/debug",
-    desc: "verbose diagnostics on/off, or tail debug.log",
-    usage: "[on|off|tail]",
-    arg: true,
-    help: "on/off set the debug key live (slow-frame timings land in debug.log); bare shows the log path; tail shows its last lines",
-  },
   {
     name: "/sessions",
     aliases: ["/ls"],
@@ -2128,25 +2115,6 @@ Verify what you write: run the commands you document (at least the build/test en
       return { handled: true, output: "usage: /plugin [on|off|add|rm|info <name>]" };
     }
 
-    case "/debug": {
-      const a = (arg ?? "").trim().toLowerCase();
-      if (a === "on" || a === "off") {
-        const spec = SETTINGS.find((s) => s.key === "debug");
-        if (!spec) return { handled: true, output: "debug setting missing" };
-        return applySetting(spec, a, state);
-      }
-      const path = debugLogPath();
-      if (a === "tail") {
-        try {
-          const lines = readFileSync(path, "utf8").trimEnd().split("\n");
-          const tail = lines.slice(-30).join("\n");
-          return { handled: true, output: tail || "(log is empty)" };
-        } catch {
-          return { handled: true, output: `(no log yet at ${path})` };
-        }
-      }
-      return { handled: true, output: `log: ${path}\non|off toggles verbose diagnostics (currently ${state.config?.debug ? "on" : "off"}) · tail shows the last 30 lines` };
-    }
     case "/settings": {
       // Obscure knobs that have no dedicated command. Interactive bare walks
       // them (pick a key, type a value); otherwise bare lists everything with

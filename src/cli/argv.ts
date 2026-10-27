@@ -22,24 +22,6 @@ const SUBCOMMANDS = new Set(["ls", "plugin", "plugins", "upgrade", "json", "mini
 const SUBCOMMAND_FLAGS: Record<string, Set<string>> = {
   upgrade: new Set(["--beta"]),
 };
-/**
- * Does this word look like a debug spec (and so may be consumed by --debug)?
- * A subcommand name is not a spec, so `fox --debug gateway` still routes to
- * the gateway rather than swallowing the name as a filter.
- */
-function isDebugSpec(word: string): boolean {
-  const s = word.trim().toLowerCase();
-  if (!s) return false;
-  if (s === "all" || s === "verbose") return true;
-  if (["off", "error", "warn", "info", "debug", "trace"].includes(s)) return true;
-  // a category list, or "category:level"
-  const cats = s.includes(":") ? s.split(":")[0] : s;
-  return cats
-    .split(",")
-    .map((c) => c.trim())
-    .filter(Boolean)
-    .every((c) => ["provider", "turn", "plugin", "session", "tools", "gateway", "tui", "config", "core"].includes(c));
-}
 export function parseArgv(argv: string[]): Parsed {
   const flags = new Map<string, string | boolean>();
   const rest: string[] = [];
@@ -56,30 +38,9 @@ export function parseArgv(argv: string[]): Parsed {
     "-p",
     "--print",
   ]);
-  // `-d`, `-dd`, `-ddd` — npm-style verbosity, countable. Handled here (not in
-  // VALUED) so the count survives; the level is resolved at startup.
-  const VERBOSITY = /^-d{1,3}$/;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (VERBOSITY.test(a)) {
-      // the deepest wins: -dd -d is still debug
-      const n = a.length - 1;
-      const prev = Number(flags.get("verbosity") ?? 0);
-      flags.set("verbosity", String(Math.max(prev, n)));
-    }
-    else if (a === "--debug") {
-      // `--debug` takes an OPTIONAL spec: `--debug` alone is the debug level,
-      // `--debug provider,turn` filters by category. A following word that is
-      // not a spec (a subcommand, say) is left alone for the next iteration.
-      const next = argv[i + 1];
-      if (next !== undefined && !next.startsWith("-") && isDebugSpec(next)) {
-        flags.set("debug", next);
-        i++;
-      } else {
-        flags.set("debug", "debug");
-      }
-    }
-    else if (a === "-c" || a === "--continue") {
+    if (a === "-c" || a === "--continue") {
       // optionally followed by a session selector: `fox -c 2` or `fox -c <id>`.
       // A following flag is never the selector, so `-c -p '...'` still parses.
       const next = argv[i + 1];
@@ -132,7 +93,6 @@ export function parseArgv(argv: string[]): Parsed {
         throw new ConfigError(
           `unknown flag ${a} for ${where}\n` +
             `  known flags: ${known.join(", ")}\n` +
-            `  verbosity: -d, -dd, -ddd (or --debug <level|category>)\n` +
             `  run ${where} --help for details`,
         );
       }

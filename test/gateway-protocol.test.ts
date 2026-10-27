@@ -127,14 +127,6 @@ function makeHost() {
   const h = {
     version: "9.9.9-test",
     provider: { model: "test-model" },
-    debug: {
-      at: () => {},
-      info: () => {},
-      warn: () => {},
-      error: () => {},
-      path: () => "/tmp/fake-debug.log",
-      tail: (n = 200) => `line1\nline2 (asked ${n})`,
-    },
     sessions: {
       list: (limit = 100) => [...sessions.values()].slice(0, limit),
       get: (id: string) => sessions.get(id) ?? null,
@@ -457,10 +449,9 @@ describe("session RPCs", () => {
     expect(got.messages).toEqual([]);
   });
 
-  test("debug.log returns the path and tail", async () => {
+  test("debug.log is gone", async () => {
     const r = await c.rpc("debug.log", { lines: 5 });
-    expect(r.result.path).toBe("/tmp/fake-debug.log");
-    expect(r.result.lines).toContain("asked 5");
+    expect(r.error?.message ?? "").toContain("unknown method");
   });
 });
 

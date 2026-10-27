@@ -10,7 +10,6 @@ import { setOutputCap, setReadCap } from "./files.ts";
 import { ctxDef, ctxRun } from "./ctx.ts";
 import { mcpTools, closeMcp } from "./mcp.ts";
 import { loadPlugins, setActivePlugins } from "../plugins/load.ts";
-import { debugInfo } from "../core/debuglog.ts";
 import { bundledPlugins, bundledDisabled } from "../plugins/bundled.ts";
 import { BUNDLED_PROVIDER_PLUGIN_NAMES, bundledProviderPlugins } from "../providers/bundled.ts";
 import type { FoxPlugin } from "../plugins/types.ts";
@@ -107,16 +106,6 @@ export async function buildRegistry(
     ...bundledProviderPlugins(),
     ...res.plugins,
   ];
-  // which plugins are live, and which were skipped and why — the question
-  // "why isn't my plugin doing anything" is answered here
-  debugInfo(
-    "plugin",
-    `registry: ${plugins.length} plugin(s)`,
-    `active=${plugins.map((p) => p.name).join(", ") || "(none)"}\n` +
-      `configured=${(cfg.plugins ?? []).join(", ") || "(none)"}\n` +
-      `disabled=${disabled.join(", ") || "(none)"}\n` +
-      (res.warnings.length ? `warnings:\n${res.warnings.join("\n")}` : ""),
-  );
 
   // Integration packs: plugin-contributed servers merge under explicit config —
   // a config file names what the user chose, a pack only suggests. Collisions

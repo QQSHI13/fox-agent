@@ -34,7 +34,6 @@ tuiFrameMs = 16                        # frame budget
 tuiCollapsedChars = 240                # folded tool output keeps this much
 tuiKeptChars = 4000                    # character budget kept per collapsed block
 contextMarkers = true                  # show [N] node markers
-debug = false                          # /debug on|off|tail + slow-frame logging
 maxSteps = 0                           # 0 = unlimited
 retryLimit = 3                         # 429/5xx retries
 requestTimeoutMs = 120000              # time WITHOUT progress, re-armed per chunk
@@ -123,7 +122,7 @@ On interactive TUI start the working directory is confirmed (`y`/`n`/`c`, one ke
 
 ## Environment variables
 
-`FOX_AGENT_MODEL`, `FOX_AGENT_BASE_URL`, `FOX_AGENT_API_KEY`, `FOX_AGENT_PROVIDER`, `FOX_AGENT_MAX_STEPS`, `FOX_AGENT_COMPACT_AT`, `FOX_AGENT_COMPACT_AT_TOKENS`, `FOX_AGENT_RETRY_LIMIT`, `FOX_AGENT_REQUEST_TIMEOUT_MS`, `FOX_AGENT_DIAGNOSTICS`, `FOX_AGENT_HOME` (state dir, default `~/.local/share/fox-agent`), `FOX_AGENT_CONFIG` (override global config path — tests/sandboxes), `FOX_AGENT_DEBUG`, `FOX_AGENT_TRACE`, `FOX_AGENT_FRAMEPROFILE`, `FOX_AGENT_NO_TRUST_CHECK`, `FOX_AGENT_NO_RESUME_HINT`, `FOX_AGENT_MODELS_OFFLINE`, `FOX_AGENT_MODELS_CACHE`, `FOX_AGENT_ANTHROPIC_CACHE`, `FOX_AGENT_ALLOW_PRIVATE_FETCH`, `FOX_AGENT_DELEGATION_DEPTH` (harness-set).
+`FOX_AGENT_MODEL`, `FOX_AGENT_BASE_URL`, `FOX_AGENT_API_KEY`, `FOX_AGENT_PROVIDER`, `FOX_AGENT_MAX_STEPS`, `FOX_AGENT_COMPACT_AT`, `FOX_AGENT_COMPACT_AT_TOKENS`, `FOX_AGENT_RETRY_LIMIT`, `FOX_AGENT_REQUEST_TIMEOUT_MS`, `FOX_AGENT_DIAGNOSTICS`, `FOX_AGENT_HOME` (state dir, default `~/.local/share/fox-agent`), `FOX_AGENT_CONFIG` (override global config path — tests/sandboxes), `FOX_AGENT_TRACE`, `FOX_AGENT_FRAMEPROFILE`, `FOX_AGENT_NO_TRUST_CHECK`, `FOX_AGENT_NO_RESUME_HINT`, `FOX_AGENT_MODELS_OFFLINE`, `FOX_AGENT_MODELS_CACHE`, `FOX_AGENT_ANTHROPIC_CACHE`, `FOX_AGENT_ALLOW_PRIVATE_FETCH`, `FOX_AGENT_DELEGATION_DEPTH` (harness-set).
 
 `OPENAI_BASE_URL`/`OPENAI_API_KEY`/`ANTHROPIC_API_KEY`/`GEMINI_API_KEY`/`GOOGLE_API_KEY` are honored as fallbacks.
 

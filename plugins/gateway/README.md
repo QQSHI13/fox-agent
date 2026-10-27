@@ -34,7 +34,6 @@ Connect to `ws://<host>/ws`. Requests carry an `id`; the reply repeats it.
 { id: 5, method: "turn.cancel",   params: { sessionId } }
 { id: 6, method: "command.list" }
 { id: 7, method: "command.run",   params: { sessionId, input } }
-{ id: 8, method: "debug.log",     params: { lines? } }
 { id: 9, method: "plugin.list" }
 { id: 10, method: "plugin.<name>.<method>", params? }   // another plugin's RPC
 ```

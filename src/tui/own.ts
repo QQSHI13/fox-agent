@@ -40,7 +40,7 @@
  *
  * Whatever was trying to reach the screen is still useful — a plugin's stack
  * trace, an MCP child's complaint, a library warning. `drain()` hands it to the
- * caller, which routes it to the debug log and (bounded) to the exit panel.
+ * caller, which shows it (bounded) in the exit panel.
  *
  * ## Degradation
  *

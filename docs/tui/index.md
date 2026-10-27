@@ -75,7 +75,7 @@ never disagree.
 | `/reload` | Re-read config, re-apply model, theme, caps and plugins |
 | `/todo`, `/usage`, `/cost` | Task list, token totals, spend |
 | `/export`, `/import`, `/share` | Move a session as a `.zip`, or render it as one offline HTML file |
-| `/debug`, `/upgrade`, `/exit` | Diagnostics, self-update, quit |
+| `/upgrade`, `/exit` | Self-update, quit |
 
 Commands that mutate (`/new`, `/login`, `/settings`, `/upgrade`, …) say so in
 `/help`; the TUI-only interactive parts ride `CommandResult` (`picker`, `prompt`,
@@ -97,7 +97,7 @@ global config. Built-in presets: `default`, `light`, `mono`, `solarized-dark`,
 
 ## When it feels slow
 
-Set `debug = true` (`/debug on`), then `/debug tail`. Frames over `tuiFrameMs`
-land in `debug.log` with their timing. Rendering is O(window): only the visible
-slice of the transcript is painted per frame, and counts come from a per-item
-cache — so a slow frame is a specific row's cost, not a global one.
+Rendering is O(window): only the visible slice of the transcript is painted per
+frame, and counts come from a per-item cache — so a slow frame is a specific
+row's cost, not a global one. `FOX_AGENT_FRAMEPROFILE=<file>` writes per-frame
+phase timings (paint, composite, flush) for measuring one.

@@ -15,8 +15,6 @@ import { listSessions, getSession, allMessagesLite, createSession, appendMessage
 import { runTurnCore } from "../loop/turn.ts";
 import { resolveChat } from "../providers/index.ts";
 import { VERSION } from "../core/version.ts";
-import { debugAt, debugLogPath, type DebugCategory, type DebugLevel } from "../core/debuglog.ts";
-import { readFileSync } from "node:fs";
 import { COMMANDS, runSlashCommand, type HarnessState } from "../commands.ts";
 import { activePlugins } from "../plugins/load.ts";
 import type { FoxPlugin } from "../plugins/types.ts";
@@ -94,21 +92,6 @@ export interface FoxHostApi {
    */
   plugins: {
     active(): FoxPlugin[];
-  };
-  /**
-   * The host's debug log — a plugin writes through the host so its entries land
-   * in the same file, with the same levels and categories, and honour the same
-   * verbosity the user set (-d/-dd/-ddd).
-   */
-  debug: {
-    at(level: DebugLevel, category: DebugCategory, message: string, detail?: unknown): void;
-    info(category: DebugCategory, message: string, detail?: unknown): void;
-    warn(category: DebugCategory, message: string, detail?: unknown): void;
-    error(category: DebugCategory, message: string, detail?: unknown): void;
-    /** where the log lives — a plugin shows it so the user can find it */
-    path(): string;
-    /** the last N lines of the log (a debug panel's content) */
-    tail(lines?: number): string;
   };
 }
 
@@ -193,21 +176,6 @@ export function installHostApi(config: Config, provider: ProviderConfig): FoxHos
     },
     chat: resolveChat,
     plugins: { active: () => activePlugins() },
-    debug: {
-      at: (level, category, message, detail) => debugAt(level, category, message, detail),
-      info: (category, message, detail) => debugAt("info", category, message, detail),
-      warn: (category, message, detail) => debugAt("warn", category, message, detail),
-      error: (category, message, detail) => debugAt("error", category, message, detail),
-      path: () => debugLogPath(),
-      tail: (n = 60) => {
-        try {
-          const lines = readFileSync(debugLogPath(), "utf8").trimEnd().split("\n");
-          return lines.slice(-n).join("\n");
-        } catch {
-          return "(no log yet)";
-        }
-      },
-    },
   };
   globalThis.foxHost = api;
   return api;

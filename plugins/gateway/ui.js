@@ -1061,8 +1061,7 @@
       }
       if (state === "failed") {
         $("#scroll").appendChild(notice("error", "The turn failed",
-          "The provider or a tool failed. The gateway's debug log (sidebar: Log) has the trace.",
-          [{ label: "Open log", onClick: openLog }]));
+          "The provider or a tool failed. The error is in the reply above."));
       } else if (state === "cancelled") {
         $("#scroll").appendChild(notice("warn", "Cancelled", "The turn was stopped."));
       }
@@ -1493,15 +1492,11 @@
     });
   }
 
-  // ---- side panel: debug log + plugin panels ----------------------------
+  // ---- side panel: plugin panels ----------------------------------------
 
   var panelOpen = false;
-  var panelTab = "log";
+  var panelTab = "";
   var pluginList = [];
-
-  function openLog() {
-    openPanel("log");
-  }
 
   function openPanel(tab) {
     // One overlay at a time: a panel sliding in behind an open switcher gives
@@ -1528,7 +1523,7 @@
   function renderPanelTabs() {
     var tabs = $("#panelTabs");
     tabs.textContent = "";
-    var entries = [{ id: "log", title: "Log" }];
+    var entries = [];
     pluginList.forEach(function (p) {
       (p.panels || []).forEach(function (panel) {
         entries.push({ id: p.name + "/" + panel.id, title: panel.title || panel.id, url: panel.url });
@@ -1550,14 +1545,6 @@
     var body = $("#panelBody");
     var meta = $("#panelMeta");
     body.textContent = "";
-    if (panelTab === "log") {
-      $("#panelTitle").textContent = "Debug log";
-      meta.textContent = "";
-      var pre = el("pre", "log", "Loading…");
-      body.appendChild(pre);
-      refreshLog(pre);
-      return;
-    }
     // plugin panel: sandboxed iframe + postMessage bridge
     var parts = panelTab.split("/");
     var pname = parts[0];
@@ -1624,27 +1611,7 @@
     });
   }
 
-  function refreshLog(pre) {
-    pre.textContent = "Loading…";
-    rpc("debug.log", { lines: 400 }).then(function (r) {
-      $("#panelMeta").textContent = r.path || "(no log path)";
-      pre.textContent = r.lines && r.lines !== "(no log yet)"
-        ? r.lines
-        : "(the log is empty — start fox with -d to fill it)\n" + (r.path || "");
-      pre.scrollTop = pre.scrollHeight;
-    }).catch(function (e) {
-      pre.textContent = "Could not read the log: " + (e.message || e);
-    });
-  }
-
-  $("#logBtn").addEventListener("click", openLog);
   $("#panelClose").addEventListener("click", closePanel);
-  $("#panelRefresh").addEventListener("click", function () {
-    if (panelTab === "log") {
-      var pre = $("#panelBody pre.log");
-      if (pre) refreshLog(pre);
-    }
-  });
 
   // ---- drawer (narrow viewport) -----------------------------------------
 
@@ -1707,7 +1674,6 @@
     if (mod && e.key.toLowerCase() === "j") { e.preventDefault(); scrollToLatest(true); return; }
     if (mod && e.key === "Enter") { e.preventDefault(); send(); return; }
     if (e.altKey && e.key.toLowerCase() === "n") { e.preventDefault(); newSession(); return; }
-    if (mod && e.shiftKey && e.key.toLowerCase() === "l") { e.preventDefault(); openLog(); return; }
 
     // "/" from anywhere focuses the composer and starts a command
     if (e.key === "/" && document.activeElement !== input && !switcherOpen && !panelOpen) {

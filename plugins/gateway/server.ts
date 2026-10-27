@@ -35,14 +35,6 @@ import { clampLimit, isPaged, pageMessages, type LiteMessage } from "./paging.ts
 interface HostApi {
   version: string;
   provider: { model: string };
-  debug: {
-    at(level: "off" | "error" | "warn" | "info" | "debug" | "trace", category: string, message: string, detail?: unknown): void;
-    info(category: string, message: string, detail?: unknown): void;
-    warn(category: string, message: string, detail?: unknown): void;
-    error(category: string, message: string, detail?: unknown): void;
-    path(): string;
-    tail(lines?: number): string;
-  };
   sessions: {
     list(limit?: number): { id: string; title: string | null; cwd: string; model: string; updated_at: number }[];
     get(id: string): { id: string; title: string | null; cwd: string; model: string; updated_at: number } | null;
@@ -179,7 +171,6 @@ async function runTurn(
   const h = host();
   const ctl = new AbortController();
   running.set(sessionId, ctl);
-  h.debug.info("gateway", `turn started ${sessionId}`, prompt.slice(0, 200));
   push({ event: "turn.status", sessionId, state: "started" });
   // A turn always ends in exactly one terminal status, or a client is left with a
   // spinner and a disabled composer forever. The generator can end WITHOUT a
@@ -214,10 +205,8 @@ async function runTurn(
     end(ctl.signal.aborted ? "cancelled" : "completed");
   } catch (e) {
     if (ctl.signal.aborted) {
-      h.debug.info("gateway", `turn cancelled ${sessionId}`);
       end("cancelled");
     } else {
-      h.debug.error("gateway", `turn failed ${sessionId}`, (e as Error)?.stack ?? String(e));
       push({ event: "turn.delta", sessionId, delta: `\n[error: ${(e as Error)?.message ?? e}]` });
       end("failed");
     }
@@ -321,7 +310,6 @@ export async function createGateway(opts: GatewayOptions = {}): Promise<GatewayH
           try {
             return await route(req);
           } catch (e) {
-            h.debug.error("gateway", `plugin route failed ${name}/${rest}`, (e as Error)?.stack ?? String(e));
             return Response.json({ error: (e as Error)?.message ?? String(e) }, { status: 500 });
           }
         }
@@ -353,31 +341,26 @@ export async function createGateway(opts: GatewayOptions = {}): Promise<GatewayH
     websocket: {
       open(ws) {
         clients.set(ws, { send: (d) => ws.send(d) });
-        host().debug.info("gateway", "client connected", `clients=${clients.size}`);
       },
       close(ws) {
         clients.delete(ws);
-        host().debug.info("gateway", "client disconnected", `clients=${clients.size}`);
       },
       async message(ws, raw) {
         let msg: ClientMsg;
         try {
           msg = JSON.parse(String(raw));
         } catch {
-          host().debug.warn("gateway", "malformed message", String(raw).slice(0, 200));
           // No `id` to answer: a bare {error} is the only honest reply, and the
           // client's pending-map cannot confuse it with a real response.
           ws.send(JSON.stringify({ error: { message: "malformed JSON" } }));
           return;
         }
-        host().debug.info("gateway", `rpc ${msg.method}`, `id=${msg.id}`);
         const reply = (result: unknown) => ws.send(JSON.stringify({ id: msg.id, result }));
         // Failures must carry the id. A throw used to escape this handler and
         // leave the client waiting for a reply that never came, until its own
         // timeout — the request looked "slow" instead of broken.
         const fail = (e: unknown) => {
           const message = (e as Error)?.message ?? String(e);
-          host().debug.warn("gateway", `rpc ${msg.method} failed`, message);
           ws.send(JSON.stringify({ id: msg.id, error: { message } }));
         };
         const broadcast = (ev: ServerEvent) => broadcastTo(JSON.stringify(ev));
@@ -467,13 +450,6 @@ export async function createGateway(opts: GatewayOptions = {}): Promise<GatewayH
                 );
               }
               reply(await h.commands.run(sessionId, input));
-              break;
-            }
-            case "debug.log": {
-              // the debug panel's content — the SAME log the harness writes, so the
-              // web surface is also the debugging surface
-              const n = clampLimit((msg as { params?: { lines?: number } }).params?.lines ?? 200);
-              reply({ path: h.debug.path(), lines: h.debug.tail(Math.min(n, 5000)) });
               break;
             }
             case "plugin.list": {

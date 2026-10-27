@@ -11,7 +11,7 @@ A theme is a record of named colors (`fg`, `dim`, `accent`, `user`, `think`, `to
 
 ## TUI behavior facts (the ones that matter when debugging)
 
-- Frame loop is O(window): only the visible slice of the transcript renders per frame; counts come from a per-item cache. A slow frame (over `tuiFrameMs`) is logged to `debug.log` when `debug = true` (`/debug on|off|tail`).
+- Frame loop is O(window): only the visible slice of the transcript renders per frame; counts come from a per-item cache.
 - The viewport is virtualized: `rows[0]` is an absolute row offset, painting maps window rows to screen rows via `winOffset`. Scroll-to-top (Home) clamps `scrollTop` to `[0, total - vh]`; stick-to-bottom wins when clamped to the max.
 - Status bar segments drop whole segments left-to-right on narrow terminals; the dock (input area) never truncates mid-text. `statusBar` config: space-separated segment names (default `cwd provider model ctx cost`); plugins contribute extra names via `statusSegments` (return `null` to hide the slot).
 - Selection is a re-style over painted cells (drag with mouse), never a second text pass.

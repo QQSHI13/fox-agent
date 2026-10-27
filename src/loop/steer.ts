@@ -32,7 +32,6 @@
  *    background job is live. One-shot clients (ACP prompt, A2A send) and
  *    `--print` wait for that before finishing — see `waitQuiescent`.
  */
-import { debugWarn } from "../core/debuglog.ts";
 import type { AgentEvent } from "../core/events.ts";
 import type { Config } from "../core/config.ts";
 import type { UiBridge } from "../core/ui.ts";
@@ -204,7 +203,6 @@ export function adoptTurnController(sessionId: string, ctl: AbortController): vo
 export function abortTurn(sessionId: string, reason = "cancelled"): boolean {
   const ctl = controllers.get(sessionId);
   if (!ctl) return false;
-  debugWarn("turn", `aborting ${sessionId}: ${reason}`);
   ctl.abort();
   return true;
 }
@@ -373,7 +371,6 @@ async function startTurn(sessionId: string): Promise<void> {
         host.sink(ev);
       } catch (e) {
         // a broken renderer must not eat the turn's remaining events
-        debugWarn("tui", `sink threw for ${sessionId}: ${(e as Error)?.message ?? e}`);
       }
     }
   } catch (e) {
@@ -382,7 +379,6 @@ async function startTurn(sessionId: string): Promise<void> {
     requeueSteer(sessionId, texts);
     blocked.add(sessionId);
     host.onTurnEnd?.("error", e);
-    debugWarn("turn", `steered turn failed for ${sessionId}: ${(e as Error)?.message ?? e}`);
     checkQuiescent(sessionId);
     return;
   } finally {

@@ -60,7 +60,6 @@ import { createWizard, type PromptState, type Wizard } from "./wizard.ts";
 import { childEnv } from "../core/childenv.ts";
 import { shellPath } from "../core/shell.ts";
 import { killTree } from "../tools/exec.ts";
-import { debugLog, debugLogPath, setDebugLevel, debugLevelIsExplicit } from "../core/debuglog.ts";
 import { droppedPath, expandMentions } from "../core/mentions.ts";
 import { diagnoseProviderError } from "../core/errors.ts";
 import { isWindowsTerminal, isWSL } from "../core/wsl.ts";
@@ -173,19 +172,6 @@ export function setTuiScrollStep(n: number): void {
   setPickerWheelStep(n); // pickers (/settings, /model, /sessions) scroll the same amount
 }
 
-/**
- * Verbose diagnostics (config `debug`, live via `/debug on|off`). The log is
- * always written for errors; this only widens what gets logged — slow frames —
- * and `/debug tail` reads the file back, so the flag needs no restart.
- */
-let DEBUG_VERBOSE = false;
-export function setDebug(on: boolean): void {
-  DEBUG_VERBOSE = on;
-  // widen the shared debug log too: `debug = true` means "show me everything".
-  // But an EXPLICIT level (fox -ddd, FOX_AGENT_DEBUG) wins — the config must
-  // not silently downgrade a level the user asked for.
-  if (!debugLevelIsExplicit()) setDebugLevel(on ? "debug" : "off");
-}
 export function setTuiScrollbar(on: boolean): void {
   if (SCROLLBAR === on) return;
   SCROLLBAR = on;
@@ -1130,7 +1116,6 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       setTuiCaps(state.config?.tuiCollapsedChars ?? 240, state.config?.tuiKeptChars ?? 4_000);
       setTuiScrollbar(state.config?.tuiScrollbar ?? true);
       setTuiScrollStep(state.config?.tuiScrollStep ?? 2);
-      setDebug(!!state.config?.debug);
       const wantTheme = state.config?.theme ?? "default";
       // plugin themes register on first buildRegistry, so an unknown name here
       // may just be a plugin theme that has not loaded yet — fall back silently
@@ -1375,15 +1360,14 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   }
 
   /**
-   * One clean error line in the transcript; the whole truth in the debug log.
+   * One clean error line in the transcript.
    *
-   * Raw provider bodies used to land on the grid verbatim — a 401 from a gateway
-   * prints its own multi-line HTML/JSON, which paints over the UI and teaches
-   * the user nothing at a glance. The transcript gets the summary; the log gets
-   * the stack, the body, and everything else (see src/core/debuglog.ts).
+   * Raw provider bodies must never land on the grid verbatim — a 401 from a
+   * gateway prints its own multi-line HTML/JSON, which paints over the UI and
+   * teaches the user nothing at a glance. The transcript gets the summary and
+   * the raw body is dropped.
    */
-  function reportError(summary: string, detail?: unknown) {
-    debugLog(summary, detail);
+  function reportError(summary: string, _detail?: unknown) {
     // A provider error gets its diagnosis: the likely cause AND the fix. "HTTP
     // 400: Invalid max_tokens value" names a field; "the request asked for more
     // output tokens than this endpoint allows; lower sampling.maxOutputTokens"
@@ -1391,7 +1375,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     const diag = diagnoseProviderError(summary);
     const short = summary.replace(/\s+/g, " ").slice(0, 160);
     const advice = diag ? ` — ${diag.cause}; ${diag.fix}` : "";
-    push("error", `error: ${short}${advice} · log: ${debugLogPath()}`);
+    push("error", `error: ${short}${advice}`);
   }
 
   /**
@@ -1679,7 +1663,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           push("user", `❯ ${ev.text}`);
         } else if (ev.type === "done") {
           // turn.ts already persisted the full error to the session log; the
-          // transcript gets one line, the debug log gets the whole reason
+          // transcript gets the one diagnosed line
           if (ev.reason.startsWith("error")) reportError(ev.reason.slice(7));
         }
         yield ev; // painted; the consumer (typed turn or core's steer dispatch) decides what next
@@ -4453,9 +4437,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       // Stray-output quarantine. Plugins, MCP children and library code that
       // write to stdout/stderr directly would shred the grid mid-frame. While
       // the TUI owns the terminal those writes are RECORDED and never shown:
-      // they go to the debug log, and the accumulated text is presented at exit
-      // as an error panel (so a broken plugin's output is still reachable, but
-      // it never corrupts the running UI). The TUI's own painting goes through
+      // the accumulated text is presented at exit as an error panel (so a
+      // broken plugin's output is still reachable, but it never corrupts the
+      // running UI). The TUI's own painting goes through
       // Bun.stdout.writer() (term.ts), which none of this touches.
       // Bounded tail, not an unbounded array: a chatty plugin or MCP child can
       // print for the whole session, and the old `stray.push(s)` grew without
@@ -4469,12 +4453,6 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       const origOut = process.stdout.write.bind(process.stdout);
       const origErr = process.stderr.write.bind(process.stderr);
       const origConsole = { log: console.log, info: console.info, warn: console.warn, error: console.error };
-      // A write() call can end MID-LINE: the provider's stderr arrives in
-      // chunks, and logging each chunk separately chopped messages in half
-      // ("ailed after 3 attempts" — the head of "Failed" in the next entry).
-      // Buffer the partial tail and log only COMPLETE lines, so one log entry
-      // is one line of output.
-      let partial = "";
       const asText = (c: unknown): string => (c instanceof Uint8Array ? new TextDecoder().decode(c) : String(c));
       const capStray = (chunk: unknown) => {
         const s = asText(chunk);
@@ -4489,10 +4467,6 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
             stray = stray.slice(nl + 1);
           }
         }
-        partial += s;
-        const lines = partial.split("\n");
-        partial = lines.pop() ?? ""; // the last piece has no newline yet
-        if (lines.length) debugLog("stray output", lines.join("\n"));
       };
       const swallow = (chunk: unknown, ...rest: unknown[]) => {
         capStray(chunk);
@@ -4570,11 +4544,14 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
        * of the same bug as the SDK dump: the user loses the UI, the session
        * hint, and any explanation of what happened.
        *
-       * Instead: log the truth, put ONE line in the transcript, and leave
-       * through the normal exit path so the terminal is restored.
+       * Instead: put ONE line in the transcript, leave the stack for the exit
+       * panel, and leave through the normal exit path so the terminal is
+       * restored.
        */
       function onUncaught(e: unknown) {
-        debugLog("uncaught exception", e);
+        try {
+          origErr(`${(e as Error)?.stack ?? String(e)}\n`);
+        } catch {}
         try {
           reportError(`internal error: ${(e as Error)?.message ?? String(e)}`, e);
         } catch {}
@@ -4602,16 +4579,10 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           const tail = term.drainCaptured();
           if (tail) capStray(tail);
         }
-        // flush the last partial line (no trailing newline) so it is not lost
-        if (partial.trim()) {
-          debugLog("stray output", partial.trimEnd());
-          partial = "";
-        }
         // The exit panel: everything the UI swallowed while it was up, in one
         // block. It is the "error panel" — a plugin that printed a stack trace,
         // an MCP child that complained, a library that warned: all of it is here
-        // instead of being lost (or smeared over the grid). The debug log has
-        // the same text, plus the stack traces.
+        // instead of being lost (or smeared over the grid).
         if (stray.length) {
           // Strip control characters: this text is about to be written to the
           // real terminal AFTER the alt screen is gone, so an ESC in it would
@@ -4633,7 +4604,6 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
               `${rule}\n` +
               `${shown.join("\n")}\n` +
               (more.length ? `${more.join("\n")}\n` : "") +
-              ` full log: ${debugLogPath()}\n` +
               `${rule}\n`,
           );
         }
@@ -4656,7 +4626,14 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         if (!busy) {
           setBusy(false);
           drainQueue();
-        } else debugLog("unhandledRejection during running turn", String(reason));
+        } else {
+          // a turn is live: the exiting `reportError` above is the surface, and
+          // standing the spinner down here would let a queued message dispatch
+          // into the running turn
+          try {
+            origErr(`${(reason as Error)?.stack ?? String(reason)}\n`);
+          } catch {}
+        }
       });
 
       if (state.sessionId) getSession(state.sessionId);
@@ -4761,7 +4738,6 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         const spinOnly = statusOnly && !dirty;
         statusOnly = false;
         dirty = false;
-        const t0 = DEBUG_VERBOSE ? performance.now() : 0;
         if (PROF) profMark = performance.now();
         try {
           if (spinOnly) {
@@ -4818,10 +4794,6 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           term.setCursor(caret.x, caret.y);
           term.flush();
           if (moved) lastCaretKey = caretKey;
-          if (DEBUG_VERBOSE) {
-            const ms = performance.now() - t0;
-            if (ms > 16) debugLog(`slow frame ${ms.toFixed(0)}ms`, `items=${items.length} spinOnly=${spinOnly}`);
-          }
           if (PROF && performance.now() - profMark > 20) profLine(`SLOWFRAME total=${(performance.now() - profMark).toFixed(1)}ms`);
         } catch (e) {
           // painting over the grid with a stack trace is how raw errors leak.
@@ -4831,20 +4803,22 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           // same bug. Recover instead: drop every render cache (the bad row is
           // almost certainly cached), log, tell the user once, and keep the
           // session alive — the next tick re-renders from scratch.
-          debugLog("tui frame error", e);
+          try {
+            origErr(`fox-agent: render error (recovered): ${(e as Error)?.stack ?? e}\n`);
+          } catch {}
           lineCache.clear();
           streamKernels.clear();
           thinkKernels.clear();
           frameErrors++;
           if (frameErrors <= 1 && !exitCode) {
             try {
-              push("error", `render error (recovered) — log: ${debugLogPath()}`);
+              push("error", "render error (recovered)");
             } catch {}
           }
           dirty = true; // next tick repaints everything from clean caches
         }
       };
-      let frameErrors = 0; // a second consecutive render error stays log-only
+      let frameErrors = 0; // a second consecutive render error stays panel-only
       let frameTimer: ReturnType<typeof setInterval> | null = null;
       const armFrameTimer = (ms: number) => {
         if (frameTimer) clearInterval(frameTimer);
@@ -4865,7 +4839,6 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       }
       if (exitCode) process.exitCode = exitCode;
     } catch (e) {
-      debugLog("tui fatal", e);
       try {
         restoreOutputRef?.();
       } catch {}
