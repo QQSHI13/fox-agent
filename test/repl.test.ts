@@ -314,3 +314,43 @@ describe("repl background jobs", () => {
     expect(r.output).toContain("no job r999");
   }, 30_000);
 });
+
+describe("repl: a foreground eval streams its console live", () => {
+  // The row used to sit on the label "repl" for the whole run with no sign of
+  // progress, even though `exec` streams. A foreground eval is often the longest
+  // call in a turn, so it gets the same live feed — throttled, UI-only, and the
+  // model still receives just the final result.
+  test("console lines reach the host through tool_output, tagged with the call", async () => {
+    const events: { type: string; id?: string; delta?: string }[] = [];
+    const r = await replRun(
+      { code: 'console.log("first"); await new Promise(r => setTimeout(r, 200)); console.log("second"); return "done";' },
+      { ...ctx, emit: (ev: any) => events.push(ev), callId: "call-7" } as unknown as ToolContext,
+    );
+    expect(r.ok).toBe(true);
+    // the model's result is unchanged: both lines, plus the value
+    expect(r.output).toBe("first\nsecond\ndone");
+    const streamed = events.filter((e) => e.type === "tool_output");
+    expect(streamed.length).toBeGreaterThan(0);
+    expect(streamed.every((e) => e.id === "call-7")).toBe(true);
+    // the two lines are 200ms apart and the flush threshold is 120ms, so the
+    // feed is genuinely incremental rather than one dump at the end
+    expect(streamed.length).toBeGreaterThan(1);
+    expect(streamed.map((e) => e.delta).join("")).toBe("first\nsecond\n");
+  }, 30_000);
+
+  test("a failing eval still flushes what it printed", async () => {
+    const events: any[] = [];
+    const r = await replRun(
+      { code: 'console.log("printed before the throw"); throw new Error("boom");' },
+      { ...ctx, emit: (ev: any) => events.push(ev), callId: "c9" } as unknown as ToolContext,
+    );
+    expect(r.ok).toBe(false);
+    expect(r.output).toContain("boom");
+    expect(events.map((e) => e.delta ?? "").join("")).toContain("printed before the throw");
+  }, 30_000);
+
+  test("with no host to emit to, nothing changes", async () => {
+    const r = await replRun({ code: 'console.log("quiet"); return 1;' }, ctx);
+    expect(r).toEqual({ ok: true, output: "quiet\n1" });
+  }, 30_000);
+});

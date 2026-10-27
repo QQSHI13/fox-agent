@@ -492,13 +492,41 @@ export async function replRun(
   // A per-call sink: two foreground calls (tools run in parallel within a step)
   // cannot steal each other's console lines either.
   const lines: string[] = [];
-  const evalConsole = makeConsole((line) => lines.push(line));
+  // Console lines also stream to the host as they are produced, exactly like
+  // exec's live output: a foreground eval is often the longest call in a turn
+  // (it is the "compute over data" tool), and without this the row sat on the
+  // label "repl" for the whole run with no sign of progress. Throttled so a
+  // chatty loop costs a repaint, not a flood; the model still gets only the
+  // final result. No emit/callId (a bare ToolContext, or tools.call from inside
+  // another eval) simply skips the streaming.
+  let pending = "";
+  let lastFlush = 0;
+  const streamLine = (line: string) => {
+    lines.push(line);
+    if (!ctx.emit || !ctx.callId) return;
+    pending += `${line}\n`;
+    const now = Date.now();
+    if (now - lastFlush < 120) return;
+    lastFlush = now;
+    const delta = pending;
+    pending = "";
+    ctx.emit({ type: "tool_output", id: ctx.callId, delta });
+  };
+  /** Push anything the throttle is still holding, so the last lines are not lost. */
+  const flushLines = () => {
+    if (!pending || !ctx.emit || !ctx.callId) return;
+    ctx.emit({ type: "tool_output", id: ctx.callId, delta: pending });
+    pending = "";
+  };
+  const evalConsole = makeConsole(streamLine);
   sandbox.console = evalConsole;
   try {
     const value = await evalInContext(state, args.code, timeout, evalConsole);
+    flushLines();
     const body = [lines.join("\n"), fmt(value)].filter(Boolean).join("\n").trimEnd() || "(no output)";
     return ok(body.length > outCap() ? body.slice(-outCap()) + "\n… (head truncated)" : body);
   } catch (e) {
+    flushLines();
     const msg = (e as Error).message ?? String(e);
     const stack = (e as Error).stack?.split("\n").slice(0, 4).join("\n");
     return fail(`error: ${msg}${stack && !msg.includes("\n") ? `\n${stack}` : ""}`);
