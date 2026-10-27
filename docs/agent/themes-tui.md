@@ -8,6 +8,7 @@ A theme is a record of named colors (`fg`, `dim`, `accent`, `user`, `think`, `to
 - Custom themes come from plugins (`FoxPlugin.themes`, keyed by name) — see the plugins doc. `theme = "<name>"` in config selects one; `registerThemes` makes it available.
 - A plugin may not repaint a preset name (`registerThemes` skips names already in `THEME_PRESETS`).
 - No config-file theme definition (TOML colors) exists yet — custom looks go through a plugin module.
+- The input dock's `❯` prefix is one glyph for every mode; mode is carried by color, never by the character. `prompt` is the normal arrow, `cmd` a leading `/`, `shell` a leading `!`, and `wizard` the same `❯` while a question wizard owns the dock. A new `wizard` value must stay distinguishable from `hint` (grey), `fg` (normal text), `cmd`, `shell` and `prompt` — `test/themes.test.ts` enforces contrast ≥ 4.5:1 on `inputBg` plus a perceptual (OKLab) distance from each.
 
 ## TUI behavior facts (the ones that matter when debugging)
 

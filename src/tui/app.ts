@@ -194,6 +194,13 @@ export function setTuiFrameMs(ms: number): void {
 // Live palette: resolves against the active theme on every access, so a
 // `/theme` switch repaints on the next frame without a restart.
 const C = liveTheme<keyof Theme>();
+/**
+ * The input dock's prompt prefix. ONE glyph for every mode: the wizard owns the
+ * same box as an ordinary prompt, so it must not swap the arrow to something
+ * else — a different glyph reads as a different control. Mode is carried by
+ * color (`prompt` / `cmd` / `shell` / `wizard`), never by the character.
+ */
+const DOCK_PROMPT = "❯";
 const SPIN = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 /**
  * Spinner frame set for the current theme. Braille dots by default; a theme's
@@ -3723,6 +3730,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     overlayRow: 0,
     overlaySel: 0,
     prompt: 0,
+    wizard: 0,
     cmd: 0,
     shell: 0,
     spin: 0,
@@ -3756,7 +3764,8 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     S.sbTrack = screen.sgr({ bg: C.sbTrack ?? C.inputBg });
     S.overlayRow = screen.sgr({ fg: C.fg, bg: C.inputBg });
     S.overlaySel = screen.sgr({ fg: C.hintSel, bg: C.selBg });
-    S.prompt = screen.sgr({ fg: C.prompt ?? C.accent }); // input-dock ❯ / › prefix
+    S.prompt = screen.sgr({ fg: C.prompt ?? C.accent }); // input-dock ❯ prefix
+    S.wizard = screen.sgr({ fg: C.wizard ?? C.accent }); // same ❯ while a question is open
     S.cmd = screen.sgr({ fg: C.cmd ?? C.info, bg: C.inputBg }); // leading / of a slash command
     S.shell = screen.sgr({ fg: C.shell ?? C.ok, bg: C.inputBg }); // leading ! of a shell escape
   }
@@ -4082,7 +4091,10 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     // with the custom box open the dock shows what is being typed, not the
     // filter — the two would otherwise fight over the same line
     const gp = getPrompt(); const selectFilter = gp && st0?.kind === "select" && !gp.entering ? gp.filter : "";
-    const pfx = getPrompt() ? "› " : "❯ ";
+    // The prefix glyph is ONE constant: the wizard owns the same input box, so
+    // it wears the same ❯. It used to swap to ›, which read as a different
+    // control entirely — two arrows for one dock.
+    const pfx = `${DOCK_PROMPT} `;
     // unescaped leading / (slash command) or ! (shell escape) gets its own
     // marker color; the rest of the line stays inputFg. Escaped (\/) stays
     // plain. Detection mirrors dispatch(): first non-whitespace char + !lit.
@@ -4092,11 +4104,15 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     // the arrow itself carries the mode color (cmd=info, shell=ok, else accent);
     // the / or ! stays plain — coloring the arrow reads cleaner than tinting a
     // bare punctuation char and matches how prompts signal "you are in X mode".
-    const pfxArrow = getPrompt() ? "›" : "❯";
-    const pfxStyle = dockMode === "cmd" ? S.cmd : dockMode === "shell" ? S.shell : S.prompt;
+    const pfxArrow = DOCK_PROMPT;
+    // The arrow carries the mode color, and a wizard is a mode of its own: the
+    // color is what tells the reader "this dock wants an answer", not the glyph.
+    const pfxStyle = getPrompt() ? S.wizard : dockMode === "cmd" ? S.cmd : dockMode === "shell" ? S.shell : S.prompt;
     const drawPrefix = (y: number, style = pfxStyle) => {
       P.dock.text(1, y, pfxArrow, style);
-      P.dock.text(1 + charWidth(pfxArrow.codePointAt(0)!), y, " ", S.prompt);
+      // the gap takes the arrow's own style: it is blank, so only a style with a
+      // background could show — and then it must match the arrow, not `prompt`
+      P.dock.text(1 + charWidth(pfxArrow.codePointAt(0)!), y, " ", style);
     };
     if (selectFilter) {
       // a select step's keystrokes go to the filter — show them in the dock,
@@ -4118,7 +4134,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
             ? "(type to filter · ↑↓ choose · enter confirms · esc cancels)"
             : `(${resolveField(st0!.hint, getPrompt()!.answers) ?? "type your answer"} · enter submits · esc cancels)`
         : "(type here — / commands · \\ escapes · ! shell · wheel/pgup scroll · click expands · drag/dbl-click selects)";
-      drawPrefix(inputTop, getPrompt() ? S.prompt : S.dim);
+      drawPrefix(inputTop, getPrompt() ? S.wizard : S.dim);
       P.dock.text(3, inputTop, placeholder, S.dim);
       pendingCaret = { x: 3, y: inputTop };
     } else {

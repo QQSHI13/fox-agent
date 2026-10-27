@@ -25,11 +25,19 @@ export interface Theme {
   accent: string;
   ok: string;
   /**
-   * Input-dock prompt prefix (❯ / ›). Optional — falls back to `accent`.
+   * Input-dock prompt prefix (❯). Optional — falls back to `accent`.
    * Distinct so themes can color the prompt marker independently of the
    * generic accent (spinner, slash-list headers, flash messages).
    */
   prompt?: string;
+  /**
+   * The same ❯ prefix while a question wizard owns the dock. Optional —
+   * falls back to `accent`. The GLYPH stays identical (one prompt marker for
+   * one input box); only the color says "an answer is owed here", so this slot
+   * must stay distinguishable from every other dock color: `hint` (grey),
+   * `fg` (normal text), `cmd` (slash), `shell` (!) and `prompt` itself.
+   */
+  wizard?: string;
   /**
    * Leading `/` of an unescaped slash command in the input dock. Optional —
    * falls back to `info`. Only the marker char is tinted; the rest of the
@@ -122,6 +130,7 @@ export const THEME_PRESETS: Record<string, Theme> = {
     hintSel: "#c0caf5",
     accent: "#bb9af7",
     prompt: "#c792ea",
+    wizard: "#ff9e64",
     cmd: "#89ddff",
     shell: "#9ece6a",
     ok: "#9ece6a",
@@ -143,6 +152,7 @@ export const THEME_PRESETS: Record<string, Theme> = {
     hintSel: "#1f2335",
     accent: "#7847bd",
     prompt: "#9d7cd8",
+    wizard: "#b03a00",
     cmd: "#007197",
     shell: "#587539",
     ok: "#587539",
@@ -164,6 +174,7 @@ export const THEME_PRESETS: Record<string, Theme> = {
     hintSel: "#ffffff",
     accent: "#e0e0e0",
     prompt: "#e0e0e0",
+    wizard: "#e8a33d",
     cmd: "#d0d0d0",
     shell: "#c0c0c0",
     ok: "#c0c0c0",
@@ -187,6 +198,7 @@ export const THEME_PRESETS: Record<string, Theme> = {
     hintSel: "#eee8d5",
     accent: "#6c71c4",
     prompt: "#8a8fd4",
+    wizard: "#ff8c66",
     cmd: "#2aa198",
     shell: "#859900",
     ok: "#859900",
@@ -208,6 +220,7 @@ export const THEME_PRESETS: Record<string, Theme> = {
     hintSel: "#f8f8f2",
     accent: "#bd93f9",
     prompt: "#d6b3ff",
+    wizard: "#ff9580",
     cmd: "#8be9fd",
     shell: "#50fa7b",
     ok: "#50fa7b",
@@ -232,6 +245,7 @@ export const THEME_PRESETS: Record<string, Theme> = {
     hintSel: "#eceff4",
     accent: "#bf9ab4",
     prompt: "#d8b4c8",
+    wizard: "#fe7562",
     cmd: "#88c0d0",
     shell: "#a3be8c",
     ok: "#a3be8c",
@@ -253,6 +267,7 @@ export const THEME_PRESETS: Record<string, Theme> = {
     hintSel: "#cdd6f4",
     accent: "#cba6f7",
     prompt: "#e0b0ff",
+    wizard: "#fab387",
     cmd: "#89dceb",
     shell: "#a6e3a1",
     ok: "#a6e3a1",
@@ -274,6 +289,7 @@ export const THEME_PRESETS: Record<string, Theme> = {
     hintSel: "#ebdbb2",
     accent: "#d3869b",
     prompt: "#e6a8b8",
+    wizard: "#fe8019",
     cmd: "#8ec07c",
     shell: "#b8bb26",
     ok: "#b8bb26",
@@ -295,6 +311,7 @@ export const THEME_PRESETS: Record<string, Theme> = {
     hintSel: "#e0def4",
     accent: "#c4a7e7",
     prompt: "#d8c4f0",
+    wizard: "#f6a68a",
     cmd: "#c4a7e7",
     shell: "#6ea8b8",
     ok: "#6ea8b8",
@@ -316,6 +333,7 @@ export const THEME_PRESETS: Record<string, Theme> = {
     hintSel: "#343a55",
     accent: "#7a3ab8",
     prompt: "#9d5fd0",
+    wizard: "#a8410c",
     cmd: "#00597a",
     shell: "#485e30",
     ok: "#485e30",
@@ -337,6 +355,7 @@ export const THEME_PRESETS: Record<string, Theme> = {
     hintSel: "#d3c6aa",
     accent: "#d699b6",
     prompt: "#e0b0c0",
+    wizard: "#ff8f5e",
     cmd: "#83c092",
     shell: "#a7c080",
     ok: "#a7c080",
