@@ -70,4 +70,34 @@ describe("session lock", () => {
     releaseLock("s4");
     expect(lockHolder("s4")).toBeNull();
   });
+
+  // The bug: acquireLock created the file with O_EXCL and wrote the JSON into it
+  // afterwards, so for a moment the lock existed but was EMPTY — and lockHolder
+  // treats an unparseable file as garbage and removes it. A second process
+  // landing in that window got "free", deleted the first process's lock, and
+  // both then believed they held the session (interleaved transcripts — the one
+  // thing this module exists to prevent). The lock is now published by link(),
+  // which is atomic: the name appears already holding a complete file.
+  test("a lock is never observable before it is complete", async () => {
+    const { acquireLock } = await import("../src/store/lock.ts");
+    const { readFileSync, readdirSync } = await import("node:fs");
+    expect(acquireLock("s7", "tui")).toBeNull();
+    // the published file parses on the first read, with no retry or window
+    const raw = readFileSync(join(dir, "locks", "s7.json"), "utf8");
+    expect(() => JSON.parse(raw)).not.toThrow();
+    expect(JSON.parse(raw).pid).toBe(process.pid);
+    // and no temp file is left lying around for a later opener to trip over
+    expect(readdirSync(join(dir, "locks")).filter((f) => f.endsWith(".tmp"))).toHaveLength(0);
+  });
+
+  test("two racers still produce exactly one holder", async () => {
+    const { lockHolder } = await import("../src/store/lock.ts");
+    mkdirSync(join(dir, "locks"), { recursive: true });
+    // A foreign live holder published between our two attempts must win: the
+    // claim path never reports success on faith after a collision.
+    writeFileSync(join(dir, "locks", "s8.json"), JSON.stringify({ pid: 1, kind: "acp", ts: Date.now() }));
+    const { acquireLock } = await import("../src/store/lock.ts");
+    expect(acquireLock("s8", "tui")?.pid).toBe(1);
+    expect(lockHolder("s8")?.kind).toBe("acp");
+  });
 });

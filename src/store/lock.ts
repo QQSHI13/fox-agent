@@ -12,7 +12,7 @@
  * been recycled... accepted risk, pid reuse is rare inside a session's life)
  * is treated as stale and its file removed on sight.
  */
-import { mkdirSync, openSync, readFileSync, rmSync, writeFileSync, closeSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync, linkSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { agentHome, assertSafeSessionId } from "../core/paths.ts";
 import { pidAlive } from "../core/proc.ts";
@@ -57,63 +57,65 @@ export function lockHolder(id: string): SessionLock | null {
 }
 
 /**
+ * Publish this lock atomically: write it complete, under a private name, then
+ * `link()` it into place. Returns true when the link succeeded (we hold it),
+ * false when the target already exists (someone else does).
+ *
+ * The obvious version — `openSync(path, "wx")` then write — has a window where
+ * the lock file exists and is EMPTY, and `lockHolder` treats an unparseable file
+ * as garbage and deletes it. A second process landing in that window got
+ * "no lock", deleted our file, and both processes then believed they held the
+ * session — the interleaved-transcript failure this module exists to prevent.
+ *
+ * `link()` is the atomic primitive here: it either creates the name pointing at
+ * a complete file, or fails with EEXIST. No reader can ever observe a partial
+ * lock.
+ */
+function publishLock(id: string, data: string): boolean {
+  const tmp = `${lockPath(id)}.${process.pid}.tmp`;
+  try {
+    writeFileSync(tmp, data, { mode: 0o600 });
+    linkSync(tmp, lockPath(id));
+    return true;
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "EEXIST") return false;
+    throw e;
+  } finally {
+    try {
+      unlinkSync(tmp);
+    } catch {}
+  }
+}
+
+/**
  * Take the lock for this process. Returns null on success, or the live holder
  * when another process has it — the caller decides what read-only means.
- * Uses O_EXCL create so two processes racing both see "no holder" cannot both
- * win: exactly one exclusive create succeeds.
+ *
+ * The create is atomic (`publishLock`), so two processes racing both see "no
+ * holder" cannot both win: exactly one link succeeds.
  */
 export function acquireLock(id: string, kind: string): SessionLock | null {
   assertSafeSessionId(id);
   mkdirSync(join(agentHome(), "locks"), { recursive: true });
   const self: SessionLock = { pid: process.pid, kind, ts: Date.now() };
   const data = JSON.stringify(self);
-  try {
-    const fd = openSync(lockPath(id), "wx", 0o600);
-    try {
-      writeFileSync(fd, data);
-    } finally {
-      closeSync(fd);
-    }
-    return null;
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
-  }
+  if (publishLock(id, data)) return null;
   const holder = lockHolder(id);
   // Stale/dead holder was cleaned (or file was corrupt): retry once.
   if (!holder) {
-    try {
-      const fd = openSync(lockPath(id), "wx", 0o600);
-      try {
-        writeFileSync(fd, data);
-      } finally {
-        closeSync(fd);
-      }
-      return null;
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
-      // Second EEXIST: someone else created the file in the gap between our
-      // lockHolder read and this create. Re-read the LIVE holder and report it —
-      // never return null ("we hold it") on faith. The old code returned null
-      // when retry.pid === process.pid or retry was null, which could claim a
-      // lock we do not actually hold (the create failed, so the file on disk is
-      // some other writer's, or a third process's fresh lock).
-      const retry = lockHolder(id);
-      if (retry) return retry;
-      // lockHolder cleaned a now-stale file that appeared mid-race: one more
-      // honest create attempt, and if THAT hits EEXIST the live holder wins.
-      try {
-        const fd = openSync(lockPath(id), "wx", 0o600);
-        try {
-          writeFileSync(fd, data);
-        } finally {
-          closeSync(fd);
-        }
-        return null;
-      } catch (e2) {
-        if ((e2 as NodeJS.ErrnoException).code !== "EEXIST") throw e2;
-        return lockHolder(id);
-      }
-    }
+    if (publishLock(id, data)) return null;
+    // Second collision: someone else published in the gap between our
+    // lockHolder read and this attempt. Re-read the LIVE holder and report it —
+    // never return null ("we hold it") on faith. The old code returned null when
+    // the retry looked like ours or was gone, which could claim a lock we do not
+    // actually hold (the create failed, so the file on disk is some other
+    // writer's, or a third process's fresh lock).
+    const retry = lockHolder(id);
+    if (retry) return retry;
+    // lockHolder cleaned a now-stale file that appeared mid-race: one more
+    // honest attempt, and if THAT collides the live holder wins.
+    if (publishLock(id, data)) return null;
+    return lockHolder(id);
   }
   if (holder.pid === process.pid) return null;
   return holder;
