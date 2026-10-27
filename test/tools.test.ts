@@ -98,6 +98,29 @@ describe("read", () => {
     expect(r.ok).toBe(false);
   });
 
+  // The bug: the line loop filled up to readCap() and cap() then trimmed the
+  // result to outCap(), so the "truncated at line N" note named a line that had
+  // already been cut away. Measured on defaults: body ended at line 486 while
+  // the note claimed 809 — the model believed it held 300+ lines it never got.
+  test("the truncation note names the last line the reader can actually see", async () => {
+    F.setReadCap(50_000);
+    F.setOutputCap(30_000);
+    try {
+      const width = "y".repeat(50);
+      write("wide.txt", Array.from({ length: 2000 }, (_, i) => `${String(i + 1).padStart(4)}: ${width}`).join("\n"));
+      const r = await F.readRun({ path: "wide.txt" }, ctx);
+      const lastVisible = (r.output.match(/^(\d+): /gm) ?? []).map((m) => parseInt(m)).pop()!;
+      const claimed = Number(/truncated at line (\d+)/.exec(r.output)?.[1]);
+      expect(Number.isFinite(claimed)).toBe(true);
+      // the note's number is the first line NOT shown, so it is exactly one past
+      // the last visible one — no gap, no overstatement
+      expect(claimed).toBe(lastVisible + 1);
+    } finally {
+      F.setReadCap(50_000);
+      F.setOutputCap(30_000);
+    }
+  });
+
   test("binary files are refused", async () => {
     writeFileSync(join(dir, "bin.dat"), Buffer.from([0x41, 0x00, 0x42, 0x00]));
     const r = await F.readRun({ path: "bin.dat" }, ctx);
@@ -224,6 +247,27 @@ describe("grep", () => {
     const whole = await F.grepRun({ pattern: "needle", limit: 50 }, ctx);
     expect(whole.output.split("\n").filter((l) => l.includes("needle"))).toHaveLength(4);
     expect(whole.output).not.toContain("truncated");
+  });
+
+  // The bug: the ripgrep argv carried `--max-count 5`, which is PER FILE. A file
+  // with ten hits therefore returned five lines — under any caller limit, so the
+  // truncation note never fired and the result read as the complete set. On the
+  // rg path the ONLY correct behavior is: all matches, capped at the caller's
+  // limit, with the cap announced.
+  test("returns every match in one file, not five", async () => {
+    const ten = Array.from({ length: 10 }, () => "needle").join("\n");
+    write("ten.txt", `${ten}\n`);
+    const r = await F.grepRun({ pattern: "needle", path: "ten.txt", limit: 500 }, ctx);
+    const hits = r.output.split("\n").filter((l) => l.includes("needle"));
+    expect(hits).toHaveLength(10);
+    expect(r.output).not.toContain("truncated");
+  });
+
+  test("a caller limit below the hit count is announced", async () => {
+    write("ten.txt", `${Array.from({ length: 10 }, () => "needle").join("\n")}\n`);
+    const r = await F.grepRun({ pattern: "needle", path: "ten.txt", limit: 3 }, ctx);
+    expect(r.output.split("\n").filter((l) => l.includes("needle"))).toHaveLength(3);
+    expect(r.output).toContain("truncated at 3");
   });
 
   test("include globs match the path relative to the search root, and basenames", async () => {

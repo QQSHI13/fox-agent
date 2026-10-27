@@ -62,10 +62,6 @@ async function afterWrite(path: string, absPath: string, content: string, ctx: T
   return warn ? `\n${warn}` : "";
 }
 
-function cap(s: string, note = "… (truncated)"): string {
-  return s.length > OUT_CAP ? cutHead(s, OUT_CAP) + note : s;
-}
-
 /** Media files `read` can attach for a capable model, by extension -> [kind, IANA type]. */
 type MediaKind = "image" | "video" | "audio" | "pdf";
 const MEDIA_TYPES: Record<string, [MediaKind, string]> = {
@@ -184,9 +180,18 @@ export async function readRun(args: { path: string; offset?: number; limit?: num
   }
 
   let out = "";
+  // ONE budget for the loop and for the note. The loop used to fill up to
+  // readCap() and then `cap()` trimmed the result down to outCap(), so on a big
+  // file the note named a line that had already been cut away: the model read
+  // "truncated at line 809" above a body ending at line 486, and believed it
+  // held 300 more lines than it ever received. Budgeting by min() makes the
+  // number the note prints the number the reader can actually count.
+  const budget = Math.min(readCap(), outCap());
   for (let i = 0; i < lines.length; i++) {
     const l = `${off + i}: ${lines[i]}\n`;
-    if (out.length + l.length > readCap()) return ok(cap(out, `\n… truncated at line ${off + i} of ${total} total`));
+    // no further trimming below: `out` always fits `budget`, and every appended
+    // line ends in a newline, so nothing can be split mid-character
+    if (out.length + l.length > budget) return ok(`${out}\n… truncated at line ${off + i} of ${total} total`);
     out += l;
   }
   const body = out.trimEnd() || "(empty file)";
@@ -363,7 +368,7 @@ export async function grepRun(args: { pattern: string; path?: string; include?: 
 
   const rg = Bun.which("rg");
   if (rg) {
-    const argv = ["--line-number", "--no-heading", "--color", "never", "--max-count", "5", "--glob", "!.git"];
+    const argv = ["--line-number", "--no-heading", "--color", "never", "--glob", "!.git"];
     // node_modules is never interesting, with or without an include glob
     argv.push("--glob", "!node_modules");
     if (args.include) argv.push("--glob", args.include);
