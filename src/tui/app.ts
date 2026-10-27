@@ -2,7 +2,6 @@
 // row-diffed flushing, explicit frame scheduling: keystrokes, stream deltas
 // and the spinner tick all just mark dirty; the frame loop owns the tty.
 import { openTerm, type Term } from "./term.ts";
-import { quietStderr, type QuietStderr } from "./quiet.ts";
 import { clipRead, clipWrite, osc52Encode } from "./clipboard.ts";
 export { osc52Encode };
 import { appendFileSync, unlinkSync, writeFileSync } from "node:fs";
@@ -4534,32 +4533,34 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       console.warn = console.error = (...a: unknown[]) => capStray(a.map(String).join(" "));
 
       /**
-       * The layer under the JS patches: fd 2 itself.
+       * The layer under the JS patches: the descriptors themselves.
        *
        * Everything above intercepts function CALLS. A child spawned with
        * `stderr: "inherit"`, a native library, or anything holding its own
-       * reference to fd 2 writes to the descriptor directly and never touches
+       * reference to fd 1/2 writes to the descriptor directly and never touches
        * a patched property — which is exactly how output kept reaching the grid
        * even with every JS channel covered, and why it could appear minutes
-       * later (a background child finally logging). Redirecting the descriptor
-       * catches all of them, because they all end up at fd 2.
+       * later (a background child finally logging).
        *
-       * The TUI's own painting is unaffected: it goes to fd 1 through
-       * Bun.stdout.writer(). `quiet` is null on a platform without a usable
-       * libc, and the JS patches remain the only defence — a degradation, not
-       * a failure.
+       * `term` took ownership at startup (src/tui/own.ts): fd 1 and fd 2 are a
+       * capture file, and the only handle on the terminal is private to it. So
+       * this is no longer a defence to race against — it is the TUI reading
+       * back what attempted to reach its screen.
+       *
+       * Draining runs on a timer rather than per frame: the capture is a file,
+       * reading it costs a stat + read, and a child's diagnostics are not
+       * urgent. Null capture path ⇒ ownership could not be taken (no libc), and
+       * the JS patches above remain the only defence.
        */
-      const quiet: QuietStderr | null = quietStderr();
-      let quietTimer: ReturnType<typeof setInterval> | null = null;
-      if (quiet) {
-        // Drain on a timer, not per frame: the capture is a file, reading it
-        // costs a stat + read, and a child's diagnostics are not urgent.
-        const drainQuiet = () => {
-          const text = quiet.drain();
+      const capturesToFile = term.capturePath() !== null;
+      let captureTimer: ReturnType<typeof setInterval> | null = null;
+      if (capturesToFile) {
+        const drainCaptured = () => {
+          const text = term.drainCaptured();
           if (text) capStray(text);
         };
-        quietTimer = setInterval(drainQuiet, 1000);
-        quietTimer.unref?.();
+        captureTimer = setInterval(drainCaptured, 1000);
+        captureTimer.unref?.();
       }
 
       /**
@@ -4590,15 +4591,15 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         (Bun.stderr as unknown as { write: unknown }).write = origBunErr;
         Object.assign(console, origConsole);
         process.off("uncaughtException", onUncaught);
-        // fd-2 capture comes back LAST of the teardown steps but BEFORE the
-        // panel below, so the panel is written to the real terminal while the
-        // descriptor still points at it.
-        if (quietTimer) {
-          clearInterval(quietTimer);
-          quietTimer = null;
+        // The descriptor capture lives in `term`, which restored fd 1/2 in
+        // term.end() — that already ran, because the panel below must print on
+        // the REAL terminal. Anything captured but not yet drained arrives here.
+        if (captureTimer) {
+          clearInterval(captureTimer);
+          captureTimer = null;
         }
-        if (quiet) {
-          const tail = quiet.restore();
+        {
+          const tail = term.drainCaptured();
           if (tail) capStray(tail);
         }
         // flush the last partial line (no trailing newline) so it is not lost

@@ -1,10 +1,20 @@
 // raw-mode terminal control: alt screen, synchronized output, resize events
 import { dlopen, FFIType, ptr } from "bun:ffi";
+import { ownTerminal, type TerminalOwnership } from "./own.ts";
 
 export interface Term {
   write(s: string): void;
   flush(): void;
   size(): { width: number; height: number };
+  /**
+   * Output that OTHER writers put on fd 1/2 since the last call — the TUI owns
+   * the descriptors, so anything not drawn by this Term lands in the capture
+   * file instead of on the screen (see own.ts). Empty when ownership could not
+   * be taken and the JS-property patches are doing the work instead.
+   */
+  drainCaptured(): string;
+  /** Where that captured output is accumulating, or null without ownership. */
+  capturePath(): string | null;
   onResize(cb: (w: number, h: number) => void): void;
   onKey(cb: (data: Uint8Array) => void): void;
   /** tap raw stdin alongside onKey (OSC 52 read replies); returns an off fn */
@@ -57,9 +67,12 @@ function loadIoctl() {
   return ioctlSym;
 }
 
-function ttySize(): { width: number; height: number } | null {
+function ttySize(ownerFd?: number): { width: number; height: number } | null {
   const req = process.platform === "darwin" ? TIOCGWINSZ_DARWIN : TIOCGWINSZ_LINUX;
-  for (const fd of [1, 0, 2]) {
+  // ownerFd FIRST: once the TUI owns the terminal, fd 1 is a capture file and
+  // ioctl on it answers for a regular file, not the tty.
+  const fds = ownerFd !== undefined ? [ownerFd, 0] : [1, 0, 2];
+  for (const fd of fds) {
     const ioctl = loadIoctl();
     if (ioctl) {
       try {
@@ -88,8 +101,8 @@ function ttySize(): { width: number; height: number } | null {
  * quirks), trust the SMALLER — laying out too wide causes terminal-side
  * wrapping that shreds the absolute-positioned grid; too narrow is benign.
  */
-function safeSize(): { width: number; height: number } | null {
-  const primary = ttySize();
+function safeSize(ownerFd?: number): { width: number; height: number } | null {
+  const primary = ttySize(ownerFd);
   const altCols = (process.stdout as any).columns ?? 0;
   const altRows = (process.stdout as any).rows ?? 0;
   if (!primary) return altCols ? { width: altCols, height: altRows } : null;
@@ -98,28 +111,65 @@ function safeSize(): { width: number; height: number } | null {
 }
 
 export function openTerm(): Term {
-  const out = Bun.stdout.writer({ highWaterMark: 1 << 16 });
+  /**
+   * Take the terminal before anything else runs. From here on fd 1 and fd 2 are
+   * a capture file: every other writer in this process, every child it spawns,
+   * and every native library is structurally unable to reach the screen — only
+   * `owner.write()`/`owner.flush()` can, through a private descriptor no child
+   * inherits. See own.ts for why the JS-property patches alone are not enough.
+   *
+   * Null on a platform without libc: the caller keeps `Bun.stdout.writer()`
+   * and relies on the patches. Hardening that can fail must not fail the TUI.
+   */
+  const owner: TerminalOwnership | null = ownTerminal();
+  const out = owner ? null : Bun.stdout.writer({ highWaterMark: 1 << 16 });
+  const ownerFd = owner?.ownerFd;
   const stdin = process.stdin;
   const wasRaw = stdin.isRaw ?? false;
   /** the live `data` listener, kept so `end()` can detach it (see end()) */
   let onData: ((chunk: Uint8Array) => void) | null = null;
 
-  let cached = safeSize() ?? { width: 80, height: 24 };
+  let cached = safeSize(ownerFd) ?? { width: 80, height: 24 };
   /** the resize poll interval, cleared in end() — an uncleared handle kept the
    *  event loop alive after the TUI was gone */
   let resizeTimer: ReturnType<typeof setInterval> | null = null;
 
+  /** the single write path: the owner's private fd, or the fallback sink */
+  const emit = (s: string) => {
+    if (owner) owner.write(s);
+    else out!.write(s);
+  };
+
+  /**
+   * Captured output not yet handed to the caller. Filled by the final
+   * `owner.restore()` drain in `end()`, so nothing written between the last
+   * timer drain and the descriptor swap is lost.
+   */
+  let leftover = "";
+
   return {
     write(s: string) {
-      out.write(s);
+      emit(s);
     },
     flush() {
       try {
-        out.flush();
+        if (owner) owner.flush();
+        else out!.flush();
       } catch {}
     },
+    drainCaptured(): string {
+      if (leftover) {
+        const l = leftover;
+        leftover = "";
+        return l;
+      }
+      return owner ? owner.drain() : "";
+    },
+    capturePath(): string | null {
+      return owner?.capturePath ?? null;
+    },
     size() {
-      const fresh = safeSize();
+      const fresh = safeSize(ownerFd);
       if (fresh) cached = fresh;
       return cached;
     },
@@ -128,38 +178,38 @@ export function openTerm(): Term {
       // the native blinking caret IS the input caret (no fake block glyph).
       // BUFFERED on purpose: flushing here splits one frame into several
       // writes, and on slow PTYs (WSL2!) the hardware cursor visibly marches
-      // through the grid diff before landing — the "cursor flies" bug. The
-      // caller flushes once at end of frame.
-      out.write(`\x1b[${Math.min(999, Math.max(1, y + 1))};${Math.min(999, Math.max(1, x + 1))}H\x1b[?25h`);
+      // through the grid diff before landing — the "cursor flies" bug.
+      // The caller flushes once at end of frame.
+      emit(`\x1b[${Math.min(999, Math.max(1, y + 1))};${Math.min(999, Math.max(1, x + 1))}H\x1b[?25h`);
     },
     hideCursor() {
-      out.write("\x1b[?25l");
+      emit("\x1b[?25l");
     },
     progress(state, pct) {
       // OSC 9;4 (ConEmu / Windows Terminal / WezTerm / kitty): tab + taskbar
       // progress. Buffered like setCursor — the frame loop flushes once.
       const p = state === 1 && typeof pct === "number" ? `;${Math.max(0, Math.min(100, Math.round(pct)))}` : ";0";
-      out.write(`\x1b]9;4;${state}${p}\x07`);
+      emit(`\x1b]9;4;${state}${p}\x07`);
     },
     notify(msg) {
       // OSC 9: a growl-style toast from the terminal itself. Strip control
       // characters — the payload is inside an escape sequence, and a stray
       // ESC/ BEL from model output would truncate or corrupt it.
       const clean = msg.replace(/[\x00-\x1f\x07\x7f]/g, " ").slice(0, 200);
-      out.write(`\x1b]9;${clean}\x07`);
+      emit(`\x1b]9;${clean}\x07`);
     },
     setCwd(dir) {
       // OSC 7 — file:// URL, hostname empty ("file://hostname/path" with no
       // host is the form terminals accept; they fill in their own view)
       try {
-        out.write(`\x1b]7;file://${encodeURI(dir)}\x07`);
+        emit(`\x1b]7;file://${encodeURI(dir)}\x07`);
       } catch {}
     },
     setTitle(title) {
       // OSC 0 sets icon+window title (universally supported); same sanitize
       // rule as notify — control chars would truncate the sequence
       const clean = title.replace(/[\x00-\x1f\x07\x7f]/g, " ").slice(0, 120);
-      out.write(`\x1b]0;${clean}\x07`);
+      emit(`\x1b]0;${clean}\x07`);
     },
     onResize(cb) {
       const handler = () => {
@@ -201,7 +251,7 @@ export function openTerm(): Term {
       // ?1002h rather than ?1003h (any-motion): fox-agent needs drags, not a mouse
       // position event for every pixel of idle movement, which would wake the
       // frame loop constantly for nothing.
-      out.write("\x1b[?1049h\x1b[2J\x1b[H\x1b[?25l\x1b[?2004h\x1b[?1000h\x1b[?1002h\x1b[?1006h\x1b[?7l");
+      emit("\x1b[?1049h\x1b[2J\x1b[H\x1b[?25l\x1b[?2004h\x1b[?1000h\x1b[?1002h\x1b[?1006h\x1b[?7l");
     },
     end() {
       // \x1b[0m FIRST: the last frame may have left a colored SGR active (the
@@ -209,7 +259,7 @@ export function openTerm(): Term {
       // prompt and everything the user types next inherits it — the "exit left
       // the terminal red" bug. Reset before leaving the alt screen so even the
       // restore sequence itself is unstyled.
-      out.write("\x1b[0m\x1b[?7h\x1b[?1006l\x1b[?1002l\x1b[?1000l\x1b[?2004l\x1b[?25h\x1b[?1049l\x1b[0m");
+      emit("\x1b[0m\x1b[?7h\x1b[?1006l\x1b[?1002l\x1b[?1000l\x1b[?2004l\x1b[?25h\x1b[?1049l\x1b[0m");
       try {
         stdin.setRawMode(wasRaw);
       } catch {}
@@ -237,7 +287,21 @@ export function openTerm(): Term {
         stdin.pause();
         (stdin as unknown as { unref?: () => void }).unref?.();
       } catch {}
-      out.flush();
+      /** flushed to the REAL terminal, not the capture file: the teardown
+       *  sequence above must be seen by the terminal it is tearing down */
+      this.flush();
+      /**
+       * Hand the descriptors back. This MUST happen here and not in the exit
+       * panel: everything still to be printed for the user (the resume hint,
+       * the captured-output panel) writes via the ORIGINAL `process.stderr`,
+       * which points at fd 2 — still the capture file until this restores it.
+       *
+       * Whatever was captured but never drained comes back for the caller to
+       * log; `drainCaptured()` keeps serving it after the restore.
+       */
+      if (owner) {
+        leftover = owner.restore();
+      }
     },
   };
 }
