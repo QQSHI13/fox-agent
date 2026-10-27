@@ -42,44 +42,16 @@ function dbBytes(sessionId: string): number {
 }
 
 /**
- * Seqs that must survive as stubs: the anchor of every summarized delete span.
- *
- * Mirrors `projectView`'s rule — the summary lands on the first node of the span
- * that was not already hidden — so the anchor computed here is the same row the
- * renderer will look for.
- */
-function summaryAnchors(sessionId: string): Set<number> {
-  const anchors = new Set<number>();
-  const hidden = new Set<number>();
-  for (const row of allOps(sessionId)) {
-    let op: ViewOp;
-    try {
-      op = JSON.parse(row.payload) as ViewOp;
-    } catch {
-      continue;
-    }
-    if (op.kind === "restore") {
-      for (const id of op.ids) hidden.delete(id);
-      continue;
-    }
-    if (op.kind !== "delete") continue;
-    const del = op as DeleteOp;
-    let first = true;
-    for (const id of del.ids) {
-      if (hidden.has(id)) continue;
-      hidden.add(id);
-      if (del.summary && first) {
-        anchors.add(id);
-        first = false;
-      }
-    }
-  }
-  return anchors;
-}
-
-/**
  * Summarized spans, in anchor order: what compact mode turns into real rows.
- * Walks the op log exactly like summaryAnchors but keeps the summary text.
+ *
+ * Replays the op log with the same rule `projectView` uses — a summary lands on
+ * the first node of the span that was not already hidden — so the anchor
+ * computed here is the same row the renderer will look for.
+ *
+ * `summaryAnchors` derives from this rather than walking the log a second time:
+ * the two used to be near-identical copies, and a change to the span rule made
+ * in one place only would blank the wrong row (a summary silently vanishing from
+ * the prompt, with no error anywhere).
  */
 function summarySpans(sessionId: string): { anchor: number; summary: string }[] {
   const out: { anchor: number; summary: string }[] = [];
@@ -108,6 +80,11 @@ function summarySpans(sessionId: string): { anchor: number; summary: string }[] 
     }
   }
   return out.sort((a, b) => a.anchor - b.anchor);
+}
+
+/** Seqs that must survive as stubs: the anchor of every summarized delete span. */
+function summaryAnchors(sessionId: string): Set<number> {
+  return new Set(summarySpans(sessionId).map((s) => s.anchor));
 }
 
 /**
