@@ -235,6 +235,12 @@ function htmlToText(html: string): string {
   let out = "";
   let i = 0;
   const n = html.length;
+  // Lowercase ONCE. Searching for a close tag used to lowercase the entire
+  // remaining body per skipped block, which is quadratic in the number of
+  // <script>/<style> tags — a script-heavy page spent ~100 ms per fetch here.
+  // toLowerCase is length-preserving, so offsets from the lowered copy are valid
+  // indexes into `html`.
+  const lower = html.toLowerCase();
   while (i < n) {
     if (html[i] !== "<") {
       out += html[i];
@@ -258,8 +264,8 @@ function htmlToText(html: string): string {
     const isClosing = /<\s*\//.test(html.slice(i, i + 8));
     if (SKIP_TAGS.has(name) && !isClosing) {
       // skip the whole block up to its close tag (or the end)
-      const close = html.slice(gt + 1).toLowerCase().indexOf(`</${name}`);
-      i = close < 0 ? n : gt + 1 + close;
+      const close = lower.indexOf(`</${name}`, gt + 1);
+      i = close < 0 ? n : close;
       continue;
     }
     if (!isClosing && BLOCK_OPEN.has(name)) out += "\n";
