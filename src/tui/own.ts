@@ -144,10 +144,25 @@ export function ownTerminal(): TerminalOwnership | null {
     return null;
   }
 
-  // dup BEFORE dup2: this is the last remaining handle on the real terminal
+  // dup BEFORE dup2: these are the last remaining handles on the real terminal.
+  // TWO of them, one per descriptor we are about to overwrite: fd 1 carries the
+  // frames, fd 2 carries everything printed AFTER the TUI comes down (the resume
+  // hint, the captured-output panel). Restoring only fd 1 left fd 2 pointing at
+  // the capture file this function then unlinks, so all of that was written into
+  // a deleted file and the user never saw it.
   const ownerFd = l.dup(1);
   if (ownerFd < 0) {
     try {
+      closeSync(capFd);
+      unlinkSync(capturePath);
+    } catch {}
+    return null;
+  }
+  const ownerFd2 = l.dup(2);
+  if (ownerFd2 < 0) {
+    // without both, take neither: a half-restored terminal is worse than none
+    try {
+      closeSync(ownerFd);
       closeSync(capFd);
       unlinkSync(capturePath);
     } catch {}
@@ -159,8 +174,10 @@ export function ownTerminal(): TerminalOwnership | null {
   // the captured text readable rather than two interleaved streams.
   if (l.dup2(capFd, 1) < 0 || l.dup2(capFd, 2) < 0) {
     l.dup2(ownerFd, 1);
+    l.dup2(ownerFd2, 2);
     try {
       closeSync(ownerFd);
+      closeSync(ownerFd2);
       closeSync(capFd);
       unlinkSync(capturePath);
     } catch {}
@@ -217,11 +234,17 @@ export function ownTerminal(): TerminalOwnership | null {
       // teardown sequence can land in the capture file
       this.flush();
       const tail = readNew();
+      // BOTH descriptors: everything printed after the TUI comes down — the
+      // resume hint, the captured-output panel, a plugin's parting message —
+      // goes through stderr, and restoring only fd 1 sent all of it into the
+      // capture file unlinked two lines below.
       try {
         l.dup2(ownerFd, 1);
+        l.dup2(ownerFd2, 2);
       } catch {}
       try {
         closeSync(ownerFd);
+        closeSync(ownerFd2);
       } catch {}
       try {
         closeSync(capFd);

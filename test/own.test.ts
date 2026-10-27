@@ -115,6 +115,33 @@ report({ first: first.includes("PRE-RESTORE"), secondEmpty: second === "" });
     expect(v.secondEmpty).toBe(true);
   });
 
+  // The bug: restore() gave fd 1 back and left fd 2 pointing at the capture
+  // file, which it then unlinked. Everything printed AFTER the TUI comes down —
+  // the "to resume: fox -c …" hint and the captured-output panel — goes through
+  // stderr, so all of it was written into a deleted file and the user saw none
+  // of it. term.ts's own comment says fd 2 "is still the capture file until this
+  // restores it"; it never was restored.
+  probeTest("restore() hands back BOTH descriptors, so post-exit stderr is visible", async () => {
+    const v = await probe(`
+import { readlinkSync } from "node:fs";
+const readFd = (n) => { try { return readlinkSync("/proc/self/fd/" + n); } catch { return "(unreadable)"; } };
+const before = { fd1: readFd(1), fd2: readFd(2) };
+own.restore();
+const after = { fd1: readFd(1), fd2: readFd(2) };
+// post-restore stderr must not be swallowed: write a marker, then read the
+// capture file's size — a capped fd 2 would keep growing it
+console.error("POST-EXIT-MARKER");
+report({ before, after, capturedStillExists: (() => { try { return require("node:fs").existsSync(own.capturePath); } catch { return false; } })() });
+`);
+    // both must be the SAME device after restore (the pty), not the capture file
+    const before = v.before as { fd1: string; fd2: string };
+    const after = v.after as { fd1: string; fd2: string };
+    expect(after.fd2).toBe(after.fd1);
+    expect(after.fd2).not.toContain("fox-capture");
+    expect(before.fd2).toContain("fox-capture");
+    expect(v.capturedStillExists).toBe(false);
+  });
+
   probeTest("the capture file is removed on restore", async () => {
     const v = await probe(`
 const { existsSync } = await import("node:fs");
