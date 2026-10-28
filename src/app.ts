@@ -267,12 +267,20 @@ export async function run(parsed: Parsed): Promise<void> {
   // ---- A2A server ----
   // The horizontal peer-agent surface: other agents (and the gateway plugin)
   // discover this fox-agent at /.well-known/agent-card.json and delegate via
-  // message/send, message/stream (SSE), or tasks/get. Runs a turn through the
-  // same runTurnCore engine as everything else. Binds local-only by default.
+  // SendMessage, SendStreamingMessage (SSE), SubscribeToTask or GetTask. Runs a
+  // turn through the same runTurnCore engine as everything else, and speaks the
+  // A2A 1.0 protocol (0.3 dialect on request). Binds local-only by default.
   if (parsed.flags.get("a2a")) {
     const { runA2aServer } = await import("./a2a/server.ts");
     const port = Number(parsed.flags.get("port") ?? 0) || 0;
-    await runA2aServer({ config: config!, provider, port });
+    await runA2aServer({
+      config: config!,
+      provider,
+      port,
+      // An endpoint that runs tools with full machine access must not be open
+      // beyond loopback without a credential. Off loopback, a token is required.
+      authToken: process.env.FOX_AGENT_A2A_TOKEN || undefined,
+    });
     return;
   }
 

@@ -114,10 +114,10 @@ export async function executeTask(
   const label = args.description!.trim();
   try {
     // A2A: the entry points at a running agent over HTTP. Streams when the
-    // server speaks message/stream (SSE), polls otherwise.
+    // server speaks SendStreamingMessage (SSE), polls otherwise.
     if (spec.url) {
       const { runA2aAgent } = await import("../a2a/client.ts");
-      const TERMINAL = new Set(["completed", "failed", "canceled", "rejected", "input-required"]);
+      const { TERMINAL_STATES } = await import("../a2a/types.ts");
       const text = (
         await runA2aAgent(spec.url, args.prompt!, {
           signal: ctx.signal,
@@ -127,7 +127,8 @@ export async function executeTask(
           onEvent: ctx.emit
             ? (ev) => {
                 if (!ev.state) return;
-                ctx.emit?.({ type: "child_tool", session: label, name: `remote ${ev.state}`, done: TERMINAL.has(ev.state), ok: ev.state !== "failed" });
+                const done = TERMINAL_STATES.has(ev.state) || ev.state === "TASK_STATE_INPUT_REQUIRED" || ev.state === "TASK_STATE_AUTH_REQUIRED";
+                ctx.emit?.({ type: "child_tool", session: label, name: `remote ${ev.state}`, done, ok: ev.state !== "TASK_STATE_FAILED" });
               }
             : undefined,
         })
