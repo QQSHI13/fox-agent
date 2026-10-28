@@ -84,6 +84,10 @@ knowing if you are debugging a hook that seems not to fire.
 Poll instead of re-running. You are notified when a job finishes; the job is
 reaped after a grace window.
 
+A job's lifetime is the session's, not the turn's. Interrupting a turn (esc /
+ctrl+c) does not touch running jobs, and a job's own `tools.call("exec", …)`
+keeps its subprocess: only `signal: "kill"` or the session ending stops one.
+
 A hanging foreground eval is killed at `timeout_ms` (default 30 000). You set
 that budget yourself: there is no upper bound (anything positive is honoured),
 and `timeout_ms: 0` disables the timeout entirely so an eval runs until it

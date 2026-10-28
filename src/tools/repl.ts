@@ -249,8 +249,14 @@ function pushJobLine(job: ReplJob, raw: string): void {
  * Passing the collected object in as the IIFE's `console` parameter binds it
  * per call — the argument is read synchronously during `runInContext`, before
  * any other eval can interleave, and the async body carries it in its closure.
+ *
+ * `tools` is bound the same way, for the same reason plus one of its own: the
+ * bridge closes over the AbortSignal its calls run under, and a background job
+ * must NOT inherit the turn's (esc aborts the turn, not the job). A global
+ * `tools` was re-assigned by every call, so a job parked on an await would wake
+ * up holding a later call's signal.
  */
-function evalInContext(state: ReplSession, code: string, timeout: number, consoleObj: Record<string, unknown>): Promise<unknown> {
+function evalInContext(state: ReplSession, code: string, timeout: number, consoleObj: Record<string, unknown>, toolsObj: Record<string, unknown>): Promise<unknown> {
   // timeout 0 = no bound at all: vm's sync `timeout` is omitted (it means
   // "infinite" when 0, but leaving it out is explicit) and the hang timer is
   // never armed. vm's own `timeout` is a plain setTimeout value, so it shares
@@ -286,8 +292,9 @@ function evalInContext(state: ReplSession, code: string, timeout: number, consol
     const sandbox = state.context as Record<string, unknown>;
     let ran: Promise<unknown>;
     sandbox.__fox_repl_console = consoleObj;
+    sandbox.__fox_repl_tools = toolsObj;
     try {
-      ran = vm.runInContext(`(async (console) => ${body})(__fox_repl_console)`, state.context, runOptions);
+      ran = vm.runInContext(`(async (console, tools) => ${body})(__fox_repl_console, __fox_repl_tools)`, state.context, runOptions);
     } catch (e) {
       // a SYNCHRONOUS infinite loop (or a parse error) throws straight out of
       // runInContext — clear the timer there too, or it fires later into a
@@ -296,6 +303,7 @@ function evalInContext(state: ReplSession, code: string, timeout: number, consol
       throw e;
     } finally {
       delete sandbox.__fox_repl_console;
+      delete sandbox.__fox_repl_tools;
     }
     return Promise.race([ran, hang]).finally(() => timer?.clear());
   };
@@ -391,7 +399,21 @@ export async function replRun(
   const state = sessionState(sessionId);
 
   const tools = ctx.tools;
-  const bridge = {
+  /**
+   * The `tools` bridge for ONE eval, closing over the signal its calls run under.
+   *
+   * This is per call, not per session, because of what an inherited signal
+   * means: every background job was handed the bridge built for the turn that
+   * STARTED it (and, before that, a module-global bridge that the newest call
+   * overwrote), so esc — which aborts the TURN — killed the job's subprocesses
+   * too. Measured: a job whose code awaited 300ms and then ran
+   * `tools.call("exec", …)` died with `exit 143 (interrupted)` the moment the
+   * turn was interrupted, and a job started with `signal: "kill"` left its own
+   * exec child running. A job's lifetime is the session's: it takes the JOB's
+   * signal, which only `signal: "kill"` (or session end) aborts. A foreground
+   * eval takes the turn's, exactly as the caller asked.
+   */
+  const makeBridge = (signal: AbortSignal | undefined) => ({
     list: () => [...tools.values()].map((t) => ({ name: t.def.name, description: t.def.description })),
     search: (q: unknown) => {
       const needle = String(q ?? "").toLowerCase();
@@ -416,8 +438,9 @@ export async function replRun(
       if (child) depths.set(sessionId, child.depth);
       try {
         // direct invocation: validated like a step's call, but outside the
-        // turn loop, so no live streaming and no beforeTool/afterTool hooks
-        const r = await tool.run(cargs as any, { ...ctx, emit: undefined, callId: undefined });
+        // turn loop, so no live streaming and no beforeTool/afterTool hooks.
+        // `signal` is the bridge's own — see makeBridge.
+        const r = await tool.run(cargs as any, { ...ctx, signal, emit: undefined, callId: undefined });
         const result = typeof r === "string" ? { ok: true, output: r } : r;
         if (!result.ok) throw new Error(result.output.slice(0, 500));
         return result.output;
@@ -425,10 +448,13 @@ export async function replRun(
         if (child) depths.set(sessionId, (depths.get(sessionId) ?? 1) - 1);
       }
     },
-  };
+  });
 
   const sandbox = state.context as Record<string, unknown>;
-  sandbox.tools = bridge;
+  // The eval wrapper below shadows this with its own binding; the global is the
+  // fallback for code that reaches `globalThis.tools` explicitly. Each branch
+  // replaces it with that eval's own bridge before running anything.
+  sandbox.tools = makeBridge(undefined);
   /** A line-collecting console whose output goes to exactly one eval's sink. */
   const makeConsole = (sink: (line: string) => void): Record<string, unknown> => {
     const capture = () => (...a: unknown[]) => {
@@ -465,7 +491,12 @@ export async function replRun(
     // while the agent moves on, and ends only when the session does
     // (cleanupRepl) or a kill asks it to. vm has no way to preempt a running
     // eval, so abort reaches a job only when it awaits.
-    void evalInContext(state, args.code, timeout, jobConsole)
+    //
+    // Its bridge therefore takes the JOB's controller, not ctx.signal: esc
+    // aborts the turn, and a job outliving the turn must not die with it.
+    const jobTools = makeBridge(ac.signal);
+    sandbox.tools = jobTools;
+    void evalInContext(state, args.code, timeout, jobConsole, jobTools)
       .then((v) => {
         job.result = capJobResult(fmt(v));
         job.done = true;
@@ -520,8 +551,11 @@ export async function replRun(
   };
   const evalConsole = makeConsole(streamLine);
   sandbox.console = evalConsole;
+  // a foreground eval IS the turn's work: esc killing its subprocesses is right
+  const fgTools = makeBridge(ctx.signal);
+  sandbox.tools = fgTools;
   try {
-    const value = await evalInContext(state, args.code, timeout, evalConsole);
+    const value = await evalInContext(state, args.code, timeout, evalConsole, fgTools);
     flushLines();
     const body = [lines.join("\n"), fmt(value)].filter(Boolean).join("\n").trimEnd() || "(no output)";
     return ok(body.length > outCap() ? body.slice(-outCap()) + "\n… (head truncated)" : body);

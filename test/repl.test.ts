@@ -313,6 +313,48 @@ describe("repl background jobs", () => {
     expect(r.ok).toBe(false);
     expect(r.output).toContain("no job r999");
   }, 30_000);
+
+  test("a background job's tool calls outlive the turn that started it", async () => {
+    // esc aborts the TURN. A job's lifetime is the session's, so its `tools.call`
+    // must run under the JOB's signal: the bridge used to close over ctx.signal,
+    // so the first subprocess a job started after an interrupt was killed with
+    // `exit 143 (interrupted)` and the job died with the turn it had outlived.
+    const turn = new AbortController();
+    const bgCtx = { ...ctx, signal: turn.signal } as unknown as ToolContext;
+    const r0 = await replRun(
+      {
+        code: 'await new Promise((r) => setTimeout(r, 150));\nconst out = await tools.call("exec", { cmd: "echo STILL-ALIVE" });\nreturn out;',
+        background: true,
+        label: "bg-exec",
+      },
+      bgCtx,
+    );
+    const id = /job (r\d+) started/.exec(r0.output)![1];
+    turn.abort(); // the user interrupted the turn; the job keeps going
+    let poll = await replRun({ job: id }, ctx);
+    for (let i = 0; i < 50 && poll.output.includes("running"); i++) {
+      await new Promise((r) => setTimeout(r, 20));
+      poll = await replRun({ job: id }, ctx);
+    }
+    expect(poll.ok).toBe(true);
+    expect(poll.output).toContain("finished");
+    expect(poll.output).toContain("STILL-ALIVE");
+    expect(poll.output).not.toContain("143");
+  }, 30_000);
+
+  test("a foreground eval's tool calls still die with the turn", async () => {
+    // the other half of the same rule: a foreground eval IS the turn's work, so
+    // interrupting the turn must kill its subprocesses (measured as
+    // `exit 143 (interrupted)`) rather than leave them running detached
+    const turn = new AbortController();
+    const fgCtx = { ...ctx, signal: turn.signal } as unknown as ToolContext;
+    const run = replRun({ code: 'await tools.call("exec", { cmd: "sleep 20" }); return "never";' }, fgCtx);
+    await new Promise((r) => setTimeout(r, 200));
+    turn.abort();
+    const r = await run;
+    expect(r.ok).toBe(false);
+    expect(r.output).toContain("interrupted");
+  }, 30_000);
 });
 
 describe("repl: a foreground eval streams its console live", () => {
