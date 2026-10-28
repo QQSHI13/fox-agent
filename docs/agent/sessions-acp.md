@@ -37,5 +37,5 @@ ACP specifics worth keeping: fox-agent never sends `session/request_permission` 
 
 - ACP protocol changes under `src/acp/` additionally need the external acceptance check — the in-process tests cannot fake a real client.
 - Session DBs are per-session sqlite; copying one between homes requires re-stamping `session_id` columns (they key rows to the session id) and the `refs` row. Use `/export`+`/import` instead.
-- `state.readOnly` sessions (open elsewhere) keep read-only commands only; sending is refused.
+- The session lock is **turn-scoped** (`src/store/lock.ts`): the marker exists only while a turn runs and is released in `runTurnCore`'s `finally`, so an idle session — no foreground turn, nothing streaming — carries no lock and any client may send the next message. A second opener is read-only only for as long as the other process is actually mid-turn (`state.readOnly` is re-polled every 500ms); read-only commands keep working, sending waits.
 - `index.db` is rebuildable from `sessions/` — never treat it as the source of truth.

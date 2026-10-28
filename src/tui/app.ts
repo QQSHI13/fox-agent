@@ -40,7 +40,7 @@ import { bundledDisabled } from "../plugins/bundled.ts";
 import { costSegment } from "../plugins/cost.ts";
 import { listSessions } from "../store/db.ts";
 import { allMessages, allMessagesLite, appendOps, createSession, forkSession, getMessage, getSession, kvGet, kvSet, pinSession, unpinSession, type MessageRow } from "../store/db.ts";
-import { acquireLock, releaseLock } from "../store/lock.ts";
+import { releaseLock, foreignLock } from "../store/lock.ts";
 import {
   runSlashCommand,
   COMMANDS,
@@ -1189,6 +1189,45 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   }
 
   /**
+   * Re-read the session's turn marker and mirror the answer into `readOnly`.
+   *
+   * The lock is TURN-scoped (src/store/lock.ts): it exists only while some
+   * process runs a turn here, so read-only is a live condition that comes and
+   * goes, not a property of having opened the session. The boot-time call seeds
+   * the flag; the poll in run() keeps it current — a second TUI becomes fully
+   * usable the moment the other process's turn ends.
+   */
+  function refreshLock(id: string, announce = true) {
+    const holder = foreignLock(id);
+    const ro = !!holder;
+    if (ro === state.readOnly) return;
+    state.readOnly = ro;
+    statsRev++;
+    markDirty(); // the status bar's readOnly segment just changed meaning
+    if (!ro) {
+      // Stand down the mirrored owner state. A crashed owner leaves its `live`
+      // kv saying busy:true forever, and the mirror only refreshes while
+      // readOnly — so without this the spinner would run with no turn behind it.
+      if (remoteBusy) {
+        remoteBusy = false;
+        busyMsg = null;
+        streamText = null;
+        startedAt = 0;
+        markDirty();
+      }
+    }
+
+    if (ro && announce) {
+      // the state it describes is transient (the other process's turn may end
+      // at any moment) — float it in the command-output plane like /todo so one
+      // keypress dismisses it and it never enters the transcript
+      setCmdOut(
+        `a turn is running in ${holder!.kind} (pid ${holder!.pid}) on session ${id} — read-only until it finishes: drafting works, /todo /sessions /usage /help work, but nothing sends or writes`,
+      );
+    }
+  }
+
+  /**
    * Move the harness to another session.
    *
    * The pin is what keeps the store from closing the handle the turn loop is
@@ -1197,23 +1236,6 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
    * `refresh` keeps the invariant simple: exactly one session is pinned, and it
    * is always the one `state.sessionId` names.
    */
-  /**
-   * Take the session lock, or degrade to a read-only viewer when another live
-   * process (tui/acp/a2a) already holds it — see src/store/lock.ts. Called after
-   * `refresh()`, so the note lands on top of the replayed transcript.
-   */
-  function attachLock(id: string) {
-    const holder = acquireLock(id, "tui");
-    state.readOnly = !!holder;
-    if (holder) {
-      statsRev++;
-      // the state it describes is transient (the other holder may close at any
-      // moment) — float it in the command-output plane like /todo so one
-      // keypress dismisses it and it never enters the transcript
-      setCmdOut(`session ${id} is open in ${holder.kind} (pid ${holder.pid}) — read-only view: drafting works, /todo /sessions /usage /help work, but nothing sends or writes`);
-    }
-  }
-
   function switchSession(id: string) {
     if (id === state.sessionId) return;
     if (busy) {
@@ -1243,7 +1265,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     lastPromptTokens = 0;
     hitTotals = null;
     refresh();
-    attachLock(id);
+    refreshLock(id);
     // The ephemeral session-info line announces the switch, then dies on the
     // next keypress (like /todo's notices) — a confirmation, not a persistent
     // header that would ride the transcript.
@@ -1434,7 +1456,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       // (~52ms) but is only needed when a turn actually runs, not to paint or
       // accept input. VERSION comes from core/version.ts (light), not here.
       const { runTurn } = await import("../loop/agent.ts");
-      for await (const ev of runTurn(state.sessionId, state.provider, raw, signal, state.config, uiBridge)) {
+      for await (const ev of runTurn(state.sessionId, state.provider, raw, signal, state.config, uiBridge, "tui")) {
         if (ev.type === "user") {
           // the turn persisted the user message — stamp its seq on the in-flight
           // line so the [N] marker appears now, not after the turn settles
@@ -1807,10 +1829,14 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     if (!raw) return;
     const lit = firstCharLit();
     const t0 = raw.trim();
-    // Read-only viewer: slash commands flow through (runSlashCommand keeps the
-    // allowlist), everything else stays in the editor as a draft.
+    // Read-only is a LIVE question, not a stored flag: the marker exists only
+    // while another process runs a turn, so ask it here rather than trusting
+    // the 500ms poll — otherwise the first message after the owner's turn ends
+    // is refused for up to half a second. Slash commands still flow (the
+    // allowlist in runSlashCommand decides what a viewer may run).
+    if (state.sessionId) refreshLock(state.sessionId, false);
     if (state.readOnly && (lit || !t0.startsWith("/"))) {
-      return flash("read-only — this session is open elsewhere; drafting is fine, sending is not");
+      return flash("read-only — a turn is running in another process here; drafting is fine, sending waits");
     }
     inSelAnchor = null;
     buf = [];
@@ -4686,57 +4712,67 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       // welcomeBlock() push needed. Bare `fox -c`: pickSessionOnBoot hides the
       // banner via chromeVisible() (the picker is the whole screen).
       // Second opener of the same session becomes the read-only viewer.
-      if (state.sessionId && !state.pendingSession) attachLock(state.sessionId);
+      if (state.sessionId && !state.pendingSession) refreshLock(state.sessionId);
       // Bare `fox -c`: the session choice is an in-TUI overlay, not a pre-TUI
       // chooser — boot unbound and offer the picker immediately.
       if (state.pickSessionOnBoot) openPicker({ kind: "sessions" });
 
-      // ---- read-only viewer: mirror the owner's live status ----
+      // ---- live status mirror + turn-lock poll ----
       /**
-       * A viewer has no run() driving local state, so the status bar would
-       * read "ready" while the owner is mid-turn and streaming text would
-       * never appear until the turn settled. Poll the session kv the owner
-       * publishes to ("live") plus the message log tail, and feed the SAME
-       * local variables paint() and the status bar already render — the
-       * viewer's frame loop needs no special casing beyond this poll. The
-       * input dock stays fully usable (drafting works); only sending is
-       * blocked, which submit() already enforces.
+       * Two jobs on one 500ms timer, because the lock is TURN-scoped and so
+       * read-only-ness now comes and goes while the TUI stays open.
+       *
+       * 1. `refreshLock` re-reads the marker, so the moment another process's
+       *    turn ends this TUI becomes a writer again (and vice versa).
+       * 2. While it IS read-only, mirror what the owning process publishes —
+       *    its spinner, busy label and streaming text go into the same local
+       *    variables paint() already renders, and new transcript rows trigger
+       *    the same refresh() an owning TUI runs. Without this a viewer would
+       *    read "ready" while the owner was mid-turn.
+       *
+       * Ordered mirror-then-flip on purpose: the tick that sees the owner's
+       * turn end still refreshes, so the row it wrote last is not stranded.
        */
       let lastSeq = -1;
       let lastLiveAt = 0;
       const pinnedMirrorId = state.sessionId;
-      if (state.readOnly && state.sessionId) {
+      if (state.sessionId) {
         const mirror = () => {
           try {
-            // the viewer may /new or /fork its way out of read-only mode
-            // (both write a NEW session this process then owns) — the mirror
-            // only makes sense while this process is still a viewer here
-            if (!state.readOnly || state.sessionId !== pinnedMirrorId) {
+            if (state.sessionId !== pinnedMirrorId) {
+              // switched (or left) sessions: this poll is about the one it
+              // was seeded from — switchSession re-runs refreshLock for the new
+              // one, and a stale id would mirror the wrong transcript
               if (mirrorTimer) clearInterval(mirrorTimer);
               mirrorTimer = null;
               return;
             }
-            const live = kvGet<LiveStatus>(state.sessionId!, "live");
-            if (live && live.at !== lastLiveAt) {
-              lastLiveAt = live.at;
-              remoteBusy = live.busy;
-              busyMsg = live.busyMsg;
-              const st = live.streaming;
-              if (st !== streamText) {
-                streamText = st;
-                streamKernels.clear(); // a new stream: all width kernels rebuild
+            // never mirror over a turn this process is running itself
+            if (state.readOnly && !busy) {
+              const live = kvGet<LiveStatus>(state.sessionId!, "live");
+              if (live && live.at !== lastLiveAt) {
+                lastLiveAt = live.at;
+                remoteBusy = live.busy;
+                busyMsg = live.busyMsg;
+                const st = live.streaming;
+                if (st !== streamText) {
+                  streamText = st;
+                  streamKernels.clear(); // a new stream: all width kernels rebuild
+                }
+                startedAt = live.startedAt;
+                markDirty();
               }
-              startedAt = live.startedAt;
-              markDirty();
+              // new transcript rows (tool results, settled messages) — refresh()
+              // rebuilds items from the log and re-seals nothing (a viewer never
+              // owns liveThink, it is null here)
+              const nodes = projectView(state.sessionId!);
+              let seq = lastSeq;
+              for (const n of nodes) if (!n.deleted) seq = Math.max(seq, n.msg.seq);
+              if (lastSeq >= 0 && seq > lastSeq) refresh();
+              lastSeq = seq;
             }
-            // new transcript rows (tool results, settled messages) — refresh()
-            // rebuilds items from the log and re-seals nothing (viewers never
-            // own liveThink, it is null here)
-            const nodes = projectView(state.sessionId!);
-            let seq = lastSeq;
-            for (const n of nodes) if (!n.deleted) seq = Math.max(seq, n.msg.seq);
-            if (lastSeq >= 0 && seq > lastSeq) refresh();
-            lastSeq = seq;
+            // last: the flag may flip to false because the owner's turn ended
+            refreshLock(state.sessionId!, false);
           } catch {}
         };
         mirror(); // seed lastSeq before the first frame, so history is not "new"

@@ -1,10 +1,19 @@
 /**
- * Cross-process "this session is open" markers.
+ * Cross-process "a turn is running on this session" markers.
  *
  * A session is one SQLite file; two live writers (a TUI and `fox --acp`, two
  * TUIs in different terminals) would interleave appends into the same
- * transcript and produce a history neither front end showed. The lock makes
- * the second opener a read-only viewer instead of a second writer.
+ * transcript and produce a history neither front end showed. The marker names
+ * the ONE turn that may write, so a second process asking to run a turn here
+ * is refused instead of interleaving.
+ *
+ * The marker is TURN-SCOPED, not attachment-scoped: it exists only while a turn
+ * actually runs (claimed in `runTurnCore`, released in its `finally`), so an
+ * idle session — no foreground turn, nothing streaming — carries no lock at
+ * all. Any client may then send the next message; whoever claims first owns
+ * that turn. Holding a lock for a session's whole attached lifetime (the old
+ * behaviour) meant a second opener stayed a read-only viewer until the owner
+ * quit, which is both stricter than the transcript needs and surprising.
  *
  * It is a best-effort marker file, not an OS lock: `$FOX_AGENT_HOME/locks/
  * <id>.json` holds `{pid, ts, kind}`. Liveness is the pid, not the file — a
@@ -19,7 +28,7 @@ import { pidAlive } from "../core/proc.ts";
 
 export interface SessionLock {
   pid: number;
-  /** "tui" | "acp" | "a2a" — shown to the second opener so it knows what it's looking at */
+  /** "tui" | "acp" | "a2a" — shown to the refused caller so it knows what it's looking at */
   kind: string;
   ts: number;
 }
@@ -57,6 +66,18 @@ export function lockHolder(id: string): SessionLock | null {
 }
 
 /**
+ * The live holder of this session, when it is ANOTHER process — null when the
+ * session is free for us (no marker, a stale one, or one of our own).
+ *
+ * Callers that only need "may I write here right now" use this rather than
+ * `lockHolder`, so the same-process case never has to be spelled out again.
+ */
+export function foreignLock(id: string): SessionLock | null {
+  const l = lockHolder(id);
+  return l && l.pid !== process.pid ? l : null;
+}
+
+/**
  * Publish this lock atomically: write it complete, under a private name, then
  * `link()` it into place. Returns true when the link succeeded (we hold it),
  * false when the target already exists (someone else does).
@@ -89,7 +110,7 @@ function publishLock(id: string, data: string): boolean {
 
 /**
  * Take the lock for this process. Returns null on success, or the live holder
- * when another process has it — the caller decides what read-only means.
+ * when another process has it — the caller decides what refusal means.
  *
  * The create is atomic (`publishLock`), so two processes racing both see "no
  * holder" cannot both win: exactly one link succeeds.
@@ -121,12 +142,54 @@ export function acquireLock(id: string, kind: string): SessionLock | null {
   return holder;
 }
 
-/** Drop the lock, but only ours — never another process's. */
+/** Drop the lock, but only ours — never another process's. Also forgets our
+ *  depth count, so a teardown mid-turn (session close/delete) does not leave a
+ *  stale depth that would make the next turn think it is nested. */
 export function releaseLock(id: string): void {
+  heldDepth.delete(id);
   try {
     const l = JSON.parse(readFileSync(lockPath(id), "utf8")) as SessionLock;
     if (l?.pid === process.pid) rmSync(lockPath(id), { force: true });
   } catch {
     // unreadable or already gone — either way there is nothing of ours to undo
   }
+}
+
+/** Turn markers this process currently holds, by depth (see `acquireTurnLock`). */
+const heldDepth = new Map<string, number>();
+
+/**
+ * Claim the session's in-flight-turn marker. True when this process may run the
+ * turn; false when another LIVE process is already running one here.
+ *
+ * Depth-counted because `acquireLock` reports our own pid as "already held":
+ * without a counter, a nested turn (a host's `turn` wrapper around
+ * `runTurnCore` — ACP's `turnEvents` is exactly that) would drop the outer
+ * turn's marker on its way out and leave the session looking idle mid-turn,
+ * which is the interleaving this module exists to prevent.
+ */
+export function acquireTurnLock(id: string, kind = "fox"): boolean {
+  const n = heldDepth.get(id) ?? 0;
+  if (n > 0) {
+    heldDepth.set(id, n + 1);
+    return true;
+  }
+  if (foreignLock(id)) return false;
+  const res = acquireLock(id, kind);
+  // A non-null result that is not ours means the create lost a race to a live
+  // holder; null means we took it.
+  if (res && res.pid !== process.pid) return false;
+  heldDepth.set(id, 1);
+  return true;
+}
+
+/** Release one depth of the session's turn marker; the file goes when it hits 0. */
+export function releaseTurnLock(id: string): void {
+  const n = heldDepth.get(id) ?? 0;
+  if (n > 1) {
+    heldDepth.set(id, n - 1);
+    return;
+  }
+  heldDepth.delete(id);
+  releaseLock(id);
 }

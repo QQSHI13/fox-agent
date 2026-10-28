@@ -8,6 +8,7 @@ import type { Tool, ToolContext, ToolResult, PtyState } from "../tools/types.ts"
 import { validateArgs } from "../tools/types.ts";
 import { outCap } from "../tools/files.ts";
 import { drainSteer, peekSteer, turnEnded, turnStarted } from "./steer.ts";
+import { acquireTurnLock, releaseTurnLock, foreignLock } from "../store/lock.ts";
 import { VERSION } from "../core/version.ts";
 import type { Config } from "../core/config.ts";
 import { defaultConfig } from "../core/config.ts";
@@ -22,6 +23,11 @@ import { cutHead, cutTail } from "../core/text.ts";
 
 export interface TurnOptions {
   maxSteps?: number;
+  /**
+   * Which surface is running this turn ("tui" | "acp" | "a2a"), so a refusal
+   * from another process can name what it is looking at. Cosmetic only.
+   */
+  lockKind?: string;
   retryLimit?: number;
   /** fraction at which the header tells the agent to compact (absent = the config's value) */
   compactWarnAt?: number;
@@ -423,11 +429,24 @@ export async function* runTurnCore(
   signal?: AbortSignal,
   opts: TurnOptions = {},
 ): AsyncGenerator<AgentEvent> {
+  // The turn marker is claimed HERE, not where a session is opened: it exists
+  // only for the duration of a turn, so an idle session is free for any client
+  // to write. Claiming it is also what makes the interleaving refusal honest —
+  // a caller that reached this point really was about to write.
+  if (!acquireTurnLock(sessionId, opts.lockKind)) {
+    const holder = foreignLock(sessionId);
+    throw new FoxError(
+      holder
+        ? `a turn is already running in another fox-agent process (${holder.kind}, pid ${holder.pid}) for this session — wait for it to finish`
+        : "a turn is already running for this session",
+    );
+  }
   turnStarted(sessionId);
   try {
     yield* turnBody(sessionId, cfg, userText, signal, opts);
   } finally {
     turnEnded(sessionId);
+    releaseTurnLock(sessionId);
   }
 }
 

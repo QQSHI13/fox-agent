@@ -353,10 +353,11 @@ describe("acp server: cancellation", () => {
 });
 
 describe("acp server: session lifecycle", () => {
-  test("a prompt on a session another process holds is refused, not interleaved", async () => {
-    // #11: the TUI degrades to a read-only viewer on lock conflict; ACP has no
-    // viewer mode, so its prompt must fail and say who holds the session. pid 1
-    // is alive-but-unsignalable, which lock.ts reads as a live holder.
+  test("a prompt is refused while another process runs a TURN here", async () => {
+    // The lock is turn-scoped (src/store/lock.ts): it exists only while a turn
+    // runs, so what must be refused is a SECOND turn on the same transcript,
+    // not a second opener. pid 1 is alive-but-unsignalable, which lock.ts reads
+    // as a live holder.
     const { writeFileSync, mkdirSync } = await import("node:fs");
     mkdirSync(join(home, "locks"), { recursive: true });
     const app = await build([textTurn("should never run")]);
@@ -374,34 +375,51 @@ describe("acp server: session lifecycle", () => {
       }
       return { id: s.sessionId, refused };
     });
-    expect(out.refused).toContain("open in another fox-agent process");
+    expect(out.refused).toContain("another fox-agent process");
     expect(out.refused).toContain("tui");
     // nothing was written: the session has no user message
     const db = await import("../src/store/db.ts");
     expect(db.allMessages(out.id).length).toBe(0);
   });
 
-  test("a session another process holds is refused at LOAD, not only at prompt", async () => {
-    // refusals must happen when the client adopts the session: finding out on
-    // the first message means the client already believes it owns it.
-    const { writeFileSync, mkdirSync } = await import("node:fs");
+  test("an idle session is adoptable, and promptable the moment the other turn ends", async () => {
+    // THE POINT OF TURN-SCOPED LOCKING: adopting (load/resume) never conflicts,
+    // and neither does prompting while nobody is mid-turn. A second client is a
+    // spectator only for exactly as long as the other process is actually busy.
+    const { writeFileSync, mkdirSync, rmSync } = await import("node:fs");
     mkdirSync(join(home, "locks"), { recursive: true });
-    const app = await build([textTurn("unused")]);
+    const app = await build([textTurn("answered")]);
     const out = await withAgent(app, async (agent) => {
       const s = await agent.request(acp.methods.agent.session.new, { cwd: work, mcpServers: [] });
-      // released first, so the file below is unambiguously a foreign holder
-      await agent.request(acp.methods.agent.session.close, { sessionId: s.sessionId });
-      writeFileSync(join(home, "locks", `${s.sessionId}.json`), JSON.stringify({ pid: 1, kind: "tui", ts: Date.now() }));
-      let loadErr = "";
+      const marker = join(home, "locks", `${s.sessionId}.json`);
+      writeFileSync(marker, JSON.stringify({ pid: 1, kind: "tui", ts: Date.now() }));
+      // 1. LOAD succeeds: the other process holds a turn, not the session
+      await agent.request(acp.methods.agent.session.load, { sessionId: s.sessionId, cwd: work, mcpServers: [] });
+      // 2. prompt is refused while that turn is live
+      let refused = "";
       try {
-        await agent.request(acp.methods.agent.session.load, { sessionId: s.sessionId, cwd: work, mcpServers: [] });
+        await agent.request(acp.methods.agent.session.prompt, {
+          sessionId: s.sessionId,
+          prompt: [{ type: "text", text: "hello" }],
+        });
       } catch (e) {
-        loadErr = (e as Error).message;
+        refused = (e as Error).message;
       }
-      return loadErr;
+      // 3. the other turn finishes — the very next prompt is accepted
+      rmSync(marker, { force: true });
+      const res = await agent.request(acp.methods.agent.session.prompt, {
+        sessionId: s.sessionId,
+        prompt: [{ type: "text", text: "hello" }],
+      });
+      return { id: s.sessionId, refused, stop: res.stopReason };
     });
-    expect(out).toContain("open in another fox-agent process");
+    expect(out.refused).toContain("another fox-agent process");
+    expect(out.stop).toBe("end_turn");
+    // the accepted turn really wrote the message
+    const db = await import("../src/store/db.ts");
+    expect(db.allMessages(out.id).some((m) => m.role === "user")).toBe(true);
   });
+
 
   test("new/list/fork/resume/delete all run against the real store", async () => {
     const app = await build([textTurn("first answer")]);

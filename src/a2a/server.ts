@@ -459,6 +459,7 @@ export function createA2aHandler(opts: A2aServerOptions): A2aHandler {
     const drive = async function* (turnPrompt: string, signal: AbortSignal): AsyncGenerator<AgentEvent> {
       for await (const ev of runTurnCore(sessionId, provider, turnPrompt, signal, {
         maxSteps: opts.config.maxSteps,
+        lockKind: "a2a",
         retryLimit: opts.config.retryLimit,
         compactWarnAt: opts.config.compactWarnAt,
         compactCtxOnlyAt: opts.config.compactCtxOnlyAt,

@@ -101,3 +101,71 @@ describe("session lock", () => {
     expect(lockHolder("s8")?.kind).toBe("acp");
   });
 });
+
+/**
+ * The turn-scoped API — the property the flexible lock exists for. These are
+ * separate from the raw marker tests above because they carry the DEPTH count
+ * (nested turns) and the "foreign means busy" rule, which is what callers
+ * actually rely on.
+ */
+describe("turn-scoped lock", () => {
+  test("claiming a free session publishes a marker; releasing removes it", async () => {
+    const { acquireTurnLock, releaseTurnLock, lockHolder } = await import("../src/store/lock.ts");
+    expect(acquireTurnLock("t1", "tui")).toBe(true);
+    expect(lockHolder("t1")?.pid).toBe(process.pid);
+    expect(lockHolder("t1")?.kind).toBe("tui");
+    releaseTurnLock("t1");
+    // the file is GONE, not merely ours — an idle session carries no lock, so
+    // another process can take the next turn immediately
+    expect(lockHolder("t1")).toBeNull();
+    expect(acquireTurnLock("t1", "acp")).toBe(true);
+    releaseTurnLock("t1");
+  });
+
+  test("a foreign live turn refuses the claim", async () => {
+    const { acquireTurnLock } = await import("../src/store/lock.ts");
+    mkdirSync(join(dir, "locks"), { recursive: true });
+    writeFileSync(join(dir, "locks", "t2.json"), JSON.stringify({ pid: 1, kind: "acp", ts: Date.now() }));
+    expect(acquireTurnLock("t2", "tui")).toBe(false);
+    // and it did not overwrite the holder
+    expect((await import("../src/store/lock.ts")).lockHolder("t2")?.kind).toBe("acp");
+  });
+
+  test("nested claims keep the marker until the OUTERMOST turn ends", async () => {
+    // ACP's turnEvents wraps runTurnCore, so one logical turn takes the marker
+    // twice. Without the depth count the inner release deleted the marker
+    // mid-turn and the session looked idle while it was still streaming.
+    const { acquireTurnLock, releaseTurnLock, lockHolder } = await import("../src/store/lock.ts");
+    expect(acquireTurnLock("t3", "acp")).toBe(true);
+    expect(acquireTurnLock("t3", "acp")).toBe(true);
+    releaseTurnLock("t3");
+    expect(lockHolder("t3")?.pid).toBe(process.pid); // still claimed
+    releaseTurnLock("t3");
+    expect(lockHolder("t3")).toBeNull();
+  });
+
+  test("a stale foreign marker does not block, and is cleaned on sight", async () => {
+    const { acquireTurnLock, releaseTurnLock } = await import("../src/store/lock.ts");
+    mkdirSync(join(dir, "locks"), { recursive: true });
+    writeFileSync(join(dir, "locks", "t4.json"), JSON.stringify({ pid: 0xffffff, kind: "tui", ts: Date.now() }));
+    expect(acquireTurnLock("t4", "acp")).toBe(true);
+    releaseTurnLock("t4");
+  });
+
+  test("releaseLock forgets the depth, so a teardown mid-turn does not strand it", async () => {
+    // session/close and session/delete call releaseLock while the turn may have
+    // nested claims outstanding; a leftover count would make the NEXT turn
+    // believe it is nested and skip its own acquire.
+    const { acquireTurnLock, releaseTurnLock, releaseLock, lockHolder } = await import("../src/store/lock.ts");
+    expect(acquireTurnLock("t5", "acp")).toBe(true);
+    expect(acquireTurnLock("t5", "acp")).toBe(true);
+    releaseLock("t5");
+    expect(lockHolder("t5")).toBeNull();
+    // a fresh acquire after the teardown really publishes again
+    expect(acquireTurnLock("t5", "acp")).toBe(true);
+    expect(lockHolder("t5")?.pid).toBe(process.pid);
+    releaseTurnLock("t5");
+    releaseTurnLock("t5");
+    expect(lockHolder("t5")).toBeNull();
+  });
+});

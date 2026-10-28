@@ -29,7 +29,7 @@ import {
   type MessageRow,
 } from "../store/db.ts";
 import { projectView } from "../context/view.ts";
-import { acquireLock, releaseLock, lockHolder } from "../store/lock.ts";
+import { releaseLock, foreignLock } from "../store/lock.ts";
 import type { Config, McpServerConfig } from "../core/config.ts";
 import type { ProviderConfig, ChatFn } from "../providers/types.ts";
 import { availableProviders, resolveChat } from "../providers/index.ts";
@@ -318,23 +318,21 @@ export function buildAgent(opts: AcpServerOptions): acp.AgentApp {
   }
 
   /**
-   * Take this session's write lock, or refuse the request that needs it.
+   * Take this session's turn lock, or refuse the request that needs it.
    *
-   * The TUI degrades to a read-only viewer when another process holds a session;
-   * ACP has no viewer mode, so the honest answer is an error naming the holder.
-   * Throwing HERE (not at prompt time) is what stops a client from adopting a
-   * session another fox is writing and only finding out on its first message —
-   * and it is the only way the lock's return value is worth anything: the
-   * `acquireLock` call used to be discarded at every site below, so ACP never
-   * actually excluded anyone.
+   * The lock is TURN-scoped (src/store/lock.ts): opening, loading or resuming a
+   * session takes nothing, because an idle session is writable by any client —
+   * that is what makes a second opener usable instead of a permanent spectator.
+   * What must not overlap is a TURN, and `runTurnCore` claims the marker around
+   * exactly that. This check exists so the client gets a protocol error naming
+   * the holder instead of a turn that fails a moment later.
    */
   function takeLock(sessionId: string): void {
-    const holder = acquireLock(sessionId, "acp");
-    if (!holder) return; // null from acquireLock means "we hold it"
-    if (holder.pid === process.pid) return; // same process, re-taken
+    const holder = foreignLock(sessionId);
+    if (!holder) return;
     throw RequestError.invalidParams(
       undefined,
-      `session is open in another fox-agent process (${holder.kind}, pid ${holder.pid}) — close it there first, or fork this session`,
+      `a turn is already running in another fox-agent process (${holder.kind}, pid ${holder.pid}) for this session — wait for it to finish, or fork this session`,
     );
   }
 
@@ -365,6 +363,7 @@ export function buildAgent(opts: AcpServerOptions): acp.AgentApp {
     try {
       for await (const ev of runTurnCore(sessionId, turnProvider, text, signal, {
         maxSteps: config.maxSteps,
+        lockKind: "acp",
         retryLimit: config.retryLimit,
         compactWarnAt: config.compactWarnAt,
         compactCtxOnlyAt: config.compactCtxOnlyAt,
@@ -548,7 +547,6 @@ export function buildAgent(opts: AcpServerOptions): acp.AgentApp {
     })
     .onRequest(acp.methods.agent.session.new, async ({ params, client }) => {
       const s = createSession(params.cwd, provider.model);
-      takeLock(s.id);
       const mcp = mcpServersFrom(params.mcpServers);
       if (Object.keys(mcp).length) sessionMcp.set(s.id, mcp);
       if (params.systemPrompt) sessionInstructions.set(s.id, systemPromptText(params.systemPrompt));
@@ -576,7 +574,6 @@ export function buildAgent(opts: AcpServerOptions): acp.AgentApp {
     .onRequest(acp.methods.agent.session.load, async ({ params, client }) => {
       checkId(params.sessionId);
       if (!getSession(params.sessionId)) throw RequestError.resourceNotFound(params.sessionId);
-      takeLock(params.sessionId);
       const mcp = mcpServersFrom(params.mcpServers);
       if (Object.keys(mcp).length) sessionMcp.set(params.sessionId, mcp);
       if (params.systemPrompt) sessionInstructions.set(params.sessionId, systemPromptText(params.systemPrompt));
@@ -589,7 +586,6 @@ export function buildAgent(opts: AcpServerOptions): acp.AgentApp {
     .onRequest(acp.methods.agent.session.resume, async ({ params, client }) => {
       checkId(params.sessionId);
       if (!getSession(params.sessionId)) throw RequestError.resourceNotFound(params.sessionId);
-      takeLock(params.sessionId);
       await announce(params.sessionId, client);
       return { modes: modesFor(params.sessionId), configOptions: configOptionsFor(params.sessionId) };
     })
@@ -597,7 +593,6 @@ export function buildAgent(opts: AcpServerOptions): acp.AgentApp {
       checkId(params.sessionId);
       const forked = forkSession(params.sessionId);
       if (!forked) throw RequestError.resourceNotFound(params.sessionId);
-      takeLock(forked.id);
       const mcp = mcpServersFrom(params.mcpServers);
       if (Object.keys(mcp).length) sessionMcp.set(forked.id, mcp);
       if (params.systemPrompt) sessionInstructions.set(forked.id, systemPromptText(params.systemPrompt));
@@ -642,18 +637,10 @@ export function buildAgent(opts: AcpServerOptions): acp.AgentApp {
       const session = getSession(params.sessionId);
       if (!session) throw RequestError.resourceNotFound(params.sessionId);
       if (turnRunning(params.sessionId)) throw RequestError.invalidParams(undefined, "a prompt is already running for this session");
-      // #11: a session another live process holds is theirs to write — a second
-      // opener prompting here would interleave appends into one transcript. The
-      // TUI degrades to a read-only viewer for the same reason; ACP has no
-      // viewer mode, so the honest answer is a refused prompt that says who
-      // holds the session.
-      const holder = lockHolder(params.sessionId);
-      if (holder && holder.pid !== process.pid) {
-        throw RequestError.invalidParams(
-          undefined,
-          `session is open in another fox-agent process (${holder.kind}, pid ${holder.pid}) — close it there first, or fork this session`,
-        );
-      }
+      // #11: a TURN another live process is running is theirs to finish — a
+      // second writer appending mid-turn would interleave one transcript. The
+      // lock is turn-scoped, so an idle session is promptable from here.
+      takeLock(params.sessionId);
       // `fox --acp` is launched before the missing-key check (see src/cli.ts), so
       // a keyless install reaches here. Say so in the protocol's own terms — an
       // editor renders `auth_required` as an actionable message, whereas the

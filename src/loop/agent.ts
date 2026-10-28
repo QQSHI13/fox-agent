@@ -14,9 +14,11 @@ export async function* runTurn(
   signal?: AbortSignal,
   config?: Config,
   ui?: UiBridge,
+  lockKind?: string,
 ): AsyncGenerator<AgentEvent> {
   yield* runTurnCore(sessionId, cfg, userText, signal, {
     maxSteps: config?.maxSteps,
+    lockKind,
     retryLimit: config?.retryLimit,
     compactWarnAt: config?.compactWarnAt,
     compactCtxOnlyAt: config?.compactCtxOnlyAt,

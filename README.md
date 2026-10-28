@@ -293,7 +293,7 @@ One SQLite database per session, so a session can be copied, deleted or corrupte
 $FOX_AGENT_HOME (default ~/.local/share/fox-agent)
   index.db              session list (id, cwd, model, title, timestamps)
   sessions/<id>.db      messages + view ops + refs + usage + kv for one session
-  locks/<id>.json       open-session markers (read-only mode for a second opener)
+  locks/<id>.json       in-flight-turn markers (only while a turn runs; an idle session is unlocked)
   pty/                  tmux pipe-pane output logs
 ```
 
