@@ -1,6 +1,6 @@
 import type { ChatMessage } from "../providers/types.ts";
 import { estimateTokens } from "../providers/models.ts";
-import { projectView, parseToolCalls, viewStamp, type ViewNode } from "./view.ts";
+import { projectView, parseToolCalls, pairedCallIds, viewStamp, type ViewNode } from "./view.ts";
 
 function marker(seq: number): string {
   return `[${seq}]`;
@@ -37,6 +37,14 @@ interface RenderedNode {
   summary?: string;
   /** kept tool_call ids joined — the only part of an assistant entry that depends on other nodes */
   callsKey: string;
+  /**
+   * For a tool node: whether its result currently sits immediately after the
+   * call it answers. Part of the memo key because pairing depends on OTHER
+   * nodes' positions and delete ops (see pairedCallIds) — hiding the message
+   * between a call and its result makes a previously unpaired node render,
+   * without touching a single field of its own row.
+   */
+  pairedKey: string;
   /** whether [N] prefixes were rendered — part of the memo key, /reload can flip it */
   markers: boolean;
   /** the message to emit, or undefined when the node renders to nothing */
@@ -88,10 +96,10 @@ export function dropRenderCache(): void {
   historyCache = null;
 }
 
-function renderNode(n: ViewNode, callsKey: string, visibleToolIds: Set<string>, markers: boolean): RenderedNode {
+function renderNode(n: ViewNode, callsKey: string, pairedKey: string, visibleToolIds: Set<string>, markers: boolean): RenderedNode {
   const m = n.msg;
   const tag = markers ? `${marker(m.seq)} ` : "";
-  const base = { content: n.content, deleted: n.deleted, summary: n.summary, callsKey, markers };
+  const base = { content: n.content, deleted: n.deleted, summary: n.summary, callsKey, pairedKey, markers };
 
   if (n.deleted) {
     return { ...base, note: n.summary ? `(ctx: ${markers ? `${marker(m.seq)} ` : ""}summarized away) ${n.summary}` : undefined };
@@ -115,6 +123,10 @@ function renderNode(n: ViewNode, callsKey: string, visibleToolIds: Set<string>, 
     return { ...base, msg };
   }
   if (m.role === "tool") {
+    // an unpaired result has no call in the request to answer — see
+    // pairedCallIds. Rendering it would be an orphan tool message, which is as
+    // malformed as the call it was meant to answer.
+    if (!visibleToolIds.has(m.tool_call_id!)) return base;
     const msg: ChatMessage = { role: "tool", tool_call_id: m.tool_call_id!, content: `${tag}${n.content}` };
     if (m.media) {
       try {
@@ -157,8 +169,15 @@ export function renderContext(
   }
   const out: ChatMessage[] = [{ role: "system", content: systemPrompt }];
   const view = projectView(sessionId);
+  // "visible" is not enough for a tool result: the provider also requires it to
+  // sit immediately after the call it answers (see pairedCallIds). An aborted
+  // step leaves both halves in the transcript, minutes apart and with a steer
+  // between them, which the API rejects as "Tool result is missing".
+  const paired = pairedCallIds(view);
   const visibleToolIds = new Set(
-    view.filter((n) => !n.deleted && n.msg.role === "tool" && n.msg.tool_call_id).map((n) => n.msg.tool_call_id!),
+    view
+      .filter((n) => !n.deleted && n.msg.role === "tool" && n.msg.tool_call_id && paired.has(n.msg.tool_call_id))
+      .map((n) => n.msg.tool_call_id!),
   );
 
   /**
@@ -199,13 +218,14 @@ export function renderContext(
             .map((c) => c.id)
             .join(",")
         : "";
+    const pairedKey = m.role === "tool" && m.tool_call_id ? (visibleToolIds.has(m.tool_call_id) ? "1" : "0") : "";
     let r = renderedNodes.get(m.id);
-    if (r && r.content === n.content && r.deleted === n.deleted && r.summary === n.summary && r.callsKey === callsKey && r.markers === markers) {
+    if (r && r.content === n.content && r.deleted === n.deleted && r.summary === n.summary && r.callsKey === callsKey && r.pairedKey === pairedKey && r.markers === markers) {
       // refresh recency so eviction walks genuinely-cold entries first
       renderedNodes.delete(m.id);
       renderedNodes.set(m.id, r);
     } else {
-      r = renderNode(n, callsKey, visibleToolIds, markers);
+      r = renderNode(n, callsKey, pairedKey, visibleToolIds, markers);
       renderedNodes.set(m.id, r);
       evictRendered();
     }

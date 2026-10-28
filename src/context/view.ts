@@ -107,6 +107,49 @@ function applyOp(c: ViewCache, op: ViewOp): void {
   }
 }
 
+/**
+ * The tool calls that are correctly paired ON THE WIRE: an assistant's call
+ * together with the result that immediately follows it.
+ *
+ * Every provider requires that adjacency — a tool_call must be answered by a
+ * tool role message before anything else is sent. The view's own orphan rule
+ * (`visibleCalls`) only asks whether a result EXISTS anywhere, which is not the
+ * same question: an aborted step persists its assistant row with the calls
+ * already on it, the detached tool keeps running and appends its result minutes
+ * later at the end of the transcript, and in between sits whatever the abort
+ * path persisted (a parked steer, a system note). Both halves then survive into
+ * the request, out of order, and the provider rejects the whole turn with
+ * "Tool result is missing for tool call …".
+ *
+ * Dropping BOTH unpaired halves is the only safe repair: dropping just the call
+ * leaves an orphan result, dropping just the result leaves a call with no
+ * answer. The stored rows are never touched — this is a render-time view of
+ * what may go on the wire, so `ctx restore` and /undo still see the originals.
+ *
+ * Deleted nodes are skipped (they do not render, so they cannot separate a
+ * pair), and so are `think`/`system` rows — storage-only, never sent.
+ */
+export function pairedCallIds(view: ViewNode[]): Set<string> {
+  const paired = new Set<string>();
+  for (let i = 0; i < view.length; i++) {
+    const n = view[i]!;
+    if (n.deleted || n.msg.role !== "assistant" || !n.msg.tool_calls) continue;
+    const calls = new Set(parseToolCalls(n.msg).map((c) => c.id));
+    if (!calls.size) continue;
+    // the batch: consecutive tool results answering THIS assistant's calls
+    for (let j = i + 1; j < view.length; j++) {
+      const m = view[j]!;
+      if (m.deleted) continue;
+      if (m.msg.role === "think" || m.msg.role === "system") continue;
+      if (m.msg.role !== "tool" || !m.msg.tool_call_id) break;
+      // a second result for an already-answered call is not part of this batch
+      if (!calls.has(m.msg.tool_call_id) || paired.has(m.msg.tool_call_id)) break;
+      paired.add(m.msg.tool_call_id);
+    }
+  }
+  return paired;
+}
+
 /** Recompute orphan/deleted for the tool nodes of exactly these call ids. */
 function recheckTools(c: ViewCache, callIds: string[]): void {
   for (const cid of callIds) {

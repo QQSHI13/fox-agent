@@ -1,6 +1,6 @@
 import { lookupModel, type ModelInfo } from "../providers/models.ts";
 import { lastPromptTokens } from "../store/db.ts";
-import { projectView, visibleNodes, parseToolCalls, type ViewNode } from "./view.ts";
+import { projectView, visibleNodes, parseToolCalls, pairedCallIds, type ViewNode } from "./view.ts";
 import { nodeTokenEstimate } from "./render.ts";
 
 export function modelBudget(model: string): ModelInfo {
@@ -38,10 +38,14 @@ export function sessionContextTokens(sessionId: string): number {
   const measured = lastPromptTokens(sessionId);
   const vis = visibleNodes(projectView(sessionId));
   // the same visible-tool set the renderer builds (renderContext) — a call
-  // counts only while its result is visible, so a hidden result stops its
-  // call from billing without a second, parallel notion of "visible".
+  // counts only while its result is visible AND adjacent, so a hidden (or
+  // unpaired) result stops its call from billing without a second, parallel
+  // notion of "visible".
+  const paired = pairedCallIds(vis);
   const visibleToolIds = new Set(
-    vis.filter((n) => n.msg.role === "tool" && n.msg.tool_call_id).map((n) => n.msg.tool_call_id!),
+    vis
+      .filter((n) => n.msg.role === "tool" && n.msg.tool_call_id && paired.has(n.msg.tool_call_id))
+      .map((n) => n.msg.tool_call_id!),
   );
   let estimated = 0;
   for (const n of vis) {

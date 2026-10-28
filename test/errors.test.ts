@@ -75,6 +75,16 @@ describe("diagnoseProviderError — the cause and the fix", () => {
   test("an unrecognized error is not given a made-up cause", () => {
     expect(diagnoseProviderError("something entirely novel")).toBeNull();
   });
+
+  test("a tool-pairing rejection is not blamed on MCP schemas", () => {
+    // The bug: this message contains the word "tool", so the generic
+    // tool-schema pattern claimed it and sent the reader to /mcp — where
+    // nothing was wrong. It is about transcript ORDER, not tool definitions.
+    const d = diagnoseProviderError("Tool result is missing for tool call tool_uvCzyFQ5rXSRKIwoLWiUmy6Z.");
+    expect(d).not.toBeNull();
+    expect(d!.cause).toContain("not next to it");
+    expect(d!.fix).not.toContain("/mcp");
+  });
 });
 
 describe("code bugs are not disguised as provider faults", () => {

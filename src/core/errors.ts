@@ -243,6 +243,13 @@ const DIAGNOSES: { test: RegExp; cause: string; fix: string }[] = [
   { test: /timed? ?out|timeout/i, cause: "the provider went quiet before answering", fix: "raise request-timeout-ms, or use a faster model" },
   { test: /stream.*(closed|ended)|connection closed|premature/i, cause: "the provider closed the stream mid-answer", fix: "usually transient — the turn is retried; if it repeats, try another profile" },
   { test: /content.?filter|content.?policy|content_policy|safety|refusal/i, cause: "the request was refused by the provider's safety filter", fix: "rephrase, or use a model without that filter" },
+  // BEFORE the generic tool-schema pattern below, which also matches the word
+  // "tool" — this shape is about transcript PAIRING, not tool definitions, and
+  // sending the reader to /mcp for it is actively misleading. It happens when a
+  // call and its result end up apart on the wire (an aborted step whose
+  // detached tool finishes later); the request is rejected until they are
+  // repaired, so the fix names the two moves that actually work.
+  { test: /tool result is missing|missing tool (result|call)|tool_call_id.*(not found|missing)/i, cause: "the transcript has a tool call whose result is not next to it", fix: "the harness drops the unpaired half on the next request; if it repeats, /undo the last ctx op or switch profile with /model" },
   { test: /tool|function.*(invalid|schema)|json.*invalid/i, cause: "the provider rejected the tool definitions", fix: "an MCP server may be sending a malformed schema; check /mcp" },
 ];
 

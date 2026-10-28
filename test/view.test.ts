@@ -264,3 +264,133 @@ describe("renderContext node memo", () => {
     expect(third[2].content).toContain("greeting done");
   });
 });
+
+describe("wire pairing (the 'Tool result is missing' rejection)", () => {
+  // Reproduced from a real docsforge session: an aborted step had already
+  // persisted its assistant row WITH the tool_call on it, the detached repl
+  // tool kept running, and its result landed at the end of the transcript
+  // minutes later — with a parked steer and a system note in between. Both
+  // halves were "visible" under the old orphan rule (a result existed
+  // somewhere), so both rendered, and every request after that was rejected:
+  //   "Tool result is missing for tool call tool_uvCzyFQ5rXSRKIwoLWiUmy6Z"
+  test("an aborted step's call and its late result are both dropped from the wire", async () => {
+    const db = await import("../src/store/db.ts");
+    const { renderContext } = await import("../src/context/render.ts");
+
+    const s = db.createSession("/tmp", "m1");
+    db.appendMessage(s.id, { parent_id: null, role: "user", content: "start the audits", tokens: 4 });
+    db.appendMessage(s.id, {
+      parent_id: null,
+      role: "assistant",
+      content: "",
+      tool_calls: JSON.stringify([{ id: "c1", name: "repl", arguments: '{"code":"poll"}' }]),
+      tokens: 4,
+    });
+    // the abort persisted the parked steer and a system note...
+    db.appendMessage(s.id, { parent_id: null, role: "user", content: "continue", tokens: 1 });
+    db.appendMessage(s.id, { parent_id: null, role: "system", content: "provider error", tokens: 2 });
+    // ...and the detached tool appended its result here, minutes later
+    db.appendMessage(s.id, { parent_id: null, role: "tool", content: "job r1 FAILED", tool_call_id: "c1", tokens: 3 });
+
+    const msgs = renderContext(s.id, "SYS");
+    // no call, no orphan result: neither half may reach the provider
+    expect(msgs.some((m) => m.tool_calls?.length)).toBe(false);
+    expect(msgs.some((m) => m.role === "tool")).toBe(false);
+    // the steer is still there — dropping it would lose the user's message
+    expect(msgs.some((m) => m.role === "user" && m.content.includes("continue"))).toBe(true);
+
+    // the invariant the provider checks, asserted directly: every call is
+    // answered by the immediately-following message
+    for (let i = 0; i < msgs.length; i++) {
+      const m = msgs[i];
+      if (!m.tool_calls?.length) continue;
+      const next = msgs.slice(i + 1, i + 1 + m.tool_calls.length);
+      expect(next.every((x) => x.role === "tool")).toBe(true);
+    }
+  });
+
+  test("an adjacent result still renders (the repair must not eat good pairs)", async () => {
+    const db = await import("../src/store/db.ts");
+    const { renderContext } = await import("../src/context/render.ts");
+
+    const s = db.createSession("/tmp", "m1");
+    db.appendMessage(s.id, { parent_id: null, role: "user", content: "go", tokens: 1 });
+    const asst = db.appendMessage(s.id, {
+      parent_id: null,
+      role: "assistant",
+      content: "",
+      tool_calls: JSON.stringify([
+        { id: "c1", name: "read", arguments: "{}" },
+        { id: "c2", name: "grep", arguments: "{}" },
+      ]),
+      tokens: 4,
+    });
+    db.appendMessage(s.id, { parent_id: asst.id, role: "tool", content: "file body", tool_call_id: "c1", tokens: 3 });
+    db.appendMessage(s.id, { parent_id: asst.id, role: "tool", content: "matches", tool_call_id: "c2", tokens: 3 });
+
+    const msgs = renderContext(s.id, "SYS");
+    const call = msgs.find((m) => m.tool_calls?.length)!;
+    expect(call.tool_calls!.map((c) => c.id)).toEqual(["c1", "c2"]);
+    expect(msgs.filter((m) => m.role === "tool").map((m) => m.content.replace(/^\[\d+\] /, ""))).toEqual(["file body", "matches"]);
+  });
+
+  test("only the SPLIT pair is dropped; other steps' pairs survive", async () => {
+    const db = await import("../src/store/db.ts");
+    const { renderContext } = await import("../src/context/render.ts");
+
+    const s = db.createSession("/tmp", "m1");
+    db.appendMessage(s.id, { parent_id: null, role: "user", content: "go", tokens: 1 });
+    const ok = db.appendMessage(s.id, {
+      parent_id: null,
+      role: "assistant",
+      content: "",
+      tool_calls: JSON.stringify([{ id: "good", name: "read", arguments: "{}" }]),
+      tokens: 2,
+    });
+    db.appendMessage(s.id, { parent_id: ok.id, role: "tool", content: "fine", tool_call_id: "good", tokens: 2 });
+    db.appendMessage(s.id, {
+      parent_id: null,
+      role: "assistant",
+      content: "",
+      tool_calls: JSON.stringify([{ id: "split", name: "repl", arguments: "{}" }]),
+      tokens: 2,
+    });
+    db.appendMessage(s.id, { parent_id: null, role: "user", content: "steer", tokens: 1 });
+    db.appendMessage(s.id, { parent_id: null, role: "tool", content: "late", tool_call_id: "split", tokens: 2 });
+
+    const msgs = renderContext(s.id, "SYS");
+    const kept = msgs.flatMap((m) => m.tool_calls ?? []).map((c) => c.id);
+    expect(kept).toEqual(["good"]);
+    expect(msgs.filter((m) => m.role === "tool").map((m) => m.content.replace(/^\[\d+\] /, ""))).toEqual(["fine"]);
+  });
+
+  test("a delete op that removes the split repairs the wire (ctx restore brings it back)", async () => {
+    const db = await import("../src/store/db.ts");
+    const { renderContext } = await import("../src/context/render.ts");
+    const { projectView } = await import("../src/context/view.ts");
+
+    const s = db.createSession("/tmp", "m1");
+    db.appendMessage(s.id, { parent_id: null, role: "user", content: "go", tokens: 1 });
+    db.appendMessage(s.id, {
+      parent_id: null,
+      role: "assistant",
+      content: "",
+      tool_calls: JSON.stringify([{ id: "c1", name: "repl", arguments: "{}" }]),
+      tokens: 2,
+    });
+    db.appendMessage(s.id, { parent_id: null, role: "user", content: "steer", tokens: 1 });
+    const late = db.appendMessage(s.id, { parent_id: null, role: "tool", content: "late", tool_call_id: "c1", tokens: 2 });
+
+    // the manual workaround QQ had to do by hand: hide the late result
+    db.appendOps(s.id, [{ kind: "delete", ids: [late.seq] }]);
+    expect(renderContext(s.id, "SYS").some((m) => m.tool_calls?.length)).toBe(false);
+
+    // and the ORIGINAL manual repair still works if the user does it their way
+    db.appendOps(s.id, [{ kind: "restore", ids: [late.seq] }]);
+    const msgs = renderContext(s.id, "SYS");
+    // restoring does not make the split adjacent — it stays off the wire
+    expect(msgs.some((m) => m.tool_calls?.length)).toBe(false);
+    // but nothing was destroyed on disk
+    expect(projectView(s.id).some((n) => n.msg.role === "tool" && n.content === "late")).toBe(true);
+  });
+});
