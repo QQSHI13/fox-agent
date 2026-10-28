@@ -349,6 +349,47 @@ describe("turn manager", () => {
     expect(peekSteer(s.id)).toHaveLength(0); // drained, not leaked
   });
 
+  test("a steer parked mid-call persists as a user message when the abort lands after the tool settles", async () => {
+    const t = await setup();
+    const s = t.createSession("/w", "m1");
+    const ac = new AbortController();
+    const { steer } = await import("../src/loop/steer.ts");
+    // NO host attached: if the turn drops the parked steer, nothing re-drains it
+    // (in production the TUI/CLI host is attached and `pump` would re-dispatch —
+    // but a turn that drops text it has already claimed is a real leak). The
+    // abort is fired from the CONSUMER when tool_end lands: the generator is
+    // suspended at that yield, so the abort deterministically lands in the
+    // window between the abort race resolving "tools" and the post-tool
+    // `signal?.aborted` exit below. That exit used to return without persisting
+    // the steer, stranding it.
+    const slowEcho = {
+      def: { name: "echo", description: "", parameters: { type: "object" } },
+      run: async () => {
+        await new Promise((r) => setTimeout(r, 20)); // resolve after the race armed "abort"
+        steer(s.id, "steer after abort"); // parked while the tool runs
+        return { ok: true, output: "echoed" };
+      },
+    } as any;
+    const registry = new Map([["echo", slowEcho]]);
+    const mock = mockChat([
+      [{ type: "tool_call", call: { id: "t1", name: "echo", arguments: "{}" } }, { type: "done", reason: "tool_calls" }],
+    ]);
+    const gen = t.runTurnCore(s.id, cfg(), "go", ac.signal, { chat: mock.fn as any, registryOverride: registry, quiet: true });
+    const events: any[] = [];
+    for await (const ev of gen) {
+      events.push(ev);
+      if (ev.type === "tool_end") ac.abort(); // deterministically hits the post-tool exit
+    }
+    expect((events.at(-1) as any).reason).toBe("aborted");
+    // give any stray macrotask a moment; with no host the steer must have been
+    // persisted by the turn itself, not left in the queue
+    await new Promise((r) => setTimeout(r, 60));
+    const msgs = t.allMessages(s.id);
+    expect(msgs.some((m: any) => m.role === "user" && m.content === "steer after abort")).toBe(true);
+    const { peekSteer } = await import("../src/loop/steer.ts");
+    expect(peekSteer(s.id)).toHaveLength(0); // drained (persisted), not stranded
+  });
+
   test("parallel tool failures are isolated — one throwing tool does not kill siblings", async () => {
     const t = await setup();
     const s = t.createSession("/w", "m1");

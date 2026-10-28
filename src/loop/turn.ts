@@ -988,6 +988,10 @@ async function* turnBody(
     stepParentId = results[results.length - 1]?.node.id ?? asstNode.id;
 
     if (signal?.aborted) {
+      // A steer parked while the tool ran (ctrl+s mid-tool, a background job
+      // finishing) is dropped by this abort exit unless it is persisted here —
+      // the top-of-loop drain never runs because the turn returns immediately.
+      persistParkedSteers(stepParentId);
       yield await endTurn("aborted", step);
       return;
     }
