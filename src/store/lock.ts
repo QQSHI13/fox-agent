@@ -162,11 +162,17 @@ const heldDepth = new Map<string, number>();
  * Claim the session's in-flight-turn marker. True when this process may run the
  * turn; false when another LIVE process is already running one here.
  *
- * Depth-counted because `acquireLock` reports our own pid as "already held":
- * without a counter, a nested turn (a host's `turn` wrapper around
- * `runTurnCore` — ACP's `turnEvents` is exactly that) would drop the outer
- * turn's marker on its way out and leave the session looking idle mid-turn,
- * which is the interleaving this module exists to prevent.
+ * Depth-counted, because `SessionHost.turn` (src/loop/steer.ts) is documented
+ * as a WRAPPER around `runTurnCore` — so core's own dispatch may drive a turn
+ * that claims again for the same session id. Without a counter the inner
+ * release would delete the marker while the outer turn was still streaming,
+ * leaving the session looking idle to every other process: the interleaving
+ * this module exists to prevent.
+ *
+ * No bundled surface nests today (a trace of the ACP and steer paths shows one
+ * claim per turn — each attachment gets its own `turnEvents`, rather than one
+ * wrapping another), so this guards a contract a host is allowed to use rather
+ * than a shape the product currently relies on.
  */
 export function acquireTurnLock(id: string, kind = "fox"): boolean {
   const n = heldDepth.get(id) ?? 0;
