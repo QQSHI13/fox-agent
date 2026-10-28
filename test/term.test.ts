@@ -173,3 +173,81 @@ describe("term: OSC 9;4 progress + OSC 9 notification", () => {
     expect(all).toContain("\x1b]0;fox — s1 [0m▶\x07");
   });
 });
+
+/**
+ * The bug: `safeSize()` reconciled ioctl against `process.stdout.columns` and
+ * trusted the smaller. `columns` is a snapshot Bun takes when it first builds
+ * its stdout sink — any earlier console.log or library touch freezes it at the
+ * boot size — and after `ownTerminal()` swaps fd 1 for the capture file it can
+ * never update again. So a grown window kept the old, smaller width: shrinking
+ * repainted, growing did nothing. It was intermittent because a run where
+ * nothing had touched process.stdout saw `columns === undefined` and skipped the
+ * check entirely.
+ *
+ * Tested at the pure-function level: reproducing it against a real tty needs a
+ * pty, and the rule itself is where the bug lived.
+ */
+describe("term: size reconciliation must not trust Bun's frozen stdout cache", () => {
+  test("once the fd is owned, the ioctl answer wins even if stdout.columns disagrees", async () => {
+    const { reconcileSize } = await import("../src/tui/term.ts");
+    // booted at 80x24, user dragged the window to 120x40
+    expect(reconcileSize({ width: 120, height: 40 }, 80, 24, true)).toEqual({ width: 120, height: 40 });
+    // the old rule returned 80x24 here — the "fox will not grow" bug
+    expect(reconcileSize({ width: 120, height: 40 }, 80, 24, false)).toEqual({ width: 80, height: 24 });
+  });
+
+  test("an owned fd reports the true size even when the cache says undefined", async () => {
+    const { reconcileSize } = await import("../src/tui/term.ts");
+    expect(reconcileSize({ width: 100, height: 30 }, 0, 0, true)).toEqual({ width: 100, height: 30 });
+  });
+
+  test("without ownership the conservative smaller-wins rule still holds", async () => {
+    const { reconcileSize } = await import("../src/tui/term.ts");
+    // no ioctl answer at all: fall back to the JS view
+    expect(reconcileSize(null, 90, 25, false)).toEqual({ width: 90, height: 25 });
+    expect(reconcileSize(null, 0, 0, false)).toBeNull();
+    // ioctl wider than the JS view (zoom / WSL relay): trust the smaller, and
+    // clamp the height to the JS view too rather than mixing the two
+    expect(reconcileSize({ width: 120, height: 40 }, 100, 30, false)).toEqual({ width: 100, height: 30 });
+    // JS view wider than ioctl: ioctl wins (never lay out wider than the tty)
+    expect(reconcileSize({ width: 100, height: 30 }, 120, 40, false)).toEqual({ width: 100, height: 30 });
+  });
+});
+
+/**
+ * A resize that moves only one dimension has to report too: dragging a window
+ * border vertically changes rows and leaves cols alone. Deduping on width alone
+ * (or reporting only what the deduped source said) swallowed exactly that case.
+ */
+describe("term: onResize reports single-dimension changes", () => {
+  test("height-only and width-only changes each fire exactly once", async () => {
+    const { openTerm } = await import("../src/tui/term.ts");
+    stub = stubStdin();
+    // no tty under bun test, so drive the size source directly: with no owned
+    // fd the report reads process.stdout.columns/rows
+    const s = process.stdout as unknown as Record<string, unknown>;
+    const saved = { columns: s.columns, rows: s.rows };
+    const seen: string[] = [];
+    try {
+      s.columns = 80;
+      s.rows = 24;
+      const term = openTerm();
+      term.onResize((w, h) => seen.push(`${w}x${h}`));
+      expect(seen).toEqual(["80x24"]); // the initial report, not a change
+      s.rows = 40; // height only
+      await Bun.sleep(400); // the poll interval is 250ms
+      expect(seen).toEqual(["80x24", "80x40"]);
+      s.columns = 120; // width only
+      await Bun.sleep(400);
+      expect(seen).toEqual(["80x24", "80x40", "120x40"]);
+      await Bun.sleep(400); // unchanged: no duplicate report
+      expect(seen).toEqual(["80x24", "80x40", "120x40"]);
+      term.end();
+    } finally {
+      if (saved.columns === undefined) delete s.columns;
+      else s.columns = saved.columns;
+      if (saved.rows === undefined) delete s.rows;
+      else s.rows = saved.rows;
+    }
+  });
+});

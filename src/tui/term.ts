@@ -100,14 +100,36 @@ function ttySize(ownerFd?: number): { width: number; height: number } | null {
  * Reconcile independent size reports: if sources disagree (zoom, WSL relay
  * quirks), trust the SMALLER — laying out too wide causes terminal-side
  * wrapping that shreds the absolute-positioned grid; too narrow is benign.
+ *
+ * The cross-check ONLY applies before ownership. `process.stdout.columns` is a
+ * snapshot Bun takes when it first constructs its stdout sink — any earlier
+ * console.log, any library touching process.stdout, freezes it at the boot
+ * size. Once `ownTerminal()` has pointed fd 1 at the capture file, the snapshot
+ * can never change again, so "trust the smaller" pinned the layout permanently:
+ * shrinking the window repainted, growing it did nothing (the exact "fox does
+ * not resize" bug — and it was intermittent, because a run where nothing had
+ * touched process.stdout saw `columns === undefined` and skipped the check).
+ *
+ * Exported for the regression test in test/term.test.ts: the rule is pure, and
+ * reproducing it against a real tty needs a pty.
  */
-function safeSize(ownerFd?: number): { width: number; height: number } | null {
-  const primary = ttySize(ownerFd);
-  const altCols = (process.stdout as any).columns ?? 0;
-  const altRows = (process.stdout as any).rows ?? 0;
+export function reconcileSize(
+  primary: { width: number; height: number } | null,
+  altCols: number,
+  altRows: number,
+  owned: boolean,
+): { width: number; height: number } | null {
   if (!primary) return altCols ? { width: altCols, height: altRows } : null;
+  // the owner's ioctl is the one honest answer; the JS cache is stale by design
+  if (owned) return primary;
   if (altCols > 0 && altCols < primary.width) return { width: altCols, height: Math.min(primary.height, altRows || primary.height) };
   return primary;
+}
+
+function safeSize(ownerFd?: number): { width: number; height: number } | null {
+  const altCols = (process.stdout as any).columns ?? 0;
+  const altRows = (process.stdout as any).rows ?? 0;
+  return reconcileSize(ttySize(ownerFd), altCols, altRows, ownerFd !== undefined);
 }
 
 export function openTerm(): Term {
@@ -133,6 +155,8 @@ export function openTerm(): Term {
   /** the resize poll interval, cleared in end() — an uncleared handle kept the
    *  event loop alive after the TUI was gone */
   let resizeTimer: ReturnType<typeof setInterval> | null = null;
+  /** the SIGWINCH handler, detached in end() for the same reason */
+  let onWinch: (() => void) | null = null;
 
   /** the single write path: the owner's private fd, or the fallback sink */
   const emit = (s: string) => {
@@ -212,16 +236,42 @@ export function openTerm(): Term {
       emit(`\x1b]0;${clean}\x07`);
     },
     onResize(cb) {
-      const handler = () => {
-        const s = safeSize();
-        if (s) {
-          cached = s;
-          cb(s.width, s.height);
-        }
+      /**
+       * One report path for all three sources, deduped on the size itself.
+       *
+       * A resize can change EITHER dimension alone (dragging a window border
+       * vertically moves only rows), so the key is the full `WxH` — a
+       * width-only comparison would swallow every height change, and the
+       * height-only drag is exactly the case that looked dead.
+       */
+      let last = "";
+      const report = () => {
+        const s = safeSize(ownerFd);
+        if (!s) return;
+        const key = `${s.width}x${s.height}`;
+        if (key === last) return;
+        last = key;
+        cached = s;
+        cb(s.width, s.height);
       };
-      (process.stdout as any).on?.("resize", handler);
-      resizeTimer = setInterval(handler, 1000);
+      /**
+       * `resize` on process.stdout only fires while Bun's own sink still owns
+       * fd 1. After `ownTerminal()` puts a capture file there, Bun never sees a
+       * WINCH again and that event stops arriving entirely — which is why the
+       * poll is the load-bearing trigger. SIGWINCH makes it immediate instead of
+       * up to a tick late; kept quiet on failure, since a platform that cannot
+       * take the signal still has the timer.
+       */
+      try {
+        process.on("SIGWINCH", report);
+        onWinch = report;
+      } catch {}
+      (process.stdout as any).on?.("resize", report);
+      // 250ms, not 1000: this is the reflow trigger once fd 1 is a file, and a
+      // quarter second is below the threshold where a resize reads as "stuck".
+      resizeTimer = setInterval(report, 250);
       resizeTimer.unref?.();
+      report();
     },
     onKey(cb) {
       stdin.setRawMode(true);
@@ -266,6 +316,10 @@ export function openTerm(): Term {
       try {
         if (resizeTimer) clearInterval(resizeTimer);
         resizeTimer = null;
+      } catch {}
+      try {
+        if (onWinch) process.off("SIGWINCH", onWinch);
+        onWinch = null;
       } catch {}
       /**
        * Release stdin, or the process outlives the TUI.
