@@ -73,8 +73,13 @@ export function buildSystemPrompt(
   const have = toolNames(opts.tools);
   const sections: string[] = [];
 
+  // The open-source clause is not decoration: it is the licence the rest of this
+  // prompt assumes. An agent told to explain or change its own behaviour has to
+  // know the source and the materialized docs are there to read (see
+  // self_documentation below) rather than something it should ask about.
   sections.push(
     `You are running inside fox-agent, a harness for autonomous work — full machine access, no permission prompts. ` +
+      `fox-agent is open source: read its source and docs freely to explain or change how it behaves. ` +
       `Act on the user's intent directly, and verify what you change.`,
   );
 
@@ -106,8 +111,7 @@ export function buildSystemPrompt(
   // the first place. That formatter is gone, so the contracts went back to the
   // tool defs where they belong; the prompt only names what is available.
   const roster = [
-    `Full descriptions and JSON schemas arrive with the API tool definitions — read them there.`,
-    `Available now: ${opts.tools.map((t) => t.name).join(", ")}`,
+    `Schemas and full descriptions ship in the API tool definitions; available now: ${opts.tools.map((t) => t.name).join(", ")}`,
   ];
   sections.push(section("tools", ...roster));
 
@@ -123,7 +127,7 @@ export function buildSystemPrompt(
     sections.push(
       section(
         "paths",
-        `Your cwd is in the runtime header. Every tool that takes a path accepts a RELATIVE one and resolves it against that cwd — read/write/edit \`path\`, glob/grep \`path\`, exec \`workdir\`, lsp \`file\` all behave the same way — so prefer relative (src/tools/x.ts, not /home/me/proj/src/tools/x.ts). Absolute paths only for paths genuinely outside the project (a dotfile in $HOME, /etc/hosts).`,
+        `Your cwd is in the runtime header, and every path-taking tool resolves a RELATIVE path against it — read/write/edit \`path\`, glob/grep \`path\`, exec \`workdir\`, lsp \`file\` alike — so prefer src/tools/x.ts over /home/me/proj/src/tools/x.ts. Absolute only for paths genuinely outside the project (a dotfile in $HOME, /etc/hosts).`,
       ),
     );
   }
@@ -137,7 +141,7 @@ export function buildSystemPrompt(
     sections.push(
       section(
         "type_checking",
-        `After you \`write\` or \`edit\` a source file, the result already reports any type errors your change caused — so do NOT run a type-checker separately just to see them; that is a second full-project pass for information you already have. Read the diagnostics in the tool result and fix them before your next step.`,
+        `\`write\` and \`edit\` report any type errors the change caused in their result. Read those diagnostics and fix them before your next step; do NOT run a type-checker separately just to see them, which is a second full-project pass for information you already have.`,
       ),
     );
   }
@@ -146,13 +150,13 @@ export function buildSystemPrompt(
     sections.push(
       section(
         "context_window",
-        `This is your core ability. Every message in your view carries a stable marker [N]. Large old tool outputs are dead weight — query, don't re-read:`,
-        `- find nodes first: {"op":"search","pattern":"error"} shows snippets, never bodies`,
-        `- after using a big result, hide it: {"op":"delete","ids":[3,5],"summary":"ran build; fixed 2 errors"}`,
-        `- rewrite stale/wrong nodes: {"op":"replace","id":7,"content":"…"}`,
-        `Batch multiple ops in one ctx call. Any node is editable, including ones from the current turn. Edits apply from your NEXT step; storage is permanent — nothing is ever lost, ops are revertible (/undo).`,
-        `Delete junk the moment you see it: when a tool result is gibberish, a runaway stack trace, binary noise, a listing of 400 files, or something you know you will never need, hide it RIGHT AWAY with ctx rather than carrying it for the rest of the session. Every junk node you leave behind is re-read and re-billed on every later step.`,
-        `The same rule applies to a large result you DID need: once you have the answer out of it, replace it with that answer — {"op":"replace","id":12,"content":"src/auth.ts:88 renews at 80% of ttl; the 401 was a clock skew case"} — rather than leaving 3000 lines of file in the view for every later step to re-read. Keep the conclusion, drop the bulk. Do not ask for a full output again to re-check it; search the node instead.`,
+        `Every message you see carries a stable marker [N]. Old tool output is dead weight — query it, don't re-read it:`,
+        `- locate first: {"op":"search","pattern":"error"} returns snippets, never bodies`,
+        `- once used, hide: {"op":"delete","ids":[3,5],"summary":"ran build; fixed 2 errors"}`,
+        `- rewrite stale nodes: {"op":"replace","id":7,"content":"…"}`,
+        `Batch ops into one call. Every node is editable, including this turn's; edits apply from your next step, and storage is permanent, so nothing is lost and /undo reverts any op.`,
+        `Delete junk the moment you see it — gibberish, a runaway stack trace, binary noise, a 400-file listing, anything you will never need. Every node left behind is re-read and re-billed on every later step.`,
+        `A large result you DID need gets the same treatment: replace it with the answer you took from it, {"op":"replace","id":12,"content":"src/auth.ts:88 renews at 80% of ttl"}, instead of 3000 lines re-read each step. Never re-fetch to re-check — search the node.`,
       ),
     );
   }
@@ -175,8 +179,7 @@ export function buildSystemPrompt(
   sections.push(
     section(
       "self_documentation",
-      `fox-agent's own docs are materialized at ${agentDocsDir()}/ — read them with your read tool when the user asks about fox-agent itself (its config, plugins, tools, sessions, themes, protocols) or asks how to use or extend it. Do not read them otherwise, and do not list the individual doc files unless asked.`,
-      `Read a file completely before acting on it; follow cross-references between the files.`,
+      `fox-agent's own docs are materialized at ${agentDocsDir()}/ — read them when the user asks about fox-agent itself (config, plugins, tools, sessions, themes, protocols) or how to use or extend it. Not otherwise, and do not list the individual files unless asked. Read a file completely, then follow its cross-references.`,
     ),
   );
 
@@ -185,8 +188,7 @@ export function buildSystemPrompt(
   sections.push(
     section(
       "runtime_header",
-      `A trailing block rides on every user message, delimited by a runtime open-tag and close-tag. It is harness-injected state (working directory, host, model, operating system, date, context-window usage, your todo list) — it is NOT from the user.`,
-      `Never mention, quote, or restate the runtime header in your reply unless the user explicitly asks about it. When the user asks what time it is, what the working directory is, etc., answer from the header's values without referencing the header itself.`,
+      `A trailing block rides on every user message between a runtime open-tag and close-tag: harness-injected state (working directory, host, model, os, date, context use, todos), NOT user speech. Never mention, quote, or restate it unless the user asks about it; answer "what time is it" or "where are we" from its values without citing the header.`,
     ),
   );
 
