@@ -60,12 +60,12 @@
 <rect x="190" y="407.0" width="17.7" height="14" rx="3" fill="#5b7fa6"/>
 <text x="394" y="418.0" text-anchor="end" fill="#8a8578" font-size="13">219 ms</text>
 <text x="47" y="446.0" text-anchor="end" fill="#8a8578" font-size="11.5">11</text>
-<text x="56" y="446.0" fill="#8a8578" font-size="14">qwen code</text>
+<text x="56" y="446.0" fill="#8a8578" font-size="14">crush</text>
 <rect x="190" y="435.0" width="126" height="14" rx="3" fill="#221f1a"/>
 <rect x="190" y="435.0" width="23.7" height="14" rx="3" fill="#5b7fa6"/>
 <text x="394" y="446.0" text-anchor="end" fill="#8a8578" font-size="13">390 ms</text>
 <text x="47" y="474.0" text-anchor="end" fill="#8a8578" font-size="11.5">12</text>
-<text x="56" y="474.0" fill="#8a8578" font-size="14">crush</text>
+<text x="56" y="474.0" fill="#8a8578" font-size="14">qwen code</text>
 <rect x="190" y="463.0" width="126" height="14" rx="3" fill="#221f1a"/>
 <rect x="190" y="463.0" width="24.2" height="14" rx="3" fill="#5b7fa6"/>
 <text x="394" y="474.0" text-anchor="end" fill="#8a8578" font-size="13">406 ms</text>
@@ -75,12 +75,12 @@
 <rect x="190" y="491.0" width="25.0" height="14" rx="3" fill="#5b7fa6"/>
 <text x="394" y="502.0" text-anchor="end" fill="#8a8578" font-size="13">433 ms</text>
 <text x="47" y="530.0" text-anchor="end" fill="#8a8578" font-size="11.5">14</text>
-<text x="56" y="530.0" fill="#8a8578" font-size="14">aider</text>
+<text x="56" y="530.0" fill="#8a8578" font-size="14">copilot cli</text>
 <rect x="190" y="519.0" width="126" height="14" rx="3" fill="#221f1a"/>
 <rect x="190" y="519.0" width="25.4" height="14" rx="3" fill="#5b7fa6"/>
 <text x="394" y="530.0" text-anchor="end" fill="#8a8578" font-size="13">448 ms</text>
 <text x="47" y="558.0" text-anchor="end" fill="#8a8578" font-size="11.5">15</text>
-<text x="56" y="558.0" fill="#8a8578" font-size="14">copilot cli</text>
+<text x="56" y="558.0" fill="#8a8578" font-size="14">aider</text>
 <rect x="190" y="547.0" width="126" height="14" rx="3" fill="#221f1a"/>
 <rect x="190" y="547.0" width="26.2" height="14" rx="3" fill="#5b7fa6"/>
 <text x="394" y="558.0" text-anchor="end" fill="#8a8578" font-size="13">478 ms</text>
@@ -164,12 +164,12 @@
 <rect x="578" y="351.0" width="50.0" height="14" rx="3" fill="#5b7fa6"/>
 <text x="782" y="362.0" text-anchor="end" fill="#8a8578" font-size="13">141 MB</text>
 <text x="435" y="390.0" text-anchor="end" fill="#8a8578" font-size="11.5">9</text>
-<text x="444" y="390.0" fill="#8a8578" font-size="14">gemini cli</text>
+<text x="444" y="390.0" fill="#8a8578" font-size="14">crush</text>
 <rect x="578" y="379.0" width="126" height="14" rx="3" fill="#221f1a"/>
 <rect x="578" y="379.0" width="50.4" height="14" rx="3" fill="#5b7fa6"/>
 <text x="782" y="390.0" text-anchor="end" fill="#8a8578" font-size="13">143 MB</text>
 <text x="435" y="418.0" text-anchor="end" fill="#8a8578" font-size="11.5">10</text>
-<text x="444" y="418.0" fill="#8a8578" font-size="14">crush</text>
+<text x="444" y="418.0" fill="#8a8578" font-size="14">claude code</text>
 <rect x="578" y="407.0" width="126" height="14" rx="3" fill="#221f1a"/>
 <rect x="578" y="407.0" width="51.3" height="14" rx="3" fill="#5b7fa6"/>
 <text x="782" y="418.0" text-anchor="end" fill="#8a8578" font-size="13">148 MB</text>
@@ -179,7 +179,7 @@
 <rect x="578" y="435.0" width="53.9" height="14" rx="3" fill="#5b7fa6"/>
 <text x="782" y="446.0" text-anchor="end" fill="#8a8578" font-size="13">164 MB</text>
 <text x="435" y="474.0" text-anchor="end" fill="#8a8578" font-size="11.5">12</text>
-<text x="444" y="474.0" fill="#8a8578" font-size="14">claude code</text>
+<text x="444" y="474.0" fill="#8a8578" font-size="14">gemini cli</text>
 <rect x="578" y="463.0" width="126" height="14" rx="3" fill="#221f1a"/>
 <rect x="578" y="463.0" width="55.7" height="14" rx="3" fill="#5b7fa6"/>
 <text x="782" y="474.0" text-anchor="end" fill="#8a8578" font-size="13">175 MB</text>
