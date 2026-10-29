@@ -321,17 +321,17 @@ describe("the rest of the prompt still assembles", () => {
     expect(h).not.toMatch(/[+-]\d{2}:\d{2}/);
   });
 
-  test("the clock is rounded to the half hour", async () => {
+  test("the clock is rounded to the quarter hour", async () => {
     const h = await header();
     const m = Number(h.match(/^date: \d{4}-\d{2}-\d{2} \d{2}:(\d{2})$/m)![1]);
-    // only :00 and :30 ever appear, and the minutes are never off by more than
-    // the 15 minutes the rounding gives away
-    expect([0, 30]).toContain(m);
+    // only :00/:15/:30/:45 ever appear, and the stamp is never more than
+    // 7.5 minutes away from the truth
+    expect([0, 15, 30, 45]).toContain(m);
   });
 
-  test("the clock is rebuilt per step, but only moves on the half hour", async () => {
+  test("the clock is rebuilt per step, but only moves on the quarter hour", async () => {
     // two headers built back to back must agree — the stamp does not tick
-    // within a half hour, so the tail's bytes stay put
+    // within a quarter hour, so the tail's bytes stay put
     expect(await header()).toBe(await header());
   });
 });
