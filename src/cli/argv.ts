@@ -35,6 +35,7 @@ export function parseArgv(argv: string[]): Parsed {
     "--request-timeout-ms",
     "--config",
     "--port",
+    "--mcp-pool",
     "-p",
     "--print",
   ]);

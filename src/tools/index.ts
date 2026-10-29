@@ -9,6 +9,7 @@ import { cleanupPty, ptySessionName } from "./pty.ts";
 import { setOutputCap, setReadCap } from "./files.ts";
 import { ctxDef, ctxRun } from "./ctx.ts";
 import { mcpTools, closeMcp } from "./mcp.ts";
+import { poolTools } from "../mcp/pool.ts";
 import { loadPlugins, setActivePlugins } from "../plugins/load.ts";
 import { bundledPlugins, bundledDisabled } from "../plugins/bundled.ts";
 import { BUNDLED_PROVIDER_PLUGIN_NAMES, bundledProviderPlugins } from "../providers/bundled.ts";
@@ -156,7 +157,12 @@ export async function buildRegistry(
   if (bundledDisabled("mcp", disabled)) {
     closeMcp(); // an earlier config may have connected; detached reap, don't leak the children
   } else {
-    const mc = await mcpTools(servers);
+    // One pool per config, shared with every other fox instance: this runs per
+    // TURN, so without it each window/subagent dials its own children (~58 MiB
+    // and a 30-45s handshake each). A null answer means the daemon could not be
+    // reached, and we dial locally exactly as before.
+    const pooled = cfg.mcpSharedPool === false ? null : await poolTools(servers);
+    const mc = pooled ?? (await mcpTools(servers));
     warnings.push(...mc.warnings);
     mcpPlugin.tools = [...mc.tools.values()];
   }

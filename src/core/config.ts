@@ -132,6 +132,14 @@ export interface Config {
   /** abort a provider request after this long with no streamed progress (0 = never) */
   requestTimeoutMs: number;
   mcpServers: Record<string, McpServerConfig>;
+  /**
+   * Dial MCP servers ONCE per config and share the pool across fox instances
+   * (default on). Off restores one pool per process: every TUI window, ACP
+   * server and subagent pays its own 30-45s handshake and ~58 MiB.
+   * Optional so a hand-built Config (an embedder, tests) keeps compiling; only
+   * an explicit `false` opts out.
+   */
+  mcpSharedPool?: boolean;
   /** external agents (ACP `command` or A2A `url`) available to the `task` tool, by name */
   agents: Record<string, ExternalAgentConfig>;
   /** language servers for post-edit diagnostics; overrides the built-in table by extension */
@@ -260,6 +268,7 @@ const DEFAULTS: Omit<Config, "projectInstructions"> = {
   compactCtxOnlyAt: 0.9,
   requestTimeoutMs: 120_000,
   mcpServers: {},
+  mcpSharedPool: true,
   agents: {},
   lsp: {},
   diagnostics: true,
@@ -452,7 +461,7 @@ const REMOVED_KEYS: Record<string, string> = {
 
 const KNOWN_KEYS = new Set([
   "model", "baseUrl", "apiKey", "provider", "maxSteps", "retryLimit", "compactWarnAt", "compactCtxOnlyAt",
-  "requestTimeoutMs", "diagnostics", "mcpServers", "agents", "lsp", "plugins", "skills",
+  "requestTimeoutMs", "diagnostics", "mcpServers", "mcpSharedPool", "agents", "lsp", "plugins", "skills",
   "providers", "disabledPlugins", "toolOutputCap", "readCap", "toolPresentationCap", "sessionListLimit",
   "tuiCollapsedChars", "tuiKeptChars", "tuiScrollbar", "tuiScrollStep", "statusBar", "tuiFrameMs", "theme", "contextMarkers", "acpHistory",
   "reasoningEffort",
@@ -535,6 +544,7 @@ function applyTable(cfg: Config, t: Record<string, unknown> | null, scope: "glob
   if (typeof t.compactCtxOnlyAt === "number" && t.compactCtxOnlyAt > 0 && t.compactCtxOnlyAt <= 1) cfg.compactCtxOnlyAt = t.compactCtxOnlyAt;
   if (typeof t.requestTimeoutMs === "number" && t.requestTimeoutMs >= 0) cfg.requestTimeoutMs = Math.floor(t.requestTimeoutMs);
   if (typeof t.diagnostics === "boolean") cfg.diagnostics = t.diagnostics;
+  if (typeof t.mcpSharedPool === "boolean") cfg.mcpSharedPool = t.mcpSharedPool;
   if (typeof t.toolOutputCap === "number" && t.toolOutputCap >= 1000) cfg.toolOutputCap = Math.floor(t.toolOutputCap);
   if (typeof t.readCap === "number" && t.readCap >= 1000) cfg.readCap = Math.floor(t.readCap);
   // 0 is meaningful here (no presentation truncation), so it must pass

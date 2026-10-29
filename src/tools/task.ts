@@ -17,8 +17,8 @@
  * `message/stream` (SSE) report state transitions the same way; servers
  * without it fall back to polling and only the final report arrives.
  */
-import { existsSync } from "node:fs";
 import { kvGet, kvSet } from "../store/db.ts";
+import { selfCommand } from "../core/selfexec.ts";
 import type { ToolDef } from "../providers/types.ts";
 import type { ExternalAgentConfig } from "../core/config.ts";
 import type { ToolContext, ToolResult } from "./types.ts";
@@ -67,18 +67,11 @@ export const taskDef: ToolDef = {
 };
 
 /**
- * How to re-launch this fox-agent as an ACP server.
- *
- * Compiled and from-source runs need opposite halves of the same pair. In a
- * `bun build --compile` binary `process.execPath` IS fox-agent and `Bun.main` is a
- * virtual `/$bunfs/root/...` path that no process can execute; running from
- * source it is the other way around — `execPath` is bun and `Bun.main` is
- * `src/cli.ts`. Probed both, rather than assumed.
+ * The ACP form of `selfCommand()`: same probing, with the protocol flag added.
  */
 export function selfAgent(): ExternalAgentConfig {
-  const main = Bun.main;
-  const compiled = main.startsWith("/$bunfs/") || !existsSync(main);
-  return compiled ? { command: process.execPath, args: ["--acp"] } : { command: process.execPath, args: [main, "--acp"] };
+  const { command, args } = selfCommand();
+  return { command, args: [...args, "--acp"] };
 }
 
 function resolveAgent(name: string | undefined, agents: Record<string, ExternalAgentConfig>): ExternalAgentConfig | string {

@@ -134,6 +134,41 @@ export async function mcpTools(
   return { tools: pool.tools, warnings };
 }
 
+/** Server name -> its tool names: the face every instance shows the model. */
+export function mcpCatalog(): Record<string, string[]> {
+  const out: Record<string, string[]> = {};
+  for (const [srv, list] of cache?.servers ?? []) out[srv] = list.map((t) => t.name);
+  return out;
+}
+
+/**
+ * The single registry entry's definition, built from a catalog alone.
+ *
+ * Shared with `mcp/pool.ts`: the daemon publishes the catalog, each instance
+ * rebuilds the identical tool face from it, so a pooled `mcp` tool and a local
+ * one are indistinguishable to the model (and to the prompt roster).
+ */
+export function mcpToolDef(catalog: Record<string, string[]>): ToolDef {
+  const servers = Object.keys(catalog);
+  const lines = servers.map((s) => `- ${s}: ${catalog[s]!.join(", ")}`);
+  return {
+    name: "mcp",
+    description:
+      `Call a tool on a connected MCP (Model Context Protocol) server. Use this for ` +
+      `any capability an MCP server provides (browser automation, fetching, external APIs). ` +
+      `Reachable servers and their tools:\n${lines.join("\n")}`,
+    parameters: {
+      type: "object",
+      properties: {
+        server: { type: "string", enum: servers, description: "which MCP server to call" },
+        tool: { type: "string", description: "the tool name on that server" },
+        arguments: { type: "object", description: "the tool's arguments (per its schema)", additionalProperties: true },
+      },
+      required: ["server", "tool"],
+    },
+  };
+}
+
 /** The single registry entry: one `mcp` tool routing to every live server. */
 function buildMcpToolMap(pool: McpPool): Map<string, Tool> {
   const tools = new Map<string, Tool>();
@@ -143,27 +178,9 @@ function buildMcpToolMap(pool: McpPool): Map<string, Tool> {
   // pick among them without guessing names; the `server`/`tool` params are
   // also typed as enums for the same reason
   const serverEnum = [...pool.servers.keys()];
-  const catalog: string[] = [];
-  for (const [srv, list] of pool.servers) {
-    catalog.push(`- ${srv}: ${list.map((t) => t.name).join(", ")}`);
-  }
-
-  const def: ToolDef = {
-    name: "mcp",
-    description:
-      `Call a tool on a connected MCP (Model Context Protocol) server. Use this for ` +
-      `any capability an MCP server provides (browser automation, fetching, external APIs). ` +
-      `Reachable servers and their tools:\n${catalog.join("\n")}`,
-    parameters: {
-      type: "object",
-      properties: {
-        server: { type: "string", enum: serverEnum, description: "which MCP server to call" },
-        tool: { type: "string", description: "the tool name on that server" },
-        arguments: { type: "object", description: "the tool's arguments (per its schema)", additionalProperties: true },
-      },
-      required: ["server", "tool"],
-    },
-  };
+  const catalog: Record<string, string[]> = {};
+  for (const [srv, list] of pool.servers) catalog[srv] = list.map((t) => t.name);
+  const def: ToolDef = mcpToolDef(catalog);
 
   tools.set(def.name, {
     def,

@@ -69,6 +69,16 @@ async function printHelp(parsed: Parsed): Promise<void> {
 async function entry(): Promise<void> {
   const parsed = parseArgv(process.argv.slice(2));
 
+  // The shared MCP pool daemon (`mcp/pool.ts`). Its argv is internal — spawned by
+  // another fox, never typed — so it is checked before anything else can reject
+  // the flag, and it deliberately pulls in the MCP bridge alone: no app.ts, no
+  // session store, no TUI.
+  const poolPath = parsed.flags.get("mcp-pool");
+  if (typeof poolPath === "string" && poolPath) {
+    const { runPoolDaemon } = await import("./mcp/pool.ts");
+    return runPoolDaemon(poolPath);
+  }
+
   // The two answers that need no application. Both return before app.ts is
   // imported, which is the whole point of this file.
   if (parsed.flags.get("version")) return console.log(VERSION);
