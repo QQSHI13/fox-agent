@@ -188,7 +188,7 @@ export function buildSystemPrompt(
   sections.push(
     section(
       "runtime_header",
-      `A trailing block rides on every user message between a runtime open-tag and close-tag: harness-injected state (working directory, host, model, os, date, context use, todos), NOT user speech. Never mention, quote, or restate it unless the user asks about it; answer "what time is it" or "where are we" from its values without citing the header.`,
+      `A trailing block rides on every user message between a runtime open-tag and close-tag: harness-injected state (working directory, host, model, os, date and time, context use, todos), NOT user speech. Never mention, quote, or restate it unless the user asks about it; answer "what time is it" or "where are we" from its values without citing the header. The clock is rounded to the half hour, so quote it as the time of day it is, not as a precise instant.`,
     ),
   );
 
@@ -216,9 +216,15 @@ function machineFacts(): { host: string; os: string; runtime: string } {
 }
 
 /**
- * Local wall clock, minute granularity. The tail is rebuilt every step anyway
- * so the ticking costs nothing extra, and an agent that cannot answer *the*
- * question "what time is it" burns an `exec date` finding out.
+ * Local wall clock at HALF-HOUR granularity. The tail is rebuilt every step
+ * anyway so the ticking costs nothing extra, and an agent that cannot answer
+ * *the* question "what time is it" burns an `exec date` finding out.
+ *
+ * Half-hour, not minute: the stamp is rebuilt every step, so a minute-precision
+ * clock changes the bytes of the tail every minute for information nobody
+ * needs — an agent plans in hours and half hours, and rounding to :00/:30
+ * keeps the line stable for half an hour at a time. Rounding is to the NEAREST
+ * half hour, so the stamp is never more than 15 minutes away from the truth.
  *
  * The offset uses UTC+8 / UTC-5:30 notation rather than a raw +08:00 — it reads
  * as a zone, not as a timestamp, and it cannot be mistaken for part of the date.
@@ -226,13 +232,25 @@ function machineFacts(): { host: string; os: string; runtime: string } {
 function localClock(): { date: string; tz: string } {
   const now = new Date();
   const p2 = (n: number) => String(n).padStart(2, "0");
-  const mins = -now.getTimezoneOffset();
+
+  // round to the nearest :00 or :30 — setMinutes(60) rolls into the next
+  // hour, and the Date arithmetic rolls the day/month/year with it
+  const at = new Date(now.getTime());
+  at.setSeconds(0, 0);
+  const m = at.getMinutes();
+  if (m >= 45) at.setMinutes(60, 0, 0);
+  else if (m >= 15) at.setMinutes(30, 0, 0);
+  else at.setMinutes(0, 0, 0);
+
+  // the offset is read off the ROUNDED instant, so the zone and the printed
+  // clock can never disagree across a DST boundary
+  const mins = -at.getTimezoneOffset();
   const abs = Math.abs(mins);
   const offset =
     mins === 0 ? "UTC" : `UTC${mins < 0 ? "-" : "+"}${Math.floor(abs / 60)}${abs % 60 ? `:${p2(abs % 60)}` : ""}`;
   const zone = Intl.DateTimeFormat().resolvedOptions().timeZone || offset;
   return {
-    date: `${now.getFullYear()}-${p2(now.getMonth() + 1)}-${p2(now.getDate())}`,
+    date: `${at.getFullYear()}-${p2(at.getMonth() + 1)}-${p2(at.getDate())} ${p2(at.getHours())}:${p2(at.getMinutes())}`,
     tz: zone === offset ? offset : `${zone} ${offset}`,
   };
 }

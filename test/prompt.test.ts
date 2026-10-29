@@ -313,12 +313,26 @@ describe("the rest of the prompt still assembles", () => {
 
   test("the clock is local and the offset reads as a zone, not a timestamp", async () => {
     const h = await header();
-    expect(h).toMatch(/^date: \d{4}-\d{2}-\d{2}$/m);
+    expect(h).toMatch(/^date: \d{4}-\d{2}-\d{2} \d{2}:\d{2}$/m);
     // UTC+8 / UTC-5:30 / plain UTC (a machine at offset 0 has no zone name to
     // disambiguate) — never the raw +08:00 timestamp form, which would read as
     // part of the date and needs a lookup to convert
     expect(h).toMatch(/^tz: (\S+ )?UTC([+-]\d{1,2}(:\d{2})?)?$/m);
     expect(h).not.toMatch(/[+-]\d{2}:\d{2}/);
+  });
+
+  test("the clock is rounded to the half hour", async () => {
+    const h = await header();
+    const m = Number(h.match(/^date: \d{4}-\d{2}-\d{2} \d{2}:(\d{2})$/m)![1]);
+    // only :00 and :30 ever appear, and the minutes are never off by more than
+    // the 15 minutes the rounding gives away
+    expect([0, 30]).toContain(m);
+  });
+
+  test("the clock is rebuilt per step, but only moves on the half hour", async () => {
+    // two headers built back to back must agree — the stamp does not tick
+    // within a half hour, so the tail's bytes stay put
+    expect(await header()).toBe(await header());
   });
 });
 
