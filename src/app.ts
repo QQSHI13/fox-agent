@@ -245,6 +245,11 @@ export async function run(parsed: Parsed): Promise<void> {
       requestTimeoutMs: c.requestTimeoutMs,
     };
     setActiveEndpoint(p.baseUrl);
+    // Every startup mode (TUI, --acp, --a2a, -p) lands here, so this is the one
+    // place that can start the shared MCP pool before the first turn needs it.
+    // Fire-and-forget: the first turn falls back to a local dial if it is not
+    // ready, exactly as before this existed.
+    void import("./mcp/pool.ts").then((m) => m.warmPool(c.mcpServers, c.mcpSharedPool)).catch(() => {});
   }
   const needsConfigNow = !!parsed.flags.get("acp") || !!parsed.flags.get("a2a") || parsed.flags.has("print") || !process.stdout.isTTY || !!parsed.flags.get("no-tui");
   if (needsConfigNow) applyLoadedConfig(loadConfig(configOverrides));

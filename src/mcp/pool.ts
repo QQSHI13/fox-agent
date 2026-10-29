@@ -215,6 +215,11 @@ export async function runPoolDaemon(sockPath: string): Promise<void> {
 export async function poolTools(
   servers: Record<string, McpServerConfig>,
 ): Promise<{ tools: Map<string, Tool>; warnings: string[] } | null> {
+  // No servers, no pool. Without this the empty config hashed to its own socket
+  // path and spawned a daemon that answered an empty catalog and was then
+  // dropped — 359 ms and a process, for nothing.
+  if (!Object.keys(servers).length) return { tools: new Map(), warnings: [] };
+
   const sockPath = poolSocketPath(servers);
   const link = await connectOrSpawn(sockPath);
   if (!link) return null;
@@ -260,10 +265,13 @@ async function connectOrSpawn(sockPath: string): Promise<Link | null> {
   // pool then, and the caller dials locally exactly as it did before.
   if (!canSelfExec()) return null;
 
-  const { args } = selfCommand();
+  const { command, args } = selfCommand();
   try {
     const p = Bun.spawn({
-      cmd: [...args, POOL_FLAG, sockPath],
+      // BOTH halves: from source `command` is bun and `args` is [cli.ts]; dropping
+      // either one yielded `exec cli.ts`, which is not executable, and the spawn
+      // failed silently into the fallback below.
+      cmd: [command, ...args, POOL_FLAG, sockPath],
       stdin: "ignore",
       stdout: "ignore",
       stderr: "ignore",
@@ -281,6 +289,19 @@ async function connectOrSpawn(sockPath: string): Promise<Link | null> {
     if (c) return c;
   }
   return null;
+}
+
+/**
+ * Start the pool now, without waiting for it: called from every startup mode
+ * (TUI, --acp, --a2a, -p) so the first turn does not pay the dial.
+ *
+ * Deliberately fire-and-forget and silent: startup must not block on a 30-45 s
+ * MCP handshake, and a pool that fails to start must leave the caller falling
+ * back to a local dial exactly as if this had never been called.
+ */
+export function warmPool(servers: Record<string, McpServerConfig>, enabled: boolean | undefined): void {
+  if (enabled === false || !Object.keys(servers).length) return;
+  void connectOrSpawn(poolSocketPath(servers)).catch(() => {});
 }
 
 function connect(sockPath: string): Promise<Link | null> {

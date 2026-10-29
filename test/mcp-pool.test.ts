@@ -8,7 +8,7 @@
 // Tested against the real fixture server over the real socket, not a mock: the
 // claim "two instances, one set of children" is only true of real processes.
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -99,6 +99,45 @@ describe.skipIf(!CAN_RUN)("the shared MCP pool", () => {
     expect(one).toBe(same);
     // two different configs must never share a pool: they would cross-route calls
     expect(other).not.toBe(one);
+  });
+
+  test("an empty config never starts a daemon", async () => {
+    // It used to: {} hashed to its own socket path and spawned a pool that
+    // answered an empty catalog and was dropped — 359 ms and a process for it.
+    const { poolTools, warmPool } = await import("../src/mcp/pool.ts");
+    const before = fixtureProcs();
+    const out = await poolTools({});
+    expect(out).toEqual({ tools: new Map(), warnings: [] });
+    warmPool({}, true);
+    await Bun.sleep(500);
+    expect(fixtureProcs()).toBe(before);
+  });
+
+  test("warmPool is a no-op when the pool is switched off", async () => {
+    const { warmPool, poolSocketPath } = await import("../src/mcp/pool.ts");
+    const sock = poolSocketPath(fixtureCfg());
+    warmPool(fixtureCfg(), false);
+    await Bun.sleep(500);
+    expect(existsSync(sock)).toBe(false);
+  });
+
+  test("config: mcpSharedPool is a recognised key, and only `false` opts out", async () => {
+    const { loadConfig } = await import("../src/core/config.ts");
+    const cfgPath = join(home, "config.toml");
+    writeFileSync(cfgPath, "mcpSharedPool = false\n");
+    const off = loadConfig({ cwd: home, configPath: cfgPath });
+    expect(off.mcpSharedPool).toBe(false);
+    // the bug this pins: the key was missing from KNOWN_KEYS, so a config that
+    // set it got "unknown key" and was silently ignored
+    expect(off.warnings.filter((w) => w.includes("mcpSharedPool"))).toEqual([]);
+
+    writeFileSync(cfgPath, "mcpSharedPool = true\n");
+    expect(loadConfig({ cwd: home, configPath: cfgPath }).mcpSharedPool).toBe(true);
+    // absent -> true, from DEFAULTS. The field is optional on Config so a
+    // hand-built config still compiles, but a loaded one always answers here;
+    // callers read "on unless explicitly false".
+    writeFileSync(cfgPath, "model = \"m\"\n");
+    expect(loadConfig({ cwd: home, configPath: cfgPath }).mcpSharedPool).toBe(true);
   });
 });
 
