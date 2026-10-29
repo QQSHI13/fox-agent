@@ -91,6 +91,28 @@ describe("tables", () => {
     expect(padded.map((r) => r.map((s) => s.t).join(""))[2]).toBe("│  x │ y  │ z  │");
   });
 
+  test("a list directly under a text line still renders as a list", () => {
+    // a model writes a list on the line right after a bold lead-in constantly;
+    // the paragraph gatherer used to swallow those lines and print `- one`
+    // literally — the "lists don't render after a bold line" report.
+    const viaBold = renderMarkdown("**Steps:**\n- one\n- two");
+    expect(viaBold.map((r) => r.map((s) => s.t).join(""))).toEqual(["Steps:", "• one", "• two"]);
+    const viaProse = renderMarkdown("Here is a list:\n* one\n+ two");
+    expect(viaProse.map((r) => r.map((s) => s.t).join(""))).toEqual(["Here is a list:", "• one", "• two"]);
+    const ordered = renderMarkdown("Steps:\n1. one\n2. two");
+    expect(ordered.map((r) => r.map((s) => s.t).join(""))).toEqual(["Steps:", "1. one", "2. two"]);
+    // a footnote definition may also follow with no blank line
+    const fn = renderMarkdown("text[^1] here\n[^1]: the note body");
+    expect(fn.some((r) => r.some((s) => s.t === "  [1] "))).toBe(true);
+  });
+
+  test("a thematic break under a paragraph line stays literal", () => {
+    // deliberately NOT a paragraph interrupt: `Text` + `---` must not turn the
+    // text into a setext heading or eat the break
+    const rows = renderMarkdown("Text\n---");
+    expect(rows.map((r) => r.map((s) => s.t).join(""))).toEqual(["Text", "---"]);
+  });
+
   test("a table following a paragraph line is not swallowed into it", () => {
     const rows = renderMarkdown("intro\n| a |\n| --- |\n| b |");
     const text = rows.map((r) => r.map((s) => s.t).join(""));

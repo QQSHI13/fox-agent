@@ -149,6 +149,18 @@ export function renderMarkdown(src: string, state?: MdState, width?: number): Se
     return segs.length ? segs : [{ t: "", ...base }];
   };
 
+  // A list (or footnote definition) may start on the line right after a text
+  // line, with NO blank line between: `**Steps:**` then `- one` is the single
+  // most common way a model writes a list under a bold lead-in. The paragraph
+  // gatherer only stopped at headings/fences/quotes/tables, so those lines were
+  // swallowed into the paragraph and printed literally (`- one`), which is the
+  // "lists don't render after a bold line" report. GFM lets a list item
+  // interrupt a paragraph (a thematic break does not — `---` under a paragraph
+  // stays literal, so it is deliberately absent here), and the test matches the
+  // list forms this renderer's own dispatch handles below.
+  const interruptsPara = (l: string): boolean =>
+    /^\s*([-*+]|\d+[.)])\s+/.test(l) || FN_DEF.test(l);
+
   while (i < lines.length) {
     const line = lines[i];
 
@@ -394,7 +406,8 @@ export function renderMarkdown(src: string, state?: MdState, width?: number): Se
       i < lines.length &&
       lines[i].trim() &&
       !/^(#{1,6}\s|```|>)/.test(lines[i]) &&
-      !isTableLine(lines[i]) // a table row is not a paragraph line
+      !isTableLine(lines[i]) && // a table row is not a paragraph line
+      !interruptsPara(lines[i])
     )
       para.push(lines[i++]);
     for (const pl of para) out.push(inline(pl));
