@@ -378,9 +378,6 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     key: string;
     z: number;
     rect: [number, number, number, number];
-    paint: (p: TuiRegionPlane) => boolean | void;
-    /** optional cheap "did my inputs change?" probe (see paintPluginRegions) */
-    sig?: () => string;
     plane: Plane;
     owner: string;
   };
@@ -398,7 +395,29 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         const key = `${p.name}/${name}`;
         const plane = screen.createPlane(`plugin:${key}`, r.z);
         plane.clip = r.rect;
-        pluginRegions.push({ key, z: r.z, rect: r.rect, paint: r.paint, sig: r.sig, plane, owner: p.name });
+        // PUSH contract: the plugin receives ONE persistent write handle at
+        // registration and pushes content whenever it wants — a callback, a
+        // timer, a stream. The frame loop NEVER calls plugin code; it only
+        // composites whatever the plugin last pushed into its plane. A slow or
+        // stuck plugin therefore shows stale content in its own region and
+        // cannot freeze the rest of the screen. `paint`/`sig` are gone.
+        const handle: TuiRegionPlane = {
+          text: (x: number, y: number, str: string, style: Style) => void plane.text(x, y, str, screen.sgr(style)),
+          fillRow: (y: number, x0: number, x1: number, style: Style) => plane.fillRow(y, x0, x1, screen.sgr(style)),
+          restyle: (y: number, x0: number, x1: number, bg: string) => plane.restyle(y, x0, x1, bg),
+          w: W,
+          h: H,
+          wrap: (text: string, width: number, opts?: TuiWrapOptions) => wrapText(text, width, opts),
+        };
+        try {
+          r.paint?.(handle);
+        } catch (e) {
+          if (!regionWarned.has(key)) {
+            regionWarned.add(key);
+            push("error", `region '${key}' (${p.name}) init threw: ${(e as Error)?.message ?? e}`, { ephemeral: true });
+          }
+        }
+        pluginRegions.push({ key, z: r.z, rect: r.rect, plane, owner: p.name });
       }
     }
     // drop planes whose region vanished this reload
@@ -406,68 +425,15 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     for (const name of screen.planeNames()) if (name.startsWith("plugin:") && !live.has(name)) screen.dropPlane(name);
     return pluginRegions;
   }
-  function paintPluginRegions(frameChanged: boolean, fullInvalidate: boolean): void {
-    for (const r of resolvePluginRegions()) {
-      // A region's painter is arbitrary plugin code: it can walk a directory,
-      // hit the network, or tokenize a file. Running it on EVERY frame — which
-      // is what this loop used to do, unconditionally, spinner ticks included —
-      // means one slow painter taxes every other plane's frame, because paint,
-      // composite and flush are one synchronous transaction per tick.
-      //
-      // The gate: re-derive only when this region's own inputs may have moved.
-      // `sig` is the region's cheap "would my output differ?" probe, the same
-      // contract the built-in regions use (lastDockSig, lastStatusSig, …).
-      // Omitting it keeps the old always-repaint behaviour, so an existing
-      // plugin is unaffected.
-      //
-      // `sig` is plugin code too — it reads files, stats paths, formats text —
-      // and it used to run OUTSIDE the try below. A throwing sig therefore
-      // escaped this whole loop: every remaining region lost its frame, and the
-      // throw landed in frameTick's coarse catch, which clears the render caches
-      // and repaints from scratch, so a sig that always throws meant a FULL
-      // redraw every tick. Contained here, it costs this one region one frame.
-      let sig = "";
-      let sigOk = true;
-      if (r.sig) {
-        try {
-          sig = r.sig();
-        } catch (e) {
-          sigOk = false; // repaint rather than skip: a region whose probe is
-          // broken still has content worth drawing
-          if (!regionWarned.has(r.key)) {
-            regionWarned.add(r.key);
-            push("error", `region '${r.key}' (${r.owner}) sig threw: ${(e as Error)?.message ?? e}`, { ephemeral: true });
-          }
-        }
-      }
-      const key = `${W}x${H}|${r.rect.join(",")}|${sig}`;
-      const unchanged =
-        sigOk && r.sig !== undefined && !frameChanged && !fullInvalidate && lastRegionSig.get(r.key) === key;
-      if (unchanged) continue;
-      lastRegionSig.set(r.key, key);
-      // Only a region that is about to be redrawn needs its plane wiped; an
-      // unchanged one keeps last frame's cells (composite re-reads them).
-      r.plane.clearRows(0, H);
-      let ok = false;
-      try {
-        ok = r.paint({
-          text: (x: number, y: number, str: string, style: Style) => void r.plane.text(x, y, str, screen.sgr(style)),
-          fillRow: (y: number, x0: number, x1: number, style: Style) => r.plane.fillRow(y, x0, x1, screen.sgr(style)),
-          restyle: (y: number, x0: number, x1: number, bg: string) => r.plane.restyle(y, x0, x1, bg),
-          w: W,
-          h: H,
-          // the TUI's own wrapper: a plugin panel must break lines exactly where
-          // the transcript and the input box do, not one column off
-          wrap: (text: string, width: number, opts?: TuiWrapOptions) => wrapText(text, width, opts),
-        } satisfies TuiRegionPlane) !== false;
-      } catch (e) {
-        if (!regionWarned.has(r.key)) {
-          regionWarned.add(r.key);
-          push("error", `region '${r.key}' (${r.owner}) threw: ${(e as Error)?.message ?? e}`, { ephemeral: true });
-        }
-      }
-      if (!ok) r.plane.clearRows(0, H); // hid this frame: nothing composites
-    }
+  /**
+   * Plugin regions are fully push-based: resolvePluginRegions() handed each a
+   * persistent handle once, and the frame loop only needs their planes to
+   * exist so composite() merges whatever they last pushed. No plugin code runs
+   * here — a slow or stuck plugin shows stale content in its own region and
+   * never blocks the other planes.
+   */
+  function paintPluginRegions(_frameChanged: boolean, _fullInvalidate: boolean): void {
+    resolvePluginRegions();
   }
   let W = 0;
   let H = 0;
@@ -2277,11 +2243,17 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       // re-derive they schedule, and that is deferred to the frame loop.
       void (async () => {
         let n = 0;
+        // TEMP observation aid: FOX_SLOW_EXPAND busy-waits 2s so the freeze fix
+        // is visible. REMOVE BEFORE MERGE. The re-wrap now runs off the frame
+        // path (pushTranscriptFrame), so with this set the spinner and input bar
+        // must stay live during the expand; on the old code the screen locks.
+        const slow = !!process.env.FOX_SLOW_EXPAND;
         for (const it of items) {
           if (!expandable(it)) continue;
           const want = anyFolded;
           if (isExpanded(it) !== want) {
             if (!want) fillDetail(it); // about to expand: defer-pay here too
+            if (slow) { const t0 = Date.now(); while (Date.now() - t0 < 2000) {} }
             toggleExpand(it);
             if (++n % 16 === 0) await breathe();
           }
@@ -3996,6 +3968,38 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
    */
   let deriveRunning = false;
   let deriveQueued = false;
+
+  /**
+   * Generic PUSH scheduler for a region's paint. Runs `paint()` in an async
+   * task (after a macrotask yield) instead of synchronously inside the frame,
+   * so a slow region — a plugin's write step, a heavy dock derive — never
+   * blocks the frame loop or the other regions. `running`/`queued` coalesce a
+   * burst of changes into one in-flight task plus one follow-up, so no update
+   * is dropped but we never stack duplicate paints.
+   */
+  function makeRegionPush(paint: () => void): () => void {
+    let running = false;
+    let queued = false;
+    const run = async (): Promise<void> => {
+      if (running) { queued = true; return; }
+      running = true;
+      try {
+        do {
+          queued = false;
+          await breathe();
+          paint();
+        } while (queued);
+      } finally {
+        running = false;
+      }
+    };
+    return () => { void run(); };
+  }
+
+  const pushDock = makeRegionPush(() => paintDock());
+  const pushFloats = makeRegionPush(() => paintFloats());
+  const pushOverlay = makeRegionPush(() => paintOverlay(painted?.inputTop ?? H - 2));
+  const pushStatus = makeRegionPush(() => paintStatus());
   async function pushTranscriptFrame(): Promise<void> {
     if (deriveRunning) { deriveQueued = true; return; }
     deriveRunning = true;
@@ -4094,27 +4098,22 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     const ds = dockSig();
     if (ds !== lastDockSig || frameChanged) {
       lastDockSig = ds;
-      paintDock();
+      pushDock();
     }
 
     // ---- floats region (wizard / queue / cmdOut / hints) ----
     const fsig = floatsSig();
     if (fsig !== lastFloatsSig || frameChanged) {
-      // the floats plane restamps from empty: opening/closing a popup cannot
-      // corrupt the band underneath, so no transcript re-derive is scheduled
       lastFloatsSig = fsig;
-      paintFloats();
+      pushFloats();
     }
 
     // ---- overlay (modal) ----
     const os = overlaySig();
     if (overlay && (os !== lastOverlaySig || frameChanged)) {
       lastOverlaySig = os;
-      paintOverlay(painted?.inputTop ?? H - 2);
+      pushOverlay();
     } else if (!overlay && lastOverlaySig !== "-") {
-      // modal closed: its plane simply goes empty at the next composite —
-      // transcript/floats/dock were never overwritten, so no wipe or
-      // re-derive of anything is needed
       P.overlay.clearRows(0, H);
       lastOverlaySig = "-";
     }
@@ -4123,7 +4122,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     const ss = statusSig();
     if (ss !== lastStatusSig || fullInvalidate) {
       lastStatusSig = ss;
-      paintStatus();
+      pushStatus();
     }
 
     // ---- plugin regions (gated by each region's own sig when it has one) ----

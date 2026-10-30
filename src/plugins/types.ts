@@ -159,10 +159,17 @@ export interface BeforeToolPatch {
 
 /**
  * A TUI screen region a plugin owns. The plane is clip-rect bounded — a
- * region can never paint outside `rect`, however buggy its painter, because
- * the clamp lives in the plane's write primitives. Paint runs on the frame
- * cadence only while the TUI is up; returning false hides the region for
- * that frame (the plane goes empty and the screen underneath shows through).
+ * region can never paint outside `rect`, however buggy its writer, because
+ * the clamp lives in the plane's write primitives.
+ *
+ * PUSH contract: `paint` is called ONCE at registration with a persistent
+ * `TuiRegionPlane` handle. The plugin keeps the handle and writes content
+ * whenever it wants — from a callback, a timer, a stream — then calls nothing:
+ * the frame loop composites whatever the region last pushed, on its own
+ * schedule. The frame NEVER calls plugin code, so a slow or stuck plugin shows
+ * stale content in its own region and cannot freeze the rest of the screen.
+ * There is no per-frame `sig` probe and no return value; the plugin owns its
+ * own update timing entirely.
  */
 export interface TuiRegion {
   /** stack order among regions; plugin regions should stay >= 50 (above all built-ins) */
@@ -170,30 +177,18 @@ export interface TuiRegion {
   /**
    * The band this region owns, [x0, y0, x1, y1) in screen cells. y may be
    * negative or exceed the screen height — it is clamped against the live
-   * screen size every paint, so "bottom-anchored" regions can express
-   * themselves relative to a fixed max and simply not paint rows that do
-   * not exist this frame.
+   * screen size, so "bottom-anchored" regions can express themselves relative
+   * to a fixed max and simply not paint rows that do not exist.
    */
   rect: [number, number, number, number];
   /**
-   * Optional cheap probe: "would my paint output differ from last frame?"
-   * Return a string that changes when it would. When provided, the region is
-   * SKIPPED (painter not called, plane not wiped) on frames where the string
-   * plus the screen geometry is unchanged — so a panel that only changes when
-   * a number moves stops costing every frame.
-   *
-   * Omit it and the painter runs on every frame, which is what every region
-   * did before this existed. A region whose painter is cheap and always
-   * changing should omit it; one that reads files, calls out, or formats a lot
-   * of text should never omit it.
+   * Called once at registration. Store the `TuiRegionPlane` handle and push
+   * content through it (`p.text`, `p.fillRow`, `p.restyle`) whenever the
+   * region's data changes. Throwing is contained: the region is warned once.
+   * `p.w`/`p.h` are the live screen size; `p.wrap` breaks lines exactly where
+   * the transcript and input box do.
    */
-  sig?: () => string;
-  /**
-   * Stamp this frame's content. Return false to hide the region this frame.
-   * Throwing is contained: the region is dropped for the frame and warned
-   * once. Keep it cheap — it runs at frame rate while anything repaints.
-   */
-  paint: (p: TuiRegionPlane) => boolean | void;
+  paint: (p: TuiRegionPlane) => void;
 }
 
 /**
