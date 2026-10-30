@@ -928,7 +928,10 @@ async function* turnBody(
         //
         // `version` records which policy produced the text, so a session
         // truncated by an older policy is identifiable (and re-derivable).
-        const trunc = truncateToolResult(call.name, res.output, presentationCap);
+        // `uncapped` (exec full, read with an explicit in-range limit) means the
+        // caller sized this result on purpose: presenting it truncated would
+        // silently undo the exact thing the caller asked for.
+        const trunc = res.uncapped ? null : truncateToolResult(call.name, res.output, presentationCap);
         if (trunc) {
           appendOps(sessionId, [{ kind: "replace", id: node.seq, content: trunc.text, version: trunc.version }]);
           // the model reads the view, not the row, so the truncated text is
