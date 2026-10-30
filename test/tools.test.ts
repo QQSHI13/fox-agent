@@ -63,16 +63,19 @@ describe("read", () => {
     expect(r.output).toContain("offset: 13");
   });
 
-  test("a limit above the internal 2000-line guard says what was withheld", async () => {
-    // limit used to be re-capped at 2000 with no notice: `limit: 5000` returned
-    // 2000 lines and looked like the complete file
-    write("big.txt", Array.from({ length: 2500 }, (_, i) => `row${i + 1}`).join("\n"));
+  test("an explicit limit is honoured exactly — no silent re-cap at 2000 lines", async () => {
+    // `limit` used to be re-capped at 2000 with no notice: `limit: 5000`
+    // returned 2000 lines and looked like the complete file
+    write("big.txt", Array.from({ length: 6000 }, (_, i) => `row${i + 1}`).join("\n"));
     const r = await F.readRun({ path: "big.txt", limit: 5000 }, ctx);
     expect(r.ok).toBe(true);
-    expect(r.output).toContain("row2000");
-    expect(r.output).not.toContain("2001:");
-    expect(r.output).toContain("500 more line(s)");
-    expect(r.output).toContain("offset/limit");
+    expect(r.output).toContain("row5000");
+    expect(r.output).not.toContain("5001:");
+    expect(r.output).not.toContain("truncated at line");
+    // an explicit limit is caller-sized: the framework must not re-cap it
+    // downstream, and it says how to continue past the window
+    expect(r.uncapped).toBe(true);
+    expect(r.output).toContain("6000 lines total; showed through line 5000 — continue with offset: 5001");
   });
 
   test("an offset past the end reports the real line count, not an empty file", async () => {

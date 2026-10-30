@@ -112,25 +112,28 @@ export function modelAcceptsMedia(kind: MediaKind, ctx: ToolContext): boolean {
 export const readDef: ToolDef = {
   name: "read",
   description:
-    "Read a file's contents. Text returns line-numbered (n: line) output; use offset/limit to page through a large file. Image/audio/video/pdf attach as media when the model accepts that kind (otherwise an error says so); other binary files are refused.",
+    "Read a file's contents. Text returns line-numbered (n: line) output. An explicit limit is honoured exactly — even above the configured read/output caps — so a large file read in pages with offset/limit is never silently cut. Set full=true to read the entire file regardless of size. Image/audio/video/pdf attach as media when the model accepts that kind (otherwise an error says so); other binary files are refused.",
   parameters: {
     type: "object",
     properties: {
       path: { type: "string", description: "File path" },
       offset: { type: "number", description: "1-based start line" },
-      limit: { type: "number", description: "Max lines to return (page through a large file)" },
+      limit: { type: "number", description: "Max lines to return; honoured exactly — a window the caller sized is never re-capped" },
+      full: { type: "boolean", description: "Read the entire file regardless of size, bypassing every cap and guard" },
     },
     required: ["path"],
   },
 };
 
-export async function readRun(args: { path: string; offset?: number; limit?: number }, ctx: ToolContext): Promise<ToolResult> {
+export async function readRun(args: { path: string; offset?: number; limit?: number; full?: boolean }, ctx: ToolContext): Promise<ToolResult> {
   const p = resolve(ctx.cwd, args.path);
+  const full = args.full === true;
   let buf: Buffer;
   try {
     const st = statSync(p);
     if (st.isDirectory()) return fail(`error: ${args.path} is a directory`);
-    if (st.size > MAX_READ_BYTES) return fail(`error: ${args.path} is ${(st.size / 1e6).toFixed(1)}MB — too large for read; use exec to slice it`);
+    // full=true bypasses the byte cap: the caller explicitly asked for everything
+    if (!full && st.size > MAX_READ_BYTES) return fail(`error: ${args.path} is ${(st.size / 1e6).toFixed(1)}MB — too large for read; use exec to slice it`);
     buf = readFileSync(p);
   } catch (e) {
     return fail(`error: cannot read ${args.path}: ${(e as Error).message}`);
@@ -167,44 +170,45 @@ export async function readRun(args: { path: string; offset?: number; limit?: num
     return ok(`${args.path}: offset ${off} is past the end (${total} line${total === 1 ? "" : "s"} in the file)`);
   }
   lines = lines.slice(off - 1);
-  // The caller's limit is the budget; it used to be silently re-capped at 2000
-  // lines, so `limit: 5000` returned 2000 and looked complete. Keep a guard
-  // against a pathological ask, but SAY when it bites instead of hiding it.
+  // The caller's limit is the budget — honoured exactly, never re-capped. It
+  // used to be silently re-capped at 2000 lines, so `limit: 5000` returned 2000
+  // and looked complete. An explicit limit means the caller sized what it can
+  // afford; the soft caps in the loop below stay out of its way and only apply
+  // to a read with no limit at all.
   const asked = args.limit && args.limit > 0 ? Math.floor(args.limit) : undefined;
-  const HARD_LINE_GUARD = 2000;
-  let withheldFromGuard = 0;
   if (asked !== undefined) lines = lines.slice(0, asked);
-  if (lines.length > HARD_LINE_GUARD) {
-    withheldFromGuard = lines.length - HARD_LINE_GUARD;
-    lines = lines.slice(0, HARD_LINE_GUARD);
-  }
 
   let out = "";
-  // ONE budget for the loop and for the note. The loop used to fill up to
-  // readCap() and then `cap()` trimmed the result down to outCap(), so on a big
-  // file the note named a line that had already been cut away: the model read
-  // "truncated at line 809" above a body ending at line 486, and believed it
-  // held 300 more lines than it ever received. Budgeting by min() makes the
-  // number the note prints the number the reader can actually count.
-  const budget = Math.min(readCap(), outCap());
+  // ONE budget for the loop and for the note, so the "truncated at line N" note
+  // names the first line the reader does NOT see — no gap between the body and
+  // the number. The configured `readCap`/`outCap` soft budgets guard against a
+  // runaway or unbounded read. An explicit limit is caller-sized and is honoured
+  // even above those soft budgets — `read({limit: 5000})` returns all 5000 lines
+  // rather than an unexplained ~600. full=true bypasses every budget.
+  const soft = full ? Infinity : asked !== undefined ? Infinity : Math.min(readCap(), outCap());
+  let shown = 0;
   for (let i = 0; i < lines.length; i++) {
     const l = `${off + i}: ${lines[i]}\n`;
-    // no further trimming below: `out` always fits `budget`, and every appended
-    // line ends in a newline, so nothing can be split mid-character
-    if (out.length + l.length > budget) return ok(`${out}\n… truncated at line ${off + i} of ${total} total`);
+    if (out.length + l.length > soft) break; // soft budget: say where it bit below
     out += l;
+    shown++;
   }
+  const stoppedEarly = shown < lines.length;
   const body = out.trimEnd() || "(empty file)";
-  const lastShown = off + lines.length - 1;
-  const more = total > lastShown;
+  const lastShown = off + shown - 1;
+  const more = total > lastShown || stoppedEarly;
   // name what was held back and how to get it — a bare "(N lines total)" after
   // a cut listing reads as the whole file to a model that is skimming
   const notes = [
-    withheldFromGuard > 0 ? `${withheldFromGuard} more line(s) beyond the ${HARD_LINE_GUARD}-line guard — use offset/limit to page` : "",
-    more && withheldFromGuard === 0 ? `${total} lines total; showed through line ${lastShown} — continue with offset: ${lastShown + 1}` : "",
-    more && withheldFromGuard > 0 ? `${total} lines total` : "",
+    stoppedEarly ? `… truncated at line ${off + shown} of ${total} total — soft budget; re-read with full:true or a smaller limit` : "",
+    more && !stoppedEarly ? `${total} lines total; showed through line ${lastShown} — continue with offset: ${lastShown + 1}` : "",
   ].filter(Boolean);
-  return ok(notes.length ? `${body}\n(${notes.join("; ")})` : body);
+  const result = ok(notes.length ? `${body}\n(${notes.join("; ")})` : body);
+  // tell the framework this result is caller-sized: no harness re-cap, no
+  // presentation truncation. Without this the next step (and the transcript)
+  // silently saw an excerpt no matter how the read was asked for.
+  if (full || asked !== undefined) result.uncapped = true;
+  return result;
 }
 
 // ---------- write ----------
