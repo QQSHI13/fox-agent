@@ -2269,15 +2269,25 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       // (a streaming tool body, the next think block, a replayed transcript)
       // must arrive in the mode the user chose, or the toggle keeps losing
       expandMode = anyFolded;
-      for (const it of items) {
-        if (!expandable(it)) continue;
-        const want = anyFolded;
-        if (isExpanded(it) !== want) {
-          if (!want) fillDetail(it); // about to expand: defer-pay here too
-          toggleExpand(it);
+      // Yield to the event loop every N items so the spinner, the input bar and
+      // any pending keystroke stay live while a long expand runs. Without this
+      // the whole loop is one synchronous block: the screen freezes for however
+      // long expanding every node takes, which is exactly the "ctrl+t hangs
+      // everything" report. touch()/markDirty() are cheap; the cost is the
+      // re-derive they schedule, and that is deferred to the frame loop.
+      void (async () => {
+        let n = 0;
+        for (const it of items) {
+          if (!expandable(it)) continue;
+          const want = anyFolded;
+          if (isExpanded(it) !== want) {
+            if (!want) fillDetail(it); // about to expand: defer-pay here too
+            toggleExpand(it);
+            if (++n % 16 === 0) await breathe();
+          }
         }
-      }
-      flash(anyFolded ? "all unfolded" : "all folded");
+        flash(anyFolded ? "all unfolded" : "all folded");
+      })();
       return;
     }
     if (name === "v" && ctrl) {
@@ -3074,6 +3084,12 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   }
 
   function itemRows(it: Item, w: number): { rows: Row[]; span: [number, number] } {
+    // TEMP-DEBUG: artificial 2s slowdown so the ctrl+t freeze is visible.
+    // REMOVE BEFORE MERGE. Only active when the env var is set.
+    if (process.env.FOX_SLOW_RENDER) {
+      const t0 = Date.now();
+      while (Date.now() - t0 < 2000) {} // busy-wait, blocks the thread like a real heavy re-wrap
+    }
     const perWidth = lineCache.get(it.k);
     const cached = perWidth?.get(w);
     if (cached && cached.rev === revs.get(it.k) && cached.hl === highlightVersion()) {
