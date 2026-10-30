@@ -419,9 +419,30 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       // contract the built-in regions use (lastDockSig, lastStatusSig, …).
       // Omitting it keeps the old always-repaint behaviour, so an existing
       // plugin is unaffected.
-      const sig = r.sig ? r.sig() : "";
+      //
+      // `sig` is plugin code too — it reads files, stats paths, formats text —
+      // and it used to run OUTSIDE the try below. A throwing sig therefore
+      // escaped this whole loop: every remaining region lost its frame, and the
+      // throw landed in frameTick's coarse catch, which clears the render caches
+      // and repaints from scratch, so a sig that always throws meant a FULL
+      // redraw every tick. Contained here, it costs this one region one frame.
+      let sig = "";
+      let sigOk = true;
+      if (r.sig) {
+        try {
+          sig = r.sig();
+        } catch (e) {
+          sigOk = false; // repaint rather than skip: a region whose probe is
+          // broken still has content worth drawing
+          if (!regionWarned.has(r.key)) {
+            regionWarned.add(r.key);
+            push("error", `region '${r.key}' (${r.owner}) sig threw: ${(e as Error)?.message ?? e}`, { ephemeral: true });
+          }
+        }
+      }
       const key = `${W}x${H}|${r.rect.join(",")}|${sig}`;
-      const unchanged = r.sig !== undefined && !frameChanged && !fullInvalidate && lastRegionSig.get(r.key) === key;
+      const unchanged =
+        sigOk && r.sig !== undefined && !frameChanged && !fullInvalidate && lastRegionSig.get(r.key) === key;
       if (unchanged) continue;
       lastRegionSig.set(r.key, key);
       // Only a region that is about to be redrawn needs its plane wiped; an

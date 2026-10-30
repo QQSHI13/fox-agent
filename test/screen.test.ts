@@ -322,3 +322,141 @@ describe("planes", () => {
     expect((p.chars as (string | undefined)[]).every((c) => c === undefined)).toBe(true);
   });
 });
+
+describe("damage tracking: composite rebuilds only touched rows", () => {
+  /** A term that records every write, so "did anything reach the screen" is observable. */
+  class Rec {
+    buf = "";
+    write(s: string) {
+      this.buf += s;
+    }
+    flush() {}
+  }
+
+  test("a spinner tick writes only its own row, not the whole screen", async () => {
+    // The point of the whole change: a frame whose only change is one row must
+    // not cost screen-area work. Before this, every frame cleared all cells,
+    // copied every plane and hashed every row.
+    const { Screen } = await import("../src/tui/screen.ts");
+    const term = new Rec();
+    const scr = new Screen(term as any);
+    scr.resize(40, 10);
+    const st = scr.sgr({});
+    const status = scr.createPlane("status", 40);
+
+    status.fillRow(9, 0, 40, st);
+    scr.composite();
+    scr.flush();
+    term.buf = "";
+
+    // change ONLY the status row
+    status.fillRow(9, 0, 40, st);
+    status.text(0, 9, "tick", st);
+    scr.composite();
+    scr.flush();
+
+    // every emitted CUP must address row 10 (1-based), i.e. no other row was
+    // emitted at all
+    const cups = [...term.buf.matchAll(/\x1b\[(\d+);1H/g)].map((m) => Number(m[1]));
+    expect(cups).toEqual([10]);
+  });
+
+  test("composite must NOT consume the dirty rows — flush needs them", async () => {
+    // Regression caught by measurement, not by the suite: composite() cleared
+    // the dirty bits, so flush() found nothing and wrote ZERO bytes while the
+    // grid was correct. Every existing test passed because they call flush()
+    // without composite() in between. This pins the actual contract.
+    const { Screen } = await import("../src/tui/screen.ts");
+    const term = new Rec();
+    const scr = new Screen(term as any);
+    scr.resize(20, 3);
+    const st = scr.sgr({});
+    const p = scr.createPlane("p", 0);
+    p.text(0, 0, "hello", st);
+
+    scr.composite();
+    scr.flush();
+    expect(term.buf.length).toBeGreaterThan(0); // reached the terminal at all
+    expect(term.buf).toContain("hello");
+  });
+
+  test("a frame with nothing dirty emits nothing", async () => {
+    const { Screen } = await import("../src/tui/screen.ts");
+    const term = new Rec();
+    const scr = new Screen(term as any);
+    scr.resize(20, 3);
+    const st = scr.sgr({});
+    const p = scr.createPlane("p", 0);
+    p.text(0, 0, "hi", st);
+    scr.composite();
+    scr.flush();
+    term.buf = "";
+
+    // nothing written this frame
+    scr.composite();
+    scr.flush();
+    expect(term.buf).toBe("");
+  });
+
+  test("dropping a plane clears its content off the screen", async () => {
+    // The failure mode a single shared grid introduces: the plane is gone, but
+    // the grid still holds its last frame. Only rows marked dirty are rebuilt,
+    // so dropPlane must invalidate. Otherwise a removed panel never disappears.
+    const { Screen } = await import("../src/tui/screen.ts");
+    const scr = new Screen({ write: () => {} } as any);
+    scr.resize(20, 3);
+    const st = scr.sgr({});
+    const p = scr.createPlane("gone", 50);
+    p.fillRow(1, 0, 20, st);
+    p.text(0, 1, "BOO", st);
+    scr.composite();
+    const chars = (scr as any).chars as (string | undefined)[];
+    expect(chars[20]).toBe("B"); // it is on the grid
+
+    scr.dropPlane("gone");
+    scr.composite();
+    expect(chars[20]).toBeUndefined(); // and now it is not
+  });
+
+  test("rows below a plane's own writes are untouched, so a small plane does not repaint the screen", async () => {
+    const { Screen } = await import("../src/tui/screen.ts");
+    const scr = new Screen({ write: () => {} } as any);
+    scr.resize(20, 20);
+    const st = scr.sgr({});
+    const base = scr.createPlane("base", 0);
+    for (let y = 0; y < 20; y++) base.fillRow(y, 0, 20, st);
+    scr.composite();
+
+    // record the grid, then touch one row only
+    const before = (scr as any).chars.slice() as (string | undefined)[];
+    base.fillRow(5, 0, 20, st);
+    base.text(0, 5, "X", st);
+    scr.composite();
+    const after = (scr as any).chars as (string | undefined)[];
+    expect(after[5 * 20]).toBe("X"); // the touched row changed
+    // and every other row is byte-identical (not re-derived differently)
+    for (let y = 0; y < 20; y++) {
+      if (y === 5) continue;
+      expect(after.slice(y * 20, y * 20 + 20)).toEqual(before.slice(y * 20, y * 20 + 20) as never);
+    }
+  });
+
+  test("a full repaint still looks identical to the old rebuild-everything path", async () => {
+    // The fast path kicks in when most rows are dirty; its output must not
+    // differ from the row-by-row one, or the optimisation changes pixels.
+    const { Screen } = await import("../src/tui/screen.ts");
+    const scr = new Screen({ write: () => {} } as any);
+    scr.resize(12, 8);
+    const st = scr.sgr({});
+    const low = scr.createPlane("low", 0);
+    const high = scr.createPlane("high", 10);
+    low.fillRow(0, 0, 12, st);
+    low.text(0, 0, "underneath", st);
+    high.text(0, 0, "TOP", st); // covers 3 cells, rest transparent
+    scr.markAllDirty();
+    scr.composite();
+    expect(((scr as any).chars as string[]).slice(0, 10).join("")).toBe("TOPerneath");
+    // a row no plane covers is empty, not stale
+    expect(((scr as any).chars as (string | undefined)[]).slice(5 * 12, 6 * 12).every((c) => c === undefined)).toBe(true);
+  });
+});
