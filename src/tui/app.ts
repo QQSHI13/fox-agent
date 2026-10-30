@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { Screen, Plane, charWidth, type Style } from "./screen.ts";
+import { PushCompositor } from "./compositor.ts";
 import { computeFrame, dockRows, itemEdgeSpan, scrollbarScrollTop, viewportHeight, chipGutter, contentOrigin, contentOriginForChip, contentWidth, type Frame, type FrameInput, type Row } from "./layout.ts";
 import { activePlugins } from "../plugins/load.ts";
 import type { TuiRegionPlane, TuiWrapOptions } from "../plugins/types.ts";
@@ -354,7 +355,7 @@ export function argsJson(args: string): string {
 
 export async function startTui(state: HarnessState, applyConfig?: () => { warnings: string[] }) {
   const term: Term = openTerm();
-  const screen = new Screen(term);
+  const screen = new PushCompositor(term);
   // ---- planes: one per screen region, composited into the grid each paint ----
   // z is the stack order; a region stamps complete content into its plane and
   // composite() folds them in bottom-up. Regions no longer clear each other's
@@ -3083,12 +3084,6 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   }
 
   function itemRows(it: Item, w: number): { rows: Row[]; span: [number, number] } {
-    // TEMP-DEBUG: artificial 2s slowdown so the ctrl+t freeze is visible.
-    // REMOVE BEFORE MERGE. Only active when the env var is set.
-    if (process.env.FOX_SLOW_RENDER) {
-      const t0 = Date.now();
-      while (Date.now() - t0 < 2000) {} // busy-wait, blocks the thread like a real heavy re-wrap
-    }
     const perWidth = lineCache.get(it.k);
     const cached = perWidth?.get(w);
     if (cached && cached.rev === revs.get(it.k) && cached.hl === highlightVersion()) {
