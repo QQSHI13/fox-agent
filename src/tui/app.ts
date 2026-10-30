@@ -2243,17 +2243,16 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       // re-derive they schedule, and that is deferred to the frame loop.
       void (async () => {
         let n = 0;
-        // TEMP observation aid: FOX_SLOW_EXPAND busy-waits 2s so the freeze fix
-        // is visible. REMOVE BEFORE MERGE. The re-wrap now runs off the frame
-        // path (pushTranscriptFrame), so with this set the spinner and input bar
-        // must stay live during the expand; on the old code the screen locks.
-        const slow = !!process.env.FOX_SLOW_EXPAND;
+        // TEMP observation aid: a fixed 2s busy-wait per expanded item so the
+        // freeze fix is visible. REMOVE BEFORE MERGE. The re-wrap runs off the
+        // frame path (pushTranscriptFrame), so the spinner and input bar must
+        // stay live during the expand; on the old code the screen locks.
         for (const it of items) {
           if (!expandable(it)) continue;
           const want = anyFolded;
           if (isExpanded(it) !== want) {
             if (!want) fillDetail(it); // about to expand: defer-pay here too
-            if (slow) { const t0 = Date.now(); while (Date.now() - t0 < 2000) {} }
+            { const t0 = Date.now(); while (Date.now() - t0 < 2000) {} }
             toggleExpand(it);
             if (++n % 16 === 0) await breathe();
           }
@@ -4000,6 +3999,14 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   const pushFloats = makeRegionPush(() => paintFloats());
   const pushOverlay = makeRegionPush(() => paintOverlay(painted?.inputTop ?? H - 2));
   const pushStatus = makeRegionPush(() => paintStatus());
+  // Geometry coordinator: when the transcript publishes a new layout split
+  // (inputTop/vh/queueH moved — a dock resize, a queue push), the floats and
+  // overlay sit ABOVE the dock and must re-push at their new positions. The
+  // dock re-derives on its own sig; these two only move when the split does.
+  screen.onGeometry(["inputTop", "queueH"], () => {
+    pushFloats();
+    pushOverlay();
+  });
   async function pushTranscriptFrame(): Promise<void> {
     if (deriveRunning) { deriveQueued = true; return; }
     deriveRunning = true;
@@ -4012,6 +4019,19 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         stick = fr.stick;
         painted = fr;
         stampTranscript(fr);
+        // Publish the authoritative layout split to the shared geometry so any
+        // dependent region (floats above the dock, a bottom-anchored plugin)
+        // re-pushes at the new positions. inputTop/vh/queueH moved -> notify.
+        screen.pushGeometry({
+          inputTop: fr.inputTop,
+          vh: fr.vh,
+          shownCount: fr.shownCount,
+          firstShown: fr.firstShown,
+          queueH: fr.queueH,
+          total: fr.total,
+          scrollTop: fr.scrollTop,
+          stick: fr.stick,
+        });
         markDirty(); // a new Frame landed: schedule a composite+flush to show it
       } while (deriveQueued);
     } finally {
