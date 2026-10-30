@@ -8,7 +8,7 @@ import { appendFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { Screen, Plane, type Style } from "./screen.ts";
+import { Screen, Plane, charWidth, type Style } from "./screen.ts";
 import { computeFrame, dockRows, itemEdgeSpan, scrollbarScrollTop, viewportHeight, chipGutter, contentOrigin, contentOriginForChip, contentWidth, type Frame, type FrameInput, type Row } from "./layout.ts";
 import { activePlugins } from "../plugins/load.ts";
 import type { TuiRegionPlane, TuiWrapOptions } from "../plugins/types.ts";
@@ -27,7 +27,6 @@ import { renderMarkdown } from "./markdown.ts";
 import { codeContRow, codeGutterRow, wrapCodeAware } from "./markdown.ts";
 import { createPlainRows, createStreamRows } from "./rows.ts";
 import { wrapProse, wrapSegs, wrapText, type Seg } from "./wrap.ts";
-import { charWidth } from "./screen.ts";
 import { Picker, type PickerAction, type PickerRow } from "./picker.ts";
 import { sessionRows, setPickerWheelStep } from "./pickerui.ts";
 import { VERSION } from "../core/version.ts";
@@ -3991,6 +3990,69 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
    */
   const breathe = () => new Promise<void>((r) => setTimeout(r, 0));
 
+  /**
+   * The transcript's PUSH: run computeFrame (the expensive re-wrap) off the
+   * frame path, then stamp the transcript plane. While this runs, the frame
+   * loop is free — the spinner, dock and every other region paint from their
+   * last-pushed state, so a slow derive never freezes them. Re-entrancy is
+   * guarded by `deriveRunning`: a schedule that arrives mid-derive re-arms for
+   * one more pass, so a burst of changes (ctrl+t over many nodes) still lands
+   * every update instead of dropping the last one.
+   */
+  let deriveRunning = false;
+  let deriveQueued = false;
+  async function pushTranscriptFrame(): Promise<void> {
+    if (deriveRunning) { deriveQueued = true; return; }
+    deriveRunning = true;
+    try {
+      do {
+        deriveQueued = false;
+        await breathe(); // let any pending frame/keystroke run first
+        const fr = computeFrame(frameInput());
+        scrollTop = fr.scrollTop;
+        stick = fr.stick;
+        painted = fr;
+        stampTranscript(fr);
+        markDirty(); // a new Frame landed: schedule a composite+flush to show it
+      } while (deriveQueued);
+    } finally {
+      deriveRunning = false;
+    }
+  }
+
+  /** Stamp one computed Frame into the transcript plane. Pure cell writes. */
+  function stampTranscript(fr: Frame): void {
+    const st = (seg: Seg, fallback: number): number => {
+      if (!seg.fg && !seg.bg && !seg.bold && !seg.italic && !seg.strike && !seg.href) return fallback;
+      return screen.sgr(seg);
+    };
+    P.transcript.clearRows(0, H);
+    const winBase = fr.scrollTop - fr.winOffset;
+    let y = 0;
+    for (let i = fr.winOffset; i < fr.rowCount && y < fr.vh; i++, y++) {
+      const row = fr.rows[i];
+      const absolute = winBase + i;
+      if (row.bg) P.transcript.fillRow(y, 0, SCROLLBAR ? W - 1 : W, row.bg);
+      const mk = row.marker;
+      const chipW = mk && "w" in mk ? mk.w : 0;
+      if (mk && "label" in mk) {
+        P.transcript.text(0, y, mk.label, screen.sgr({ fg: mk.fg, bg: mk.bg, bold: true }));
+        P.transcript.text(chipW, y, " ", S.base);
+      }
+      const x0 = contentOriginForChip(chipW);
+      let x = x0;
+      for (const seg of row.segs) x = P.transcript.text(x, y, seg.t, st(seg, S.base));
+      if (hasSel()) {
+        const range = selRangeForRow(absolute, selA!, selB!, rowCells(row.segs));
+        if (range) P.transcript.restyle(y, x0 + range.from, x0 + range.to + 1, C.selBg);
+      }
+    }
+    if (SCROLLBAR && fr.sbShowing) {
+      for (let sy = 0; sy < fr.vh; sy++)
+        P.transcript.fillRow(sy, W - 1, W, sy >= fr.sb.ty && sy < fr.sb.ty + fr.sb.th ? S.sbThumb : S.sbTrack);
+    }
+  }
+
   function paintRegions() {
     const st = (seg: Seg, fallback: number): number => {
       if (!seg.fg && !seg.bg && !seg.bold && !seg.italic && !seg.strike && !seg.href) return fallback;
@@ -4014,90 +4076,24 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     }
 
     // ---- frame + transcript region ----
+    // PUSH, not pull: the transcript's derive (computeFrame — the expensive
+    // re-wrap) runs in an async task scheduled below, NOT synchronously here.
+    // A slow derive (ctrl+t expand, a long stream) therefore never sits inside
+    // this frame's synchronous block: the event loop stays free, the spinner
+    // and input bar keep painting from the last-pushed `painted`, and this
+    // region just re-stamps once the derive lands. The cost of a slow plane
+    // is confined to that plane — the "one slow plane freezes the screen"
+    // failure is gone because no panel code runs inside the frame.
     const pT = PROF ? performance.now() : 0;
     const fs = transcriptSig();
     const frameChanged = fs !== lastFrameSig || !painted;
     const pS = PROF ? performance.now() : 0;
-    if (frameChanged) {
-      const fr = computeFrame(frameInput());
-      scrollTop = fr.scrollTop; // computeFrame owns the clamp/stick rule
-      stick = fr.stick;
-      painted = fr; // THE geometry of record until the next frame
+    if (frameChanged && !deriveRunning) {
       lastFrameSig = fs;
-
-      // transcript — the plane is restamped in full; there is no "old range"
-      // to clear, because everything it contained is about to be overwritten
-      // (and a cell the new frame does NOT write is transparent, revealing
-      // the grid's last composite — which is exactly what stale-ghosting
-      // used to require clearRows choreography to avoid)
-      P.transcript.clearRows(0, H);
-
-      // fr.rows is the WINDOW built around scrollTop (total is the real
-      // length): rows[0] is absolute row fr.scrollTop - fr.winOffset, and the
-      // viewport starts winOffset rows INTO the slice — rows before it are
-      // scroll-up margin, never on screen
-      const winBase = fr.scrollTop - fr.winOffset;
-      let y = 0;
-      for (let i = fr.winOffset; i < fr.rowCount && y < fr.vh; i++, y++) {
-        const row = fr.rows[i];
-        const absolute = winBase + i;
-        // tool rows fill the background first, so the text paints over it
-        // instead of floating in default. NEVER the last column — that cell
-        // belongs to the scrollbar strip (the strip's track/thumb must show
-        // through even on tool rows)
-        if (row.bg) P.transcript.fillRow(y, 0, SCROLLBAR ? W - 1 : W, row.bg);
-        // the [N] marker chip hugs column 0 — OUTSIDE the content margin — so
-        // it sits at the very-left edge. A marked item's first row stamps the
-        // chip; its continuation rows carry the same-width indent so wrapped
-        // text stays aligned under the content, not the marker.
-        const mk = row.marker;
-        // a chip row reserves its `[N]` width + one gap; a continuation row
-        // (indent 0) has no marker, so its content starts at the usual margin
-        const chipW = mk && "w" in mk ? mk.w : 0;
-        if (mk && "label" in mk) {
-          // bg spans EXACTLY `[N]` — the gap after it stays uncolored so no
-          // stray background cell trails the marker
-          P.transcript.text(0, y, mk.label, screen.sgr({ fg: mk.fg, bg: mk.bg, bold: true }));
-          // text() keeps a filled cell's bg when painting over it, so the gap
-          // column would inherit the row fill — stamp it default to be sure
-          P.transcript.text(chipW, y, " ", S.base);
-        }
-        // content sits one uncolored space past the chip on line 1, and at the
-        // usual x=1 margin on every wrapped line — the marker only borrows line 1
-        const x0 = contentOriginForChip(chipW);
-        let x = x0;
-        for (const seg of row.segs) {
-          x = P.transcript.text(x, y, seg.t, st(seg, S.base));
-        }
-        // Selection is a re-style over the cells already painted, not a second
-        // text pass: one char per cell, so re-stamping the range with a
-        // highlight background cannot disturb wide chars or wrapping. The range
-        // is relative to the CONTENT (row.segs), which starts at x0 — restyle at
-        // x0 + offset, not 1 + offset, or the highlight lands a marker-width off.
-        // restyle() takes an EXCLUSIVE end but selRangeForRow returns an inclusive
-        // `to`, so +1 or the last selected cell (e.g. a trailing '.') stays unlit.
-        //
-        // The selection covers CONTENT ONLY, never the chip: the marker is not
-        // part of the message text (rowCells is built from row.segs, which
-        // excludes it) and it is not in the copied output either. Highlighting
-        // it would make the screen claim the selection covers a glyph the
-        // clipboard never got. The chip keeps markerBg and the gap column keeps
-        // its own cell, so a selected marked row reads as chip + gap + lit text.
-        if (hasSel()) {
-          const range = selRangeForRow(absolute, selA!, selB!, rowCells(row.segs));
-          if (range) P.transcript.restyle(y, x0 + range.from, x0 + range.to + 1, C.selBg);
-        }
-      }
-
-      // scrollbar — dedicated track column only when content overflows:
-      // painting the track unconditionally put a dead gutter down the welcome
-      // screen and any short session with nothing to scroll
-      if (SCROLLBAR && fr.sbShowing) {
-        for (let sy = 0; sy < fr.vh; sy++)
-          P.transcript.fillRow(sy, W - 1, W, sy >= fr.sb.ty && sy < fr.sb.ty + fr.sb.th ? S.sbThumb : S.sbTrack);
-      }
-      if (PROF) profLine(`  derive=${(performance.now() - pS).toFixed(1)} sig=${(pS - pT).toFixed(1)}`);
+      // schedule the derive off the frame path; the stamp happens when it lands
+      void pushTranscriptFrame();
     }
+    if (PROF) profLine(`  sig=${(pS - pT).toFixed(1)}`);
 
     // ---- dock region ----
     const ds = dockSig();
