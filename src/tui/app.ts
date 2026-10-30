@@ -600,7 +600,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
    */
   let paintTimer: ReturnType<typeof setTimeout> | null = null;
   // set from startTui once frameTick exists (same pattern as clearKeyRef)
-  let tickRef: (() => void) | null = null;
+  let tickRef: (() => void | Promise<void>) | null = null;
   /**
    * When the last frame actually ran. The paint window below is a *burst*
    * coalescer, and a burst is defined by frames arriving close together — so
@@ -3955,9 +3955,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
 
   let lastOverlaySig = "";
 
-  function paint() {
+  function paint(): void {
     // any stray write from a region's painter must not re-arm the loop we are
-    // already inside (see inPaint / the stray swallow)
+    // already inside (see the stray swallow at the write site)
     inPaint = true;
     try {
       paintRegions();
@@ -3965,6 +3965,15 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       inPaint = false;
     }
   }
+
+  /**
+   * Yield to the event loop so a slow region's derive doesn't starve the
+   * spinner, the input bar, or a pending keystroke. The transcript derive
+   * (ctrl+t expand, a long stream) can run for tens of ms; without a yield
+   * here it sits inside one synchronous block with every region after it,
+   * so the whole screen freezes until it finishes.
+   */
+  const breathe = () => new Promise<void>((r) => setTimeout(r, 0));
 
   function paintRegions() {
     const st = (seg: Seg, fallback: number): number => {
@@ -4805,7 +4814,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       // Frame interval honors tuiFrameMs (config, default 16). The loop is a
       // coalescer, not a pacer: dirty work runs at most once per interval,
       // and a spinner-only tick re-derives the status region alone.
-      const frameTick = () => {
+      const frameTick = async () => {
         tickSpinner();
         if (!dirty && !statusOnly) return;
         const spinOnly = statusOnly && !dirty;
@@ -4844,6 +4853,11 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           lastTickAt = performance.now();
           const q0 = PROF ? performance.now() : 0;
           paint();
+          // Let the transcript's derive breathe BEFORE the dock/status/input
+          // derive, so a slow transcript (ctrl+t expand, a long stream) does
+          // not sit inside one synchronous block with every region after it —
+          // that is the "one slow plane freezes the whole screen" failure.
+          await breathe();
           const q1 = PROF ? performance.now() : 0;
           const caret = nextCaret ?? { x: 3, y: H - 2 };
           const caretKey = `${caret.x},${caret.y}`;
