@@ -101,6 +101,13 @@ export function createInputModule(deps: InputDeps): InputModule {
    *  YAML, a markdown list) where leading whitespace is the content. An editor
    *  must round-trip what it is given; the suppression is for rendering, not
    *  for editing. */
+  /** Display width of `s` in cells (CJK-aware). Shared by wrapByWidth and indexAtWidth. */
+  function measureWidth(s: string): number {
+    let n = 0;
+    for (const ch of s) n += charWidth(ch.codePointAt(0)!);
+    return n;
+  }
+
   function wrapByWidth(s: string, maxCols: number): string[] {
     if (s.length === 0) return [""];
     const out: string[] = [];
@@ -115,7 +122,7 @@ export function createInputModule(deps: InputDeps): InputModule {
       }
       let w = word;
       for (;;) {
-        if (currentWidth() + widthOf(w) <= maxCols) {
+        if (currentWidth() + measureWidth(w) <= maxCols) {
           add(w);
           break;
         }
@@ -143,14 +150,7 @@ export function createInputModule(deps: InputDeps): InputModule {
     return out.length ? out : [""];
     // -- tiny helpers over the in-progress line --
     function currentWidth(): number {
-      let n = 0;
-      for (const ch of line) n += charWidth(ch.codePointAt(0)!);
-      return n;
-    }
-    function widthOf(t: string): number {
-      let n = 0;
-      for (const ch of t) n += charWidth(ch.codePointAt(0)!);
-      return n;
+      return measureWidth(line);
     }
     function add(t: string): void {
       line += t;
