@@ -11,13 +11,13 @@
 // `cd build && make` has to still be in build/ on the next call.
 import { openSync, readSync, fstatSync, closeSync, statSync, writeFileSync, mkdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
-import type { ToolDef } from "../providers/types.ts";
-import type { ToolContext, ToolResult, PtyState } from "./types.ts";
-import { fail, ok } from "./types.ts";
-import { childEnv } from "../core/childenv.ts";
-import { ptyDir } from "../core/paths.ts";
-import { outCap } from "./files.ts";
-import { pidAlive } from "../core/proc.ts";
+import type { ToolDef } from "../../providers/types.ts";
+import type { ToolContext, ToolResult, PtyState } from "../../tools/types.ts";
+import { fail, ok } from "../../tools/types.ts";
+import { childEnv } from "../../core/childenv.ts";
+import { ptyDir } from "../../core/paths.ts";
+
+import { pidAlive } from "../../core/proc.ts";
 
 export const ptyDef: ToolDef = {
   name: "pty",
@@ -264,7 +264,7 @@ export function partialTailBytes(buf: Buffer): number {
 }
 
 /** Exported for tests: the drain step that must not lose a character. */
-export function readRange(path: string, from: number): { text: string; end: number } {
+export function readRange(path: string, from: number, cap = 30_000): { text: string; end: number } {
   let fd: number;
   try {
     fd = openSync(path, "r");
@@ -274,7 +274,7 @@ export function readRange(path: string, from: number): { text: string; end: numb
   try {
     const size = fstatSync(fd).size;
     if (size <= from) return { text: "", end: size };
-    const len = Math.min(size - from, outCap() * 4);
+    const len = Math.min(size - from, cap * 4);
     const buf = Buffer.alloc(len);
     readSync(fd, buf, 0, len, from);
     // Stop short of a character split across this range's end (see
@@ -357,10 +357,11 @@ async function drivePtyInner(args: { keys?: string; quiet_ms?: number }, ctx: To
     await waitForQuiet(pty.logPath, Math.min(5_000, Math.max(200, args.quiet_ms ?? 400)));
   }
 
-  const { text, end } = readRange(pty.logPath, pty.cursor);
+  const { text, end } = readRange(pty.logPath, pty.cursor, ctx.toolOutputCap ?? 30_000);
   pty.cursor = end;
   const fresh = text.replace(/\r/g, "").trimEnd();
-  const body = fresh.length > outCap() ? `…\n${fresh.slice(-outCap())}` : fresh || "(no new output)";
+  const cap = ctx.toolOutputCap ?? 30_000;
+  const body = fresh.length > cap ? `…\n${fresh.slice(-cap)}` : fresh || "(no new output)";
   // tell the model plainly that its shell is not the one it was using, rather
   // than handing back a pristine prompt that looks like nothing happened
   let note = lost

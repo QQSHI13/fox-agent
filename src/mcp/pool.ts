@@ -26,7 +26,7 @@ import { join } from "node:path";
 import { agentHome } from "../core/paths.ts";
 import { childEnv } from "../core/childenv.ts";
 import type { McpServerConfig } from "../core/config.ts";
-import type { Tool, ToolContext, ToolResult } from "../tools/types.ts";
+import type { Tool, ToolContext, ToolResult } from "../core/tool.ts";
 import { fail } from "../tools/types.ts";
 
 /** argv flag the daemon entry point (and the spawner) agree on. */
@@ -136,7 +136,7 @@ export async function runPoolDaemon(sockPath: string): Promise<void> {
   let dialing: Promise<Map<string, Tool>> | null = null;
   const tools = (servers: Record<string, McpServerConfig>) =>
     (dialing ??= (async () => {
-      const { mcpTools } = await import("../tools/mcp.ts");
+      const { mcpTools } = await import("./client.ts");
       const { tools: map, warnings } = await mcpTools(servers);
       for (const w of warnings) process.stderr.write(`fox-agent: ${w}\n`);
       return map;
@@ -152,7 +152,7 @@ export async function runPoolDaemon(sockPath: string): Promise<void> {
     idle = setTimeout(() => {
       if (conns > 0) return;
       void (async () => {
-        const { closeMcp } = await import("../tools/mcp.ts");
+        const { closeMcp } = await import("./client.ts");
         closeMcp();
         rmSync(sockPath, { force: true });
         process.exit(0);
@@ -170,7 +170,7 @@ export async function runPoolDaemon(sockPath: string): Promise<void> {
         const servers = msg.servers as Record<string, McpServerConfig> | undefined;
         if (!servers) throw new Error("catalog requires the server config");
         const map = await tools(servers);
-        const { mcpCatalog } = await import("../tools/mcp.ts");
+        const { mcpCatalog } = await import("./client.ts");
         return { catalog: mcpCatalog() };
       }
       if (method === "call") {
@@ -234,7 +234,7 @@ export async function poolTools(
   const catalog = res.catalog;
   if (!Object.keys(catalog).length) return { tools: new Map(), warnings: [] };
 
-  const { mcpToolDef } = await import("../tools/mcp.ts");
+  const { mcpToolDef } = await import("./client.ts");
   const def = mcpToolDef(catalog);
   const tool: Tool = {
     def,

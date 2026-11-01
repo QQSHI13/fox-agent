@@ -821,30 +821,27 @@ describe("/settings", () => {
     expect(state.config.compactWarnAt).toBeUndefined();
   });
 
-  test("toolOutputCap reaches the running tools, not just the file", async () => {
-    // it lives in a module-level OUT_CAP that every tool reads through outCap();
-    // buildRegistry was the only other writer, so a change used to say
-    // "live now" while the running turn kept the old cap until /reload
+  test("toolOutputCap is config-driven, threaded per-turn into ToolContext", async () => {
+    // tools read toolOutputCap from ToolContext (populated fresh each call from
+    // config), not a module global — a /settings write updates the config the
+    // next turn reads; there is no live global to push.
     const tt = await setup();
     const cfgPath = join(dir, "config.toml");
     writeFileSync(cfgPath, 'model = "m"\n');
     const { loadConfig } = await import("../src/core/config.ts");
-    const { outCap } = await import("../src/tools/files.ts");
     const s = tt.createSession("/w", "m1");
     const state = mkState(cfgPath, s.id, loadConfig({ cwd: "/w", configPath: cfgPath }, {}));
 
-    expect(outCap()).toBe(30_000);
     tt.runSlashCommand("/settings toolOutputCap=8000", state)!;
     expect(state.config.toolOutputCap).toBe(8000);
     expect(readFileSync(cfgPath, "utf8")).toContain("toolOutputCap = 8000");
-    // applyResultLive is async (a dynamic import inside it), so give it a turn
-    await new Promise((r) => setTimeout(r, 50));
-    expect(outCap()).toBe(8000);
 
-    // and a reset puts the documented default back in the running process
+    // a reset clears the key — the default (30000) applies at read time, not
+    // stored, so the config field is undefined after reset
     tt.runSlashCommand("/settings toolOutputCap=", state)!;
-    await new Promise((r) => setTimeout(r, 50));
-    expect(outCap()).toBe(30_000);
+    expect(state.config.toolOutputCap).toBeUndefined();
+    const { defaultConfig } = await import("../src/core/config.ts");
+    expect(defaultConfig().toolOutputCap).toBe(30_000);
   });
 
   test("every live-applied setting resets to DEFAULTS, not a stale literal", async () => {

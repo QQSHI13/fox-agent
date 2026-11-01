@@ -20,7 +20,7 @@ import { VERSION } from "./core/version.ts";
 import { viewTokenEstimate } from "./context/render.ts";
 import { checkBudget } from "./context/budget.ts";
 import type { ProviderConfig } from "./providers/types.ts";
-import { getTodos, renderTodosMd } from "./tools/todo.ts";
+import { getTodos, renderTodosMd } from "./plugins/bundled/todo.ts";
 import { resolveProfile, resolveValue, saveGlobalConfig, saveProviderProfile, type Config, type ModelConfig } from "./core/config.ts";
 import { setTheme, themeName, themeNames } from "./tui/themes.ts";
 import { availableProviders } from "./providers/index.ts";
@@ -136,11 +136,11 @@ function applyResultLive(state: HarnessState, spec: SettingSpec): void {
           );
           break;
         }
-        case "toolOutputCap": {
-          const { setOutputCap } = await import("./tools/files.ts");
-          setOutputCap(value as number);
+        case "toolOutputCap":
+          // No live push needed: the turn loop reads toolOutputCap from config
+          // and threads it into each ToolContext per call. The /settings write
+          // updates the config file; the next turn picks it up.
           break;
-        }
         case "readCap": {
           const { setReadCap } = await import("./tools/files.ts");
           setReadCap(value as number);

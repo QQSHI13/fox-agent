@@ -86,7 +86,7 @@ describe("exec vs pty: the contrast is deliberate", () => {
   test("pty keeps a cd that exec discards", async () => {
     if (!Bun.which("tmux")) return; // covered by test/pty.test.ts when tmux exists
     const { execRun } = await import("../src/tools/exec.ts");
-    const { drivePty, cleanupPty } = await import("../src/tools/pty.ts");
+    const { drivePty, cleanupPty } = await import("../src/plugins/bundled/pty.ts");
     process.env.FOX_AGENT_HOME = root;
   // BOTH: loadConfig reads the global config from FOX_AGENT_CONFIG when set,
   // else ~/.config — setting only the home left this suite asserting against

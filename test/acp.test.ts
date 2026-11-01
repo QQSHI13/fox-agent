@@ -771,7 +771,7 @@ describe("event mapping", () => {
 
 describe("delegation targets", () => {
   test("selfAgent points at something executable in this runtime", async () => {
-    const { selfAgent } = await import("../src/tools/task.ts");
+    const { selfAgent } = await import("../src/plugins/bundled/task.ts");
     const spec = selfAgent();
     expect(spec.args).toContain("--acp");
     // From source: bun plus an entry script that must exist on disk. Compiled:
@@ -782,7 +782,7 @@ describe("delegation targets", () => {
   });
 
   test("an unknown agent name is refused with the names that do exist", async () => {
-    const { taskRun } = await import("../src/tools/task.ts");
+    const { taskRun } = await import("../src/plugins/bundled/task.ts");
     const res = await taskRun(
       { description: "d", prompt: "p", agent: "nope" },
       {
@@ -802,7 +802,7 @@ describe("delegation targets", () => {
   test("the depth cap refuses to delegate any deeper", async () => {
     // The cap travels in the environment because a child is a separate process;
     // a closure or a kv row could not cross that boundary.
-    const { taskRun } = await import("../src/tools/task.ts");
+    const { taskRun } = await import("../src/plugins/bundled/task.ts");
     const prev = process.env.FOX_AGENT_DELEGATION_DEPTH;
     process.env.FOX_AGENT_DELEGATION_DEPTH = "3";
     try {

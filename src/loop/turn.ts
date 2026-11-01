@@ -6,8 +6,7 @@ import { classifyProviderError, diagnoseProviderError, FoxError, isTimeout, isTr
 import type { AgentEvent } from "../core/events.ts";
 import type { Tool, ToolContext, ToolResult, PtyState } from "../tools/types.ts";
 import { validateArgs } from "../tools/types.ts";
-import { outCap } from "../tools/files.ts";
-import { drainSteer, peekSteer, turnEnded, turnStarted } from "./steer.ts";
+import { drainSteer, peekSteer, turnEnded, turnStarted, steer, backgroundStarted, backgroundEnded } from "./steer.ts";
 import { acquireTurnLock, releaseTurnLock, foreignLock } from "../store/lock.ts";
 import { VERSION } from "../core/version.ts";
 import type { Config } from "../core/config.ts";
@@ -336,7 +335,7 @@ async function execToolCall(call: ToolCall, tools: Map<string, Tool>, tctx: Tool
     // that already applied its caller's own budget (`uncapped`, e.g. exec with
     // full:true) skips it — otherwise the harness silently re-imposed the cap
     // the caller had just asked to lift.
-    const cap = result.uncapped ? Infinity : outCap() * 2;
+    const cap = result.uncapped ? Infinity : (tctx.toolOutputCap ?? 30_000) * 2;
     const output = result.output.length > cap ? cutTail(result.output, cap) : result.output;
     return { ok: result.ok, output, media: result.media };
   } catch (e) {
@@ -872,6 +871,13 @@ async function* turnBody(
           emit: quiet ? undefined : liveEvents.push,
           callId: call.id,
           ui: opts.ui,
+          toolOutputCap: effCfg.toolOutputCap,
+          // Steer/background lifecycle: the loop owns the session's turn state,
+          // so only it can populate these. Tools (repl) call them to notify the
+          // agent when a detached job finishes; bare ToolContexts get undefined.
+          steer: (text) => steer(sessionId, text),
+          backgroundStarted: () => backgroundStarted(sessionId),
+          backgroundEnded: () => backgroundEnded(sessionId),
           get pty() {
             return ptyState;
           },

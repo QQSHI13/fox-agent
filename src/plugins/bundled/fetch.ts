@@ -1,8 +1,8 @@
-import type { ToolDef } from "../providers/types.ts";
-import type { ToolContext, ToolResult } from "./types.ts";
-import { fail, ok } from "./types.ts";
-import { MAX_READ_BYTES, modelAcceptsMedia } from "./files.ts";
-import { VERSION } from "../core/version.ts";
+import type { ToolDef } from "../../providers/types.ts";
+import type { ToolContext, ToolResult } from "../../tools/types.ts";
+import { fail, ok } from "../../tools/types.ts";
+import { MAX_READ_BYTES, modelAcceptsMedia } from "../../tools/files.ts";
+import { VERSION } from "../../core/version.ts";
 import { lookup } from "node:dns/promises";
 
 export const fetchDef: ToolDef = {

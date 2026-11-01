@@ -12,9 +12,9 @@
  * Surfaces: the /cost command, and a "cost" status segment (wired by the TUI
  * via costSegment(), since plugin segments resolve without session context).
  */
-import type { FoxPlugin } from "./types.ts";
-import { sessionUsage } from "../store/db.ts";
-import { lookupCatalogModel } from "../providers/modelsdev.ts";
+import type { FoxPlugin } from "../types.ts";
+import { sessionUsage } from "../../store/db.ts";
+import { lookupCatalogModel } from "../../providers/modelsdev.ts";
 
 /** Active model per session, snapshotted at turn start (the turn's model is fixed for its steps). */
 const activeModel = new Map<string, string>();

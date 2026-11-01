@@ -17,12 +17,12 @@
  * `message/stream` (SSE) report state transitions the same way; servers
  * without it fall back to polling and only the final report arrives.
  */
-import { kvGet, kvSet } from "../store/db.ts";
-import { selfCommand } from "../core/selfexec.ts";
-import type { ToolDef } from "../providers/types.ts";
-import type { ExternalAgentConfig } from "../core/config.ts";
-import type { ToolContext, ToolResult } from "./types.ts";
-import { fail, ok } from "./types.ts";
+import { kvGet, kvSet } from "../../store/db.ts";
+import { selfCommand } from "../../core/selfexec.ts";
+import type { ToolDef } from "../../providers/types.ts";
+import type { ExternalAgentConfig } from "../../core/config.ts";
+import type { ToolContext, ToolResult } from "../../tools/types.ts";
+import { fail, ok } from "../../tools/types.ts";
 
 /**
  * How deep delegation may nest.
@@ -109,8 +109,8 @@ export async function executeTask(
     // A2A: the entry points at a running agent over HTTP. Streams when the
     // server speaks SendStreamingMessage (SSE), polls otherwise.
     if (spec.url) {
-      const { runA2aAgent } = await import("../a2a/client.ts");
-      const { TERMINAL_STATES } = await import("../a2a/types.ts");
+      const { runA2aAgent } = await import("../../a2a/client.ts");
+      const { TERMINAL_STATES } = await import("../../a2a/types.ts");
       const text = (
         await runA2aAgent(spec.url, args.prompt!, {
           signal: ctx.signal,
@@ -132,7 +132,7 @@ export async function executeTask(
     // ACP: spawn a child process and stream its tool activity into the parent's
     // stream as it happens. Lazy-imported so the ACP SDK stays off TUI startup.
     if (!spec.command) return fail(`error: agent "${args.agent ?? "default"}" has neither command nor url — fix fox-agent.toml [agents.${args.agent}]`);
-    const { runAcpAgent } = await import("../acp/client.ts");
+    const { runAcpAgent } = await import("../../acp/client.ts");
     // ACP sends the tool's name on `tool_call` and only the id on
     // `tool_call_update`, so the name has to be remembered across the two. Without
     // this the parent's UI reports raw call ids ("c1") for the child's work.

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { replRun, cleanupRepl } from "../src/tools/repl.ts";
+import { replRun, cleanupRepl } from "../src/plugins/bundled/repl.ts";
 import { defaultRegistry } from "../src/tools/index.ts";
 import type { ToolContext } from "../src/tools/types.ts";
 

@@ -444,7 +444,7 @@ describe("task tool: a2a routing", () => {
 
   test("an agent with a url delegates over A2A and returns the report", async () => {
     const url = foxServer("thing done");
-    const { taskRun } = await import("../src/tools/task.ts");
+    const { taskRun } = await import("../src/plugins/bundled/task.ts");
     const r = await taskRun({ description: "d", prompt: "do the thing", agent: "remote" }, ctx({ remote: { url } }));
     expect(r.ok).toBe(true);
     expect(r.output).toContain("thing done");
@@ -453,21 +453,21 @@ describe("task tool: a2a routing", () => {
 
   test("a remote failure surfaces as a tool failure, not a crash", async () => {
     const { url } = legacyServer({ stream: false });
-    const { taskRun } = await import("../src/tools/task.ts");
+    const { taskRun } = await import("../src/plugins/bundled/task.ts");
     // a peer that answers with no artifacts at all still counts as done
     const r = await taskRun({ description: "d", prompt: "p", agent: "remote" }, ctx({ remote: { url } }));
     expect(r.ok).toBe(true);
   }, 15_000);
 
   test("an agent with neither command nor url is rejected plainly", async () => {
-    const { taskRun } = await import("../src/tools/task.ts");
+    const { taskRun } = await import("../src/plugins/bundled/task.ts");
     const r = await taskRun({ description: "d", prompt: "p", agent: "broken" }, ctx({ broken: {} }));
     expect(r.ok).toBe(false);
     expect(r.output).toContain("neither command nor url");
   });
 
   test("an unknown agent still names what is configured", async () => {
-    const { taskRun } = await import("../src/tools/task.ts");
+    const { taskRun } = await import("../src/plugins/bundled/task.ts");
     const r = await taskRun({ description: "d", prompt: "p", agent: "ghost" }, ctx({ remote: { url: "http://x" } }));
     expect(r.ok).toBe(false);
     expect(r.output).toContain('unknown agent "ghost"');

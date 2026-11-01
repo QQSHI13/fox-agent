@@ -39,7 +39,7 @@ import { shutdownTools } from "../tools/index.ts";
 import { lookupModel } from "../providers/models.ts";
 import { VERSION } from "../core/version.ts";
 import { REASONING_EFFORTS, type ReasoningEffort } from "../core/reasoning.ts";
-import { getTodos } from "../tools/todo.ts";
+import { getTodos } from "../plugins/bundled/todo.ts";
 import { stopReasonFor, toolKind, toSessionUpdate, planForToolEnd, modeUpdate } from "./updates.ts";
 
 export interface AcpServerOptions {

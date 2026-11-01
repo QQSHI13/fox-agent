@@ -20,12 +20,11 @@
  * whose code shells out via `tools.call("exec", …)` or `spawnShell`.
  */
 import vm from "node:vm";
-import { safeDelay, setLongTimeout, type LongTimeout } from "../core/timers.ts";
-import type { ToolDef } from "../providers/types.ts";
-import type { ToolContext, ToolResult } from "./types.ts";
-import { fail, ok, validateArgs } from "./types.ts";
-import { outCap } from "./files.ts";
-import { steer, backgroundStarted, backgroundEnded } from "../loop/steer.ts";
+import { safeDelay, setLongTimeout, type LongTimeout } from "../../core/timers.ts";
+import type { ToolDef } from "../../providers/types.ts";
+import type { ToolContext, ToolResult } from "../../core/tool.ts";
+import { fail, ok, validateArgs } from "../../tools/types.ts";
+
 
 export const replDef: ToolDef = {
   name: "repl",
@@ -127,6 +126,15 @@ interface ReplJob {
   bgEnded?: boolean;
   reaped?: boolean;
   readAt?: number; // when a settled job was first polled — starts the reap grace
+  /**
+   * Steer/background lifecycle closures captured from the ToolContext at job
+   * launch. A background job outlives the tool call (and its context), so the
+   * session-scoped closures must be stored on the job — the job's callbacks
+   * cannot reach back to the ctx that spawned them.
+   */
+  notifyAgent?: (text: string) => void;
+  bgStart?: () => void;
+  bgEnd?: () => void;
 }
 
 const jobs = new Map<string, Map<string, ReplJob>>(); // sessionId -> id -> job
@@ -164,7 +172,10 @@ function liveJobCount(sessionId: string): number {
 function endBackground(sessionId: string, job: ReplJob): void {
   if (job.bgEnded) return;
   job.bgEnded = true;
-  backgroundEnded(sessionId);
+  // Prefer the captured ctx closure; fall back to a direct import only if the
+  // job was created before the context carried these (defensive — should not
+  // happen in practice since launch always captures them).
+  job.bgEnd?.();
 }
 
 function reapJob(sessionId: string, id: string): void {
@@ -190,8 +201,7 @@ function notifyDone(sessionId: string, job: ReplJob): void {
   // message, and peekSteer shows it in the TUI meanwhile.
   if (job.killed) return;
   const secs = Math.floor((Date.now() - job.startedAt) / 1000);
-  steer(
-    sessionId,
+  job.notifyAgent?.(
     `repl job ${job.id} (${job.label}) ${job.ok ? "finished" : "FAILED"} after ${secs}s — ` +
       `poll it with repl({job:"${job.id}"}).`,
   );
@@ -440,7 +450,7 @@ export async function replRun(
         // direct invocation: validated like a step's call, but outside the
         // turn loop, so no live streaming and no beforeTool/afterTool hooks.
         // `signal` is the bridge's own — see makeBridge.
-        const r = await tool.run(cargs as any, { ...ctx, signal, emit: undefined, callId: undefined });
+        const r = await tool.run(cargs as Record<string, unknown>, { ...ctx, signal, emit: undefined, callId: undefined });
         const result = typeof r === "string" ? { ok: true, output: r } : r;
         if (!result.ok) throw new Error(result.output.slice(0, 500));
         return result.output;
@@ -475,13 +485,22 @@ export async function replRun(
     const label = (args.label ?? args.code.split("\n")[0]).slice(0, 60);
     const id = `r${++jobSeq}`;
     const ac = new AbortController();
-    const job: ReplJob = { id, label, startedAt: Date.now(), done: false, ok: false, result: "", log: [], logCursor: 0, lostLines: 0, ac };
+    const job: ReplJob = {
+      id, label, startedAt: Date.now(), done: false, ok: false, result: "", log: [], logCursor: 0, lostLines: 0, ac,
+      // Capture the session-scoped steer/background closures from the live
+      // context. A background job outlives the tool call, so the closures must
+      // travel with the job — the .then/.catch callbacks cannot reach back to
+      // the ctx that spawned them.
+      notifyAgent: ctx.steer,
+      bgStart: ctx.backgroundStarted,
+      bgEnd: ctx.backgroundEnded,
+    };
     sessionJobs(sessionId).set(id, job);
     // A live job is outstanding work: a one-shot client (fox -p, an ACP prompt,
     // an A2A task) must not report "done" while this can still steer more into
     // the session. Counted BEFORE the eval starts, so there is no window where
     // the session looks idle.
-    backgroundStarted(sessionId);
+    job.bgStart?.();
     // Per-job sink: a background eval's console lines belong to that job, no
     // matter what else runs in the session meanwhile (the old module-global
     // "active job" made the newest job swallow every other eval's output).
@@ -558,7 +577,7 @@ export async function replRun(
     const value = await evalInContext(state, args.code, timeout, evalConsole, fgTools);
     flushLines();
     const body = [lines.join("\n"), fmt(value)].filter(Boolean).join("\n").trimEnd() || "(no output)";
-    return ok(body.length > outCap() ? body.slice(-outCap()) + "\n… (head truncated)" : body);
+    return ok(body.length > (ctx.toolOutputCap ?? 30000) ? body.slice(-(ctx.toolOutputCap ?? 30000)) + "\n… (head truncated)" : body);
   } catch (e) {
     flushLines();
     const msg = (e as Error).message ?? String(e);

@@ -57,7 +57,7 @@ describe("bundled:cost", () => {
 
   test("rateFor reads the catalog; unpriced models get null, never a guess", async () => {
     await awaitCatalog();
-    const { rateFor } = await import("../src/plugins/cost.ts");
+    const { rateFor } = await import("../src/plugins/bundled/cost.ts");
     expect(rateFor("priced-1")).toEqual({ input: 1, output: 2, cacheRead: 0.1, cacheWrite: undefined });
     expect(rateFor("free-1")).toBeNull();
     expect(rateFor("never-heard-of")).toBeNull();
@@ -67,7 +67,7 @@ describe("bundled:cost", () => {
     await awaitCatalog();
     // import order matters: the store must see FOX_AGENT_HOME before first use
     const { createSession, recordUsage } = await import("../src/store/db.ts");
-    const { sessionCost } = await import("../src/plugins/cost.ts");
+    const { sessionCost } = await import("../src/plugins/bundled/cost.ts");
     const s = createSession(home, "priced-1");
     // 1M cached in ($0.1) + 0.5M fresh in ($0.5) + 0.5M out ($1) = $1.60
     recordUsage(s.id, "m1", 1_500_000, 500_000, 1_000_000);
@@ -77,7 +77,7 @@ describe("bundled:cost", () => {
 
   test("a model with no rate reports tokens without inventing dollars", async () => {
     const { createSession, recordUsage } = await import("../src/store/db.ts");
-    const cost = await import("../src/plugins/cost.ts");
+    const cost = await import("../src/plugins/bundled/cost.ts");
     const s = createSession(home, "priced-1");
     recordUsage(s.id, "m1", 1234, 567, 0);
     expect(cost.sessionCost(s.id, "free-1")).toBeNull();
@@ -91,7 +91,7 @@ describe("bundled:cost", () => {
   test("the /cost command prints rates and the session total", async () => {
     await awaitCatalog();
     const { createSession, recordUsage } = await import("../src/store/db.ts");
-    const cost = await import("../src/plugins/cost.ts");
+    const cost = await import("../src/plugins/bundled/cost.ts");
     const s = createSession(home, "priced-1");
     recordUsage(s.id, "m1", 500_000, 250_000, 0);
     const cmd = cost.default.commands!.find((c) => c.name === "/cost")!;

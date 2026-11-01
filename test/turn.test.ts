@@ -157,10 +157,8 @@ describe("turn manager", () => {
     // very cap full:true had just lifted (the whole output arrived tail-cut,
     // with no marker). This pins both halves of the contract.
     const t = await setup();
-    const { outCap, setOutputCap } = await import("../src/tools/files.ts");
     const { defaultConfig } = await import("../src/core/config.ts");
-    setOutputCap(30_000); // isolate this test from any earlier config
-    const harnessCap = outCap() * 2;
+    const harnessCap = 30_000 * 2; // turn loop tail-cap = toolOutputCap (default 30k) * 2
     const huge = "Z".repeat(harnessCap + 25_000);
     // presentation truncation off (0), so only the turn tail-cap is in play
     const config = defaultConfig({ model: "test-model", baseUrl: "http://localhost:9", apiKey: "test", toolPresentationCap: 0 });

@@ -5,10 +5,10 @@ import type { Tool } from "./types.ts";
 import { COMMANDS } from "../commands.ts";
 import * as F from "./files.ts";
 import { execDef, execRun } from "./exec.ts";
-import { cleanupPty, ptySessionName } from "./pty.ts";
-import { setOutputCap, setReadCap } from "./files.ts";
+import { cleanupPty, ptySessionName } from "../plugins/bundled/pty.ts";
+import { setReadCap } from "./files.ts";
 import { ctxDef, ctxRun } from "./ctx.ts";
-import { mcpTools, closeMcp } from "./mcp.ts";
+import { mcpTools, closeMcp } from "../mcp/client.ts";
 import { poolTools } from "../mcp/pool.ts";
 import { loadPlugins, setActivePlugins } from "../plugins/load.ts";
 import { bundledPlugins, bundledDisabled } from "../plugins/bundled.ts";
@@ -86,7 +86,6 @@ export async function buildRegistry(
   exclude?: Set<string>,
 ): Promise<{ tools: Map<string, Tool>; warnings: string[]; plugins: FoxPlugin[]; agents: Record<string, ExternalAgentConfig> }> {
   const map = baseRegistry();
-  setOutputCap(cfg.toolOutputCap ?? 30_000);
   setReadCap(cfg.readCap ?? 50_000);
   // `?? []` on both: `Config` is public surface an embedder (or a test) may build
   // by hand, and a config written before these fields existed must degrade to
@@ -237,10 +236,10 @@ export async function shutdownTools(sessionId: string): Promise<void> {
   await fireSessionEnd(sessionId, "exit");
   // pty calls in a step run chained; join the chain so a queued call cannot
   // re-spawn the tmux session after the kill below
-  const { joinPtyChain } = await import("./pty.ts");
+  const { joinPtyChain } = await import("../plugins/bundled/pty.ts");
   await joinPtyChain().catch(() => {});
   await cleanupPty(ptySessionName(sessionId)); // belt and braces when no registry was ever built
-  const { cleanupRepl } = await import("./repl.ts");
+  const { cleanupRepl } = await import("../plugins/bundled/repl.ts");
   cleanupRepl(sessionId); // drops the scratchpad AND any repl jobs still running under it
   closeMcp(); // detached: hands the terminal back while children reap in the background
   // an idle tsserver holds a project's worth of memory; leaving one per fox-agent run
