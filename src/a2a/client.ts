@@ -426,10 +426,6 @@ export async function deletePushConfig(
   await rpc(conn, "DeleteTaskPushNotificationConfig", () => ({ taskId, configId }), opts);
 }
 
-/** §3.1.11 */
-export async function getExtendedAgentCard(conn: A2aConnection, opts: A2aOptions = {}): Promise<any> {
-  return rpc(conn, "GetExtendedAgentCard", () => ({}), opts);
-}
 
 // ---------------------------------------------------------------------------
 // streaming (§3.1.2, §3.1.6)
