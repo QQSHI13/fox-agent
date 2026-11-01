@@ -110,25 +110,23 @@ export function truncateToolResult(name: string, text: string, cap: number): Tru
  * own result with this before returning; the head+tail presentation pass runs
  * afterwards in the turn loop. The marker is deliberately short: the model
  * needs "there was more" and where to look, not an essay.
- *
- * Returns the text unchanged when it fits.
- */
-export function tailCap(text: string, cap: number): string {
-  if (cap <= 0 || text.length <= cap) return text;
-  return cutTail(text, cap) + `\n… (${text.length - cap} chars dropped, tail kept)`;
-}
-
 /**
  * The "output too chatty" pre-cap: a tool that STREAMS output bounds memory
- * during the run with this, before the final `tailCap`. The marker says how
- * much was dropped and why — it is not reversible (the dropped text was never
- * stored), so the wording says "re-run with a narrower request", not
- * "ctx restore".
+ * during the run with this. The marker says how much was dropped and why — it
+ * is not reversible (the dropped text was never stored), so the wording says
+ * "re-run with a narrower request", not "ctx restore".
  */
 export function chattyCap(text: string, cap: number): string {
   if (cap <= 0 || text.length <= cap) return text;
   return `… (${text.length - cap} chars dropped, output too chatty — re-run with a narrower request)\n${text}`;
 }
+
+/**
+ * Head+tail truncation is the ONLY presentation cap — applied by the turn loop
+ * as a revertible `replace` view op after the whole result is stored. Tools no
+ * longer cap their own output; they return everything (bounded by chattyCap
+ * during streaming for memory), and the view shows the excerpt.
+ */
 
 /**
  * Resolve the effective presentation cap for one tool result.

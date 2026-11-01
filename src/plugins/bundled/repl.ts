@@ -24,7 +24,7 @@ import { safeDelay, setLongTimeout, type LongTimeout } from "../../core/timers.t
 import type { ToolDef } from "../../providers/types.ts";
 import type { ToolContext, ToolResult } from "../../core/tool.ts";
 import { fail, ok, validateArgs } from "../../tools/types.ts";
-import { tailCap } from "../../context/truncate.ts";
+import { chattyCap } from "../../context/truncate.ts";
 
 
 export const replDef: ToolDef = {
@@ -578,8 +578,9 @@ export async function replRun(
     const value = await evalInContext(state, args.code, timeout, evalConsole, fgTools);
     flushLines();
     const body = [lines.join("\n"), fmt(value)].filter(Boolean).join("\n").trimEnd() || "(no output)";
-    const cap = ctx.toolOutputCap ?? 30_000;
-    return ok(tailCap(body, cap));
+    // Full output returned; the turn loop stores it whole and applies the
+    // presentation cap as a revertible view op (ctx restore brings it back).
+    return ok(body);
   } catch (e) {
     flushLines();
     const msg = (e as Error).message ?? String(e);

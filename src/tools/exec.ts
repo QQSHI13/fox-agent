@@ -6,7 +6,7 @@ import { setLongTimeout } from "../core/timers.ts";
 import { childEnv } from "../core/childenv.ts";
 import { shellName, shellPath } from "../core/shell.ts";
 import { cutTail } from "../core/text.ts";
-import { tailCap, chattyCap } from "../context/truncate.ts";
+import { chattyCap } from "../context/truncate.ts";
 
 export const execDef: ToolDef = {
   name: "exec",
@@ -183,16 +183,12 @@ export async function execRun(
   if (stderr.trim()) s += (s ? "\n[stderr]\n" : "") + stderr;
   s = s.trimEnd();
   if (dropped > 0) s = chattyCap(s, s.length);
-  // full:true lifts the per-result cap for this call — the 5MB in-memory guard
-  // above still bounds it, and says so when it bites
-  const cap = ctx.toolOutputCap ?? 30_000;
-  const truncated = !args.full ? tailCap(s, cap) : s;
+  // The turn loop stores the whole result and applies the presentation cap as a
+  // revertible view op (ctx restore brings back the full text). full:true still
+  // marks uncapped so the presentation pass skips it.
   let head = `exit ${code}`;
   if (killedBy) head += ` (${killedBy})`;
-  const body = `${head}\n${truncated || "(no output)"}`;
-  // a non-zero exit is a tool failure — the model (and the TUI's ✗) need to know
+  const body = `${head}\n${s || "(no output)"}`;
   const result = code === 0 && !killedBy ? ok(body) : fail(body);
-  // full:true also tells the turn loop to skip ITS per-result tail cap; the
-  // local cap above is already conditional on the same flag (see `truncated`)
   return args.full ? { ...result, uncapped: true } : result;
 }
