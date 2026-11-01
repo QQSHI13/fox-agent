@@ -95,7 +95,7 @@
 <rect x="190" y="603.0" width="29.7" height="14" rx="3" fill="#5b7fa6"/>
 <text x="394" y="614.0" text-anchor="end" fill="#8a8578" font-size="13">611 ms</text>
 <text x="47" y="642.0" text-anchor="end" fill="#8a8578" font-size="11.5">18</text>
-<text x="56" y="642.0" fill="#8a8578" font-size="14">iflow cli</text>
+<text x="56" y="642.0" fill="#8a8578" font-size="14">cline</text>
 <rect x="190" y="631.0" width="126" height="14" rx="3" fill="#221f1a"/>
 <rect x="190" y="631.0" width="35.0" height="14" rx="3" fill="#5b7fa6"/>
 <text x="394" y="642.0" text-anchor="end" fill="#8a8578" font-size="13">849 ms</text>
