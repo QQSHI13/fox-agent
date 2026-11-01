@@ -24,6 +24,7 @@ beforeEach(() => {
     sessionId: "s1",
     cwd: dir,
     toolOutputCap: 30_000,
+    readCap: 50_000,
     get pty() {
       return pty;
     },
@@ -106,20 +107,17 @@ describe("read", () => {
   // already been cut away. Measured on defaults: body ended at line 486 while
   // the note claimed 809 — the model believed it held 300+ lines it never got.
   test("the truncation note names the last line the reader can actually see", async () => {
-    F.setReadCap(50_000);
-    try {
-      const width = "y".repeat(50);
-      write("wide.txt", Array.from({ length: 2000 }, (_, i) => `${String(i + 1).padStart(4)}: ${width}`).join("\n"));
-      const r = await F.readRun({ path: "wide.txt" }, ctx);
-      const lastVisible = (r.output.match(/^(\d+): /gm) ?? []).map((m) => parseInt(m)).pop()!;
-      const claimed = Number(/truncated at line (\d+)/.exec(r.output)?.[1]);
-      expect(Number.isFinite(claimed)).toBe(true);
-      // the note's number is the first line NOT shown, so it is exactly one past
-      // the last visible one — no gap, no overstatement
-      expect(claimed).toBe(lastVisible + 1);
-    } finally {
-      F.setReadCap(50_000);
-    }
+    // readCap/toolOutputCap ride on the context now (no module globals), so
+    // the wide-file read is bounded by ctx.readCap directly
+    const width = "y".repeat(50);
+    write("wide.txt", Array.from({ length: 2000 }, (_, i) => `${String(i + 1).padStart(4)}: ${width}`).join("\n"));
+    const r = await F.readRun({ path: "wide.txt" }, ctx);
+    const lastVisible = (r.output.match(/^(\d+): /gm) ?? []).map((m) => parseInt(m)).pop()!;
+    const claimed = Number(/truncated at line (\d+)/.exec(r.output)?.[1]);
+    expect(Number.isFinite(claimed)).toBe(true);
+    // the note's number is the first line NOT shown, so it is exactly one past
+    // the last visible one — no gap, no overstatement
+    expect(claimed).toBe(lastVisible + 1);
   });
 
   test("binary files are refused", async () => {

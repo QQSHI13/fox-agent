@@ -531,18 +531,18 @@ export class PushCompositor extends Screen {
     vh: 0, total: 0, scrollTop: 0, stick: true,
     queueH: 0,
   };
-  private listeners: { fields: (keyof Geometry)[]; fn: GeometryListener }[] = [];
+  /**
+   * Single hook the transcript frame calls when its published split changes.
+   * One consumer (floats/overlay/dock re-push in app.ts) — a one-slot callback
+   * replaces the general listener array, which only ever had one entry.
+   */
+  onSplitMoved: GeometryListener | null = null;
 
   constructor(term: Term) {
     super(term);
   }
 
-  /** Watch specific geometry fields; fired (synchronously) when any moves. */
-  onGeometry(fields: (keyof Geometry)[], fn: GeometryListener): void {
-    this.listeners.push({ fields, fn });
-  }
-
-  /** Merge a geometry patch and notify listeners whose watched fields changed. */
+  /** Merge a geometry patch and fire the split hook if any watched field moved. */
   pushGeometry(patch: Partial<Geometry>): void {
     const changed: Partial<Geometry> = {};
     for (const k of Object.keys(patch) as (keyof Geometry)[]) {
@@ -551,15 +551,11 @@ export class PushCompositor extends Screen {
         (this.geom as unknown as Record<string, unknown>)[k] = patch[k] as unknown;
       }
     }
-    if (Object.keys(changed).length) {
-      for (const l of this.listeners) {
-        if (l.fields.some((f) => f in changed)) {
-          try {
-            l.fn(changed);
-          } catch {
-            /* a listener that throws must not starve the others */
-          }
-        }
+    if (Object.keys(changed).length && this.onSplitMoved) {
+      try {
+        this.onSplitMoved(changed);
+      } catch {
+        /* a throwing hook must not break the frame that published the split */
       }
     }
   }

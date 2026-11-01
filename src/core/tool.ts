@@ -93,6 +93,13 @@ export interface ToolContext {
    * undefined meaning "no cap".
    */
   toolOutputCap?: number;
+  /**
+   * Cap on one `read` result's text in chars (config `readCap`, default 50000).
+   * The `read` tool pages by line and reads this to bound its soft budget.
+   * The turn loop populates it; a bare ToolContext gets undefined meaning
+   * "use the default".
+   */
+  readCap?: number;
   get pty(): PtyState | undefined;
   set pty(v: PtyState | undefined);
 }

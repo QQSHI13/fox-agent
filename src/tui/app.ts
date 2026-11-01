@@ -3610,11 +3610,11 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   // reads painted.{inputTop,shownCount,firstShown} to stamp the input box, so it
   // re-derives here too — otherwise it stays stamped at the OLD split (and on the
   // very first frame, where painted is null, it stamps nothing at all).
-  screen.onGeometry(["inputTop", "queueH"], () => {
+  screen.onSplitMoved = () => {
     pushDock();
     pushFloats();
     pushOverlay();
-  });
+  };
 
   /** The transcript's PUSH, wired into the compositor's guarded pushFrame:
    *  computeFrame off the frame path, stamp the plane when the Frame lands. */
