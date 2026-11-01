@@ -60,7 +60,7 @@
 <rect x="190" y="407.0" width="19.0" height="14" rx="3" fill="#5b7fa6"/>
 <text x="394" y="418.0" text-anchor="end" fill="#8a8578" font-size="13">252 ms</text>
 <text x="47" y="446.0" text-anchor="end" fill="#8a8578" font-size="11.5">11</text>
-<text x="56" y="446.0" fill="#8a8578" font-size="14">qwen code</text>
+<text x="56" y="446.0" fill="#8a8578" font-size="14">crush</text>
 <rect x="190" y="435.0" width="126" height="14" rx="3" fill="#221f1a"/>
 <rect x="190" y="435.0" width="25.9" height="14" rx="3" fill="#5b7fa6"/>
 <text x="394" y="446.0" text-anchor="end" fill="#8a8578" font-size="13">471 ms</text>
@@ -70,7 +70,7 @@
 <rect x="190" y="463.0" width="26.5" height="14" rx="3" fill="#5b7fa6"/>
 <text x="394" y="474.0" text-anchor="end" fill="#8a8578" font-size="13">492 ms</text>
 <text x="47" y="502.0" text-anchor="end" fill="#8a8578" font-size="11.5">13</text>
-<text x="56" y="502.0" fill="#8a8578" font-size="14">aider</text>
+<text x="56" y="502.0" fill="#8a8578" font-size="14">qwen code</text>
 <rect x="190" y="491.0" width="126" height="14" rx="3" fill="#221f1a"/>
 <rect x="190" y="491.0" width="28.5" height="14" rx="3" fill="#5b7fa6"/>
 <text x="394" y="502.0" text-anchor="end" fill="#8a8578" font-size="13">570 ms</text>
@@ -95,7 +95,7 @@
 <rect x="190" y="603.0" width="32.4" height="14" rx="3" fill="#5b7fa6"/>
 <text x="394" y="614.0" text-anchor="end" fill="#8a8578" font-size="13">735 ms</text>
 <text x="47" y="642.0" text-anchor="end" fill="#8a8578" font-size="11.5">18</text>
-<text x="56" y="642.0" fill="#8a8578" font-size="14">cline</text>
+<text x="56" y="642.0" fill="#8a8578" font-size="14">iflow cli</text>
 <rect x="190" y="631.0" width="126" height="14" rx="3" fill="#221f1a"/>
 <rect x="190" y="631.0" width="37.6" height="14" rx="3" fill="#5b7fa6"/>
 <text x="394" y="642.0" text-anchor="end" fill="#8a8578" font-size="13">991 ms</text>
@@ -179,7 +179,7 @@
 <rect x="578" y="435.0" width="50.6" height="14" rx="3" fill="#5b7fa6"/>
 <text x="782" y="446.0" text-anchor="end" fill="#8a8578" font-size="13">150 MB</text>
 <text x="435" y="474.0" text-anchor="end" fill="#8a8578" font-size="11.5">12</text>
-<text x="444" y="474.0" fill="#8a8578" font-size="14">claude code</text>
+<text x="444" y="474.0" fill="#8a8578" font-size="14">gemini cli</text>
 <rect x="578" y="463.0" width="126" height="14" rx="3" fill="#221f1a"/>
 <rect x="578" y="463.0" width="51.4" height="14" rx="3" fill="#5b7fa6"/>
 <text x="782" y="474.0" text-anchor="end" fill="#8a8578" font-size="13">155 MB</text>
