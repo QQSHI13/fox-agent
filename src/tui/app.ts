@@ -1962,7 +1962,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     }
     return i;
   }
-  function toggleExpand(it: Item) {
+  function toggleExpand(it: Item, batch = false) {
     // toolhead too: the "▸ input — click or ctrl+t" affordance is painted only
     // when argsFull produced a detail, and without this branch clicking it did
     // nothing — the reported "tool call content doesn't display" bug
@@ -1986,7 +1986,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       else expandedRefs.delete(it.ref);
     }
     touch(it.k);
-    markDirty();
+    // ctrl+t toggles N items in a loop and markDirty()s once at the end; a
+    // single click toggles one and wants the repaint now.
+    if (!batch) markDirty();
   }
 
   /**
@@ -2187,8 +2189,12 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       // any pending keystroke stay live while a long expand runs. Without this
       // the whole loop is one synchronous block: the screen freezes for however
       // long expanding every node takes, which is exactly the "ctrl+t hangs
-      // everything" report. touch()/markDirty() are cheap; the cost is the
-      // re-derive they schedule, and that is deferred to the frame loop.
+      // everything" report.
+      //
+      // PERF: toggleExpand calls touch() but NOT markDirty() — each markDirty
+      // schedules a full transcript re-derive (computeFrame). With N expandable
+      // items that is N re-derives. Batching: touch every item, markDirty ONCE
+      // at the end, so the derive runs a single time with all revs bumped.
       void (async () => {
         let n = 0;
         for (const it of items) {
@@ -2196,10 +2202,11 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           const want = anyFolded;
           if (isExpanded(it) !== want) {
             if (!want) fillDetail(it); // about to expand: defer-pay here too
-            toggleExpand(it);
+            toggleExpand(it, true); // batch: markDirty comes once after the loop
             if (++n % 16 === 0) await screen.breathe();
           }
         }
+        markDirty();
         flash(anyFolded ? "all unfolded" : "all folded");
       })().catch(() => {}); // a throw inside the expand loop must not become an unhandled rejection
       return;
