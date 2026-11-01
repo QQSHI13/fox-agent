@@ -18,6 +18,8 @@ interface LiveClient {
   close: () => Promise<void>;
   /** the stdio child's pid — closeMcp SIGKILLs it when a polite close hangs */
   pid?: number;
+  /** false the moment the transport reports the child went away */
+  alive: boolean;
 }
 interface ServerTool {
   /** the tool name as the server reports it (no mcp__ prefix) */
@@ -26,17 +28,75 @@ interface ServerTool {
   schema: Record<string, unknown>;
   call: (args: unknown) => Promise<ToolResult>;
 }
+
+/**
+ * One server's connection state, kept across reconnects.
+ *
+ * MCP children die (a crashed browser bridge, an npx wrapper that exits, an
+ * OOM kill) and nothing used to notice: the tool table was a stale snapshot, so
+ * every later call failed forever with the SDK's error and no diagnosis. A slot
+ * is the durable half — the config, the tools it last advertised, and the
+ * backoff bookkeeping — so a call can reconnect before it runs.
+ */
+interface ServerSlot {
+  name: string;
+  cfg: McpServerConfig;
+  client: LiveClient | null;
+  tools: ServerTool[];
+  /** last dial failure, so the model learns WHY, not just that it failed */
+  lastError: string | null;
+  /** consecutive failed dials since the last success */
+  failures: number;
+  /** earliest time the next dial may run (exponential backoff) */
+  nextAttemptAt: number;
+  /** in-flight dial, so concurrent calls share one attempt instead of racing */
+  dialing: Promise<boolean> | null;
+}
+
 interface McpPool {
   key: string;
   warnings: string[];
   clients: LiveClient[];
   /** server name -> its tools (for the `mcp` tool's enum + routing) */
   servers: Map<string, ServerTool[]>;
+  /** every configured server, connected or not — routing, liveness, diagnosis */
+  slots: Map<string, ServerSlot>;
   /** the single built `mcp` tool, cached so a config-cache hit returns the
    * identical Map (callers/tests rely on reference identity, not just equality) */
   tools: Map<string, Tool>;
 }
 let cache: McpPool | null = null;
+
+// ---- lifetime ---------------------------------------------------------------
+
+/** Spawn + handshake + listTools for one server. Generous: npx cold starts. */
+const MCP_DIAL_TIMEOUT_MS = 60_000;
+/** One tool call. Browser navigation legitimately takes minutes. */
+const MCP_CALL_TIMEOUT_MS = 15 * 60_000;
+/** Backoff for consecutive dial failures: 1s, 2s, 4s … capped at 60s. */
+const MCP_BACKOFF_BASE_MS = 1_000;
+const MCP_BACKOFF_MAX_MS = 60_000;
+
+/** Await `p`, but fail after `ms` naming which deadline bit. */
+async function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      p,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${what} timed out after ${Math.round(ms / 1000)}s`)), ms);
+        (timer as { unref?: () => void }).unref?.();
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+function backoffMs(failures: number): number {
+  const step = Math.max(0, Math.min(failures, 16) - 1);
+  return Math.min(MCP_BACKOFF_MAX_MS, MCP_BACKOFF_BASE_MS * 2 ** step);
+}
 
 /**
  * MCP content parts -> ToolResult. Text joins as output; image parts become
@@ -82,56 +142,133 @@ export async function mcpTools(
   if (cache) closeMcp();
 
   const warnings: string[] = [];
-  const clients: LiveClient[] = [];
-  const serversMap = new Map<string, ServerTool[]>();
+  const slots = new Map<string, ServerSlot>();
+  const pool: McpPool = { key, warnings, clients: [], servers: new Map(), slots, tools: new Map() };
 
-  for (const [name, cfg] of Object.entries(servers)) {
+  // dial every server in parallel: N cold npx starts used to run in sequence,
+  // so three servers meant three handshakes end to end
+  await Promise.all(
+    Object.entries(servers).map(async ([name, cfg]) => {
+      const slot: ServerSlot = {
+        name,
+        cfg,
+        client: null,
+        tools: [],
+        lastError: null,
+        failures: 0,
+        nextAttemptAt: 0,
+        dialing: null,
+      };
+      slots.set(name, slot);
+      const up = await dialSlot(pool, slot);
+      if (!up && slot.lastError) warnings.push(`mcp server '${name}' unavailable: ${slot.lastError.slice(0, 200)}`);
+    }),
+  );
+
+  rebuildToolFace(pool);
+  cache = pool;
+  return { tools: pool.tools, warnings };
+}
+
+/**
+ * Connect one slot: spawn, handshake, list tools — all bounded.
+ *
+ * Marks the client dead when the transport closes, so a child that dies later
+ * cannot leave the slot advertising tools it can no longer serve (the old code
+ * cached a snapshot forever: every later call failed with the SDK error and no
+ * diagnosis). Concurrent callers share the in-flight attempt, so ten parallel
+ * calls against a dead server start ONE child, not ten.
+ */
+async function dialSlot(pool: McpPool, slot: ServerSlot): Promise<boolean> {
+  if (slot.dialing) return slot.dialing;
+  const attempt = (async () => {
     try {
       const sdk = await import("@modelcontextprotocol/sdk/client/index.js");
       const stdio = await import("@modelcontextprotocol/sdk/client/stdio.js");
       const client = new sdk.Client({ name: "fox-agent", version: VERSION });
       const transport = new stdio.StdioClientTransport({
-        command: cfg.command,
-        args: cfg.args ?? [],
-        env: childEnv(cfg.env),
+        command: slot.cfg.command,
+        args: slot.cfg.args ?? [],
+        env: childEnv(slot.cfg.env),
         // SDK default is stderr inherit, which points at the parent's stderr —
         // the TUI's own surface. A chatty server (npm exec wrappers print
         // notices/warnings by the line) then smears garbage across the screen;
         // its diagnostics are not worth the pixels, matching lsp/client.ts.
         stderr: "ignore",
       });
-      await client.connect(transport);
-      clients.push({ close: () => client.close(), pid: transport.pid ?? undefined });
-      const res = await client.listTools();
-      const serverTools: ServerTool[] = [];
-      for (const t of res.tools) {
-        serverTools.push({
-          name: t.name,
-          description: t.description ?? t.name,
-          schema: (t.inputSchema as Record<string, unknown>) ?? { type: "object" },
-          call: async (args: unknown): Promise<ToolResult> => {
-            try {
-              const r = await client.callTool({ name: t.name, arguments: args as Record<string, unknown> });
-              return toResult(r.content, r.isError === true);
-            } catch (e) {
-              return fail(`error: mcp call failed: ${(e as Error).message}`);
-            }
-          },
-        });
-      }
-      if (serverTools.length) serversMap.set(name, serverTools);
-    } catch (e) {
-      // every failing server is reported, not just the last one. console.error
-      // would smear the parent TUI (same reason server stderr is "ignore"
-      // above) — the warnings channel is what callers actually surface.
-      warnings.push(`mcp server '${name}' unavailable: ${(e as Error).message.slice(0, 200)}`);
-    }
-  }
 
-  const pool: McpPool = { key, warnings, clients, servers: serversMap, tools: new Map() };
+      const live: LiveClient = { close: () => client.close(), pid: transport.pid ?? undefined, alive: true };
+      const markDead = () => {
+        live.alive = false;
+        if (slot.client === live) slot.client = null;
+      };
+      const t = transport as { onclose?: () => void; onerror?: () => void };
+      t.onclose = markDead;
+      t.onerror = markDead;
+
+      await withTimeout(client.connect(transport), MCP_DIAL_TIMEOUT_MS, `mcp '${slot.name}' connect`);
+      const res = await withTimeout(client.listTools(), MCP_DIAL_TIMEOUT_MS, `mcp '${slot.name}' listTools`);
+
+      slot.tools = res.tools.map((tool) => ({
+        name: tool.name,
+        description: tool.description ?? tool.name,
+        schema: (tool.inputSchema as Record<string, unknown>) ?? { type: "object" },
+        call: async (args: unknown): Promise<ToolResult> => {
+          try {
+            const r = await withTimeout(
+              client.callTool({ name: tool.name, arguments: args as Record<string, unknown> }),
+              MCP_CALL_TIMEOUT_MS,
+              `mcp '${slot.name}/${tool.name}'`,
+            );
+            return toResult(r.content, r.isError === true);
+          } catch (e) {
+            if (!live.alive) slot.client = null; // the child went away mid-call
+            return fail(`error: mcp '${slot.name}/${tool.name}' call failed: ${(e as Error).message}`);
+          }
+        },
+      }));
+
+      slot.client = live;
+      slot.lastError = null;
+      slot.failures = 0;
+      slot.nextAttemptAt = 0;
+      pool.clients.push(live);
+      rebuildToolFace(pool);
+      return true;
+    } catch (e) {
+      slot.client = null;
+      slot.tools = [];
+      slot.failures++;
+      slot.lastError = (e as Error).message ?? String(e);
+      slot.nextAttemptAt = Date.now() + backoffMs(slot.failures);
+      rebuildToolFace(pool);
+      return false;
+    } finally {
+      slot.dialing = null;
+    }
+  })();
+  slot.dialing = attempt;
+  return attempt;
+}
+
+/**
+ * Make sure a slot is connected, reconnecting under backoff if it is not.
+ *
+ * The backoff gate is what keeps a broken command from burning a turn: before
+ * `nextAttemptAt` the caller is told the server is down (with the last real
+ * error) instead of paying another dial.
+ */
+async function ensureSlot(pool: McpPool, slot: ServerSlot, force = false): Promise<boolean> {
+  if (slot.client?.alive) return true;
+  if (!force && Date.now() < slot.nextAttemptAt) return false;
+  return dialSlot(pool, slot);
+}
+
+/** Rebuild the single `mcp` tool so its description and enums match the live set. */
+function rebuildToolFace(pool: McpPool): void {
+  pool.servers = new Map();
+  for (const [name, slot] of pool.slots) if (slot.tools.length) pool.servers.set(name, slot.tools);
   pool.tools = buildMcpToolMap(pool);
-  cache = pool;
-  return { tools: pool.tools, warnings };
 }
 
 /** Server name -> its tool names: the face every instance shows the model. */
@@ -190,10 +327,40 @@ function buildMcpToolMap(pool: McpPool): Map<string, Tool> {
       if (typeof srv !== "string" || typeof toolName !== "string") {
         return fail("error: mcp requires { server, tool, arguments? }");
       }
-      const list = pool.servers.get(srv);
-      if (!list) return fail(`error: no MCP server '${srv}' (reachable: ${serverEnum.join(", ")})`);
-      const st = list.find((t) => t.name === toolName);
-      if (!st) return fail(`error: server '${srv}' has no tool '${toolName}' (${list.map((t) => t.name).join(", ")})`);
+      const slot = pool.slots.get(srv);
+      if (!slot) {
+        // an unknown NAME is a different mistake from a dead server, and the
+        // model needs to be able to tell them apart
+        const known = [...pool.slots.keys()];
+        return fail(
+          known.length
+            ? `error: no MCP server '${srv}' configured (configured: ${known.join(", ")})`
+            : "error: no MCP servers are configured — add [mcpServers.*] to fox-agent.toml, then /reload",
+        );
+      }
+
+      // Reconnect before running, so a child that died since the last call is
+      // replaced instead of failing on a stale handle. Backoff-gated: inside
+      // the window this returns false immediately rather than paying a dial.
+      const up = await ensureSlot(pool, slot);
+      if (!up) {
+        const wait = Math.max(0, slot.nextAttemptAt - Date.now());
+        const why = slot.lastError ? `last error: ${slot.lastError}` : "not connected";
+        return fail(
+          `error: mcp server '${srv}' is down — ${why}` +
+            (wait > 0 ? `; next reconnect attempt in ${Math.ceil(wait / 1000)}s` : ""),
+        );
+      }
+
+      const st = slot.tools.find((t) => t.name === toolName);
+      if (!st) {
+        const have = slot.tools.map((t) => t.name);
+        return fail(
+          have.length
+            ? `error: server '${srv}' has no tool '${toolName}' (available: ${have.join(", ")})`
+            : `error: server '${srv}' connected but advertises no tools`,
+        );
+      }
       return st.call(args.arguments ?? {});
     },
   });

@@ -231,6 +231,7 @@ describe("closeMcp: a wedged server must not hang shutdown", () => {
           closeCalled = true; // never resolves
         }),
       pid: child.pid,
+      alive: true,
     };
     const t0 = Date.now();
     await closeClients([wedged]);
@@ -254,6 +255,7 @@ describe("closeMcp: a wedged server must not hang shutdown", () => {
         resolved = true;
       },
       pid: child.pid,
+      alive: true,
     };
     await closeClients([good]);
     expect(resolved).toBe(true);

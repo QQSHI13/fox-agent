@@ -174,9 +174,20 @@ export async function runPoolDaemon(sockPath: string): Promise<void> {
         return { catalog: mcpCatalog() };
       }
       if (method === "call") {
-        const map = await tools(msg.servers as Record<string, McpServerConfig>);
+        const serversCfg = msg.servers as Record<string, McpServerConfig>;
+        const map = await tools(serversCfg);
         const mcp = map.get("mcp");
-        if (!mcp) return fail("error: no MCP servers reachable");
+        // The map is empty when no server holds a tool — which is NOT the same
+        // as "could not reach it". Name the configured servers so the caller
+        // can tell a missing config from a server that failed to start.
+        if (!mcp) {
+          const names = Object.keys(serversCfg ?? {});
+          return fail(
+            names.length
+              ? `error: none of the configured MCP servers are up (${names.join(", ")}) — each failed to start or advertised no tools; check the server command and /reload`
+              : "error: no MCP servers are configured",
+          );
+        }
         return await mcp.run(
           { server: msg.server as string, tool: msg.tool as string, arguments: msg.arguments },
           // The bridge's own run() only reads its arguments — the context is
