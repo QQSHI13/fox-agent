@@ -549,7 +549,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   function inputLayout(): InputLayout { return inputMod.inputLayout(); }
   function caretPos(layout: InputLayout): { visRow: number; colW: number } { return inputMod.caretPos(layout, cur); }
   function rowBufRange(layout: InputLayout, v: number): [number, number] { return inputMod.rowBufRange(layout, v); }
-  function inputIndexAt(x: number, y: number): number | null { return inputMod.inputIndexAt(x, y); }
+  function inputIndexAt(x: number, y: number, round = false): number | null { return inputMod.inputIndexAt(x, y, round); }
   function moveCaretVertical(dir: -1 | 1, extend: boolean) {
     const r = inputMod.moveCaretVertical(dir, extend, cur, inSelAnchor);
     cur = r.cur;
@@ -2528,7 +2528,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         return;
       }
       if (press?.input) {
-        const ii = inputIndexAt(x, y);
+        // round=true: the caret sits BETWEEN chars (a selection edge), so a drag
+        // snaps at the half-cell — the first cell moved now selects 1 char, not 0
+        const ii = inputIndexAt(x, y, true);
         if (ii !== null && ii !== cur) {
           cur = ii; // anchor stays where the press landed
           press.moved = true;

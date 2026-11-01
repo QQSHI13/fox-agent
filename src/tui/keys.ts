@@ -453,6 +453,21 @@ export function createDecoder(emit: (k: Key) => void) {
     const mods = modsOf(params[1]);
 
     /**
+     * Map a numeric code point (from kitty `CSI <cp> u` or xterm
+     * modifyOtherKeys `CSI 27;<mods>;<cp> ~`) to the key it names, honouring
+     * ctrl/meta. Shared by both protocol handlers — they differ only in WHERE
+     * the code point sits in the parameter list, not in what it means.
+     */
+    function emitCodepoint(cp: number, mu: { ctrl?: boolean; meta?: boolean; shift?: boolean }): void {
+      if (cp === 127 || cp === 8) emit({ type: "named", name: "backspace", ...mu });
+      else if (cp === 13) emit({ type: "named", name: "return", ...mu });
+      else if (cp === 9) emit({ type: "named", name: "tab", ...mu });
+      else if (cp === 27) emit({ type: "named", name: "escape", ...mu });
+      else if (mu.ctrl || mu.meta) emit({ type: "named", name: String.fromCodePoint(cp).toLowerCase(), ...mu });
+      else emit({ type: "char", ch: String.fromCodePoint(cp) });
+    }
+
+    /**
      * `CSI <code> ; <mods> u` (kitty keyboard) and `CSI 27 ; <mods> ; <code> ~`
      * (xterm modifyOtherKeys=2) report keys as raw code points.
      *
@@ -464,29 +479,12 @@ export function createDecoder(emit: (k: Key) => void) {
      */
     if (m[2] === "u") {
       const cp = Number(params[0]);
-      if (Number.isFinite(cp) && cp > 0) {
-        const mu = modsOf(params[1]);
-        if (cp === 127 || cp === 8) emit({ type: "named", name: "backspace", ...mu });
-        else if (cp === 13) emit({ type: "named", name: "return", ...mu });
-        else if (cp === 9) emit({ type: "named", name: "tab", ...mu });
-        else if (cp === 27) emit({ type: "named", name: "escape", ...mu });
-        else if (mu.ctrl || mu.meta) {
-          const letter = String.fromCodePoint(cp).toLowerCase();
-          emit({ type: "named", name: letter, ...mu });
-        } else emit({ type: "char", ch: String.fromCodePoint(cp) });
-      }
+      if (Number.isFinite(cp) && cp > 0) emitCodepoint(cp, modsOf(params[1]));
       return true;
     }
     if (m[2] === "~" && params[0] === "27" && params.length >= 3) {
       const cp = Number(params[2]);
-      const mu = modsOf(params[1]);
-      if (Number.isFinite(cp) && cp > 0) {
-        if (cp === 127 || cp === 8) emit({ type: "named", name: "backspace", ...mu });
-        else if (cp === 13) emit({ type: "named", name: "return", ...mu });
-        else if (cp === 9) emit({ type: "named", name: "tab", ...mu });
-        else if (mu.ctrl || mu.meta) emit({ type: "named", name: String.fromCodePoint(cp).toLowerCase(), ...mu });
-        else emit({ type: "char", ch: String.fromCodePoint(cp) });
-      }
+      if (Number.isFinite(cp) && cp > 0) emitCodepoint(cp, modsOf(params[1]));
       return true;
     }
     // for a modified key the lookup key is the final char (arrows) or
