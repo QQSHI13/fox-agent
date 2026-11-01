@@ -68,7 +68,7 @@ export interface InputModule {
   /** Buffer-index range one visual row covers (newline excluded). */
   rowBufRange(layout: InputLayout, v: number): [number, number];
   /** (x, y) in the input dock -> buffer index; null when y is above the dock. */
-  inputIndexAt(x: number, y: number): number | null;
+  inputIndexAt(x: number, y: number, round?: boolean): number | null;
   /** up/down inside a multi-line input, keeping the display column. */
   moveCaretVertical(dir: -1 | 1, extend: boolean, cur: number, anchor: number | null): { cur: number; anchor: number | null };
   /** Drop the cached layout (width changed — a stale wrap must not survive). */
@@ -162,13 +162,17 @@ export function createInputModule(deps: InputDeps): InputModule {
   }
 
   /** Buffer index of the first char whose cell would start past `targetW`
-   *  display columns. */
-  function indexAtWidth(s: string, targetW: number): number {
+   *  display columns. `round` snaps to the nearest boundary (for selection —
+   *  a caret or highlight sits BETWEEN chars, not on one), so a drag only needs
+   *  to cross half a cell to move; without it the first drag cell does nothing
+   *  and selecting 2 chars takes 3. */
+  function indexAtWidth(s: string, targetW: number, round = false): number {
     let w = 0;
     let i = 0;
     for (const ch of s) {
       const cw = charWidth(ch.codePointAt(0)!);
-      if (w + cw > targetW) break;
+      if (round && w + cw / 2 > targetW) break;
+      if (!round && w + cw > targetW) break;
       w += cw;
       i++;
     }
@@ -290,13 +294,13 @@ export function createInputModule(deps: InputDeps): InputModule {
   }
 
   /** (x, y) in the input dock -> buffer index; null when y is above the dock. */
-  function inputIndexAt(x: number, y: number): number | null {
+  function inputIndexAt(x: number, y: number, round = false): number | null {
     const { layout, firstShown, inputTop, shownCount } = deps.dockGeom();
     if (y < inputTop || y >= inputTop + shownCount) return null;
     const v = Math.min(firstShown + (y - inputTop), layout.rows.length - 1);
     const [s, e] = rowBufRange(layout, v);
     const targetW = Math.max(0, x - 3); // 1 margin + 2 for the "❯ " prefix
-    return s + indexAtWidth(inputText().slice(s, e), targetW);
+    return s + indexAtWidth(inputText().slice(s, e), targetW, round);
   }
 
   /** up/down inside a multi-line input, keeping the display column. */
