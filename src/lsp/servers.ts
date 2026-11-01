@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { dirname, extname, join } from "node:path";
-import { findUp } from "../core/config.ts";
+import { findUp } from "../core/discovery.ts";
 
 /**
  * Which language server handles which file, and where its project root is.

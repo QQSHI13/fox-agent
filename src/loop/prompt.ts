@@ -1,6 +1,6 @@
 import { lookupModel } from "../providers/models.ts";
 import type { ToolDef } from "../providers/types.ts";
-import { renderTodos, getTodos } from "../tools/todo.ts";
+import { renderTodos, getTodos } from "../plugins/bundled/todo.ts";
 import { VERSION } from "../core/version.ts";
 import { shellPath } from "../core/shell.ts";
 import os from "node:os";

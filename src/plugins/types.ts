@@ -30,8 +30,8 @@
  * tool's output text. Neither can reorder, drop, or insert a message, so the
  * pairing holds whatever a plugin does.
  */
-import type { Tool } from "../tools/types.ts";
-import type { Style } from "../tui/screen.ts";
+import type { Tool } from "../core/tool.ts";
+import type { Style } from "../core/style.ts";
 import type { ChatFn, ChatMessage, ToolDef } from "../providers/types.ts";
 import type { ExternalAgentConfig, McpServerConfig } from "../core/config.ts";
 

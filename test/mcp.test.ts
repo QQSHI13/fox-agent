@@ -1,6 +1,6 @@
 // The MCP bridge against a real server process.
 //
-// Everything here was previously untested: src/tools/mcp.ts had one test, for
+// Everything here was previously untested: src/mcp/client.ts had one test, for
 // `buildRegistry` with *zero* servers configured, so the spawn, the handshake,
 // `listTools`, the tool naming, the output cap and the two failure paths had
 // never executed. The fixture in test/fixtures/mcp-server.ts is the other end.
@@ -18,7 +18,7 @@ const FIXTURE = join(import.meta.dir, "fixtures", "mcp-server.ts");
 const SDK_SERVER = join(import.meta.dir, "..", "node_modules", "@modelcontextprotocol", "sdk", "dist", "esm", "server", "index.js");
 const CAN_RUN = existsSync(SDK_SERVER);
 
-/** OUT_CAP_MCP in src/tools/mcp.ts — private there, restated here on purpose. */
+/** OUT_CAP_MCP in src/mcp/client.ts — private there, restated here on purpose. */
 const OUT_CAP_MCP = 30_000;
 
 let home: string;
@@ -36,7 +36,7 @@ beforeEach(() => {
 afterEach(async () => {
   // the module-level client cache outlives a test, so a leaked child would be
   // inherited by the next one and make failures order-dependent
-  const { closeMcp } = await import("../src/tools/mcp.ts");
+  const { closeMcp } = await import("../src/mcp/client.ts");
   await closeMcp();
   rmSync(home, { recursive: true, force: true });
 });
@@ -57,7 +57,7 @@ function fixtureProcs(): number {
 
 describe.skipIf(!CAN_RUN)("mcp bridge against a live server", () => {
   test("spawns, handshakes, and exposes ONE mcp tool routing to the server", async () => {
-    const { mcpTools } = await import("../src/tools/mcp.ts");
+    const { mcpTools } = await import("../src/mcp/client.ts");
     const { tools, warnings } = await mcpTools(fixtureCfg());
 
     expect(warnings).toEqual([]);
@@ -74,7 +74,7 @@ describe.skipIf(!CAN_RUN)("mcp bridge against a live server", () => {
   }, 30_000);
 
   test("callTool round-trips through the real server", async () => {
-    const { mcpTools } = await import("../src/tools/mcp.ts");
+    const { mcpTools } = await import("../src/mcp/client.ts");
     const { tools } = await mcpTools(fixtureCfg());
     // the output is computed by the fixture, so this cannot pass unless the
     // spawn, the initialize handshake and the tools/call round trip all happened
@@ -83,7 +83,7 @@ describe.skipIf(!CAN_RUN)("mcp bridge against a live server", () => {
   }, 30_000);
 
   test("a tool result flagged isError becomes a failure, not a throw", async () => {
-    const { mcpTools } = await import("../src/tools/mcp.ts");
+    const { mcpTools } = await import("../src/mcp/client.ts");
     const { tools } = await mcpTools(fixtureCfg());
     const res = await tools.get("mcp")!.run({ server: "fix", tool: "boom" }, {} as never);
     // `isError: true` is a protocol-level result, distinct from a transport
@@ -92,7 +92,7 @@ describe.skipIf(!CAN_RUN)("mcp bridge against a live server", () => {
   }, 30_000);
 
   test("oversized output is capped where the bridge caps it", async () => {
-    const { mcpTools } = await import("../src/tools/mcp.ts");
+    const { mcpTools } = await import("../src/mcp/client.ts");
     const { tools } = await mcpTools(fixtureCfg());
     const res = (await tools.get("mcp")!.run({ server: "fix", tool: "big" }, {} as never)) as { ok: boolean; output: string };
     expect(BIG_LEN).toBeGreaterThan(OUT_CAP_MCP); // the fixture must actually overflow
@@ -104,7 +104,7 @@ describe.skipIf(!CAN_RUN)("mcp bridge against a live server", () => {
   }, 30_000);
 
   test("image content parts become MediaParts, not stringified base64", async () => {
-    const { mcpTools } = await import("../src/tools/mcp.ts");
+    const { mcpTools } = await import("../src/mcp/client.ts");
     const { tools } = await mcpTools(fixtureCfg());
     const res = (await tools.get("mcp")!.run({ server: "fix", tool: "shot" }, {} as never)) as {
       ok: boolean;
@@ -122,7 +122,7 @@ describe.skipIf(!CAN_RUN)("mcp bridge against a live server", () => {
   }, 30_000);
 
   test("text-only results carry no media field", async () => {
-    const { mcpTools } = await import("../src/tools/mcp.ts");
+    const { mcpTools } = await import("../src/mcp/client.ts");
     const { tools } = await mcpTools(fixtureCfg());
     const res = (await tools.get("mcp")!.run({ server: "fix", tool: "textonly" }, {} as never)) as { ok: boolean; media?: unknown };
     expect(res.ok).toBe(true);
@@ -130,7 +130,7 @@ describe.skipIf(!CAN_RUN)("mcp bridge against a live server", () => {
   }, 30_000);
 
   test("routing to an unknown server or tool fails cleanly with the reachable set", async () => {
-    const { mcpTools } = await import("../src/tools/mcp.ts");
+    const { mcpTools } = await import("../src/mcp/client.ts");
     const { tools } = await mcpTools(fixtureCfg());
     const bad = (await tools.get("mcp")!.run({ server: "nope", tool: "echo" }, {} as never)) as { ok: boolean; output: string };
     expect(bad.ok).toBe(false);
@@ -141,7 +141,7 @@ describe.skipIf(!CAN_RUN)("mcp bridge against a live server", () => {
   }, 30_000);
 
   test("one unreachable server warns and leaves the others working", async () => {
-    const { mcpTools } = await import("../src/tools/mcp.ts");
+    const { mcpTools } = await import("../src/mcp/client.ts");
     const { tools, warnings } = await mcpTools({
       ...fixtureCfg("good"),
       bad: { command: join(home, "definitely-not-a-real-binary") },
@@ -156,7 +156,7 @@ describe.skipIf(!CAN_RUN)("mcp bridge against a live server", () => {
   }, 30_000);
 
   test("the same config is cached; a changed one reaps the old children first", async () => {
-    const { mcpTools } = await import("../src/tools/mcp.ts");
+    const { mcpTools } = await import("../src/mcp/client.ts");
     const first = await mcpTools(fixtureCfg());
     const before = fixtureProcs();
     expect(before).toBeGreaterThan(0);
@@ -177,7 +177,7 @@ describe.skipIf(!CAN_RUN)("mcp bridge against a live server", () => {
   }, 30_000);
 
   test("closeMcp kills the children and clears the cache", async () => {
-    const { mcpTools, closeMcp } = await import("../src/tools/mcp.ts");
+    const { mcpTools, closeMcp } = await import("../src/mcp/client.ts");
     const first = await mcpTools(fixtureCfg());
     expect(fixtureProcs()).toBeGreaterThan(0);
 
@@ -221,7 +221,7 @@ describe("closeMcp: a wedged server must not hang shutdown", () => {
   // client.close() never settles (measured with the npx chrome-devtools bridge
   // over WSL interop). closeClients must return on its own and SIGKILL the child.
   test("a close() that never settles returns within the deadline and kills the child", async () => {
-    const { closeClients } = await import("../src/tools/mcp.ts");
+    const { closeClients } = await import("../src/mcp/client.ts");
     // a real live child, so the kill path is exercised against a real pid
     const child = Bun.spawn(["sleep", "300"]);
     let closeCalled = false;
@@ -245,7 +245,7 @@ describe("closeMcp: a wedged server must not hang shutdown", () => {
   }, 30_000);
 
   test("a well-behaved close still wins the race (no premature kill of a live close)", async () => {
-    const { closeClients } = await import("../src/tools/mcp.ts");
+    const { closeClients } = await import("../src/mcp/client.ts");
     const child = Bun.spawn(["sleep", "300"]);
     let resolved = false;
     const good = {

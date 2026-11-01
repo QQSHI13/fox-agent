@@ -5,7 +5,6 @@ import { fail, ok } from "./types.ts";
 import { setLongTimeout } from "../core/timers.ts";
 import { childEnv } from "../core/childenv.ts";
 import { shellName, shellPath } from "../core/shell.ts";
-import { outCap } from "./files.ts";
 import { cutTail } from "../core/text.ts";
 
 export const execDef: ToolDef = {
@@ -143,8 +142,8 @@ export async function execRun(
   const read = async (stream: ReadableStream, sink: (s: string) => void) => {
     const dec = new TextDecoder();
     try {
-      for await (const chunk of stream as any) {
-        const s = dec.decode(chunk as Uint8Array, { stream: true });
+      for await (const chunk of stream as unknown as AsyncIterable<Uint8Array>) {
+        const s = dec.decode(chunk, { stream: true });
         sink(s);
         streamOut(s);
       }
@@ -185,7 +184,8 @@ export async function execRun(
   if (dropped > 0) s = `… (${dropped} chars dropped, output too chatty)\n${s}`;
   // full:true lifts the per-result cap for this call — the 5MB in-memory guard
   // above still bounds it, and says so when it bites
-  const truncated = !args.full && s.length > outCap() ? cutTail(s, outCap()) + "\n… (head truncated)" : s;
+  const cap = ctx.toolOutputCap ?? 30_000;
+  const truncated = !args.full && s.length > cap ? cutTail(s, cap) + "\n… (head truncated)" : s;
   let head = `exit ${code}`;
   if (killedBy) head += ` (${killedBy})`;
   const body = `${head}\n${truncated || "(no output)"}`;

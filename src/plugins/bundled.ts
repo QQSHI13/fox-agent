@@ -11,14 +11,14 @@
  *     per-session scratchpad is dropped from `onSessionEnd`.
  */
 import type { FoxPlugin } from "./types.ts";
-import { ptyDef, drivePty, cleanupPty, ptySessionName } from "../tools/pty.ts";
-import { todoDef, todoRun } from "../tools/todo.ts";
-import { fetchDef, fetchRun } from "../tools/fetch.ts";
-import { replDef, replRun, cleanupRepl } from "../tools/repl.ts";
-import { questionPlugin } from "../tools/question.ts";
-import { lspPlugin } from "../tools/lsp.ts";
-import { taskDef, taskRun } from "../tools/task.ts";
-import costPlugin, { costSegment } from "./cost.ts";
+import { ptyDef, drivePty, cleanupPty, ptySessionName } from "./bundled/pty.ts";
+import { todoDef, todoRun } from "./bundled/todo.ts";
+import { fetchDef, fetchRun } from "./bundled/fetch.ts";
+import { replDef, replRun, cleanupRepl } from "./bundled/repl.ts";
+import { questionPlugin } from "./bundled/question.ts";
+import { lspPlugin } from "./bundled/lsp.ts";
+import { taskDef, taskRun } from "./bundled/task.ts";
+import costPlugin, { costSegment } from "./bundled/cost.ts";
 
 const ptyPlugin: FoxPlugin = {
   name: "bundled:pty",

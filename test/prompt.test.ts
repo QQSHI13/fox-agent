@@ -232,7 +232,7 @@ describe("tools are presented honestly", () => {
     // description, which the provider ships verbatim — restating them here was
     // redundant. The prompt only names what is available.
     const { execDef } = await import("../src/tools/exec.ts");
-    const { ptyDef } = await import("../src/tools/pty.ts");
+    const { ptyDef } = await import("../src/plugins/bundled/pty.ts");
     expect(execDef.description).toMatch(/working directory NEVER carries over/);
     expect(ptyDef.description).toMatch(/KEEPS its own working directory/);
     const p = await build();

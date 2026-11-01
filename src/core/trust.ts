@@ -2,7 +2,8 @@ import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "no
 import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { agentHome } from "./paths.ts";
-import { PROJECT_CONFIG_NAME, findUp } from "./config.ts";
+import { PROJECT_CONFIG_NAME } from "./config.ts";
+import { findUp } from "./discovery.ts";
 import { isDir } from "./fs.ts";
 
 export function trustFilePath(): string {

@@ -8,8 +8,7 @@ import { appendFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { Screen, Plane, charWidth, type Style } from "./screen.ts";
-import { PushCompositor } from "./compositor.ts";
+import { PushCompositor, Plane, charWidth, type Style } from "./screen.ts";
 import { computeFrame, dockRows, itemEdgeSpan, scrollbarScrollTop, viewportHeight, chipGutter, contentOrigin, contentOriginForChip, contentWidth, type Frame, type FrameInput, type Row } from "./layout.ts";
 import { activePlugins } from "../plugins/load.ts";
 import type { TuiRegionPlane, TuiWrapOptions } from "../plugins/types.ts";
@@ -28,6 +27,7 @@ import { renderMarkdown } from "./markdown.ts";
 import { codeContRow, codeGutterRow, wrapCodeAware } from "./markdown.ts";
 import { createPlainRows, createStreamRows } from "./rows.ts";
 import { wrapProse, wrapSegs, wrapText, type Seg } from "./wrap.ts";
+import { createInputModule, type InputModule, type InputLayout, type VisualRow } from "./input.ts";
 import { Picker, type PickerAction, type PickerRow } from "./picker.ts";
 import { sessionRows, setPickerWheelStep } from "./pickerui.ts";
 import { VERSION } from "../core/version.ts";
@@ -37,7 +37,7 @@ import { projectView } from "../context/view.ts";
 import { sessionContextTokens } from "../context/budget.ts";
 import { lookupModel } from "../providers/models.ts";
 import { bundledDisabled } from "../plugins/bundled.ts";
-import { costSegment } from "../plugins/cost.ts";
+import { costSegment } from "../plugins/bundled/cost.ts";
 import { listSessions } from "../store/db.ts";
 import { allMessages, allMessagesLite, appendOps, createSession, forkSession, getMessage, getSession, kvGet, kvSet, pinSession, unpinSession, type MessageRow } from "../store/db.ts";
 import { releaseLock, foreignLock } from "../store/lock.ts";
@@ -65,6 +65,8 @@ import { diagnoseProviderError } from "../core/errors.ts";
 import { isWindowsTerminal, isWSL } from "../core/wsl.ts";
 import { liveTheme, setTheme, theme, themeName, type Theme } from "./themes.ts";
 import { diffSegs, jsonSegs, statusSegs, pathSegs, wordDiff, ansiSegs, highlightVersion, setHighlightDone } from "./highlight.ts";
+import { argsSummary, argsFull, argsJson, keepTail, diffTouchKeys } from "./helpers.ts";
+export { argsSummary, argsFull, argsJson, keepTail, diffTouchKeys };
 
 type ItemKind = "user" | "toolhead" | "toolbody" | "info" | "error" | "md" | "think";
 interface Item {
@@ -125,17 +127,6 @@ let KEPT_TOOL_CHARS = 4_000;
 export function setTuiCaps(collapsed: number, kept: number): void {
   COLLAPSED_TOOL_CHARS = collapsed;
   KEPT_TOOL_CHARS = kept;
-}
-
-/**
- * Cap a tool result's kept text at the TAIL, not the head. The most recent
- * output is what the model needs, so for an over-long result we keep the end
- * and note the dropped head — same direction the live streaming body already
- * keeps (`slice(-KEPT_TOOL_CHARS)`), so a body the user watched stream does not
- * snap to a disjoint prefix the moment it settles. Exported for testing.
- */
-export function keepTail(text: string, cap: number): string {
-  return text.length > cap ? `… (${text.length - cap} chars dropped)\n${text.slice(-cap)}` : text;
 }
 
 /**
@@ -276,83 +267,6 @@ const CHROME_KEY = SEQ_KEY_SPACE - 1;
  * `sig` maps an item to a render signature; `sigs` is the caller-held map of
  * key -> signature, mutated in place so it stays in sync across rebuilds.
  */
-export function diffTouchKeys<T>(prev: T[], curr: T[], key: (t: T) => number, sig: (t: T) => string, sigs: Map<number, string>): number[] {
-  const changed: number[] = [];
-  const prevKeys = new Set(prev.map(key));
-  const seen = new Set<number>();
-  for (const it of curr) {
-    const k = key(it);
-    seen.add(k);
-    if (sigs.get(k) !== sig(it)) {
-      changed.push(k);
-      sigs.set(k, sig(it));
-    }
-  }
-  // nodes that vanished (ctx hid them, session trimmed): drop their sigs so a
-  // later same-key node is not mistaken for the old one
-  for (const k of prevKeys) if (!seen.has(k)) sigs.delete(k);
-  return changed;
-}
-
-/**
- * One-line "what actually ran" for a tool head: the meaningful field when the
- * args have an obvious one (cmd, path, pattern, url), else compacted JSON.
- */
-export function argsSummary(args: string): string {
-  const t = (args ?? "").trim();
-  if (!t || t === "{}") return "";
-  try {
-    const a = JSON.parse(t);
-    const v = a?.cmd ?? a?.path ?? a?.pattern ?? a?.file ?? a?.url ?? a?.command ?? a?.job ?? null;
-    if (typeof v === "string" && v.trim()) return ` ${v.replace(/\s+/g, " ").slice(0, 200)}`;
-  } catch {}
-  return ` ${t.replace(/\s+/g, " ").slice(0, 200)}`;
-}
-
-/**
- * The full "what actually ran", whitespace-flattened and capped but NOT
- * truncated to the head-line width — the tool head is expandable, and the
- * expanded view may use the whole screen width.
- *
- * A single-field args object (cmd/path/pattern) is shown whole; a call that
- * also carries content (write's new text, edit's old/new strings, task's
- * prompt) gets those fields appended — the expanded view is the only place
- * the call's actual payload is visible, so showing only the path there would
- * leave the content permanently invisible.
- */
-export function argsFull(args: string): string {
-  const t = (args ?? "").trim();
-  if (!t || t === "{}") return "";
-  try {
-    const a = JSON.parse(t);
-    const v = a?.cmd ?? a?.path ?? a?.pattern ?? a?.file ?? a?.url ?? a?.command ?? a?.job ?? null;
-    if (typeof v !== "string" || !v.trim()) return t.replace(/\s+/g, " ").slice(0, 4_000);
-    const extra: string[] = [];
-    for (const k of ["old_string", "new_string", "content", "text", "prompt", "task", "description", "ids", "ops"]) {
-      const x = a?.[k];
-      if (typeof x === "string" && x.trim()) extra.push(`${k}: ${x.replace(/\s+/g, " ").slice(0, 2_000)}`);
-      else if (x !== undefined) extra.push(`${k}: ${JSON.stringify(x).replace(/\s+/g, " ").slice(0, 2_000)}`);
-    }
-    return [v.replace(/\s+/g, " ").slice(0, 4_000), ...extra].join("\n  ");
-  } catch {}
-  return t.replace(/\s+/g, " ").slice(0, 4_000);
-}
-
-/**
- * The tool call's arguments as pretty-printed JSON — what the expandable head
- * reveals on click. This is the model's actual call verbatim (2-space
- * indented, key order preserved), not a reconstruction: auditing "what did it
- * send" wants ground truth. Unparseable args degrade to the raw string.
- */
-export function argsJson(args: string): string {
-  const t = (args ?? "").trim();
-  if (!t || t === "{}") return "{}";
-  try {
-    return JSON.stringify(JSON.parse(t), null, 2).slice(0, 8_000);
-  } catch {}
-  return t.slice(0, 8_000);
-}
-
 export async function startTui(state: HarnessState, applyConfig?: () => { warnings: string[] }) {
   const term: Term = openTerm();
   const screen = new PushCompositor(term);
@@ -425,16 +339,11 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     for (const name of screen.planeNames()) if (name.startsWith("plugin:") && !live.has(name)) screen.dropPlane(name);
     return pluginRegions;
   }
-  /**
-   * Plugin regions are fully push-based: resolvePluginRegions() handed each a
-   * persistent handle once, and the frame loop only needs their planes to
-   * exist so composite() merges whatever they last pushed. No plugin code runs
-   * here — a slow or stuck plugin shows stale content in its own region and
-   * never blocks the other planes.
-   */
-  function paintPluginRegions(_frameChanged: boolean, _fullInvalidate: boolean): void {
-    resolvePluginRegions();
-  }
+  // Plugin regions are fully push-based: resolvePluginRegions() hands each a
+  // persistent handle ONCE, and the plugin pushes content whenever it wants.
+  // No plugin code runs in the frame loop — composite() merges whatever each
+  // plugin last pushed into its plane. A slow/stuck plugin shows stale content
+  // in its own region and never blocks the other planes.
   let W = 0;
   let H = 0;
 
@@ -460,6 +369,10 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
    */
   let buf: Ch[] = []; // input buffer; lit chars are literal newlines
   let cur = 0; // cursor index into buf
+  /** The anchored end of an input selection; the caret is the moving end. */
+  let inSelAnchor: number | null = null;
+  /** Max visual rows the input dock flexes to before scrolling. */
+  const INPUT_MAX_ROWS = 8;
   let busy = false;
   let frameIdx = 0;
   let startedAt = 0;
@@ -544,44 +457,35 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
    */
   const itemSigs = new Map<number, string>();
   const itemSig = (it: Item): string => `${it.kind}|${it.text}|${it.expanded ? 1 : 0}|${it.mdBody ? 1 : 0}|${it.detail ?? ""}`;
-  let dirty = true;
   /**
-   * True while paint() is running. The stray-output swallow invalidates the
-   * row-hash diff so the next flush repaints over a scribble — but a plugin
-   * region that writes to stdout on every paint would re-arm the frame loop
-   * from inside a frame and spin. Inside a paint, the invalidation alone is
-   * enough: the flush for THIS frame is already coming.
+   * True while a region paint is running. The stray-output swallow invalidates
+   * the row-hash diff so the next flush repaints over a scribble — but a plugin
+   * that writes to stdout on every paint would re-arm the loop from inside a
+   * paint and spin. Inside a paint, the invalidation alone is enough.
    */
   let inPaint = false;
-  /** spinner tick landed: only the status region needs re-deriving */
-  let statusOnly = false;
   /**
-   * Short-interval paint scheduler: the event-driven half of the frame loop.
-   * markDirty used to only raise a flag and wait for the 33ms interval, so a
-   * scroll burst's last ticks (a direction change worst of all) idled up to
-   * 57ms before showing. Now dirty work lands within ~8ms of the event, and
-   * the schedule itself is the burst coalescer — N ticks inside the window
-   * still produce one paint at the final offset. The setInterval remains for
+   * PUSH model: every state mutation calls markDirty (or a direct push*). The
+   * push fans out to ALL region restampers — each is async + coalesced, so a
+   * burst of dirty events collapses to one restamp per region, and the region
+   * re-derives from CURRENT state (no signatures, no diff-and-decide). Each
+   * push composites eagerly so the GRID is always ready; the frame tick only
+   * diffs the grid against the last frame and flushes changed rows.
+   *
+   * The tick does NOT composite — the push already did. (composite() early-outs
+   * on zero dirty rows, so a stray forceRepaintAll from the output quarantine
+   * is the only path that re-runs it inside the tick.)
+   *
+   * The short-interval scheduler is the burst coalescer: N dirty events inside
+   * the window produce ONE flush at the final offset. setInterval remains for
    * spinner pacing and as a missed-event safety net.
    */
+  let dirty = true; // set on every push; cleared by the tick after flush
   let paintTimer: ReturnType<typeof setTimeout> | null = null;
-  // set from startTui once frameTick exists (same pattern as clearKeyRef)
   let tickRef: (() => void | Promise<void>) | null = null;
-  /**
-   * When the last frame actually ran. The paint window below is a *burst*
-   * coalescer, and a burst is defined by frames arriving close together — so
-   * this is what distinguishes "the 40th keypress of a burst" (coalesce it)
-   * from "the first keypress on an idle screen" (there is nothing to coalesce;
-   * waiting out the window is pure added latency). Measured: a settled frame
-   * costs 1–2.5ms, so an idle keystroke's whole latency was this timer.
-   */
   let lastTickAt = 0;
-  const BURST_MS = 8; // coalescing window while frames are already flowing
-  const IDLE_MS = 24; // no frame for this long ⇒ the next event starts fresh
-  // idle-path coalescer: a microtask, not a timer. Everything typed into one
-  // read batch resolves in the same macrotask, so a microtask still collapses
-  // a burst to a single paint — while costing zero timer latency, which is
-  // exactly what an idle keystroke was paying. The timer path stays for bursts.
+  const BURST_MS = 8;
+  const IDLE_MS = 24;
   let microPending = false;
   const schedulePaint = (ms = BURST_MS) => {
     if (paintTimer || microPending) return;
@@ -596,9 +500,6 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     }
     paintTimer = setTimeout(() => {
       paintTimer = null;
-      // a frame scheduled before exit must not paint after the alt screen is
-      // torn down — that write lands on the primary screen and leaves the
-      // status bar behind (the "quit but the bottom bar is still there" bug)
       if (exiting) return;
       tickRef?.();
     }, ms);
@@ -606,11 +507,56 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   };
   const markDirty = () => {
     dirty = true;
+    resolvePluginRegions(); // no-op unless statsRev bumped (/reload) — planes must exist
+    pushDock();
+    pushFloats();
+    pushOverlay();
+    pushStatus();
+    pushTranscriptFrame();
     schedulePaint();
   };
   // a Shiki block finished tokenizing off-thread: cached-flat rows must repaint
   // in their grammar colors, so re-run the frame on the version bump
   setHighlightDone(() => markDirty());
+
+  // The input module owns the buffer/caret math (input.ts). It is functional —
+  // pure over the args it is given — so these closures bridge it to the app's
+  // mutable buf/cur/inSelAnchor state and keep the ~30 call sites unchanged.
+  // dockGeom is deferred: it is declared below (hoisted) and reads `painted`,
+  // which is null until the first frame; the module only calls it on a hit-test.
+  let inputMod: InputModule;
+  {
+    let dockGeomRef: () => { layout: InputLayout; caret: { visRow: number; colW: number }; shownCount: number; firstShown: number; inputTop: number };
+    inputMod = createInputModule({
+      display: () => buf.map((c) => c.c).join(""),
+      isSecret: () => { const st = getPrompt()?.steps[getPrompt()!.idx]; return !!st?.secret; },
+      width: () => W,
+      markDirty,
+      dockGeom: () => dockGeomRef(),
+    });
+    dockGeomRef = dockGeom as typeof dockGeomRef;
+  }
+  const inSelRange = (): [number, number] | null => inputMod.inSelRange(inSelAnchor, cur);
+  function deleteInSel(): boolean {
+    const r = inputMod.deleteInSel(buf, cur, inSelAnchor);
+    if (!r.did) return false;
+    buf = r.buf;
+    cur = r.cur;
+    inSelAnchor = r.anchor;
+    return true;
+  }
+  function inputText(): string { return inputMod.inputText(); }
+  function inputLayout(): InputLayout { return inputMod.inputLayout(); }
+  function caretPos(layout: InputLayout): { visRow: number; colW: number } { return inputMod.caretPos(layout, cur); }
+  function rowBufRange(layout: InputLayout, v: number): [number, number] { return inputMod.rowBufRange(layout, v); }
+  function inputIndexAt(x: number, y: number): number | null { return inputMod.inputIndexAt(x, y); }
+  function moveCaretVertical(dir: -1 | 1, extend: boolean) {
+    const r = inputMod.moveCaretVertical(dir, extend, cur, inSelAnchor);
+    cur = r.cur;
+    inSelAnchor = r.anchor;
+  }
+  const wrapByWidth = (s: string, maxCols: number): string[] => inputMod.wrapByWidth(s, maxCols);
+  const indexAtWidth = (s: string, targetW: number): number => inputMod.indexAtWidth(s, targetW);
 
   // ---- mouse / selection state ----
   /**
@@ -666,11 +612,11 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
    * core/ui.ts).
    */
   const wizard: Wizard = createWizard({
-    getBuf: () => ({ buf, cur, inputRev }),
+    getBuf: () => ({ buf, cur, inputRev: inputMod.rev() }),
     setBuf: (b, c) => {
       buf = b as Ch[];
       cur = c;
-      inputRev++;
+      inputMod.bumpRev();
     },
     chsSet: (...a) => chsSet(...a),
     display: (...a) => display(...a),
@@ -1806,7 +1752,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     inSelAnchor = null;
     buf = [...text].map((x) => ({ c: x, lit: false }));
     cur = buf.length;
-    inputRev++;
+    inputMod.bumpRev();
     markDirty();
   }
 
@@ -1828,7 +1774,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     inSelAnchor = null;
     buf = [];
     cur = 0; // a stale index past the new (empty) buffer crashes graphemeBack on the next backspace
-    inputRev++; // the layout cache is keyed on this — without it a multi-line message leaves a multi-line input box
+    inputMod.bumpRev(); // the layout cache is keyed on this — without it a multi-line message leaves a multi-line input box
     markDirty();
     const t = t0;
 
@@ -1884,7 +1830,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     // serial stretch read as a hang after exit. The await in cli.ts's finally
     // joins this same in-flight pass (shutdownTools is idempotent during it).
     try {
-      void import("../tools/index.ts").then((m) => m.beginShutdown(state.sessionId));
+      void import("../tools/index.ts")
+        .then((m) => m.beginShutdown(state.sessionId))
+        .catch(() => {}); // shutdown rejects routinely (MCP close, plugin hook) — never surface as "internal error"
     } catch {}
     try {
       if (state.sessionId) unpinSession(state.sessionId);
@@ -1998,7 +1946,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     for (const ch of text) chars.push({ c: ch === "\t" ? " " : ch, lit });
     buf.splice(cur, 0, ...chars);
     cur += chars.length;
-    inputRev++;
+    inputMod.bumpRev();
     markDirty();
   }
   /** next cursor position one word away in `dir` (-1 left, +1 right) */
@@ -2115,7 +2063,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         cur++;
       }
       hintSel = 0;
-      inputRev++;
+      inputMod.bumpRev();
       markDirty();
       return;
     }
@@ -2183,7 +2131,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       if (buf.length) {
         buf = [];
         cur = 0;
-        inputRev++;
+        inputMod.bumpRev();
         flash("cleared");
         return;
       }
@@ -2209,7 +2157,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         if (raw && (lit || !(t.startsWith("/") || t.startsWith("!")))) {
           buf = [];
           cur = 0;
-          inputRev++;
+          inputMod.bumpRev();
           steer(state.sessionId, raw);
           return flash("steering — delivered after the current tool");
         }
@@ -2243,29 +2191,24 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       // re-derive they schedule, and that is deferred to the frame loop.
       void (async () => {
         let n = 0;
-        // TEMP observation aid: a fixed 2s busy-wait per expanded item so the
-        // freeze fix is visible. REMOVE BEFORE MERGE. The re-wrap runs off the
-        // frame path (pushTranscriptFrame), so the spinner and input bar must
-        // stay live during the expand; on the old code the screen locks.
         for (const it of items) {
           if (!expandable(it)) continue;
           const want = anyFolded;
           if (isExpanded(it) !== want) {
             if (!want) fillDetail(it); // about to expand: defer-pay here too
-            { const t0 = Date.now(); while (Date.now() - t0 < 2000) {} }
             toggleExpand(it);
-            if (++n % 16 === 0) await breathe();
+            if (++n % 16 === 0) await screen.breathe();
           }
         }
         flash(anyFolded ? "all unfolded" : "all folded");
-      })();
+      })().catch(() => {}); // a throw inside the expand loop must not become an unhandled rejection
       return;
     }
     if (name === "v" && ctrl) {
       void clipRead(term).then((p) => {
         if (!p) return;
         insertText(p, true);
-      });
+      }).catch(() => {}); // clipboard read is best-effort — a rejection must not surface as "internal error"
       return;
     }
     if (name === "escape") {
@@ -2348,7 +2291,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       const prev = buf[cur - 1];
       if (prev && prev.c === "\\" && !prev.lit) {
         buf.splice(cur - 1, 1, { c: "\n", lit: true });
-        inputRev++;
+        inputMod.bumpRev();
         markDirty();
       } else submit();
       return;
@@ -2361,7 +2304,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         const from = ctrl || k.meta ? wordBoundary(-1) : cur - graphemeBack(buf, cur);
         buf.splice(from, cur - from);
         cur = from;
-        inputRev++;
+        inputMod.bumpRev();
       }
       hintSel = 0;
       markDirty();
@@ -2373,7 +2316,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         // starting here, not its first code point
         const end = cur + graphemeForward(buf, cur);
         buf.splice(cur, end - cur);
-        inputRev++;
+        inputMod.bumpRev();
       }
       markDirty();
       return;
@@ -2689,12 +2632,19 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
    * same status-bar confirmation on success or failure. Two callers used to
    * report two different messages ("copied N chars…" vs bare "copied") through
    * two different code paths.
+   *
+   * Every `void copyText(...)` call site relies on this never rejecting —
+   * clipWrite failures are reported via the flash message, not thrown.
    */
-  async function copyText(text: string) {
+  async function copyText(text: string): Promise<void> {
     if (!text) return;
-    const okd = await clipWrite(text, term);
-    const lines = text.split("\n").length;
-    flash(okd ? `copied ${text.length} chars${lines > 1 ? ` (${lines} lines)` : ""}` : "copy failed — no clipboard tool");
+    try {
+      const okd = await clipWrite(text, term);
+      const lines = text.split("\n").length;
+      flash(okd ? `copied ${text.length} chars${lines > 1 ? ` (${lines} lines)` : ""}` : "copy failed — no clipboard tool");
+    } catch {
+      flash("copy failed — clipboard error");
+    }
   }
 
   /**
@@ -2706,50 +2656,54 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
    */
   async function markerOps(seq: number) {
     if (!state.sessionId) return;
-    const msg = getMessage(state.sessionId, seq);
-    if (!msg) {
-      flash(`no message [${seq}]`);
-      return;
-    }
-    const body = (msg.content ?? "").replace(/\s+/g, " ").slice(0, 60);
-    const answer = await wizard.ask(`[${seq}] ${msg.role} — ${body || "(no text)"}`, [
-      {
-        key: "op",
-        label: "operation",
-        kind: "select",
-        options: [
-          { value: "fork", label: "fork — cut the session here (new session from [N])" },
-          { value: "copy", label: "copy — message body to clipboard" },
-          { value: "revert", label: "revert — hide [N] and everything after from context" },
-        ],
-      },
-    ]);
-    const op = answer?.op;
-    if (!op) return;
-    if (op === "fork") {
-      // /fork N keeps messages through [N] (forkSession deletes seq > cap), so
-      // cutting "from [N]" passes the marker's own seq — the fork opens at [N]
-      const fork = forkSession(state.sessionId, seq);
-      flash(fork ? `forked -> ${fork.id}` : "fork failed");
-    } else if (op === "copy") {
-      await copyText(msg.content ?? "");
-    } else if (op === "revert") {
-      // hide this message + all later ones: a single delete op over the seq
-      // range. The view projection (not the transcript) drops them, so the
-      // model stops seeing them; /undo restores. Storage stays append-only.
-      const msgs = allMessagesLite(state.sessionId);
-      const ids = msgs.filter((m) => m.seq >= seq).map((m) => m.seq);
-      if (!ids.length) {
-        flash("nothing to revert");
+    try {
+      const msg = getMessage(state.sessionId, seq);
+      if (!msg) {
+        flash(`no message [${seq}]`);
         return;
       }
-      appendOps(state.sessionId, [{ kind: "delete", ids }]);
-      // the projection cache must not survive the surgery
-      void import("../context/view.ts").then((m) => m.dropViewCache(state.sessionId!)).catch(() => {});
-      // force the hidden nodes to re-render (they now show as dimmed/summarized)
-      for (const id of ids) touchSeq(id);
-      refresh();
-      flash(`reverted — hid [${seq}]..[${ids[ids.length - 1]}] from context (/undo restores)`);
+      const body = (msg.content ?? "").replace(/\s+/g, " ").slice(0, 60);
+      const answer = await wizard.ask(`[${seq}] ${msg.role} — ${body || "(no text)"}`, [
+        {
+          key: "op",
+          label: "operation",
+          kind: "select",
+          options: [
+            { value: "fork", label: "fork — cut the session here (new session from [N])" },
+            { value: "copy", label: "copy — message body to clipboard" },
+            { value: "revert", label: "revert — hide [N] and everything after from context" },
+          ],
+        },
+      ]);
+      const op = answer?.op;
+      if (!op) return;
+      if (op === "fork") {
+        // /fork N keeps messages through [N] (forkSession deletes seq > cap), so
+        // cutting "from [N]" passes the marker's own seq — the fork opens at [N]
+        const fork = forkSession(state.sessionId, seq);
+        flash(fork ? `forked -> ${fork.id}` : "fork failed");
+      } else if (op === "copy") {
+        await copyText(msg.content ?? "");
+      } else if (op === "revert") {
+        // hide this message + all later ones: a single delete op over the seq
+        // range. The view projection (not the transcript) drops them, so the
+        // model stops seeing them; /undo restores. Storage stays append-only.
+        const msgs = allMessagesLite(state.sessionId);
+        const ids = msgs.filter((m) => m.seq >= seq).map((m) => m.seq);
+        if (!ids.length) {
+          flash("nothing to revert");
+          return;
+        }
+        appendOps(state.sessionId, [{ kind: "delete", ids }]);
+        // the projection cache must not survive the surgery
+        void import("../context/view.ts").then((m) => m.dropViewCache(state.sessionId!)).catch(() => {});
+        // force the hidden nodes to re-render (they now show as dimmed/summarized)
+        for (const id of ids) touchSeq(id);
+        refresh();
+        flash(`reverted — hid [${seq}]..[${ids[ids.length - 1]}] from context (/undo restores)`);
+      }
+    } catch (e) {
+      flash(`marker op failed: ${(e as Error)?.message ?? String(e)}`);
     }
   }
 
@@ -2901,7 +2855,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       const line = g.layout.logical[vr.logical];
       const idx = indexAtWidth(line, targetW);
       cur = Math.min(g.layout.lineStarts[vr.logical] + idx, buf.length);
-      inputRev++; // caret moved -> layout/caret recompute is a no-op but keep rev honest
+      inputMod.bumpRev(); // caret moved -> layout/caret recompute is a no-op but keep rev honest
       markDirty();
       return;
     }
@@ -3222,242 +3176,6 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   }
 
 
-  // ---- input layout: soft-wrap + flex box + caret mapping ----
-  const INPUT_MAX_ROWS = 8;
-
-  interface VisualRow {
-    text: string;
-    logical: number; // logical line index
-    startCol: number; // display column where this visual row begins
-    rowW: number; // this row's own display width (≤ maxCols; word-wrap leaves it short)
-    index: number;
-  }
-  interface InputLayout {
-    rows: VisualRow[];
-    logical: string[];
-    lineStarts: number[]; // buf index where each logical line starts
-    maxCols: number;
-  }
-
-  // Word-aware wrap, matching the transcript's wrapSegs: break at spaces so a
-  // word never splits mid-glyph; a single oversized word still fills then
-  // continues (hard char-split). The old version cut at exactly maxCols, which
-  // broke words in the middle — this breaks at the space before maxCols.
-  //
-  // Leading spaces are KEPT, unconditionally. wrapSegs suppresses them (spaces
-  // at the very start of a transcript line are layout noise), and this used to
-  // copy that rule — which silently dropped the indentation a user had typed:
-  // "  hello" painted as "hello" while the caret, computed from the real buffer,
-  // sat 2 columns past the end of the text. With 4 spaces it was 4 off, and it
-  // hit every indented block — the exact input (pasted code, YAML, a markdown
-  // list) where leading whitespace is the content. An editor must round-trip
-  // what it is given; the suppression is for rendering, not for editing.
-  function wrapByWidth(s: string, maxCols: number): string[] {
-    if (s.length === 0) return [""];
-    const out: string[] = [];
-    let line = "";
-    for (const word of s.split(/( +)/)) {
-      if (!word) continue;
-      if (/^ +$/.test(word)) {
-        const room = maxCols - currentWidth();
-        const sp = Math.min(word.length, Math.max(0, room));
-        if (sp > 0) add(" ".repeat(sp));
-        continue;
-      }
-      let w = word;
-      for (;;) {
-        if (currentWidth() + widthOf(w) <= maxCols) {
-          add(w);
-          break;
-        }
-        if (line.length === 0) {
-          // lone oversized word: fill the line, hard-split the rest
-          let take = "";
-          let tw = 0;
-          for (const ch of w) {
-            const cw = charWidth(ch.codePointAt(0)!);
-            if (tw + cw > maxCols) break;
-            take += ch;
-            tw += cw;
-          }
-          if (!take) break;
-          add(take);
-          flush();
-          w = w.slice(take.length);
-          if (!w) break;
-          continue;
-        }
-        flush();
-      }
-    }
-    flush();
-    return out.length ? out : [""];
-    // -- tiny helpers over the in-progress line --
-    function currentWidth(): number {
-      let n = 0;
-      for (const ch of line) n += charWidth(ch.codePointAt(0)!);
-      return n;
-    }
-    function widthOf(t: string): number {
-      let n = 0;
-      for (const ch of t) n += charWidth(ch.codePointAt(0)!);
-      return n;
-    }
-    function add(t: string): void {
-      line += t;
-    }
-    function flush(): void {
-      out.push(line);
-      line = "";
-    }
-  }
-
-  let inputRev = 0; // bumped on every buffer mutation
-  /**
-   * What the input dock paints. Identical to the buffer except on a secret
-   * prompt step (an api key), where every non-newline code point is a bullet —
-   * one bullet per code point keeps the caret math honest (see caretPos).
-   */
-  function inputText(): string {
-    const d = display();
-    const st = getPrompt()?.steps[getPrompt()!.idx];
-    if (!st?.secret) return d;
-    return [...d].map((c) => (c === "\n" ? c : "•")).join("");
-  }
-  let layoutCache: { rev: number; layout: InputLayout } | null = null;
-  function inputLayout(): InputLayout {
-    if (layoutCache && layoutCache.rev === inputRev) return layoutCache.layout;
-    const d = inputText();
-    const logical = d.split("\n");
-    const maxCols = Math.max(8, W - 4);
-    const rows: VisualRow[] = [];
-    const lineStarts: number[] = [];
-    let idx = 0;
-    for (let li = 0; li < logical.length; li++) {
-      lineStarts.push(idx);
-      idx += logical[li].length + 1;
-      // Word-aware wrap breaks at spaces, so a visual row is NOT maxCols wide.
-      // startCol is the display column where the row begins (cumulative width of
-      // prior parts + skipped break spaces); rowW is this row's own width, so the
-      // caret/selection math no longer assumes every row spans the full maxCols.
-      const parts = wrapByWidth(logical[li], maxCols);
-      let colAt = 0;
-      for (let pi = 0; pi < parts.length; pi++) {
-        const partW = parts[pi].length ? [...parts[pi]].reduce((a, ch) => a + charWidth(ch.codePointAt(0)!), 0) : 0;
-        rows.push({ text: parts[pi], logical: li, startCol: colAt, rowW: partW, index: rows.length });
-        colAt += partW;
-        // the break space between wrapped parts is consumed, not painted
-        if (pi + 1 < parts.length && logical[li].length > colAt && logical[li][colAt] === " ") colAt += 1;
-      }
-    }
-    const layout = { rows, logical, lineStarts, maxCols };
-    layoutCache = { rev: inputRev, layout };
-    return layout;
-  }
-
-  /** map cursor index -> visual row + display-width column */
-  function caretPos(layout: InputLayout): { visRow: number; colW: number } {
-    // walk the painted text (inputText), not buf: a secret step's bullets are
-    // all width 1, and the wrap this maps into was computed on those bullets
-    const chars = [...inputText()];
-    let li = 0;
-    let colW = 0;
-    for (let i = 0; i < cur && i < chars.length; i++) {
-      if (chars[i] === "\n") {
-        li++;
-        colW = 0;
-      } else colW += charWidth(chars[i].codePointAt(0)!);
-    }
-    // A row spans [startCol, startCol + rowW) — word-wrap leaves rowW < maxCols,
-    // so matching against maxCols would let a short row swallow the next row's
-    // columns. Rows are contiguous (next.startCol = this.startCol + rowW + 1 for
-    // the consumed break space), so the last row on the line absorbs the EOL.
-    let visRow = layout.rows.findIndex((r) => r.logical === li && colW >= r.startCol && colW < r.startCol + Math.max(r.rowW, 1));
-    // No match means colW landed exactly on a row's end width — which is the
-    // NORMAL state for the caret at the end of a line (it sits just past the
-    // last char, before the newline), and equally the last row of a wrapped
-    // line. It must stay on THIS line's final row. The old fallback took
-    // `rows.length - 1`, the last row of the whole layout, so end-of-line put
-    // the caret on a different line entirely in any multi-line input ("first\n
-    // second" — end of "first" jumped down onto "second"). Comment claimed
-    // "the last row on the line"; the code never scoped it to the line.
-    if (visRow < 0) {
-      for (let i = layout.rows.length - 1; i >= 0; i--) {
-        if (layout.rows[i].logical === li) {
-          visRow = i;
-          break;
-        }
-      }
-    }
-    if (visRow < 0) visRow = layout.rows.length - 1; // past EOL lands on last row
-    return { visRow, colW: colW - layout.rows[Math.max(0, visRow)].startCol };
-  }
-
-  // ---- input selection + vertical motion ----
-
-  /** The anchored end of an input selection; the caret is the moving end. */
-  let inSelAnchor: number | null = null;
-  const inSelRange = (): [number, number] | null =>
-    inSelAnchor !== null && inSelAnchor !== cur ? [Math.min(inSelAnchor, cur), Math.max(inSelAnchor, cur)] : null;
-
-  /** Delete the input selection if there is one; true when it did. */
-  function deleteInSel(): boolean {
-    const r = inSelRange();
-    if (!r) return false;
-    buf.splice(r[0], r[1] - r[0]);
-    cur = r[0];
-    inSelAnchor = null;
-    inputRev++;
-    markDirty();
-    return true;
-  }
-
-  /** buffer-index range one visual row covers (the newline excluded) */
-  function rowBufRange(layout: InputLayout, v: number): [number, number] {
-    const row = layout.rows[v];
-    const chars = [...inputText()];
-    let i = layout.lineStarts[row.logical];
-    let w = 0;
-    while (i < chars.length && chars[i] !== "\n" && w < row.startCol) {
-      w += charWidth(chars[i].codePointAt(0)!);
-      i++;
-    }
-    const start = i;
-    // the row spans its own width (rowW), not maxCols — word-wrap leaves it
-    // short, and walking maxCols would run into the next row's text
-    let w2 = 0;
-    while (i < chars.length && chars[i] !== "\n" && w2 < row.rowW) {
-      w2 += charWidth(chars[i].codePointAt(0)!);
-      i++;
-    }
-    return [start, i];
-  }
-
-  /** (x, y) in the input dock -> buffer index; null when y is above the dock. */
-  function inputIndexAt(x: number, y: number): number | null {
-    const { layout, firstShown, inputTop, shownCount } = dockGeom();
-    if (y < inputTop || y >= inputTop + shownCount) return null;
-    const v = Math.min(firstShown + (y - inputTop), layout.rows.length - 1);
-    const [s, e] = rowBufRange(layout, v);
-    const targetW = Math.max(0, x - 3); // 1 margin + 2 for the "❯ " prefix
-    return s + indexAtWidth(inputText().slice(s, e), targetW);
-  }
-
-  /** up/down inside a multi-line input, keeping the display column. */
-  function moveCaretVertical(dir: -1 | 1, extend: boolean) {
-    if (extend && inSelAnchor === null) inSelAnchor = cur;
-    if (!extend) inSelAnchor = null;
-    const layout = inputLayout();
-    const pos = caretPos(layout);
-    const tv = pos.visRow + dir;
-    if (tv < 0) cur = 0;
-    else if (tv >= layout.rows.length) cur = buf.length;
-    else {
-      const [s, e] = rowBufRange(layout, tv);
-      cur = s + indexAtWidth(inputText().slice(s, e), pos.colW);
-    }
-    markDirty();
-  }
 
   function clampScroll() {
     scrollTop = Math.max(0, Math.min(scrollTop, Math.max(0, totalRows() - viewportH())));
@@ -3870,155 +3588,45 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   // setTuiScrollbar (config apply, called from outside startTui's closure)
   // uses this to force a full repaint on live switches
   clearKeyRef = () => {
-    lastClearKey = "";
-    dirty = true;
+    screen.forceRepaintAll();
+    markDirty();
   };
 
-  /** Frame signature: everything computeFrame + the transcript depend on. */
-  let lastFrameSig = "";
-  /** Status signature: spinner idx, busy label, flash, stats, elapsed second. */
-  let lastStatusSig = "";
-  /** Dock signature: buffer rev, prompt step, selection, caret. */
-  let lastDockSig = "";
-  /** Floats signature: queue depth, cmdOut, hints, prompt. */
-  let lastFloatsSig = "";
-  /** Full-invalidate key: dims + theme (screen.resize/initStyles territory). */
-  let lastClearKey = "";
-  /** Does the transcript need re-derivation? Cheap incremental check. */
-  function transcriptSig(): string {
-    // items rev total changes on any touch() — touch() maintains it
-    // incrementally, so this reads the running total instead of re-summing
-    // every item per frame (the O(n)/frame cost on long sessions).
-    // streamText identity per stream; selection via anchors; scroll offsets
-    // are the frame's own inputs.
-    // pendingCount drives viewportHeight (queue rows reserve transcript rows),
-    // so it belongs in the frame signature — a queue change shifts every
-    // transcript row and must re-derive the region
-    // selection: FULL anchors, not a boolean — a boolean makes drag-extension
-    // invisible (hasSel stays true while the drag grows; frameChanged never
-    // fires; the highlight freezes at where it first appeared)
-    // inputRev + dock caret: the input layout (wrapped row count) is a
-    // computeFrame INPUT — it sets shownCount/inputTop, i.e. where the
-    // transcript ends and the dock begins. Without it the box never flexed:
-    // typing past a line re-wrapped the buffer but the frame kept the old
-    // dock height, and paintDock stamped into the stale geometry.
-    const layout = inputLayout();
-    const caret = caretPos(layout);
-    return `${W}x${H}|${revSum}|${items.length}|${scrollTop}|${stick}|${streamText?.length ?? -1}|${streamText?.slice(-24) ?? ""}|${SCROLLBAR}|${hasSel() ? `${selA!.row},${selA!.col},${selB!.row},${selB!.col}` : "-"}|${themeName()}|${state.readOnly}|${pendingLines().length}|${inputRev}|${layout.rows.length}|${caret.visRow}|${highlightVersion()}`;
-  }
-
-  function statusSig(): string {
-    const flash = Date.now() < flashUntil ? flashMsg : "";
-    // elapsed() rounds to seconds — the sig flips once per second, so the
-    // clock text updates without a full frame
-    return `${frameIdx}|${flash}|${displayBusy()}|${busyMsg ?? ""}|${streamText !== null}|${elapsed()}|${cachedStats()}|${state.readOnly}`;
-  }
-
-  function dockSig(): string {
-    const st0 = getPrompt()?.steps[getPrompt()!.idx];
-    // cur rides the sig: input drag-selection moves cur without bumping
-    // inputRev, and the highlight range is (inSelAnchor, cur)
-    return `${inputRev}|${cur}|${getPrompt() ? `${getPrompt()!.idx}|${st0?.kind}|${getPrompt()!.filter}` : "-"}|${inSelAnchor ?? "-"}|${nextCaret ? "c" : "-"}`;
-  }
-
-  function floatsSig(): string {
-    const pend = pendingLines();
-    return `${pend.length}|${pend[0] ?? ""}|${cmdOut?.length ?? 0}|${cmdOut?.[0] ?? ""}|${getPrompt() ? `${getPrompt()!.idx}|${getPrompt()!.sel}|${getPrompt()!.filter}|${wizardOptionsCount()}` : "-"}|${hintMatches().length}|${hintSel}|${W}|${inputRev}`;
-  }
-
-  function overlaySig(): string {
-    // sessAllDirs must ride the signature: ctrl+a flips the all-dirs scope, which
-    // changes the title + rows but not filter/selection/confirm — without it the
-    // toggle fires but paintOverlay is skipped (the signature looks unchanged),
-    // so ctrl+a looks dead.
-    return overlay ? `${sessAllDirs ? 1 : 0}|${overlay.filter()}|${overlay.selectedIndex()}|${overlay.pendingConfirm()?.id ?? ""}` : "-";
-  }
-
-  let lastOverlaySig = "";
-
-  function paint(): void {
-    // any stray write from a region's painter must not re-arm the loop we are
-    // already inside (see the stray swallow at the write site)
+  // Each region push composites eagerly after stamping its plane, so the GRID
+  // is always ready for the next flush. The frame tick only diffs + flushes —
+  // it never composites (composite() early-outs on zero dirty rows, so the only
+  // re-composite inside a tick is a stray forceRepaintAll from the quarantine).
+  const inPaintGuard = <A extends unknown[]>(fn: (...a: A) => void) => (...a: A) => {
     inPaint = true;
-    try {
-      paintRegions();
-    } finally {
-      inPaint = false;
-    }
-  }
-
-  /**
-   * Yield to the event loop so a slow region's derive doesn't starve the
-   * spinner, the input bar, or a pending keystroke. The transcript derive
-   * (ctrl+t expand, a long stream) can run for tens of ms; without a yield
-   * here it sits inside one synchronous block with every region after it,
-   * so the whole screen freezes until it finishes.
-   */
-  const breathe = () => new Promise<void>((r) => setTimeout(r, 0));
-
-  /**
-   * The transcript's PUSH: run computeFrame (the expensive re-wrap) off the
-   * frame path, then stamp the transcript plane. While this runs, the frame
-   * loop is free — the spinner, dock and every other region paint from their
-   * last-pushed state, so a slow derive never freezes them. Re-entrancy is
-   * guarded by `deriveRunning`: a schedule that arrives mid-derive re-arms for
-   * one more pass, so a burst of changes (ctrl+t over many nodes) still lands
-   * every update instead of dropping the last one.
-   */
-  let deriveRunning = false;
-  let deriveQueued = false;
-
-  /**
-   * Generic PUSH scheduler for a region's paint. Runs `paint()` in an async
-   * task (after a macrotask yield) instead of synchronously inside the frame,
-   * so a slow region — a plugin's write step, a heavy dock derive — never
-   * blocks the frame loop or the other regions. `running`/`queued` coalesce a
-   * burst of changes into one in-flight task plus one follow-up, so no update
-   * is dropped but we never stack duplicate paints.
-   */
-  function makeRegionPush(paint: () => void): () => void {
-    let running = false;
-    let queued = false;
-    const run = async (): Promise<void> => {
-      if (running) { queued = true; return; }
-      running = true;
-      try {
-        do {
-          queued = false;
-          await breathe();
-          paint();
-        } while (queued);
-      } finally {
-        running = false;
-      }
-    };
-    return () => { void run(); };
-  }
-
-  const pushDock = makeRegionPush(() => paintDock());
-  const pushFloats = makeRegionPush(() => paintFloats());
-  const pushOverlay = makeRegionPush(() => paintOverlay(painted?.inputTop ?? H - 2));
-  const pushStatus = makeRegionPush(() => paintStatus());
+    try { fn(...a); screen.composite(); } finally { inPaint = false; }
+  };
+  const pushDock = screen.makeRegionPush(inPaintGuard(() => paintDock()));
+  const pushFloats = screen.makeRegionPush(inPaintGuard(() => paintFloats()));
+  const pushOverlay = screen.makeRegionPush(inPaintGuard(() => paintOverlay(painted?.inputTop ?? H - 2)));
+  const pushStatus = screen.makeRegionPush(inPaintGuard(() => paintStatus()));
   // Geometry coordinator: when the transcript publishes a new layout split
-  // (inputTop/vh/queueH moved — a dock resize, a queue push), the floats and
-  // overlay sit ABOVE the dock and must re-push at their new positions. The
-  // dock re-derives on its own sig; these two only move when the split does.
+  // (inputTop/vh/queueH moved — a dock resize, a queue push, the input wrapping),
+  // the regions that read that split must re-push at the new positions. The dock
+  // reads painted.{inputTop,shownCount,firstShown} to stamp the input box, so it
+  // re-derives here too — otherwise it stays stamped at the OLD split (and on the
+  // very first frame, where painted is null, it stamps nothing at all).
   screen.onGeometry(["inputTop", "queueH"], () => {
+    pushDock();
     pushFloats();
     pushOverlay();
   });
-  async function pushTranscriptFrame(): Promise<void> {
-    if (deriveRunning) { deriveQueued = true; return; }
-    deriveRunning = true;
-    try {
-      do {
-        deriveQueued = false;
-        await breathe(); // let any pending frame/keystroke run first
-        const fr = computeFrame(frameInput());
+
+  /** The transcript's PUSH, wired into the compositor's guarded pushFrame:
+   *  computeFrame off the frame path, stamp the plane when the Frame lands. */
+  function pushTranscriptFrame(): Promise<void> {
+    return screen.pushFrame(
+      () => computeFrame(frameInput()),
+      (fr) => {
         scrollTop = fr.scrollTop;
         stick = fr.stick;
         painted = fr;
-        stampTranscript(fr);
+        inPaint = true;
+        try { stampTranscript(fr); screen.composite(); } finally { inPaint = false; }
         // Publish the authoritative layout split to the shared geometry so any
         // dependent region (floats above the dock, a bottom-anchored plugin)
         // re-pushes at the new positions. inputTop/vh/queueH moved -> notify.
@@ -4032,11 +3640,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           scrollTop: fr.scrollTop,
           stick: fr.stick,
         });
-        markDirty(); // a new Frame landed: schedule a composite+flush to show it
-      } while (deriveQueued);
-    } finally {
-      deriveRunning = false;
-    }
+      },
+      () => markDirty(), // a new Frame landed: schedule a flush to show it
+    );
   }
 
   /** Stamp one computed Frame into the transcript plane. Pure cell writes. */
@@ -4072,88 +3678,16 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     }
   }
 
-  function paintRegions() {
-    const st = (seg: Seg, fallback: number): number => {
-      if (!seg.fg && !seg.bg && !seg.bold && !seg.italic && !seg.strike && !seg.href) return fallback;
-      return screen.sgr(seg);
-    };
-    void st;
-
-    // full invalidate on dims/theme change: screen.resize already zeroed the
-    // grid; forceRepaintAll makes flush re-emit every row
-    const clearKey = `${W}x${H}|${themeName()}`;
-    const fullInvalidate = clearKey !== lastClearKey;
-    if (fullInvalidate) {
-      screen.clear();
-      screen.forceRepaintAll();
-      lastClearKey = clearKey;
-      lastFrameSig = "";
-      lastDockSig = "";
-      lastFloatsSig = "";
-      lastStatusSig = "";
-      lastOverlaySig = "";
-    }
-
-    // ---- frame + transcript region ----
-    // PUSH, not pull: the transcript's derive (computeFrame — the expensive
-    // re-wrap) runs in an async task scheduled below, NOT synchronously here.
-    // A slow derive (ctrl+t expand, a long stream) therefore never sits inside
-    // this frame's synchronous block: the event loop stays free, the spinner
-    // and input bar keep painting from the last-pushed `painted`, and this
-    // region just re-stamps once the derive lands. The cost of a slow plane
-    // is confined to that plane — the "one slow plane freezes the screen"
-    // failure is gone because no panel code runs inside the frame.
-    const pT = PROF ? performance.now() : 0;
-    const fs = transcriptSig();
-    const frameChanged = fs !== lastFrameSig || !painted;
-    const pS = PROF ? performance.now() : 0;
-    if (frameChanged && !deriveRunning) {
-      lastFrameSig = fs;
-      // schedule the derive off the frame path; the stamp happens when it lands
-      void pushTranscriptFrame();
-    }
-    if (PROF) profLine(`  sig=${(pS - pT).toFixed(1)}`);
-
-    // ---- dock region ----
-    const ds = dockSig();
-    if (ds !== lastDockSig || frameChanged) {
-      lastDockSig = ds;
-      pushDock();
-    }
-
-    // ---- floats region (wizard / queue / cmdOut / hints) ----
-    const fsig = floatsSig();
-    if (fsig !== lastFloatsSig || frameChanged) {
-      lastFloatsSig = fsig;
-      pushFloats();
-    }
-
-    // ---- overlay (modal) ----
-    const os = overlaySig();
-    if (overlay && (os !== lastOverlaySig || frameChanged)) {
-      lastOverlaySig = os;
-      pushOverlay();
-    } else if (!overlay && lastOverlaySig !== "-") {
-      P.overlay.clearRows(0, H);
-      lastOverlaySig = "-";
-    }
-
-    // ---- status region (ALWAYS checked: spinner ticks land here alone) ----
-    const ss = statusSig();
-    if (ss !== lastStatusSig || fullInvalidate) {
-      lastStatusSig = ss;
-      pushStatus();
-    }
-
-    // ---- plugin regions (gated by each region's own sig when it has one) ----
-    paintPluginRegions(frameChanged, fullInvalidate);
-  }
 
   function paintDock() {
     const fr = painted;
-    if (!fr) return;
-    const { layout, caret } = dockGeom();
-    const { shownCount, firstShown, inputTop } = fr;
+    // NULL-FRAME FALLBACK: on the very first paint `painted` is still null (the
+    // transcript's async computeFrame has not landed), but the dock must still
+    // stamp the input box — derive the geometry directly, exactly as dockGeom's
+    // no-frame branch does. Returning early here left the first frame's input
+    // box empty (the "input box doesn't show text" report).
+    const { layout, caret, shownCount, firstShown, inputTop } = dockGeom();
+    void fr;
     let pendingCaret: { x: number; y: number } | null = null;
 
     // plane restamps fully: shrinking from 4 wrapped rows to 1 cannot leave
@@ -4410,7 +3944,22 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
    * no-autowrap grid would clip mid-cell.
    */
   function paintOverlay(inputTop: number) {
-    const p = overlay!;
+    // NULL GUARD: this runs asynchronously (makeRegionPush, and via the geometry
+    // coordinator when a transcript frame moves inputTop/queueH). The overlay can
+    // have been closed between the push being scheduled and it executing — the
+    // old `overlay!` lied and `p.window(...)` threw "null is not an object
+    // (evaluating 'j.window')" every time the input wrapped (wrap -> inputTop
+    // moves -> geometry notify -> async re-push into a closed picker).
+    //
+    // PUSH CONSISTENCY (same contract as plugin planes): the push ALWAYS leaves
+    // the plane in the correct state for "whatever is currently true". A null
+    // overlay means the modal is gone, so the plane must be empty — clearRows
+    // stamps "nothing" the same way a plugin's idle plane holds nothing. Without
+    // this, a dismissed overlay left its last frame composited over the
+    // transcript until something else happened to repaint those rows.
+    const p = overlay;
+    P.overlay.clearRows(0, H);
+    if (!p) return;
     const bodyH = Math.max(1, inputTop - 3); // every row the hardware leaves free
     const top = Math.max(0, inputTop - bodyH - 2);
     const win = p.window(bodyH);
@@ -4448,19 +3997,6 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     return out;
   }
 
-  /** Buffer index of the first char whose cell would start past `targetW` display columns. */
-  function indexAtWidth(s: string, targetW: number): number {
-    let w = 0;
-    let i = 0;
-    for (const ch of s) {
-      const cw = charWidth(ch.codePointAt(0)!);
-      if (w + cw > targetW) break;
-      w += cw;
-      i++;
-    }
-    return i;
-  }
-
   /** Display width of the first `upto` buffer indices of `s` (inverse of indexAtWidth). */
   function widthOf(s: string, upto: number): number {
     let w = 0;
@@ -4481,14 +4017,15 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     if (w === W && h === H) return;
     W = Math.max(20, w);
     H = Math.max(8, h);
-    screen.resize(W, H);
+    screen.resize(W, H); // zeroes the grid; forceRepaintAll makes flush re-emit every row
     initStyles();
     paintedTheme = themeName();
     lineCache.clear();
-    layoutCache = null; // the input wrap is width-keyed — a stale wrap kept
+    inputMod.invalidate(); // the input wrap is width-keyed — a stale wrap kept
     // the dock at the old width's row breaks until the next edit
     streamKernels.clear(); // stream rows are width-keyed too
-    dirty = true;
+    screen.forceRepaintAll();
+    markDirty(); // re-push every region at the new geometry
   }
 
   /** A /theme switch must rebuild every cached style id, not just the next row. */
@@ -4499,7 +4036,8 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     lineCache.clear();
     streamKernels.clear(); // cached stream rows carry old-theme seg colors
     thinkKernels.clear(); // so do think kernels: C.think is baked into their segs at creation
-    dirty = true;
+    screen.forceRepaintAll();
+    markDirty();
   }
 
   let lastSpinAt = 0;
@@ -4514,11 +4052,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     // Reading a name only paintStatus() declared threw ReferenceError the first
     // time a turn went busy — the crash that emptied the screen.
     frameIdx = (frameIdx + 1) % spinFrames().length;
-    // spinner-only update: the status region re-derives on the next paint()
-    // (its signature includes frameIdx) and nothing else does — one row
-    // re-stamped, the row-hash diff turns it into ~20 bytes of output.
-    // NO global dirty: a mid-reasoning turn now costs nothing per tick.
-    statusOnly = true;
+    // spinner tick: PUSH the status region (it re-derives from current state,
+    // no signature). The push composites eagerly; the tick flush shows it.
+    pushStatus();
   }
 
   async function run() {
@@ -4651,7 +4187,13 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           origErr(`${(e as Error)?.stack ?? String(e)}\n`);
         } catch {}
         try {
-          reportError(`internal error: ${(e as Error)?.message ?? String(e)}`, e);
+          const msg = (e as Error)?.message ?? String(e);
+          const stack = (e as Error)?.stack ?? "";
+          // include the first stack frame so the transcript shows WHERE, not
+          // just WHAT — a bare "internal error" with a minified-bundle stack
+          // is unactionable
+          const where = stack.split("\n")[1]?.trim() ?? "";
+          reportError(`internal error: ${msg}${where ? ` — ${where}` : ""}`, e);
         } catch {}
         try {
           gracefulExit(1);
@@ -4716,7 +4258,10 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       // spinner running forever with no way to submit. console.error would
       // corrupt the grid, so surface it as a transcript item instead.
       process.on("unhandledRejection", (reason) => {
-        reportError("internal error", reason);
+        const msg = (reason as Error)?.message ?? String(reason);
+        const stack = (reason as Error)?.stack ?? "";
+        const where = stack.split("\n")[1]?.trim() ?? "";
+        reportError(`internal error: ${msg}${where ? ` — ${where}` : ""}`, reason);
         // only stand the spinner down when no turn is actually running — the
         // rejection may have come from an unrelated floating promise, and
         // resetting a live turn's busy flag here would let a queued message
@@ -4747,8 +4292,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       term.onKey((data) => dec.feed(data));
 
       // First frame BEFORE anything expensive: transcript replay and
-      // config/plugin loading happen once the window is already up.
-      paint();
+      // config/plugin loading happen once the window is already up. PUSH every
+      // region once so the grid is ready, then composite+flush synchronously.
+      markDirty();
       screen.composite();
       screen.flush();
       term.flush();
@@ -4837,73 +4383,34 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       }
 
       let lastCaretKey: string | null = null;
-      // Frame interval honors tuiFrameMs (config, default 16). The loop is a
-      // coalescer, not a pacer: dirty work runs at most once per interval,
-      // and a spinner-only tick re-derives the status region alone.
+      // Frame interval honors tuiFrameMs (config, default 16). FULLY PUSH-based:
+      // region pushes (markDirty / direct push* / tickSpinner) stamp their planes
+      // and composite eagerly, so the GRID is already prepared. The tick does NOT
+      // composite and does NOT call any paint code — it only diffs the grid
+      // against the last frame and flushes changed rows, then repositions the
+      // caret. It is a pure "present" step.
       const frameTick = async () => {
         tickSpinner();
-        if (!dirty && !statusOnly) return;
-        const spinOnly = statusOnly && !dirty;
-        statusOnly = false;
+        if (!dirty) return;
         dirty = false;
         if (PROF) profMark = performance.now();
         try {
-          if (spinOnly) {
-            // spinner path: status region only — no computeFrame, no
-            // transcript/dock derivation, then the usual row-hash flush.
-            // The caret repositions too: the status write strands the
-            // hardware cursor at the row end, and the input caret would
-            // visibly jump there until the next full frame.
-            const p0 = PROF ? performance.now() : 0;
-            paintStatus();
-            const p1 = PROF ? performance.now() : 0;
-            screen.composite();
-            const p2 = PROF ? performance.now() : 0;
-            screen.flush();
-            const caret = nextCaret ?? { x: 3, y: H - 2 };
-            term.setCursor(caret.x, caret.y);
-            term.flush();
-            if (PROF) profLine(`spin paint=${(p1 - p0).toFixed(1)} comp=${(p2 - p1).toFixed(1)} flush=${(performance.now() - p2).toFixed(1)}`);
-            return;
-          }
-          // Cursor churn flickers: only hide/reposition it when the caret actually
-          // moved (typing, scrolling the dock). While streaming, the caret sits
-          // still and the grid diff paints underneath it without a single
-          // hide/show round-trip. paint() runs BEFORE the caret is read: nextCaret
-          // is computed inside paint, so reading it first would place the cursor
-          // one frame (one keystroke) behind the text.
-          //
-          // Marks the burst window as live (see schedulePaint): only a FULL paint
-          // counts — a spinner-only tick must not reset it, or a long turn would
-          // keep the window armed and make every keystroke pay it.
           lastTickAt = performance.now();
           const q0 = PROF ? performance.now() : 0;
-          paint();
-          // Let the transcript's derive breathe BEFORE the dock/status/input
-          // derive, so a slow transcript (ctrl+t expand, a long stream) does
-          // not sit inside one synchronous block with every region after it —
-          // that is the "one slow plane freezes the whole screen" failure.
-          await breathe();
-          const q1 = PROF ? performance.now() : 0;
           const caret = nextCaret ?? { x: 3, y: H - 2 };
           const caretKey = `${caret.x},${caret.y}`;
           const moved = caretKey !== lastCaretKey;
-          if (moved) term.hideCursor(); // see the old comment: visible cursor mid-repaint ghosts on Windows Terminal
-          screen.composite();
+          if (moved) term.hideCursor(); // visible cursor mid-repaint ghosts on Windows Terminal
+          screen.composite(); // early-outs on zero dirty rows (push already composited)
           const q2 = PROF ? performance.now() : 0;
           screen.flush();
-          if (PROF) profLine(`full paint=${(q1 - q0).toFixed(1)} comp=${(q2 - q1).toFixed(1)} flush=${(performance.now() - q2).toFixed(1)} items=${items.length} ${W}x${H}`);
-          const q3 = PROF ? performance.now() : 0;
+          if (PROF) profLine(`full paint=${(q2 - q0).toFixed(1)} flush=${(performance.now() - q2).toFixed(1)} items=${items.length} ${W}x${H}`);
           if (process.env.FOX_AGENT_TRACE && screen.lastDirty()) {
             try {
               appendFileSync(process.env.FOX_AGENT_TRACE + ".grid", `⟦frame⟧\n${screen.dumpGrid()}\n`);
             } catch {}
           }
           term.flush();
-          // The grid diff leaves the hardware cursor at the end of whatever row
-          // it last wrote — a status-bar tick or transcript scroll would strand
-          // it there, visibly jumping the input caret. Reposition every frame;
-          // hide only when it actually moved (hide/show churn flickers).
           term.setCursor(caret.x, caret.y);
           term.flush();
           if (moved) lastCaretKey = caretKey;
@@ -4916,8 +4423,13 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           // same bug. Recover instead: drop every render cache (the bad row is
           // almost certainly cached), log, tell the user once, and keep the
           // session alive — the next tick re-renders from scratch.
+          const errStack = (e as Error)?.stack ?? String(e);
           try {
-            origErr(`fox-agent: render error (recovered): ${(e as Error)?.stack ?? e}\n`);
+            origErr(`fox-agent: render error (recovered): ${errStack}\n`);
+            // also append to the debug log so a dev run (bun src/cli.ts) shows
+            // the FULL unminified stack — the transcript shows one frame only,
+            // and the compiled bundle's stack is minified to single letters
+            appendFileSync(join(process.env.FOX_AGENT_HOME ?? tmpdir(), "debug.log"), `[render error] ${errStack}\n`);
           } catch {}
           lineCache.clear();
           streamKernels.clear();
@@ -4925,7 +4437,12 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           frameErrors++;
           if (frameErrors <= 1 && !exitCode) {
             try {
-              push("error", "render error (recovered)");
+              // include the first stack frame so the transcript shows WHERE,
+              // not just THAT — a bare "render error" with a minified-bundle
+              // stack is unactionable
+              const where = errStack.split("\n")[1]?.trim() ?? "";
+              const what = (e as Error)?.message ?? String(e);
+              push("error", `render error: ${what}${where ? ` — ${where}` : ""}`);
             } catch {}
           }
           dirty = true; // next tick repaints everything from clean caches

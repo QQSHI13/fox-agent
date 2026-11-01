@@ -16,7 +16,7 @@
 import type { SessionUpdate, StopReason, ToolKind, PlanEntry, PlanEntryStatus } from "@agentclientprotocol/sdk/unstable";
 import type { AgentEvent } from "../core/events.ts";
 import { assertNever } from "../core/events.ts";
-import type { TodoItem } from "../tools/todo.ts";
+import type { TodoItem } from "../plugins/bundled/todo.ts";
 
 /**
  * fox-agent tool -> ACP ToolKind. Clients pick icons and UI affordances from this, so

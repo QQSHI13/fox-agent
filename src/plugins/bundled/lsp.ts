@@ -9,11 +9,11 @@
  * for the file exists, costs nothing until called, and turns off like any
  * bundled plugin (`disabledPlugins = ["lsp"]`).
  */
-import type { Tool } from "./types.ts";
-import type { ToolDef } from "../providers/types.ts";
-import { ok, fail } from "./types.ts";
+import type { Tool } from "../../tools/types.ts";
+import type { ToolDef } from "../../providers/types.ts";
+import { ok, fail } from "../../tools/types.ts";
 import { relative, resolve } from "node:path";
-import * as nav from "../lsp/client.ts";
+import * as nav from "../../lsp/client.ts";
 
 export const lspDef: ToolDef = {
   name: "lsp",
@@ -46,7 +46,7 @@ function renderLocations(cwd: string, label: string, locs: nav.LspLocation[] | n
   return `${label} (${locs.length}):\n${lines.join("\n")}${more}`;
 }
 
-export async function lspRun(args: any, ctx: import("./types.ts").ToolContext): Promise<import("./types.ts").ToolResult> {
+export async function lspRun(args: any, ctx: import("../../tools/types.ts").ToolContext): Promise<import("../../tools/types.ts").ToolResult> {
   const q: string = args?.query;
   if (!q || !args?.file) return fail("error: query and file are required");
   // Resolve against ctx.cwd, like every other path-taking tool. This passed
@@ -102,7 +102,7 @@ export async function lspRun(args: any, ctx: import("./types.ts").ToolContext): 
   }
 }
 
-export const lspPlugin: import("../plugins/types.ts").FoxPlugin = {
+export const lspPlugin: import("../types.ts").FoxPlugin = {
   name: "bundled:lsp",
   tools: [{ def: lspDef, run: lspRun }],
 };

@@ -61,7 +61,7 @@ const sid = (tag: string) => `ptytest${tag}${Math.random().toString(36).slice(2,
 
 describe("pty starting directory", () => {
   liveTest("the shell starts in ctx.cwd, not in fox-agent's own cwd", async () => {
-    const { drivePty } = await import("../src/tools/pty.ts");
+    const { drivePty } = await import("../src/plugins/bundled/pty.ts");
     const c = ctx(sid("cwd"), workdir);
     // process.cwd() here is the repo, so a pane that ignored -c would report that
     expect(process.cwd()).not.toBe(workdir);
@@ -74,7 +74,7 @@ describe("pty starting directory", () => {
   }, 20_000);
 
   liveTest("tmux itself reports the pane path as the session dir", async () => {
-    const { ensurePty } = await import("../src/tools/pty.ts");
+    const { ensurePty } = await import("../src/plugins/bundled/pty.ts");
     const c = ctx(sid("pane"), workdir);
     const { pty } = await ensurePty(c);
     // "=name:" — the trailing colon is required for a pane target; "=name" alone
@@ -85,7 +85,7 @@ describe("pty starting directory", () => {
   }, 20_000);
 
   liveTest("a cd inside the shell persists to the next call — drift is allowed here", async () => {
-    const { drivePty } = await import("../src/tools/pty.ts");
+    const { drivePty } = await import("../src/plugins/bundled/pty.ts");
     const other = join(home, "elsewhere");
     mkdirSync(other, { recursive: true });
     const c = ctx(sid("drift"), workdir);
@@ -100,7 +100,7 @@ describe("pty starting directory", () => {
     // tmux does not fail when -c names a missing directory — it falls back to
     // $HOME. Left unreported, every relative path the model writes lands in the
     // wrong tree while pty says it succeeded.
-    const { drivePty } = await import("../src/tools/pty.ts");
+    const { drivePty } = await import("../src/plugins/bundled/pty.ts");
     const gone = join(home, "deleted-out-from-under-us");
     const c = ctx(sid("nodir"), gone);
 
@@ -117,7 +117,7 @@ describe("pty starting directory", () => {
   }, 25_000);
 
   liveTest("a usable start directory produces no warning", async () => {
-    const { drivePty } = await import("../src/tools/pty.ts");
+    const { drivePty } = await import("../src/plugins/bundled/pty.ts");
     const c = ctx(sid("okdir"), workdir);
     const res = await drivePty({ keys: "echo hi\n", quiet_ms: 400 }, c);
     expect(res.output).not.toContain("not usable");
@@ -127,7 +127,7 @@ describe("pty starting directory", () => {
   liveTest("a symlinked session dir is not mistaken for a fallback", async () => {
     // tmux reports the pane's *resolved* path, so a raw string compare would warn
     // on every spawn for anyone whose project dir is reached through a symlink
-    const { drivePty } = await import("../src/tools/pty.ts");
+    const { drivePty } = await import("../src/plugins/bundled/pty.ts");
     const link = join(home, "link-to-project");
     symlinkSync(workdir, link, "dir");
     const c = ctx(sid("symlink"), link);
@@ -139,7 +139,7 @@ describe("pty starting directory", () => {
 
 describe("a lost tmux session is reported", () => {
   liveTest("the next call says so instead of silently handing back a fresh shell", async () => {
-    const { drivePty, ptySessionName } = await import("../src/tools/pty.ts");
+    const { drivePty, ptySessionName } = await import("../src/plugins/bundled/pty.ts");
     const id = sid("lost");
     const c = ctx(id, workdir);
 
@@ -158,7 +158,7 @@ describe("a lost tmux session is reported", () => {
   }, 25_000);
 
   liveTest("the byte cursor resets, so stale log bytes are not replayed as new", async () => {
-    const { drivePty } = await import("../src/tools/pty.ts");
+    const { drivePty } = await import("../src/plugins/bundled/pty.ts");
     const c = ctx(sid("cursor"), workdir);
 
     await drivePty({ keys: "echo UNIQUE_BEFORE_LOSS\n", quiet_ms: 400 }, c);
@@ -178,7 +178,7 @@ describe("a lost tmux session is reported", () => {
   }, 25_000);
 
   liveTest("a healthy session is reused, with no spurious loss note", async () => {
-    const { drivePty } = await import("../src/tools/pty.ts");
+    const { drivePty } = await import("../src/plugins/bundled/pty.ts");
     const c = ctx(sid("reuse"), workdir);
     await drivePty({ keys: "export KEEP=yes\n", quiet_ms: 400 }, c);
     const name = c.pty!.session;
@@ -192,7 +192,7 @@ describe("a lost tmux session is reported", () => {
 
 describe("pty without tmux", () => {
   test("reports a clear tool failure rather than a raw spawn crash", async () => {
-    const { drivePty } = await import("../src/tools/pty.ts");
+    const { drivePty } = await import("../src/plugins/bundled/pty.ts");
     const c = ctx(sid("notmux"), workdir);
     const realPath = process.env.PATH;
     // an empty PATH is how Bun.which fails to find tmux
@@ -219,7 +219,7 @@ describe("pty log path", () => {
   });
 
   liveTest("draining twice does not repeat output already returned", async () => {
-    const { drivePty } = await import("../src/tools/pty.ts");
+    const { drivePty } = await import("../src/plugins/bundled/pty.ts");
     const c = ctx(sid("drain"), workdir);
     await drivePty({ keys: "echo ONLY_ONCE\n", quiet_ms: 400 }, c);
     const second = await drivePty({}, c);
@@ -233,7 +233,7 @@ describe("pty log path", () => {
 // bytes are cut at every possible offset.
 describe("pty log decoding", () => {
   test("partialTailBytes holds back exactly the incomplete lead", async () => {
-    const { partialTailBytes } = await import("../src/tools/pty.ts");
+    const { partialTailBytes } = await import("../src/plugins/bundled/pty.ts");
     const three = Buffer.from("日"); // e6 97 a5
     const four = Buffer.from("😀"); // f0 9f 98 80
 
@@ -255,7 +255,7 @@ describe("pty log decoding", () => {
   });
 
   test("consecutive reads of a multi-byte log lose nothing at any cut point", async () => {
-    const { readRange } = await import("../src/tools/pty.ts");
+    const { readRange } = await import("../src/plugins/bundled/pty.ts");
     // the measured symptom of the old code: reading "abc日本語です" as bytes
     // 0-5 then 5-11 produced "abc�" then "�本�" — two characters
     // destroyed, permanently, because the cursor advanced past the split bytes
@@ -280,7 +280,7 @@ describe("pty log decoding", () => {
   });
 
   test("a read at the end of the log yields nothing and holds the cursor", async () => {
-    const { readRange } = await import("../src/tools/pty.ts");
+    const { readRange } = await import("../src/plugins/bundled/pty.ts");
     const log = join(home, "eof.log");
     writeFileSync(log, "done");
     expect(readRange(log, 4)).toEqual({ text: "", end: 4 });
@@ -295,7 +295,7 @@ describe("pty log decoding", () => {
 // newline into a synthetic Enter and dropped every other one into `-l` raw.
 describe("literal keys", () => {
   liveTest("multi-line keys run line by line in one call", async () => {
-    const { drivePty } = await import("../src/tools/pty.ts");
+    const { drivePty } = await import("../src/plugins/bundled/pty.ts");
     const c = ctx(sid("multi"), workdir);
     const res = await drivePty({ keys: "echo MULTI_FIRST\necho MULTI_SECOND\n", quiet_ms: 400 }, c);
     expect(res.output).toContain("MULTI_FIRST");
@@ -303,7 +303,7 @@ describe("literal keys", () => {
   }, 20_000);
 
   liveTest("keys without a newline are typed, not run — and the result says so", async () => {
-    const { drivePty } = await import("../src/tools/pty.ts");
+    const { drivePty } = await import("../src/plugins/bundled/pty.ts");
     const c = ctx(sid("noenter"), workdir);
     const res = await drivePty({ keys: "echo STILL_PENDING" }, c);
     expect(res.output).toContain("unexecuted");
@@ -320,7 +320,7 @@ describe("literal keys", () => {
 // running. Staleness is now decided by the owning pid encoded in the name.
 describe("the stale-session sweep", () => {
   liveTest("reaps a dead owner's shell and leaves a live peer's alone", async () => {
-    const { drivePty, ptySessionName } = await import("../src/tools/pty.ts");
+    const { drivePty, ptySessionName } = await import("../src/plugins/bundled/pty.ts");
 
     // a peer owned by a process that has exited (spawnSync reaps it, so the
     // pid is gone by the time the sweep looks)

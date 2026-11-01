@@ -30,23 +30,9 @@ export function setReadCap(n: number): void {
 export const MAX_READ_BYTES = 10_000_000;
 
 /**
- * Tool output cap. Configurable (`toolOutputCap` in config, applied by
- * `buildRegistry`); module-level because every tool reads it and threading a
- * number through ToolContext would touch a dozen signatures for a constant
- * nobody changes mid-turn.
- */
-let OUT_CAP = 30_000;
-/** The cap tools should apply to one result's text. */
-export function outCap(): number {
-  return OUT_CAP;
-}
-export function setOutputCap(n: number): void {
-  if (Number.isFinite(n) && n >= 1000) OUT_CAP = Math.floor(n);
-}
-
-/**
  * What to append to an edit/write result about the state of the file afterwards.
  *
+
  * A language server is authoritative when one answers: it type-checks, so it
  * catches the errors that matter, and its output supersedes the transpiler's
  * parse check. `syntaxWarning` stays as the fallback for when no server is
@@ -185,7 +171,7 @@ export async function readRun(args: { path: string; offset?: number; limit?: num
   // runaway or unbounded read. An explicit limit is caller-sized and is honoured
   // even above those soft budgets — `read({limit: 5000})` returns all 5000 lines
   // rather than an unexplained ~600. full=true bypasses every budget.
-  const soft = full ? Infinity : asked !== undefined ? Infinity : Math.min(readCap(), outCap());
+  const soft = full ? Infinity : asked !== undefined ? Infinity : Math.min(readCap(), ctx.toolOutputCap ?? 30_000);
   let shown = 0;
   for (let i = 0; i < lines.length; i++) {
     const l = `${off + i}: ${lines[i]}\n`;
@@ -389,8 +375,8 @@ export async function grepRun(args: { pattern: string; path?: string; include?: 
       if (!lines.length) return ok("(no matches)");
       if (lines.length <= limit) return ok(lines.join("\n"));
       return ok(`${lines.slice(0, limit).join("\n")}\n… (truncated at ${limit} of ${lines.length}+ matches — narrow the pattern, add include, or raise limit)`);
-    } catch (e: any) {
-      if (e.code === 1) return ok("(no matches)");
+    } catch (e) {
+      if ((e as { code?: number }).code === 1) return ok("(no matches)");
       // fall through to walker on other failures
     }
   }

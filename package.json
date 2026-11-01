@@ -15,22 +15,29 @@
     "dev": "bun src/cli.ts",
     "build": "bun run build.ts",
     "test": "bun test",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "bun check --no-pretty",
+    "verify": "bun run typecheck && bun test",
+    "check:tui": "bun run typecheck && bun test test/term.test.ts test/screen.test.ts test/layout.test.ts test/wrap-input.test.ts test/markdown.test.ts test/rich.test.ts test/toolhead.test.ts test/difftouch.test.ts",
+    "check:acp": "bun run typecheck && bun test test/acp.test.ts",
+    "check:fast": "bun run typecheck && bun test --timeout 30000",
+    "lint": "bun check --no-pretty",
+    "size": "find src -name '*.ts' | xargs wc -l | sort -rn | head -15",
+    "acp-accept": "bun run build && bun scripts/acp-accept.ts",
     "bench": "bun run build && python3 scripts/bench/bench.py"
   },
   "devDependencies": {
-    "bun-types": "^1.4.4",
+    "bun-types": "1.4.4",
     "typescript": "7.0.2"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "2.0.2",
-    "@ai-sdk/anthropic": "^4.0.85",
-    "@ai-sdk/google": "^4.0.102",
-    "@ai-sdk/openai": "^4.0.99",
-    "@ai-sdk/openai-compatible": "^3.0.75",
-    "@modelcontextprotocol/sdk": "^1.31.0",
-    "@speed-highlight/core": "^2.1.0",
-    "ai": "^7.0.148"
+    "@ai-sdk/anthropic": "4.0.85",
+    "@ai-sdk/google": "4.0.102",
+    "@ai-sdk/openai": "4.0.99",
+    "@ai-sdk/openai-compatible": "3.0.75",
+    "@modelcontextprotocol/sdk": "1.31.0",
+    "@speed-highlight/core": "2.1.0",
+    "ai": "7.0.148"
   },
   "license": "Apache-2.0",
   "repository": {

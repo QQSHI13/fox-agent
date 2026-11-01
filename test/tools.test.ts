@@ -23,7 +23,7 @@ beforeEach(() => {
   ctx = {
     sessionId: "s1",
     cwd: dir,
-    
+    toolOutputCap: 30_000,
     get pty() {
       return pty;
     },
@@ -107,7 +107,6 @@ describe("read", () => {
   // the note claimed 809 — the model believed it held 300+ lines it never got.
   test("the truncation note names the last line the reader can actually see", async () => {
     F.setReadCap(50_000);
-    F.setOutputCap(30_000);
     try {
       const width = "y".repeat(50);
       write("wide.txt", Array.from({ length: 2000 }, (_, i) => `${String(i + 1).padStart(4)}: ${width}`).join("\n"));
@@ -120,7 +119,6 @@ describe("read", () => {
       expect(claimed).toBe(lastVisible + 1);
     } finally {
       F.setReadCap(50_000);
-      F.setOutputCap(30_000);
     }
   });
 
@@ -558,7 +556,7 @@ describe("childEnv", () => {
 
 describe("todo", () => {
   test("result is a markdown task list, no emoji markers", async () => {
-    const { todoRun, renderTodosMd, renderTodos } = await import("../src/tools/todo.ts");
+    const { todoRun, renderTodosMd, renderTodos } = await import("../src/plugins/bundled/todo.ts");
     const r = await todoRun(
       {
         todos: [
@@ -582,7 +580,7 @@ describe("todo", () => {
   });
 
   test("validation still rejects junk", async () => {
-    const { todoRun } = await import("../src/tools/todo.ts");
+    const { todoRun } = await import("../src/plugins/bundled/todo.ts");
     expect((await todoRun({}, ctx)).ok).toBe(false);
     expect((await todoRun({ todos: [{ content: "", status: "done" }] }, ctx)).ok).toBe(false);
     expect((await todoRun({ todos: [{ content: "x", status: "paused" as "done" }] }, ctx)).ok).toBe(false);

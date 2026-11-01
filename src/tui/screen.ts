@@ -1,18 +1,9 @@
 // immediate-mode cell screen with row-diff flushing
 import type { Term } from "./term.ts";
+import type { Style } from "../core/style.ts";
 
-export interface Style {
-  fg?: string;
-  bg?: string;
-  bold?: boolean;
-  /** faint / dim intensity: SGR 2 on, 22 (or 0) off */
-  faint?: boolean;
-  italic?: boolean;
-  /** strikethrough: SGR 9 on, 29 off */
-  strike?: boolean;
-  /** OSC 8 hyperlink target; empty string ends a hyperlink */
-  href?: string;
-}
+// Re-export so existing `import { type Style } from "./screen.ts"` keeps working.
+export type { Style };
 
 function rgb(hex?: string): number {
   if (!hex) return 0;
@@ -492,6 +483,157 @@ export class Screen {
   forceRepaintAll() {
     this.prevHash.fill(NaN);
     this.markAllDirty();
+  }
+}
+
+/**
+ * Push-based compositor — extends the proven Screen grid/planes/flush with a
+ * geometry coordinator and an async-push scheduling surface.
+ *
+ * The frame loop never calls panel code. Each region's expensive derive runs in
+ * an async task (scheduled on change) that stamps its plane when ready; the
+ * frame loop only composite()+flush()es whatever the planes last held. A slow
+ * region therefore confines its cost to itself — the spinner and every other
+ * region keep painting from their last-pushed state while the slow one catches
+ * up. That is the fix for "one slow plane freezes the whole screen".
+ *
+ * Geometry (who gets how many rows, where each region sits) is a shared,
+ * cooperative record — one layout coordinator owns the split as pure integer
+ * math (never a panel draw). When the dock's row count moves, the coordinator
+ * recomputes the derived fields (inputTop, vh, queueH) and notifies the
+ * regions that depend on them so they re-push at their new geometry. The
+ * transcript and floats read their sizes from here; hit-tests read the
+ * last-pushed Frame for row content and this record for layout.
+ */
+export interface Geometry {
+  W: number;
+  H: number;
+  /** dock-owned */
+  inputRows: number;
+  shownCount: number;
+  inputTop: number;
+  firstShown: number;
+  /** transcript-owned */
+  vh: number;
+  total: number;
+  scrollTop: number;
+  stick: boolean;
+  /** floats-owned */
+  queueH: number;
+}
+
+export type GeometryListener = (changed: Partial<Geometry>) => void;
+
+export class PushCompositor extends Screen {
+  geom: Geometry = {
+    W: 0, H: 0,
+    inputRows: 1, shownCount: 1, inputTop: 0, firstShown: 0,
+    vh: 0, total: 0, scrollTop: 0, stick: true,
+    queueH: 0,
+  };
+  private listeners: { fields: (keyof Geometry)[]; fn: GeometryListener }[] = [];
+
+  constructor(term: Term) {
+    super(term);
+  }
+
+  /** Watch specific geometry fields; fired (synchronously) when any moves. */
+  onGeometry(fields: (keyof Geometry)[], fn: GeometryListener): void {
+    this.listeners.push({ fields, fn });
+  }
+
+  /** Merge a geometry patch and notify listeners whose watched fields changed. */
+  pushGeometry(patch: Partial<Geometry>): void {
+    const changed: Partial<Geometry> = {};
+    for (const k of Object.keys(patch) as (keyof Geometry)[]) {
+      if (this.geom[k] !== patch[k]) {
+        (changed as Record<string, unknown>)[k] = patch[k] as unknown;
+        (this.geom as unknown as Record<string, unknown>)[k] = patch[k] as unknown;
+      }
+    }
+    if (Object.keys(changed).length) {
+      for (const l of this.listeners) {
+        if (l.fields.some((f) => f in changed)) {
+          try {
+            l.fn(changed);
+          } catch {
+            /* a listener that throws must not starve the others */
+          }
+        }
+      }
+    }
+  }
+
+  /**
+   * Yield to the event loop so a slow region's derive doesn't starve the
+   * spinner, the input bar, or a pending keystroke. The transcript derive
+   * (ctrl+t expand, a long stream) can run for tens of ms; without a yield
+   * here it sits inside one synchronous block with every region after it,
+   * so the whole screen freezes until it finishes.
+   */
+  breathe(): Promise<void> {
+    return new Promise<void>((r) => setTimeout(r, 0));
+  }
+
+  /**
+   * Generic PUSH scheduler for a region's paint. Runs `paint()` in an async
+   * task (after a macrotask yield) instead of synchronously inside the frame,
+   * so a slow region — a plugin's write step, a heavy dock derive — never
+   * blocks the frame loop or the other regions. `running`/`queued` coalesce a
+   * burst of changes into one in-flight task plus one follow-up, so no update
+   * is dropped but we never stack duplicate paints.
+   */
+  makeRegionPush(paint: () => void): () => void {
+    let running = false;
+    let queued = false;
+    const run = async (): Promise<void> => {
+      if (running) { queued = true; return; }
+      running = true;
+      try {
+        do {
+          queued = false;
+          await this.breathe();
+          paint();
+        } while (queued);
+      } finally {
+        running = false;
+      }
+    };
+    return () => { void run(); };
+  }
+
+  /**
+   * The transcript's PUSH: run `derive` (the expensive computeFrame re-wrap)
+   * off the frame path, then hand the Frame to `stamp`. While this runs, the
+   * frame loop is free — the spinner, dock and every other region paint from
+   * their last-pushed state, so a slow derive never freezes them. Re-entrancy
+   * is guarded by `deriveRunning`: a schedule that arrives mid-derive re-arms
+   * for one more pass, so a burst of changes (ctrl+t over many nodes) still
+   * lands every update instead of dropping the last one.
+   */
+  private deriveRunning = false;
+  private deriveQueued = false;
+
+  async pushFrame<T>(derive: () => T, stamp: (fr: T) => void, onLanded: () => void): Promise<void> {
+    if (this.deriveRunning) { this.deriveQueued = true; return; }
+    this.deriveRunning = true;
+    try {
+      do {
+        this.deriveQueued = false;
+        await this.breathe(); // let any pending frame/keystroke run first
+        const fr = derive();
+        stamp(fr);
+        onLanded();
+      } while (this.deriveQueued);
+    } finally {
+      this.deriveRunning = false;
+    }
+  }
+
+  /** True while a transcript derive is in flight (paintRegions reads this to
+   *  avoid double-scheduling a burst of sig changes). */
+  get transcriptDeriving(): boolean {
+    return this.deriveRunning;
   }
 }
 

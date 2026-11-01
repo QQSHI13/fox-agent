@@ -195,6 +195,11 @@ export function classifyProviderError(e: unknown): ProviderError {
   // A TypeError with no HTTP status and nothing network-shaped is our bug.
   // Reporting it as a provider error hides real defects, so say so plainly and
   // keep the raw text + stack in `detail` for the session log.
+  // Only the MESSAGE is checked for network patterns — the stack trace of a
+  // TypeError will naturally contain frames from network code (fetch, streams,
+  // SDK internals) even when the error itself is a null-reference bug. Checking
+  // the stack let "null is not an object (evaluating 'j.window')" slip through
+  // as "retriable" because the SDK's stack happened to mention "socket".
   const networkish = RETRIABLE_PATTERNS.some((p) => p.test(msg));
   if (INTERNAL_NAMES.has(name) && status === undefined && !networkish) {
     const detail = [`${name}: ${rawMsg}`, src?.stack ?? ""].filter(Boolean).join("\n");

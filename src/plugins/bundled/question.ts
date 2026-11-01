@@ -9,10 +9,10 @@
  * clear message instead of blocking on an answer that can never come — the
  * model is told to decide on its own, which is the correct default there.
  */
-import type { Tool } from "./types.ts";
-import type { ToolDef } from "../providers/types.ts";
-import { ok, fail } from "./types.ts";
-import type { UiStep } from "../core/ui.ts";
+import type { Tool } from "../../tools/types.ts";
+import type { ToolDef } from "../../providers/types.ts";
+import { ok, fail } from "../../tools/types.ts";
+import type { UiStep } from "../../core/ui.ts";
 
 export const questionDef: ToolDef = {
   name: "question",
@@ -58,7 +58,7 @@ export const questionDef: ToolDef = {
   },
 };
 
-export async function questionRun(args: any, ctx: import("./types.ts").ToolContext): Promise<import("./types.ts").ToolResult> {
+export async function questionRun(args: any, ctx: import("../../tools/types.ts").ToolContext): Promise<import("../../tools/types.ts").ToolResult> {
   if (!ctx.ui) {
     return fail(
       "error: no interactive UI on this host (headless run) — no one can answer. Decide yourself using the context you have and say which assumption you made.",
@@ -115,7 +115,7 @@ export async function questionRun(args: any, ctx: import("./types.ts").ToolConte
   return ok(lines.join("\n"));
 }
 
-export const questionPlugin: import("../plugins/types.ts").FoxPlugin = {
+export const questionPlugin: import("../types.ts").FoxPlugin = {
   name: "bundled:question",
   tools: [{ def: questionDef, run: questionRun }],
 };
