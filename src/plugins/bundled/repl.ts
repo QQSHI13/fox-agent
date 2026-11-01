@@ -23,7 +23,7 @@ import vm from "node:vm";
 import { safeDelay, setLongTimeout, type LongTimeout } from "../../core/timers.ts";
 import type { ToolDef } from "../../providers/types.ts";
 import type { ToolContext, ToolResult } from "../../core/tool.ts";
-import { fail, ok, validateArgs } from "../../tools/types.ts";
+import { fail, ok, validateArgs } from "../../core/tool.ts";
 import { chattyCap } from "../../context/truncate.ts";
 
 

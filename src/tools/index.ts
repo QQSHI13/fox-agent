@@ -1,7 +1,7 @@
 import type { ToolDef } from "../providers/types.ts";
 import type { Config, ExternalAgentConfig, McpServerConfig } from "../core/config.ts";
-import type { ToolContext, ToolResult } from "./types.ts";
-import type { Tool } from "./types.ts";
+import type { ToolContext, ToolResult } from "../core/tool.ts";
+import type { Tool } from "../core/tool.ts";
 import { COMMANDS } from "../commands.ts";
 import * as F from "./files.ts";
 import { execDef, execRun } from "./exec.ts";
@@ -18,7 +18,7 @@ import { setCustomProviders, setDisabledBundledProviders } from "../providers/in
 import type { ChatFn } from "../providers/types.ts";
 import { shutdownLsp } from "../lsp/client.ts";
 
-export type { Tool, ToolContext, ToolResult } from "./types.ts";
+export type { Tool, ToolContext, ToolResult } from "../core/tool.ts";
 
 /**
  * The core tool set — the ones that are the harness itself (files, exec,

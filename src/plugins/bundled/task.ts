@@ -21,8 +21,8 @@ import { kvGet, kvSet } from "../../store/db.ts";
 import { selfCommand } from "../../core/selfexec.ts";
 import type { ToolDef } from "../../providers/types.ts";
 import type { ExternalAgentConfig } from "../../core/config.ts";
-import type { ToolContext, ToolResult } from "../../tools/types.ts";
-import { fail, ok } from "../../tools/types.ts";
+import type { ToolContext, ToolResult } from "../../core/tool.ts";
+import { fail, ok } from "../../core/tool.ts";
 
 /**
  * How deep delegation may nest.

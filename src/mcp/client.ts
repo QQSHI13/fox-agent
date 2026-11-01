@@ -6,8 +6,8 @@
 // runs (without MCP) if it isn't installed.
 import type { McpServerConfig } from "../core/config.ts";
 import type { MediaPart, ToolDef } from "../providers/types.ts";
-import type { Tool, ToolResult } from "../tools/types.ts";
-import { fail, ok } from "../tools/types.ts";
+import type { Tool, ToolResult } from "../core/tool.ts";
+import { fail, ok } from "../core/tool.ts";
 import { childEnv } from "../core/childenv.ts";
 import { VERSION } from "../core/version.ts";
 

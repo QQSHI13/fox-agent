@@ -1,7 +1,7 @@
 import { kvGet, kvSet } from "../../store/db.ts";
 import type { ToolDef } from "../../providers/types.ts";
-import type { ToolContext, ToolResult } from "../../tools/types.ts";
-import { fail, ok } from "../../tools/types.ts";
+import type { ToolContext, ToolResult } from "../../core/tool.ts";
+import { fail, ok } from "../../core/tool.ts";
 
 export interface TodoItem {
   content: string;

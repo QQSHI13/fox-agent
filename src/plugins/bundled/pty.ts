@@ -12,8 +12,8 @@
 import { openSync, readSync, fstatSync, closeSync, statSync, writeFileSync, mkdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import type { ToolDef } from "../../providers/types.ts";
-import type { ToolContext, ToolResult, PtyState } from "../../tools/types.ts";
-import { fail, ok } from "../../tools/types.ts";
+import type { ToolContext, ToolResult, PtyState } from "../../core/tool.ts";
+import { fail, ok } from "../../core/tool.ts";
 import { childEnv } from "../../core/childenv.ts";
 import { ptyDir } from "../../core/paths.ts";
 

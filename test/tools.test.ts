@@ -6,7 +6,7 @@ import * as F from "../src/tools/files.ts";
 import { execRun } from "../src/tools/exec.ts";
 import { baseRegistry, buildRegistry, defaultRegistry } from "../src/tools/index.ts";
 import { childEnv } from "../src/core/childenv.ts";
-import type { ToolContext } from "../src/tools/types.ts";
+import type { ToolContext } from "../src/core/tool.ts";
 
 let dir: string;
 let ctx: ToolContext;

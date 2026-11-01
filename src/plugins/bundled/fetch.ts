@@ -1,6 +1,6 @@
 import type { ToolDef } from "../../providers/types.ts";
-import type { ToolContext, ToolResult } from "../../tools/types.ts";
-import { fail, ok } from "../../tools/types.ts";
+import type { ToolContext, ToolResult } from "../../core/tool.ts";
+import { fail, ok } from "../../core/tool.ts";
 import { MAX_READ_BYTES, modelAcceptsMedia } from "../../tools/files.ts";
 import { VERSION } from "../../core/version.ts";
 import { lookup } from "node:dns/promises";

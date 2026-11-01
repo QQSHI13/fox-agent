@@ -723,7 +723,7 @@ async function plainLoop(state: HarnessState) {
       const { execRun } = await import("./tools/exec.ts");
       const r = await execRun(
         { cmd: prompt.slice(1).trim() },
-        { sessionId: state.sessionId, cwd: state.cwd } as unknown as import("./tools/types.ts").ToolContext,
+        { sessionId: state.sessionId, cwd: state.cwd } as unknown as import("./core/tool.ts").ToolContext,
       );
       console.log(typeof r === "string" ? r : r.output);
       return false;

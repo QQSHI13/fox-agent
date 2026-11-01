@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { PtyState, ToolContext } from "../src/tools/types.ts";
+import type { PtyState, ToolContext } from "../src/core/tool.ts";
 
 const HAS_TMUX = !!Bun.which("tmux");
 // CI without tmux skips the live cases rather than failing on a missing binary

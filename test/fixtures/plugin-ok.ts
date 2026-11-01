@@ -14,7 +14,7 @@
 import { appendFileSync } from "node:fs";
 import { join } from "node:path";
 import type { FoxPlugin } from "../../src/plugins/types.ts";
-import { ok } from "../../src/tools/types.ts";
+import { ok } from "../../src/core/tool.ts";
 
 export const PING_OUTPUT = "pong from the plugin";
 export const APPENDED_SYSTEM = "PLUGIN_SYSTEM_MARKER: the plugin appended this.";

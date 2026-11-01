@@ -1,7 +1,7 @@
 import { resolve } from "node:path";
 import type { ToolDef } from "../providers/types.ts";
-import type { ToolContext, ToolResult } from "./types.ts";
-import { fail, ok } from "./types.ts";
+import type { ToolContext, ToolResult } from "../core/tool.ts";
+import { fail, ok } from "../core/tool.ts";
 import { setLongTimeout } from "../core/timers.ts";
 import { childEnv } from "../core/childenv.ts";
 import { shellName, shellPath } from "../core/shell.ts";

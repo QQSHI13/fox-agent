@@ -1,8 +1,8 @@
 import { allMessages, appendOps, getMessage, type ViewOp } from "../store/db.ts";
 import { projectView } from "../context/view.ts";
 import type { ToolDef } from "../providers/types.ts";
-import type { ToolContext, ToolResult } from "./types.ts";
-import { fail, ok } from "./types.ts";
+import type { ToolContext, ToolResult } from "../core/tool.ts";
+import { fail, ok } from "../core/tool.ts";
 
 const SEARCH_DEFAULT_LIMIT = 30;
 const SEARCH_MAX_LIMIT = 100;

@@ -27,7 +27,7 @@ import { agentHome } from "../core/paths.ts";
 import { childEnv } from "../core/childenv.ts";
 import type { McpServerConfig } from "../core/config.ts";
 import type { Tool, ToolContext, ToolResult } from "../core/tool.ts";
-import { fail } from "../tools/types.ts";
+import { fail } from "../core/tool.ts";
 
 /** argv flag the daemon entry point (and the spawner) agree on. */
 export const POOL_FLAG = "--mcp-pool";

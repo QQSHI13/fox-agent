@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { replRun, cleanupRepl } from "../src/plugins/bundled/repl.ts";
 import { defaultRegistry } from "../src/tools/index.ts";
-import type { ToolContext } from "../src/tools/types.ts";
+import type { ToolContext } from "../src/core/tool.ts";
 
 let dir: string;
 let ctx: ToolContext;

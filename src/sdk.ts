@@ -25,8 +25,8 @@ export type {
   AfterToolPatch,
 } from "./plugins/types.ts";
 export type { McpServerConfig, ExternalAgentConfig } from "./core/config.ts";
-export type { Tool, ToolContext, ToolResult } from "./tools/types.ts";
-export { ok, fail } from "./tools/types.ts";
+export type { Tool, ToolContext, ToolResult } from "./core/tool.ts";
+export { ok, fail } from "./core/tool.ts";
 export type { UiBridge, UiStep } from "./core/ui.ts";
 export type { ChatFn, ChatMessage, ProviderConfig, StreamEvent, ToolDef } from "./providers/types.ts";
 

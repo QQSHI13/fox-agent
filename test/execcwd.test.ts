@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ToolContext } from "../src/tools/types.ts";
+import type { ToolContext } from "../src/core/tool.ts";
 
 let root: string;
 let session: string;

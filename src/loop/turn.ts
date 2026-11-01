@@ -4,8 +4,8 @@ import type { ProviderConfig, ChatMessage, ToolDef, ToolCall, ChatFn } from "../
 import { resolveChat } from "../providers/index.ts";
 import { classifyProviderError, diagnoseProviderError, FoxError, isTimeout, isTruncated } from "../core/errors.ts";
 import type { AgentEvent } from "../core/events.ts";
-import type { Tool, ToolContext, ToolResult, PtyState } from "../tools/types.ts";
-import { validateArgs } from "../tools/types.ts";
+import type { Tool, ToolContext, ToolResult, PtyState } from "../core/tool.ts";
+import { validateArgs } from "../core/tool.ts";
 import { drainSteer, peekSteer, turnEnded, turnStarted, steer, backgroundStarted, backgroundEnded } from "./steer.ts";
 import { acquireTurnLock, releaseTurnLock, foreignLock } from "../store/lock.ts";
 import { VERSION } from "../core/version.ts";
