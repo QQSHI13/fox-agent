@@ -63,6 +63,8 @@ const cfg = (): Config => ({
   toolOutputCap: 30_000,
   readCap: 50_000,
   toolPresentationCap: 60_000,
+  searchLimit: 500,
+  searchHidden: false,
   sessionListLimit: 50,
   tuiCollapsedChars: 240,
   tuiKeptChars: 4_000,

@@ -109,6 +109,12 @@ export function liveSettingFor(spec: SettingSpec, state: HarnessState): number |
       // read fresh per turn from config (see turn.ts), so there is no module
       // state to push into — the running turn picks it up on the next step
       return typeof v === "number" ? v : d.toolPresentationCap;
+    case "searchLimit":
+      // threaded into each ToolContext per call, same as readCap
+      return typeof v === "number" ? v : d.searchLimit;
+    case "searchHidden":
+      // threaded into each ToolContext per call, same as readCap
+      return typeof v === "boolean" ? v : d.searchHidden;
     case "tuiScrollbar":
       return typeof v === "boolean" ? v : d.tuiScrollbar;
     case "tuiScrollStep":
@@ -142,6 +148,12 @@ function applyResultLive(state: HarnessState, spec: SettingSpec): void {
           break;
         case "readCap":
           // No live push: read reads readCap from ToolContext, threaded per
+          // call from config. The /settings write updates the config; the next
+          // turn picks it up.
+          break;
+        case "searchLimit":
+        case "searchHidden":
+          // No live push: glob/grep read these from ToolContext, threaded per
           // call from config. The /settings write updates the config; the next
           // turn picks it up.
           break;

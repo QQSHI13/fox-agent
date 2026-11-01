@@ -223,6 +223,29 @@ describe("glob", () => {
     expect(whole.output.split("\n")).toHaveLength(12);
     expect(whole.output).not.toContain("truncated");
   });
+
+  test("config searchLimit is the default, and a call's own limit still wins", async () => {
+    for (let i = 0; i < 12; i++) write(`cfg/f${i}.ts`, "");
+    // ctx carries searchLimit: 3 from config in place of the 500 fallback
+    const withCfg = { ...ctx, searchLimit: 3 } as typeof ctx;
+    const byCfg = await F.globRun({ pattern: "cfg/*.ts" }, withCfg);
+    expect(byCfg.output.split("\n").filter((l) => l.endsWith(".ts"))).toHaveLength(3);
+    expect(byCfg.output).toContain("truncated at 3");
+
+    // an explicit limit overrides the configured default
+    const explicit = await F.globRun({ pattern: "cfg/*.ts", limit: 8 }, withCfg);
+    expect(explicit.output.split("\n").filter((l) => l.endsWith(".ts"))).toHaveLength(8);
+  });
+
+  test("config searchHidden includes dotfiles, and off by default keeps them out", async () => {
+    write(".dotfile.ts", "");
+    write("visible.ts", "");
+    const off = await F.globRun({ pattern: "*.ts" }, ctx);
+    expect(off.output).not.toContain(".dotfile.ts");
+
+    const on = await F.globRun({ pattern: "*.ts" }, { ...ctx, searchHidden: true } as typeof ctx);
+    expect(on.output).toContain(".dotfile.ts");
+  });
 });
 
 describe("grep", () => {

@@ -273,36 +273,36 @@ export async function editRun(
 
 export const globDef: ToolDef = {
   name: "glob",
-  description: "Find files by wildcard pattern (e.g. src/**/*.ts). Pass limit to cap the number of results (default 500).",
+  description: "Find files by wildcard pattern (e.g. src/**/*.ts). Pass limit to cap the number of results (default from config searchLimit, 500). Dotfiles are included only when config searchHidden is on.",
   parameters: {
     type: "object",
     properties: {
       pattern: { type: "string", description: "Wildcard pattern, e.g. src/**/*.ts" },
       path: { type: "string", description: "Base dir (default cwd)" },
-      limit: { type: "number", description: "Max results to return, default 500" },
+      limit: { type: "number", description: "Max results to return; defaults to config searchLimit (500)" },
     },
     required: ["pattern"],
   },
 };
 
 /**
- * Default result cap for glob/grep.
+ * Fallback result cap for glob/grep when the context carries none.
  *
- * These used to hard-cap at 200 matches and silently truncate the rest — a
- * listing the model had no way to page through and no way to know was cut.
- * A caller-chosen `limit` replaces that: the model decides how much it can
- * afford, and when it does hit the cap the result SAYS so (truncated, more
- * available) instead of reading as the complete set.
+ * The live default is config `searchLimit` (threaded through ToolContext); this
+ * constant only applies to a bare ToolContext (tests, the SDK). A caller-chosen
+ * `limit` always wins, and hitting the cap is announced in the result — an
+ * unannounced cut reads as "that is all of them", which is how a model
+ * concludes a symbol has no other callers.
  */
 const SEARCH_LIMIT_DEFAULT = 500;
 
 export async function globRun(args: { pattern: string; path?: string; limit?: number }, ctx: ToolContext): Promise<ToolResult> {
   const base = resolve(ctx.cwd, args.path ?? ".");
   const g = new Bun.Glob(args.pattern);
-  const limit = Math.max(1, Math.floor(args.limit ?? SEARCH_LIMIT_DEFAULT));
+  const limit = Math.max(1, Math.floor(args.limit ?? ctx.searchLimit ?? SEARCH_LIMIT_DEFAULT));
   const found: string[] = [];
   let truncated = false;
-  for await (const f of g.scan({ cwd: base, dot: false })) {
+  for await (const f of g.scan({ cwd: base, dot: ctx.searchHidden === true })) {
     if (found.length >= limit) {
       truncated = true;
       break;
@@ -318,14 +318,14 @@ export async function globRun(args: { pattern: string; path?: string; limit?: nu
 
 export const grepDef: ToolDef = {
   name: "grep",
-  description: "Search file contents with a regex. Output 'path:line: match'. Uses ripgrep when available. Pass limit to cap matches (default 500).",
+  description: "Search file contents with a regex. Output 'path:line: match'. Uses ripgrep when available. Pass limit to cap matches; defaults to config searchLimit (500). Dotfiles are searched only when config searchHidden is on.",
   parameters: {
     type: "object",
     properties: {
       pattern: { type: "string", description: "Regex to match" },
       path: { type: "string", description: "Dir or file (default cwd)" },
       include: { type: "string", description: "Glob filter e.g. '*.ts'" },
-      limit: { type: "number", description: "Max matches to return, default 500" },
+      limit: { type: "number", description: "Max matches to return; defaults to config searchLimit (500)" },
     },
     required: ["pattern"],
   },
@@ -339,11 +339,13 @@ export async function grepRun(args: { pattern: string; path?: string; include?: 
   } catch (e) {
     return fail(`error: bad pattern: ${(e as Error).message}`);
   }
-  const limit = Math.max(1, Math.floor(args.limit ?? SEARCH_LIMIT_DEFAULT));
+  const limit = Math.max(1, Math.floor(args.limit ?? ctx.searchLimit ?? SEARCH_LIMIT_DEFAULT));
 
   const rg = Bun.which("rg");
   if (rg) {
     const argv = ["--line-number", "--no-heading", "--color", "never", "--glob", "!.git"];
+    // dotfiles are searched only when config searchHidden is on; `.git` stays out
+    if (ctx.searchHidden === true) argv.push("--hidden");
     // node_modules is never interesting, with or without an include glob
     argv.push("--glob", "!node_modules");
     if (args.include) argv.push("--glob", args.include);
@@ -365,13 +367,13 @@ export async function grepRun(args: { pattern: string; path?: string; include?: 
       // fall through to walker on other failures
     }
   }
-  return ok(walkGrep(re, p, args.include, limit));
+  return ok(walkGrep(re, p, args.include, limit, ctx.searchHidden === true));
 }
 
 const SKIP_DIRS = new Set([".git", "node_modules", ".venv", "venv", "__pycache__", "dist", "build", ".next"]);
 
 /** Exported for tests: the offline fallback's include-glob semantics. */
-export function walkGrep(re: RegExp, root: string, include: string | undefined, limit: number): string {
+export function walkGrep(re: RegExp, root: string, include: string | undefined, limit: number, hidden = false): string {
   const out: string[] = [];
   let truncated = false; // a further match existed past `limit` — say so, like the rg path
   const includeRe = include ? new Bun.Glob(include) : null;
@@ -418,7 +420,7 @@ export function walkGrep(re: RegExp, root: string, include: string | undefined, 
           continue;
         }
       } else if (st.isDirectory()) {
-        if (!SKIP_DIRS.has(name) && !name.startsWith(".")) walk(full, depth + 1);
+        if (!SKIP_DIRS.has(name) && (hidden || !name.startsWith("."))) walk(full, depth + 1);
         continue;
       } else if (!st.isFile() || st.size > 2_000_000) {
         continue;

@@ -144,6 +144,19 @@ export interface Config {
   /** cap on one `read` result's text in chars (default 50000, min 1000) */
   readCap: number;
   /**
+   * Max results a search tool returns — `glob`/`grep`/`ls` (default 500).
+   * A caller-chosen `limit` on the call still wins; this is the default when
+   * the model does not say. Truncation is always announced in the result, so a
+   * cut list never reads as the complete set.
+   */
+  searchLimit: number;
+  /**
+   * Include dotfiles and dot-directories in search results (default false).
+   * `.git` and `node_modules` stay excluded either way — they are never what a
+   * search means.
+   */
+  searchHidden: boolean;
+  /**
    * How much of one tool result the VIEW shows, in chars (default 60000,
    * 0 = no truncation). The stored row is always whole: exceeding this cap
    * appends a `replace` view op carrying a head+tail excerpt, which `/undo` and
@@ -267,6 +280,8 @@ const DEFAULTS: Omit<Config, "projectInstructions"> = {
   diagnostics: true,
   toolOutputCap: 30_000,
   readCap: 50_000,
+  searchLimit: 500,
+  searchHidden: false,
   toolPresentationCap: 60_000,
   sessionListLimit: 0,
   tuiCollapsedChars: 240,
@@ -363,6 +378,10 @@ function applyEnv(cfg: Config, env: Record<string, string | undefined>) {
   if (Number.isFinite(outCap) && outCap >= 1000) cfg.toolOutputCap = Math.floor(outCap);
   const readCap = Number(env.FOX_AGENT_READ_CAP);
   if (Number.isFinite(readCap) && readCap >= 1000) cfg.readCap = Math.floor(readCap);
+  const searchLimit = Number(env.FOX_AGENT_SEARCH_LIMIT);
+  if (Number.isFinite(searchLimit) && searchLimit >= 1) cfg.searchLimit = Math.floor(searchLimit);
+  const searchHidden = env.FOX_AGENT_SEARCH_HIDDEN;
+  if (searchHidden !== undefined) cfg.searchHidden = /^(1|true|yes|on)$/i.test(searchHidden);
 }
 
 /**
@@ -387,6 +406,7 @@ const KNOWN_KEYS = new Set([
   "model", "baseUrl", "apiKey", "provider", "maxSteps", "retryLimit", "compactWarnAt", "compactCtxOnlyAt",
   "requestTimeoutMs", "diagnostics", "mcpServers", "mcpSharedPool", "agents", "lsp", "plugins", "skills",
   "providers", "disabledPlugins", "toolOutputCap", "readCap", "toolPresentationCap", "sessionListLimit",
+  "searchLimit", "searchHidden",
   "tuiCollapsedChars", "tuiKeptChars", "tuiScrollbar", "tuiScrollStep", "statusBar", "tuiFrameMs", "theme", "contextMarkers", "acpHistory",
   "reasoningEffort",
 ]);
@@ -471,6 +491,8 @@ function applyTable(cfg: Config, t: Record<string, unknown> | null, scope: "glob
   if (typeof t.mcpSharedPool === "boolean") cfg.mcpSharedPool = t.mcpSharedPool;
   if (typeof t.toolOutputCap === "number" && t.toolOutputCap >= 1000) cfg.toolOutputCap = Math.floor(t.toolOutputCap);
   if (typeof t.readCap === "number" && t.readCap >= 1000) cfg.readCap = Math.floor(t.readCap);
+  if (typeof t.searchLimit === "number" && t.searchLimit >= 1) cfg.searchLimit = Math.floor(t.searchLimit);
+  if (typeof t.searchHidden === "boolean") cfg.searchHidden = t.searchHidden;
   // 0 is meaningful here (no presentation truncation), so it must pass
   if (typeof t.toolPresentationCap === "number" && t.toolPresentationCap >= 0)
     cfg.toolPresentationCap = Math.floor(t.toolPresentationCap);
@@ -891,6 +913,20 @@ export const SETTINGS: SettingSpec[] = [
     def: "60000",
     validate: num(0),
     fmt: (v) => (v === undefined ? "60000" : String(v)),
+  },
+  {
+    key: "searchLimit",
+    desc: "default result cap for glob/grep (a call's own limit wins)",
+    def: "500",
+    validate: num(1),
+    fmt: (v) => (v === undefined ? "500" : String(v)),
+  },
+  {
+    key: "searchHidden",
+    desc: "include dotfiles in glob/grep results (.git and node_modules stay out)",
+    def: "false",
+    validate: bool,
+    fmt: (v) => (v === undefined ? "false" : String(v)),
   },
   {
     key: "sessionListLimit",

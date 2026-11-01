@@ -100,6 +100,19 @@ export interface ToolContext {
    * "use the default".
    */
   readCap?: number;
+  /**
+   * Default result cap for search tools — `glob`, `grep`, `ls` (config
+   * `searchLimit`, default 500). A caller-supplied `limit` on the call wins;
+   * this is what applies when the model does not say. Truncation is always
+   * announced in the result, so a cut list never reads as the complete set.
+   */
+  searchLimit?: number;
+  /**
+   * Include dotfiles and dot-directories in search results (config
+   * `searchHidden`, default false). `.git` and `node_modules` stay excluded
+   * either way.
+   */
+  searchHidden?: boolean;
   get pty(): PtyState | undefined;
   set pty(v: PtyState | undefined);
 }
