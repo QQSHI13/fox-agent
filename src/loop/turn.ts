@@ -16,7 +16,7 @@ import { loadPlugins } from "../plugins/load.ts";
 import type { UiBridge } from "../core/ui.ts";
 import { buildSystemPrompt, buildRuntimeHeader } from "./prompt.ts";
 import { renderContext, stripEchoedMarkers } from "../context/render.ts";
-import { truncateToolResult, DEFAULT_PRESENTATION_CAP } from "../context/truncate.ts";
+import { truncateToolResult, resolvePresentationCap } from "../context/truncate.ts";
 import { checkBudget, sessionContextTokens, type BudgetThresholds } from "../context/budget.ts";
 import { cutHead, cutTail } from "../core/text.ts";
 
@@ -331,13 +331,11 @@ async function execToolCall(call: ToolCall, tools: Map<string, Tool>, tctx: Tool
   try {
     const r = await tool.run(args, tctx);
     const result = typeof r === "string" ? { ok: true, output: r } : r;
-    // Tail-cap: a runaway tool must not put megabytes into one node. A tool
-    // that already applied its caller's own budget (`uncapped`, e.g. exec with
-    // full:true) skips it — otherwise the harness silently re-imposed the cap
-    // the caller had just asked to lift.
-    const cap = result.uncapped ? Infinity : (tctx.toolOutputCap ?? 30_000) * 2;
-    const output = result.output.length > cap ? cutTail(result.output, cap) : result.output;
-    return { ok: result.ok, output, media: result.media };
+    // The result reaches the store WHOLE; the presentation cap (applied below,
+    // after appendMessage) is a revertible view op — ctx restore brings back the
+    // full text. No tail-cap here: discarding before the store would make it
+    // non-revertible, which is the bug this refactor removes.
+    return { ok: result.ok, output: result.output, media: result.media };
   } catch (e) {
     return { ok: false, output: `error: ${(e as Error).message}` };
   }
@@ -527,7 +525,7 @@ async function* turnBody(
   // Presentation budget for one tool result in the VIEW. 0 disables the
   // truncation op entirely; the stored row is whole either way, so this only
   // decides how much of it the model and transcript read by default.
-  const presentationCap = effCfg.toolPresentationCap ?? DEFAULT_PRESENTATION_CAP;
+  const presentationCap = resolvePresentationCap(effCfg);
   const quiet = opts.quiet ?? false;
   // Compaction policy resolves config-first, option-second, so a host that
   // passes `config` (every host does) cannot silently lose a threshold by

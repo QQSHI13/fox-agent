@@ -108,7 +108,8 @@ describe("turn manager", () => {
       model: "test-model",
       baseUrl: "http://localhost:9",
       apiKey: "test",
-      toolPresentationCap: 4_000, // force the cap well under the 30k result
+      toolOutputCap: 2_000,
+      toolPresentationCap: 4_000, // resolvePresentationCap raises this to max(4k, 2k) = 4k
     });
     const events = await collect(
       t.runTurnCore(s.id, cfg(), "go", undefined, { chat: mock.fn as any, registryOverride: registry, quiet: true, config }),
