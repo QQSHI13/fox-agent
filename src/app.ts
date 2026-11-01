@@ -245,13 +245,13 @@ export async function run(parsed: Parsed): Promise<void> {
       requestTimeoutMs: c.requestTimeoutMs,
     };
     setActiveEndpoint(p.baseUrl);
-    // Every startup mode (TUI, --acp, --a2a, -p) lands here, so this is the one
+    // Every startup mode (TUI, --acp, -p) lands here, so this is the one
     // place that can start the shared MCP pool before the first turn needs it.
     // Fire-and-forget: the first turn falls back to a local dial if it is not
     // ready, exactly as before this existed.
     void import("./mcp/pool.ts").then((m) => m.warmPool(c.mcpServers, c.mcpSharedPool)).catch(() => {});
   }
-  const needsConfigNow = !!parsed.flags.get("acp") || !!parsed.flags.get("a2a") || parsed.flags.has("print") || !process.stdout.isTTY || !!parsed.flags.get("no-tui");
+  const needsConfigNow = !!parsed.flags.get("acp") || parsed.flags.has("print") || !process.stdout.isTTY || !!parsed.flags.get("no-tui");
   if (needsConfigNow) applyLoadedConfig(loadConfig(configOverrides));
 
   // ---- ACP server ----
@@ -266,26 +266,6 @@ export async function run(parsed: Parsed): Promise<void> {
   if (parsed.flags.get("acp")) {
     const { runAcpServer } = await import("./acp/server.ts");
     await runAcpServer({ config: config!, provider });
-    return;
-  }
-
-  // ---- A2A server ----
-  // The horizontal peer-agent surface: other agents (and the gateway plugin)
-  // discover this fox-agent at /.well-known/agent-card.json and delegate via
-  // SendMessage, SendStreamingMessage (SSE), SubscribeToTask or GetTask. Runs a
-  // turn through the same runTurnCore engine as everything else, and speaks the
-  // A2A 1.0 protocol (0.3 dialect on request). Binds local-only by default.
-  if (parsed.flags.get("a2a")) {
-    const { runA2aServer } = await import("./a2a/server.ts");
-    const port = Number(parsed.flags.get("port") ?? 0) || 0;
-    await runA2aServer({
-      config: config!,
-      provider,
-      port,
-      // An endpoint that runs tools with full machine access must not be open
-      // beyond loopback without a credential. Off loopback, a token is required.
-      authToken: process.env.FOX_AGENT_A2A_TOKEN || undefined,
-    });
     return;
   }
 

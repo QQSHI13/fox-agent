@@ -505,15 +505,15 @@ describe("plugin integration packs", () => {
   test("packed agents reach the turn's agent table; explicit config wins", async () => {
     const { buildRegistry } = await import("../src/tools/index.ts");
     const { agents, warnings } = await buildRegistry(await cfgWith([FIX_PACK]));
-    expect(agents.packedreviewer).toEqual({ url: "https://reviewer.example.com" });
+    expect(agents.packedreviewer).toEqual({ command: "definitely-not-a-real-acp-agent" });
     // the only warning is the fixture's deliberately unreachable MCP server —
     // nothing about the agents merge
     expect(warnings.every((w) => w.includes("mcp server 'packed' unavailable"))).toBe(true);
 
     const cfg2 = await cfgWith([FIX_PACK]);
-    cfg2.agents = { packedreviewer: { url: "https://override.example.com" } };
+    cfg2.agents = { packedreviewer: { command: "override-agent" } };
     const r2 = await buildRegistry(cfg2);
-    expect(r2.agents.packedreviewer).toEqual({ url: "https://override.example.com" });
+    expect(r2.agents.packedreviewer).toEqual({ command: "override-agent" });
     expect(r2.warnings.some((w) => w.includes("agent 'packedreviewer' is configured explicitly"))).toBe(true);
   });
 });

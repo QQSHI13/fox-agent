@@ -10,7 +10,6 @@ src/
   loop/       turn manager (retries, parallel tools, step caps), static system prompt + per-step runtime tail
   providers/  openai-compatible + openai-responses + anthropic (cache_control) + google, models.dev catalog
   acp/        ACP server (fox --acp), ACP client (drives other agents), event mapping
-  a2a/        A2A server (fox --a2a), A2A client (drives remote agents)
   lsp/        language server pool, frame codec, diagnostic formatting
   tools/      builtins + MCP bridge + registry
   plugins/    plugin loader + the public FoxPlugin/PluginHooks types + bundled plugins
@@ -25,7 +24,7 @@ docs/         this site, plus agent/ (docs embedded into the binary for the agen
 ## One event contract
 
 `src/core/events.ts` is the single vocabulary of what a turn emits. The TUI, ACP,
-A2A and the CLI all *map from* it — add a field there, then map it in each sink,
+and the CLI all *map from* it — add a field there, then map it in each sink,
 rather than inventing a side channel.
 
 That is why a feature added for the TUI shows up in `fox json` and over ACP without
@@ -126,7 +125,7 @@ you did not write.
   every answer is judged by the same rules, every redirect hop is re-checked, and
   bodies are stream-capped before truncation.
   `FOX_AGENT_ALLOW_PRIVATE_FETCH=1` re-enables local URLs deliberately.
-- **`--a2a` and `fox gateway` bind local-only by default**: they run tools with
+- **`fox gateway` binds local-only by default**: it runs tools with
   full machine access and have no auth layer.
 
 Run it in a container or VM for anything you don't trust.

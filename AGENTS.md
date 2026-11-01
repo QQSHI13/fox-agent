@@ -29,7 +29,7 @@ Working notes for agents (human or otherwise) editing fox-agent itself.
 
 These are load-bearing. Violating one breaks a consumer you can't see.
 
-- **`src/core/events.ts` is the single event contract.** Every frontend (TUI, ACP, A2A, headless JSON) maps from it. Add a field there, then map it in each sink — never invent a side channel.
+- **`src/core/events.ts` is the single event contract.** Every frontend (TUI, ACP, headless JSON) maps from it. Add a field there, then map it in each sink — never invent a side channel.
 - **Plugins load from the global config only.** Never read `plugins` from a project `fox-agent.toml`. This is a security boundary, not a preference.
 - **The system prompt is static.** It is built once from the tool registry + project instructions. Per-step runtime state (cwd, todos, context figure) rides a runtime tail appended to the last user message — never modify the system prompt mid-turn.
 - **Context is a view, not a copy.** Messages are an append-only log. `context/view.ts` projects it. Never mutate stored rows; emit ops (delete, replace, restore) instead.

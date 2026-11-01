@@ -14,7 +14,7 @@ the user is asking about their own code; they describe fox-agent itself.
 | `config.md` | Changing config (the user's, or your own provider/model/theme). The cascade, every key, trust rules |
 | `tools.md` | You need the exact contract of a tool — caps, cwd rules, failure modes |
 | `plugins.md` | Writing or managing a plugin; what a hook can and cannot do |
-| `sessions-acp.md` | Sessions on disk, forking/pruning, ACP and A2A, headless/`createAgent` |
+| `sessions-acp.md` | Sessions on disk, forking/pruning, ACP, headless/`createAgent` |
 | `themes-tui.md` | Themes, TUI internals, keybindings |
 | `hacking.md` | Modifying fox-agent's own source: build, tests, conventions, where features land |
 

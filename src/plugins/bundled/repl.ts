@@ -498,7 +498,7 @@ export async function replRun(
     };
     sessionJobs(sessionId).set(id, job);
     // A live job is outstanding work: a one-shot client (fox -p, an ACP prompt,
-    // an A2A task) must not report "done" while this can still steer more into
+    // a one-shot client) must not report "done" while this can still steer more into
     // the session. Counted BEFORE the eval starts, so there is no window where
     // the session looks idle.
     job.bgStart?.();

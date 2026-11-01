@@ -686,7 +686,7 @@ export function buildAgent(opts: AcpServerOptions): acp.AgentApp {
       // steered message or a live background job will produce more of the
       // answer. Wait for quiescence before replying, so the editor sees one
       // prompt resolve once the session is actually done — the same rule `fox
-      // -p` and an A2A `message/send` follow.
+      // -p` follows.
       await waitQuiescent(params.sessionId);
       if (failed) throw failed;
       return { stopReason: stop };

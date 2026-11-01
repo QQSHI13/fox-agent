@@ -22,17 +22,10 @@ An `[agents.<name>]` entry picks the protocol:
 command = "some-other-acp-agent"
 args = ["--acp"]
 
-[agents.remote]                # reach a running agent, speak A2A
-url = "https://agent.example.com"
-headers = { authorization = "Bearer token" }
 ```
 
 - `command` → fox-agent spawns it and speaks **ACP**. Tool calls stream into the
   parent's UI live.
-- `url` → fox-agent reaches it over HTTP/JSON-RPC and speaks **A2A** (SSE when
-  offered, polling when not). The final report arrives when the remote task
-  completes.
-
 `default` is fox-agent delegating to itself — a spawned `fox --acp` child with
 the *full* tool registry. It is always available and cannot be rebound by a
 plugin or config.
@@ -71,4 +64,3 @@ to keep running while you do something else, use the `repl` tool's `jobs` API �
 ## Related
 
 - [ACP](../protocols/acp.md) — the server side, and what a client should know.
-- [A2A](../protocols/a2a.md) — the remote agent protocol.

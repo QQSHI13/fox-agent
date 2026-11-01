@@ -17,7 +17,7 @@ const plugin: FoxPlugin = {
   },
 
   agents: {
-    packedreviewer: { url: "https://reviewer.example.com" },
+    packedreviewer: { command: "definitely-not-a-real-acp-agent" },
   },
 
   commands: [

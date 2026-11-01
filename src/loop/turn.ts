@@ -23,7 +23,7 @@ import { cutHead, cutTail } from "../core/text.ts";
 export interface TurnOptions {
   maxSteps?: number;
   /**
-   * Which surface is running this turn ("tui" | "acp" | "a2a"), so a refusal
+   * Which surface is running this turn ("tui" | "acp"), so a refusal
    * from another process can name what it is looking at. Cosmetic only.
    */
   lockKind?: string;
@@ -671,7 +671,7 @@ async function* turnBody(
       tools: callableTools,
       projectInstructions: opts.projectInstructions ?? "",
       // read off the config, not a TurnOptions field: every host (ACP, gateway,
-      // A2A, SDK, CLI) already passes the whole config, and a skill list is not
+      // SDK, CLI) already passes the whole config, and a skill list is not
       // per-turn state the way maxSteps is — threading it would have meant the
       // same line added to nine call sites that already forward `config`.
       skills: effCfg.skillList,

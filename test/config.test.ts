@@ -142,12 +142,11 @@ command = "not-fox"
     expect(cfg.agents.default).toBeUndefined();
   });
 
-  test("[agents.*] with a url is an A2A endpoint; neither command nor url is junk", async () => {
+  test("[agents.*] with no command is junk", async () => {
     writeFileSync(
       join(projectDir, "fox-agent.toml"),
       `[agents.remote]
 url = "https://agent.example.com"
-headers = { authorization = "Bearer t" }
 
 [agents.junk]
 args = ["--acp"]
@@ -155,9 +154,9 @@ args = ["--acp"]
     );
     const { loadConfig } = await import("../src/core/config.ts");
     const cfg = loadConfig({ cwd: projectDir }, { FOX_AGENT_API_KEY: "k" });
-    expect(cfg.agents.remote.url).toBe("https://agent.example.com");
-    expect(cfg.agents.remote.headers).toEqual({ authorization: "Bearer t" });
-    expect(cfg.agents.remote.command).toBeUndefined();
+    // url-only entries are no longer delegation targets (A2A removed): an ACP
+    // command is the only shape, so both entries are skipped
+    expect(cfg.agents.remote).toBeUndefined();
     expect(cfg.agents.junk).toBeUndefined();
   });
 

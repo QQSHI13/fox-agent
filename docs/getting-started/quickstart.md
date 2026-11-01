@@ -43,7 +43,6 @@ fox mini                                    # plain streaming REPL, no TUI
 fox -c                                      # resume latest session (picker in a terminal)
 fox -c 2                                    # resume by 'fox ls' index, or by id
 fox --acp                                   # serve the Agent Client Protocol on stdio
-fox --a2a                                   # serve the Agent2Agent protocol on HTTP
 ```
 
 `fox --help` lists every flag and subcommand; it colours its flags when stdout

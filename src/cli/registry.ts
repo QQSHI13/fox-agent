@@ -91,9 +91,6 @@ ${st.dim("headless / scripted")}
 ${flag("-p, --print", "run one prompt headless, print the answer, exit", "(reads stdin when no prompt given or stdin is piped)")}
 ${flag("--json", "with -p: emit NDJSON agent events instead of text (see: fox json)")}
 ${flag("--acp", "serve the Agent Client Protocol on stdio (see: fox acp)")}
-${flag("--a2a", "serve the Agent2Agent protocol on HTTP (see: fox a2a)")}
-${flag("--port <n>", "port for --a2a (default 0 = ephemeral)")}
-${flag("FOX_AGENT_A2A_TOKEN", "bearer token required on every --a2a request when set")}
 
 ${st.dim("overrides")}
 ${flag("--model <id>", "override model")}

@@ -24,8 +24,8 @@ export type { Tool, ToolContext, ToolResult } from "../core/tool.ts";
  * The core tool set — the ones that are the harness itself (files, exec,
  * context editing). pty, todo, fetch, repl and task ship as bundled plugins
  * instead (see src/plugins/bundled.ts), so they can be shadowed or disabled.
- * task's ACP/A2A delegation lives behind that plugin: the clients stay in
- * src/acp/client.ts + src/a2a/client.ts, but the tool that reaches them is a
+ * task's ACP delegation lives behind that plugin: the client stays in
+ * src/acp/client.ts, but the tool that reaches it is a
  * plugin like any other, and the ACP *server* (fox acp) stays in core.
  */
 export function baseRegistry(): Map<string, Tool> {
@@ -127,7 +127,7 @@ export async function buildRegistry(
     servers[name] = s;
   }
 
-  // Same merge for delegation targets (ACP `command` or A2A `url` entries).
+  // Same merge for delegation targets (ACP `command` entries).
   // Returned for the turn loop: `task` reads the merged table, so a packed
   // remote agent is delegable with no config file.
   const agents: Record<string, ExternalAgentConfig> = {};

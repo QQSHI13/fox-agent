@@ -2,7 +2,7 @@
  * Tool vocabulary — the shared types that describe "a thing the agent can do."
  *
  * Lives in core (not tools/) because the types are vocabulary, not tool
- * implementations: the MCP pool, plugins, the A2A codec, and the providers all
+ * implementations: the MCP pool, plugins, and the providers all
  * reference `Tool`/`ToolResult`/`ToolContext` without implementing a tool.
  * The screen's `Style` moved to core/style.ts for the same reason. Moving
  * them here breaks the upward imports (tools/ is above core in the layer
@@ -39,7 +39,7 @@ export interface ToolContext {
   signal?: AbortSignal;
   /** provider config for tools that need to know the active model */
   providerCfg?: ProviderConfig;
-  /** external agents `task` may delegate to (ACP command or A2A url), from `[agents.*]` */
+  /** external agents `task` may delegate to (ACP command), from `[agents.*]` */
   agents?: Record<string, ExternalAgentConfig>;
   /**
    * Post-edit diagnostics. `lsp` overrides the built-in server table by

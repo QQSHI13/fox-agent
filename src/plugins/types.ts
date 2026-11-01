@@ -293,7 +293,7 @@ export interface FoxPlugin {
   mcpServers?: Record<string, McpServerConfig>;
   /**
    * Delegation targets this plugin packs (`[agents.*]` entries: an ACP
-   * `command` or an A2A `url`) — the marketplace shape for "install a remote
+   * `command`) — the marketplace shape for "install a remote
    * reviewer". Same merge rule as `mcpServers`: explicit config wins.
    */
   agents?: Record<string, ExternalAgentConfig>;

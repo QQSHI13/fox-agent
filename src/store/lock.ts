@@ -28,7 +28,7 @@ import { pidAlive } from "../core/proc.ts";
 
 export interface SessionLock {
   pid: number;
-  /** "tui" | "acp" | "a2a" — shown to the refused caller so it knows what it's looking at */
+  /** "tui" | "acp" — shown to the refused caller so it knows what it's looking at */
   kind: string;
   ts: number;
 }

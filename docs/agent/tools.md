@@ -46,7 +46,7 @@ are changing them.
   the turn loop's `beforeTool`/`afterTool` hooks. Nesting capped at 3.
   `timeout_ms` is the caller's to set — no upper bound, `0` = never time out.
 - **`task`** — foreground only; protocol follows the `[agents.*]` entry's shape
-  (`command` → ACP, `url` → A2A). Delegation depth capped at 3 via
+  (`command` → ACP). Delegation depth capped at 3 via
   `FOX_AGENT_DELEGATION_DEPTH`. `default` cannot be rebound.
 - **`question`** — fails fast when `ctx.ui` is absent (headless), telling the model
   to decide itself. Never blocks on an answer that cannot come.
