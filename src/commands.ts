@@ -99,12 +99,11 @@ export function liveSettingFor(spec: SettingSpec, state: HarnessState): number |
     case "tuiKeptChars":
       return (typeof v === "number" ? v : d.tuiKeptChars);
     case "toolOutputCap":
-      // OUT_CAP is a module-level value every tool reads through outCap();
-      // buildRegistry is the only other writer
+      // threaded into each ToolContext per call (see core/tool.ts); no module
+      // state to push — the /settings write updates config, the next turn picks it up
       return typeof v === "number" ? v : d.toolOutputCap;
     case "readCap":
-      // READ_CAP_VALUE is a module-level value `read` reads through readCap();
-      // buildRegistry is the only other writer
+      // threaded into each ToolContext per call, same as toolOutputCap
       return typeof v === "number" ? v : d.readCap;
     case "toolPresentationCap":
       // read fresh per turn from config (see turn.ts), so there is no module

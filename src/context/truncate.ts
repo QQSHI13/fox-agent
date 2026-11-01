@@ -103,3 +103,48 @@ export function truncateToolResult(name: string, text: string, cap: number): Tru
   // The digit counts never settled; refuse rather than emit an over-cap excerpt.
   return null;
 }
+
+/**
+ * Tail-only cap with a one-line marker — the TOOL-side counterpart to
+ * `truncateToolResult`. A tool that streams or accumulates output bounds its
+ * own result with this before returning; the head+tail presentation pass runs
+ * afterwards in the turn loop. The marker is deliberately short: the model
+ * needs "there was more" and where to look, not an essay.
+ *
+ * Returns the text unchanged when it fits.
+ */
+export function tailCap(text: string, cap: number): string {
+  if (cap <= 0 || text.length <= cap) return text;
+  return cutTail(text, cap) + `\n… (${text.length - cap} chars dropped, tail kept)`;
+}
+
+/**
+ * The "output too chatty" pre-cap: a tool that STREAMS output bounds memory
+ * during the run with this, before the final `tailCap`. The marker says how
+ * much was dropped and why — it is not reversible (the dropped text was never
+ * stored), so the wording says "re-run with a narrower request", not
+ * "ctx restore".
+ */
+export function chattyCap(text: string, cap: number): string {
+  if (cap <= 0 || text.length <= cap) return text;
+  return `… (${text.length - cap} chars dropped, output too chatty — re-run with a narrower request)\n${text}`;
+}
+
+/**
+ * Resolve the effective presentation cap for one tool result.
+ *
+ * Config is the single source: `toolPresentationCap` (default 60000, 0 = no
+ * cap) applies to every tool result; `toolOutputCap` (default 30000) is what a
+ * TOOL may put in its result. The presentation cap must be at least the output
+ * cap — capping the view below what the tool was allowed to produce would
+ * re-truncate every ordinary result. The resolved value is
+ * `max(presentationCap, toolOutputCap)`.
+ */
+export function resolvePresentationCap(cfg: {
+  toolPresentationCap?: number;
+  toolOutputCap?: number;
+}): number {
+  const pres = cfg.toolPresentationCap ?? DEFAULT_PRESENTATION_CAP;
+  const out = cfg.toolOutputCap ?? 30_000;
+  return pres <= 0 ? 0 : Math.max(pres, out);
+}
