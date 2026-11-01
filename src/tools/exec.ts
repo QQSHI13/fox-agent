@@ -6,6 +6,7 @@ import { setLongTimeout } from "../core/timers.ts";
 import { childEnv } from "../core/childenv.ts";
 import { shellName, shellPath } from "../core/shell.ts";
 import { cutTail } from "../core/text.ts";
+import { tailCap, chattyCap } from "../context/truncate.ts";
 
 export const execDef: ToolDef = {
   name: "exec",
@@ -181,11 +182,11 @@ export async function execRun(
   if (stdout.trim()) s += stdout;
   if (stderr.trim()) s += (s ? "\n[stderr]\n" : "") + stderr;
   s = s.trimEnd();
-  if (dropped > 0) s = `… (${dropped} chars dropped, output too chatty)\n${s}`;
+  if (dropped > 0) s = chattyCap(s, s.length);
   // full:true lifts the per-result cap for this call — the 5MB in-memory guard
   // above still bounds it, and says so when it bites
   const cap = ctx.toolOutputCap ?? 30_000;
-  const truncated = !args.full && s.length > cap ? cutTail(s, cap) + "\n… (head truncated)" : s;
+  const truncated = !args.full ? tailCap(s, cap) : s;
   let head = `exit ${code}`;
   if (killedBy) head += ` (${killedBy})`;
   const body = `${head}\n${truncated || "(no output)"}`;

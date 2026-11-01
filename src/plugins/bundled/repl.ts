@@ -24,6 +24,7 @@ import { safeDelay, setLongTimeout, type LongTimeout } from "../../core/timers.t
 import type { ToolDef } from "../../providers/types.ts";
 import type { ToolContext, ToolResult } from "../../core/tool.ts";
 import { fail, ok, validateArgs } from "../../tools/types.ts";
+import { tailCap } from "../../context/truncate.ts";
 
 
 export const replDef: ToolDef = {
@@ -577,7 +578,8 @@ export async function replRun(
     const value = await evalInContext(state, args.code, timeout, evalConsole, fgTools);
     flushLines();
     const body = [lines.join("\n"), fmt(value)].filter(Boolean).join("\n").trimEnd() || "(no output)";
-    return ok(body.length > (ctx.toolOutputCap ?? 30000) ? body.slice(-(ctx.toolOutputCap ?? 30000)) + "\n… (head truncated)" : body);
+    const cap = ctx.toolOutputCap ?? 30_000;
+    return ok(tailCap(body, cap));
   } catch (e) {
     flushLines();
     const msg = (e as Error).message ?? String(e);
