@@ -16,12 +16,36 @@
 import { sessionDb, rid } from "./db.ts";
 import { projectView, dropViewCache } from "../context/view.ts";
 import { dropRenderCache } from "../context/render.ts";
-import type { DeleteOp, ViewOp } from "./db.ts";
+import type { DeleteOp, ReplaceOp, ViewOp } from "./db.ts";
 import { allOps } from "./db.ts";
 
+/**
+ * What /prune does. Each mode is one answer to "reclaim what, exactly?":
+ *
+ *   vacuum     — no deletions at all: VACUUM only, reclaiming pages freed
+ *                earlier (a delete pass leaves free pages until vacuumed).
+ *   hidden     — physically remove the bodies of context-hidden messages, keeping
+ *                each summarized span's anchor row as an empty stub (the summary
+ *                renders off that row). The default.
+ *   truncated  — bake the harness's presentation-truncation ops into the rows:
+ *                the truncated text becomes the stored row and the op rows go.
+ *                Only `version`ed (harness-derived) replaces; a ctx-authored
+ *                edit is deliberate surgery and stays reversible.
+ *   all        — hidden + truncated.
+ *   compact    — hidden + splice summaries in as real rows + clear the op log +
+ *                renumber [N] markers to a contiguous 1..n. Most one-way.
+ */
+export type PruneMode = "vacuum" | "hidden" | "truncated" | "all" | "compact";
+
+export const PRUNE_MODES: PruneMode[] = ["vacuum", "hidden", "truncated", "all", "compact"];
+
 export interface PruneReport {
+  /** mode this report describes */
+  mode: PruneMode;
   /** rows whose body would be / was removed */
   messages: number;
+  /** harness truncation ops baked into their rows (truncated/all) */
+  truncated: number;
   /** anchor rows blanked but kept so their summary still renders */
   stubs: number;
   /** orphaned usage rows removed */
@@ -32,6 +56,35 @@ export interface PruneReport {
   applied: boolean;
   /** compact mode: summary rows spliced in, remaining seqs renumbered 1..n */
   compacted?: { summaries: number; renumbered: number };
+}
+
+/**
+ * Harness-derived truncation ops, collapsed to the LAST one per message.
+ *
+ * A message can carry several replaces as the cap changed over a session; only
+ * the newest describes what the model currently reads. `opSeqs` carries every
+ * truncation op row for those messages — baking the newest while leaving an
+ * older one behind would let the stale excerpt win on the next projection.
+ *
+ * Ops WITHOUT a `version` are ctx-authored edits: deliberate context surgery the
+ * user can /undo, so they are never baked in.
+ */
+function truncationPlan(sessionId: string): { bakes: { id: number; content: string }[]; opSeqs: number[] } {
+  const last = new Map<number, { id: number; content: string }>();
+  const opSeqs: number[] = [];
+  for (const row of allOps(sessionId)) {
+    if (row.kind !== "replace") continue;
+    let op: ReplaceOp;
+    try {
+      op = JSON.parse(row.payload) as ReplaceOp;
+    } catch {
+      continue;
+    }
+    if (op.version === undefined) continue; // ctx-authored: stays a reversible op
+    last.set(op.id, { id: op.id, content: op.content });
+    opSeqs.push(row.seq);
+  }
+  return { bakes: [...last.values()], opSeqs };
 }
 
 function dbBytes(sessionId: string): number {
@@ -99,32 +152,50 @@ function summaryAnchors(sessionId: string): Set<number> {
  * otherwise un-delete the WRONG row), and the remaining seqs are renumbered to
  * a contiguous 1..n so transcript markers carry no gaps. Even more one-way
  * than the default mode: /undo history goes with the op log.
+ *
+ * `mode: "truncated"` bakes harness-derived presentation truncation into the
+ * rows and drops those ops, so the excerpt stops being a view over a full
+ * original and becomes the stored text. ctx-authored replaces are left alone.
  */
 export function pruneSession(
   sessionId: string,
-  opts: { dryRun?: boolean; mode?: "default" | "compact" } = {},
+  opts: { dryRun?: boolean; mode?: PruneMode } = {},
 ): PruneReport {
+  const mode = opts.mode ?? "hidden";
   const d = sessionDb(sessionId);
+  const compact = mode === "compact";
+  // which passes this mode runs
+  const doHidden = mode === "hidden" || mode === "all" || compact;
+  const doTruncated = mode === "truncated" || mode === "all";
+
   const view = projectView(sessionId);
-  const compact = opts.mode === "compact";
   const anchors = compact ? new Set<number>() : summaryAnchors(sessionId);
 
   // An orphan is hidden only as a *consequence* of its assistant being hidden
   // (pairing repair), not by an op. Pruning it is still correct — it cannot
   // become visible again while its assistant is gone — but it has no body worth
   // keeping either way, so it is treated like any other hidden row.
-  const hidden = view.filter((n) => n.deleted).map((n) => n.msg.seq);
+  const hidden = doHidden ? view.filter((n) => n.deleted).map((n) => n.msg.seq) : [];
   // compact mode deletes anchors outright (their summary comes back as a real
-  // row); default mode blanks and keeps them so renderContext keeps hanging
+  // row); the other modes blank and keep them so renderContext keeps hanging
   // the summary off the anchor node
   const toStub = compact ? [] : hidden.filter((s) => anchors.has(s) && (view.find((n) => n.msg.seq === s)!.msg.content ?? "") !== "");
   const toDelete = compact ? hidden : hidden.filter((s) => !anchors.has(s));
   const spans = compact ? summarySpans(sessionId) : [];
+  // compact clears the whole op log anyway, so only a non-compact truncated/all
+  // run deletes the truncation ops it just baked
+  const plan = doTruncated ? truncationPlan(sessionId) : { bakes: [], opSeqs: [] };
+  const opSeqsToDelete = compact ? [] : plan.opSeqs;
 
   const bytesBefore = dbBytes(sessionId);
-  if (opts.dryRun || (toDelete.length === 0 && toStub.length === 0)) {
+  const nothingToWrite =
+    toDelete.length === 0 && toStub.length === 0 && plan.bakes.length === 0 && opSeqsToDelete.length === 0;
+  // vacuum has no delete pass, so it always runs (that is the whole point)
+  if (opts.dryRun || (nothingToWrite && mode !== "vacuum")) {
     return {
+      mode,
       messages: toDelete.length,
+      truncated: plan.bakes.length,
       stubs: toStub.length,
       usage: countOrphanUsage(sessionId, toDelete),
       bytesBefore,
@@ -135,6 +206,12 @@ export function pruneSession(
 
   let usageRemoved = 0;
   d.transaction(() => {
+    if (plan.bakes.length) {
+      const bake = d.prepare("UPDATE messages SET content = ? WHERE session_id = ? AND seq = ?");
+      for (const b of plan.bakes) bake.run(b.content, sessionId, b.id);
+      const dropOp = d.prepare("DELETE FROM ops WHERE session_id = ? AND seq = ?");
+      for (const seq of opSeqsToDelete) dropOp.run(sessionId, seq);
+    }
     const blank = d.prepare("UPDATE messages SET content = '', tool_calls = NULL, tokens = 0 WHERE session_id = ? AND seq = ?");
     for (const seq of toStub) blank.run(sessionId, seq);
 
@@ -212,7 +289,7 @@ export function pruneSession(
   // dropping both keeps the two caches from ever disagreeing about the view.
   dropViewCache(sessionId);
   dropRenderCache();
-  return { messages: toDelete.length, stubs: toStub.length, usage: usageRemoved, bytesBefore, bytesAfter: dbBytes(sessionId), applied: true, compacted };
+  return { mode, messages: toDelete.length, truncated: plan.bakes.length, stubs: toStub.length, usage: usageRemoved, bytesBefore, bytesAfter: dbBytes(sessionId), applied: true, compacted };
 }
 
 function countOrphanUsage(sessionId: string, seqs: number[]): number {
@@ -229,26 +306,44 @@ function countOrphanUsage(sessionId: string, seqs: number[]): number {
 
 const kb = (n: number) => `${(n / 1024).toFixed(1)} KB`;
 
-/** Human-readable one-or-two lines for the slash command. */
+/** One line per mode describing what it charges the session for. */
+const MODE_ONE_WAY: Record<PruneMode, string> = {
+  vacuum: "reclaim only — no rows touched",
+  hidden: 'one-way — hidden bodies are gone for good ("/prune compact yes" also renumbers [N])',
+  truncated: "one-way — ctx restore can no longer bring back the full originals of truncated results",
+  all: "one-way — hidden bodies and truncated originals are both gone for good",
+  compact: "most one-way — the op log goes with it, so /undo cannot reach anything before this prune",
+};
+
+/** Human-readable lines for the slash command. */
 export function formatPruneReport(r: PruneReport): string {
-  if (!r.applied && r.messages === 0 && r.stubs === 0) {
-    return `nothing to prune — no hidden context in this session (db ${kb(r.bytesBefore)})`;
-  }
+  const what =
+    r.mode === "vacuum"
+      ? "vacuum"
+      : [
+          r.messages ? `${r.messages} hidden message${r.messages === 1 ? "" : "s"}` : "",
+          r.truncated ? `${r.truncated} truncated result${r.truncated === 1 ? "" : "s"}` : "",
+        ]
+          .filter(Boolean)
+          .join(" + ") || "nothing";
+
   if (!r.applied) {
+    const empty = r.mode === "vacuum" ? false : what === "nothing";
+    if (empty) return `nothing to prune in mode "${r.mode}" — db ${kb(r.bytesBefore)}`;
     return [
-      `/prune would delete ${r.messages} hidden message(s)${r.usage ? ` and ${r.usage} usage row(s)` : ""}`,
+      `/prune ${r.mode} ${what === "vacuum" ? "would only VACUUM" : `would remove ${what}`}`,
       r.stubs ? `, keeping ${r.stubs} summary anchor(s) as empty stubs` : "",
       `.\ndb is ${kb(r.bytesBefore)} now; VACUUM reclaims the freed pages.`,
-      `\nOne-way either way: "/prune yes" vacuums, "/prune compact yes" also removes the hidden context entirely and renumbers [N] markers 1..n.`,
+      `\nThat is ${MODE_ONE_WAY[r.mode]}. Re-run with "yes" to apply.`,
     ].join("");
   }
+
   const freed = r.bytesBefore - r.bytesAfter;
   const tail = r.compacted
     ? `, ${r.compacted.summaries} summary row(s) spliced in, markers renumbered 1..${r.compacted.renumbered}`
     : r.stubs
       ? `, kept ${r.stubs} summary anchor(s)`
       : "";
-  return `pruned ${r.messages} hidden message(s)${r.usage ? `, ${r.usage} usage row(s)` : ""}${tail} — db ${kb(
-    r.bytesBefore,
-  )} → ${kb(r.bytesAfter)} (${freed >= 0 ? "freed" : "grew"} ${kb(Math.abs(freed))})`;
+  const did = r.mode === "vacuum" ? "vacuumed" : `pruned ${what}`;
+  return `${did}${tail} — db ${kb(r.bytesBefore)} → ${kb(r.bytesAfter)} (${freed >= 0 ? "freed" : "grew"} ${kb(Math.abs(freed))})`;
 }

@@ -13,7 +13,7 @@ import {
 } from "./store/db.ts";
 import { REASONING_EFFORTS, isReasoningEffort, type ReasoningEffort } from "./core/reasoning.ts";
 import { projectView } from "./context/view.ts";
-import { formatPruneReport, pruneSession } from "./store/prune.ts";
+import { formatPruneReport, pruneSession, PRUNE_MODES, type PruneMode } from "./store/prune.ts";
 import { exportSession, importSession } from "./store/transfer.ts";
 import { shareSession } from "./store/share.ts";
 import { VERSION } from "./core/version.ts";
@@ -1768,15 +1768,20 @@ Verify what you write: run the commands you document (at least the build/test en
     }
 
     case "/prune": {
-      // arg grammar: "compact [yes]" | "yes" | "" — the destructive mode word
-      // comes first, the (now optional in the TUI) confirmation last.
+      // arg grammar: "<mode> [yes]" | "yes" | "" — the mode word comes first,
+      // the (optional in the TUI) confirmation last. Bare "yes" is the default
+      // mode (hidden), kept so old muscle memory still works.
       const words = (arg ?? "").trim().split(/\s+/).filter(Boolean);
-      const compact = words[0] === "compact";
+      const first = words[0];
       const confirm = words[words.length - 1] === "yes";
-      if (words.length > (compact ? 2 : 1) || (words.length && words[0] !== "compact" && words[0] !== "yes")) {
-        return { handled: true, output: 'usage: /prune [compact] [yes]' };
+      const isMode = (w: string | undefined): w is PruneMode =>
+        w === "vacuum" || w === "hidden" || w === "truncated" || w === "all" || w === "compact";
+      const modeArg = isMode(first) ? first : first === "yes" ? "hidden" : undefined;
+      if (first && !modeArg) {
+        return { handled: true, output: `usage: /prune [${PRUNE_MODES.join("|")}] [yes]` };
       }
-      const mode = compact ? "compact" : "default";
+      if (words.length > 2) return { handled: true, output: `usage: /prune [${PRUNE_MODES.join("|")}] [yes]` };
+      const mode: PruneMode = modeArg ?? "hidden";
       // Interactive and unconfirmed: an explicit menu pick instead of a
       // "did you mean yes?" second round-trip. Non-interactive hosts keep the
       // printed two-step — they cannot block on a keypress here.
@@ -1784,23 +1789,21 @@ Verify what you write: run the commands you document (at least the build/test en
         return {
           handled: true,
           prompt: {
-            title: "prune — reclaim disk from hidden context",
+            title: "prune — reclaim disk from context that is already invisible",
             steps: [
               {
                 key: "mode",
                 label: "mode",
                 kind: "select",
-                options: compact
-                  ? [
-                      { value: "compact", label: "compact — remove hidden context entirely, renumber [N] 1..n (even /undo history goes)" },
-                      { value: "", label: "report only — nothing is deleted" },
-                    ]
-                  : [
-                      { value: "", label: "report only — nothing is deleted" },
-                      { value: "yes", label: "vacuum — delete hidden context bodies, summary anchors kept" },
-                      { value: "compact", label: "compact — remove hidden context entirely, renumber [N] 1..n (even /undo history goes)" },
-                    ],
-                initial: "",
+                options: [
+                  { value: "", label: "report only — nothing is deleted" },
+                  { value: "vacuum", label: "vacuum — no deletions, just reclaim pages freed earlier" },
+                  { value: "hidden", label: "hidden — delete context-hidden bodies, summary anchors kept (default)" },
+                  { value: "truncated", label: "truncated — bake truncation excerpts into the rows, drop those ops (ctx restorable originals are lost)" },
+                  { value: "all", label: "all — hidden + truncated" },
+                  { value: "compact", label: "compact — hidden + splices summaries in + clears ops + renumbers [N] 1..n (most one-way)" },
+                ],
+                initial: mode,
               },
             ],
             run: (a, s) => {
@@ -1808,7 +1811,7 @@ Verify what you write: run the commands you document (at least the build/test en
               if (!picked) return { handled: true, output: "prune cancelled" };
               // direct call, not runSlashCommand("/prune") — that would just
               // open this prompt again in an interactive host
-              const report = pruneSession(s.sessionId, { mode: picked === "compact" ? "compact" : "default" });
+              const report = pruneSession(s.sessionId, { mode: picked as PruneMode });
               return { handled: true, output: formatPruneReport(report), storeChanged: report.applied };
             },
           },

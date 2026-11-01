@@ -171,6 +171,93 @@ describe("prune edge cases", () => {
   });
 });
 
+/** A session with one tool result whose view carries a harness truncation op. */
+async function truncatedSession() {
+  const { createSession, appendMessage, appendOps, allOps } = await import("../src/store/db.ts");
+  const s = createSession("/w", "m1");
+  const t = appendMessage(s.id, { parent_id: null, role: "tool", content: "FULL-ORIGINAL-BODY", tokens: 5 });
+  appendOps(s.id, [{ kind: "replace", id: t.seq, content: "TRUNCATED-VIEW", version: 1 }]);
+  return { s, seq: t.seq, ops: () => allOps(s.id) };
+}
+
+describe("prune modes", () => {
+  test("vacuum touches no rows, ever", async () => {
+    const { pruneSession } = await import("../src/store/prune.ts");
+    const { allMessages } = await import("../src/store/db.ts");
+    const { s } = await compactedSession();
+    const before = allMessages(s.id).map((m) => m.content);
+
+    const r = pruneSession(s.id, { mode: "vacuum" });
+    expect(r.applied).toBe(true); // vacuum always runs; that is the whole mode
+    expect(r.messages).toBe(0);
+    expect(r.truncated).toBe(0);
+    expect(allMessages(s.id).map((m) => m.content)).toEqual(before); // nothing hidden was touched
+  });
+
+  test("truncated bakes the excerpt into the row and drops its op", async () => {
+    const { pruneSession } = await import("../src/store/prune.ts");
+    const { allMessages } = await import("../src/store/db.ts");
+    const { s, seq, ops } = await truncatedSession();
+    expect(ops().filter((o) => o.kind === "replace")).toHaveLength(1);
+
+    const r = pruneSession(s.id, { mode: "truncated" });
+    expect(r.truncated).toBe(1);
+    expect(r.applied).toBe(true);
+    // the row now holds the excerpt, and the op that produced it is gone
+    expect(allMessages(s.id).find((m) => m.seq === seq)!.content).toBe("TRUNCATED-VIEW");
+    expect(ops().filter((o) => o.kind === "replace")).toHaveLength(0);
+  });
+
+  test("truncated leaves ctx-authored replaces alone (they stay undoable)", async () => {
+    const { createSession, appendMessage, appendOps, allOps, allMessages } = await import("../src/store/db.ts");
+    const { pruneSession } = await import("../src/store/prune.ts");
+    const s = createSession("/w", "m1");
+    const t = appendMessage(s.id, { parent_id: null, role: "tool", content: "ORIGINAL", tokens: 5 });
+    // no `version` -> the ctx tool wrote this; deliberate, not harness-derived
+    appendOps(s.id, [{ kind: "replace", id: t.seq, content: "AGENT-REWRITE" }]);
+
+    const r = pruneSession(s.id, { mode: "truncated" });
+    expect(r.truncated).toBe(0);
+    expect(allOps(s.id).filter((o) => o.kind === "replace")).toHaveLength(1); // op survives
+    expect(allMessages(s.id).find((m) => m.seq === t.seq)!.content).toBe("ORIGINAL"); // row untouched
+  });
+
+  test("truncated keeps only the newest excerpt when a result was truncated twice", async () => {
+    const { createSession, appendMessage, appendOps, allOps, allMessages } = await import("../src/store/db.ts");
+    const { pruneSession } = await import("../src/store/prune.ts");
+    const s = createSession("/w", "m1");
+    const t = appendMessage(s.id, { parent_id: null, role: "tool", content: "ORIGINAL", tokens: 5 });
+    appendOps(s.id, [{ kind: "replace", id: t.seq, content: "OLD-EXCERPT", version: 1 }]);
+    appendOps(s.id, [{ kind: "replace", id: t.seq, content: "NEW-EXCERPT", version: 1 }]);
+
+    pruneSession(s.id, { mode: "truncated" });
+    // the newest wins; a stale older excerpt must not resurface on re-projection
+    expect(allMessages(s.id).find((m) => m.seq === t.seq)!.content).toBe("NEW-EXCERPT");
+    expect(allOps(s.id).filter((o) => o.kind === "replace")).toHaveLength(0);
+  });
+
+  test("all does both passes", async () => {
+    const { pruneSession } = await import("../src/store/prune.ts");
+    const { s } = await compactedSession();
+    const { appendOps, appendMessage } = await import("../src/store/db.ts");
+    const t = appendMessage(s.id, { parent_id: null, role: "tool", content: "FULL", tokens: 5 });
+    appendOps(s.id, [{ kind: "replace", id: t.seq, content: "EXCERPT", version: 1 }]);
+
+    const r = pruneSession(s.id, { mode: "all" });
+    expect(r.messages).toBeGreaterThan(0); // hidden pass ran
+    expect(r.truncated).toBe(1); // truncation pass ran
+  });
+
+  test("hidden skips the truncation pass", async () => {
+    const { pruneSession } = await import("../src/store/prune.ts");
+    const { s, seq, ops } = await truncatedSession();
+    void seq;
+    const r = pruneSession(s.id, { mode: "hidden" });
+    expect(r.truncated).toBe(0);
+    expect(ops().filter((o) => o.kind === "replace")).toHaveLength(1); // op untouched
+  });
+});
+
 describe("/prune slash command", () => {
   const state = (sessionId: string) => ({
     sessionId,
@@ -185,7 +272,7 @@ describe("/prune slash command", () => {
 
     const before = allMessages(s.id).map((m) => m.content);
     const res = runSlashCommand("/prune", state(s.id))!;
-    expect(res.output).toMatch(/would delete 1 hidden message/);
+    expect(res.output).toMatch(/would remove 1 hidden message/);
     expect(res.output).toMatch(/one-way/i);
     // dry run: every body still there
     expect(allMessages(s.id).map((m) => m.content)).toEqual(before);
