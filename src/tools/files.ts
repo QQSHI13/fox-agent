@@ -12,21 +12,6 @@ import { applyEdits, syntaxWarning, type EditOp } from "./patch.ts";
 import { diagnose } from "../lsp/client.ts";
 
 const execFileP = promisify(execFile);
-/**
- * The `read` tool's per-result text cap (chars). Configurable (`readCap` in
- * config, applied by `buildRegistry`); module-level for the same reason as
- * OUT_CAP below — `read` reads it directly and threading it through ToolContext
- * would touch signatures for a constant nobody changes mid-turn. Distinct from
- * OUT_CAP: `read` pages by line, so it wants its own larger ceiling before the
- * shared tail-cap applies.
- */
-let READ_CAP_VALUE = 50_000;
-export function readCap(): number {
-  return READ_CAP_VALUE;
-}
-export function setReadCap(n: number): void {
-  if (Number.isFinite(n) && n >= 1000) READ_CAP_VALUE = Math.floor(n);
-}
 export const MAX_READ_BYTES = 10_000_000;
 
 /**
@@ -171,7 +156,7 @@ export async function readRun(args: { path: string; offset?: number; limit?: num
   // runaway or unbounded read. An explicit limit is caller-sized and is honoured
   // even above those soft budgets — `read({limit: 5000})` returns all 5000 lines
   // rather than an unexplained ~600. full=true bypasses every budget.
-  const soft = full ? Infinity : asked !== undefined ? Infinity : Math.min(readCap(), ctx.toolOutputCap ?? 30_000);
+  const soft = full ? Infinity : asked !== undefined ? Infinity : Math.min(ctx.readCap ?? 50_000, ctx.toolOutputCap ?? 30_000);
   let shown = 0;
   for (let i = 0; i < lines.length; i++) {
     const l = `${off + i}: ${lines[i]}\n`;

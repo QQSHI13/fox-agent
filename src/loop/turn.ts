@@ -872,6 +872,7 @@ async function* turnBody(
           callId: call.id,
           ui: opts.ui,
           toolOutputCap: effCfg.toolOutputCap,
+          readCap: effCfg.readCap,
           // Steer/background lifecycle: the loop owns the session's turn state,
           // so only it can populate these. Tools (repl) call them to notify the
           // agent when a detached job finishes; bare ToolContexts get undefined.

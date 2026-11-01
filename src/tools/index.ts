@@ -6,7 +6,7 @@ import { COMMANDS } from "../commands.ts";
 import * as F from "./files.ts";
 import { execDef, execRun } from "./exec.ts";
 import { cleanupPty, ptySessionName } from "../plugins/bundled/pty.ts";
-import { setReadCap } from "./files.ts";
+
 import { ctxDef, ctxRun } from "./ctx.ts";
 import { mcpTools, closeMcp } from "../mcp/client.ts";
 import { poolTools } from "../mcp/pool.ts";
@@ -86,7 +86,7 @@ export async function buildRegistry(
   exclude?: Set<string>,
 ): Promise<{ tools: Map<string, Tool>; warnings: string[]; plugins: FoxPlugin[]; agents: Record<string, ExternalAgentConfig> }> {
   const map = baseRegistry();
-  setReadCap(cfg.readCap ?? 50_000);
+
   // `?? []` on both: `Config` is public surface an embedder (or a test) may build
   // by hand, and a config written before these fields existed must degrade to
   // "no warnings, no plugins" rather than crash the registry build.

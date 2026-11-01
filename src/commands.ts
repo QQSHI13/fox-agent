@@ -141,11 +141,11 @@ function applyResultLive(state: HarnessState, spec: SettingSpec): void {
           // and threads it into each ToolContext per call. The /settings write
           // updates the config file; the next turn picks it up.
           break;
-        case "readCap": {
-          const { setReadCap } = await import("./tools/files.ts");
-          setReadCap(value as number);
+        case "readCap":
+          // No live push: read reads readCap from ToolContext, threaded per
+          // call from config. The /settings write updates the config; the next
+          // turn picks it up.
           break;
-        }
         case "tuiScrollbar":
         case "tuiScrollStep":
         case "tuiFrameMs": {
