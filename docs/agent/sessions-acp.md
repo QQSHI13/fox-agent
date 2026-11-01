@@ -16,15 +16,11 @@ One SQLite database per session under `agentHome()/sessions/<id>.db` (default ho
 ## ACP both ways
 
 - **Serve**: `fox --acp` speaks the Agent Client Protocol over stdio — that is how Zed (and `acpx`) drive fox-agent. The acceptance check is `bun scripts/acp-accept.ts` against the compiled binary (38 checks, real external client).
-- **Drive**: fox-agent acts as an ACP *client* too — that is what the `task` tool is built on. `[agents.<name>]` with `command = "..."` spawns an ACP agent; `url = "..."` reaches a remote agent over A2A (HTTP/JSON-RPC, SSE streaming when offered).
+- **Drive**: fox-agent acts as an ACP *client* too — that is what the `task` tool is built on. `[agents.<name>]` with `command = "..."` spawns an ACP agent.
 
 `[agents.<name>]` lives in global or project config; "default" (fox-agent itself) is always available to `task` and cannot be rebound.
 
 ACP specifics worth keeping: fox-agent never sends `session/request_permission` (it is a no-prompt harness) and never uses the client's `fs/*` or `terminal/*`. As a client it honors `fs/*`, auto-approves permissions, and leaves `terminal/*` unimplemented. `acpHistory` (`"full"` default, `"last"`, or a trailing-node count) governs how much `session/load` replays.
-
-## A2A
-
-`fox --a2a [--port n]` serves the agent card (`/.well-known/agent-card.json`), `message/send`, `message/stream` (SSE) and `tasks/get`, bound **local-only** by default (full machine access, no auth layer). The client prefers streaming, falls back to polling, does not trust `configuration.blocking`, and treats a missing agent card as non-fatal. Delegation capped at 30 min by default.
 
 ## Headless
 

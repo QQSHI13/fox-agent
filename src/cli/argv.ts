@@ -51,7 +51,6 @@ export function parseArgv(argv: string[]): Parsed {
     else if (a === "--no-tui") flags.set("no-tui", true);
     else if (a === "--json") flags.set("json", true);
     else if (a === "--acp") flags.set("acp", true);
-    else if (a === "--a2a") flags.set("a2a", true);
     else if (a === "--trust") flags.set("trust", true);
     else if (a === "-h" || a === "--help") {
       // after a known subcommand this belongs to it (`fox upgrade --help`
@@ -90,7 +89,7 @@ export function parseArgv(argv: string[]): Parsed {
         // it accepts, and where the full list lives. "unknown flag -z" sent the
         // reader hunting for a flag that does not exist anywhere.
         const where = sub !== undefined && SUBCOMMANDS.has(sub) ? `fox ${sub}` : "fox";
-        const known = [...VALUED, "--no-tui", "--json", "--acp", "--a2a", "--trust", "--help", "--version"].sort();
+        const known = [...VALUED, "--no-tui", "--json", "--acp", "--trust", "--help", "--version"].sort();
         throw new ConfigError(
           `unknown flag ${a} for ${where}\n` +
             `  known flags: ${known.join(", ")}\n` +

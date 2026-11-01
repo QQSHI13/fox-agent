@@ -293,7 +293,7 @@ async function connectOrSpawn(sockPath: string): Promise<Link | null> {
 
 /**
  * Start the pool now, without waiting for it: called from every startup mode
- * (TUI, --acp, --a2a, -p) so the first turn does not pay the dial.
+ * (TUI, --acp, -p) so the first turn does not pay the dial.
  *
  * Deliberately fire-and-forget and silent: startup must not block on a 30-45 s
  * MCP handshake, and a pool that fails to start must leave the caller falling

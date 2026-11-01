@@ -62,7 +62,7 @@ Tests must be hermetic: point `FOX_AGENT_HOME` / `FOX_AGENT_CONFIG` at tmp dirs,
 
 These invariants are what keep the frontends in sync. A PR that violates one will look fine in isolation and break a consumer you didn't touch.
 
-- **Events**: `src/core/events.ts` is the single vocabulary of what a turn emits. Add a field there, then map it in each sink (TUI, ACP, A2A, headless).
+- **Events**: `src/core/events.ts` is the single vocabulary of what a turn emits. Add a field there, then map it in each sink (TUI, ACP, headless).
 - **System prompt**: static, built once. Per-step state (cwd, todos, context figure) rides a runtime tail on the last user message — never modify the system prompt mid-turn.
 - **Context**: messages are an append-only log. `context/view.ts` projects it. Never mutate stored rows; emit ops instead.
 - **Plugins**: read from `~/.config/fox-agent/config.toml` only. A project `fox-agent.toml` cannot add plugins — that is a security boundary, not a preference.
@@ -82,7 +82,6 @@ src/
   loop/       turn manager (retries, parallel tools, step caps), static system prompt + per-step runtime tail
   providers/  openai-compatible + openai-responses + anthropic (cache_control) + google, models.dev catalog
   acp/        ACP server (fox --acp), ACP client (drives other agents), event mapping
-  a2a/        A2A server (fox --a2a), A2A client (drives remote agents)
   lsp/        language server pool, frame codec, diagnostic formatting
   mcp/        MCP shared-daemon pool (one per config, many fox instances share it)
   tools/      builtins + MCP bridge + registry

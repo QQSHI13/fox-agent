@@ -68,7 +68,6 @@ command = "..." ; args = [...] ; extensions = [".ts"] ; rootMarkers = ["tsconfig
 
 [agents.<name>]                        # `task` delegation targets
 command = "..."                        # spawn an ACP child
-# url = "..."                          # or a remote A2A agent
 ```
 
 There is no `[plugins]` table — `plugins` is a plain array of paths.

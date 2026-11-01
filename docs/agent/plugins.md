@@ -23,7 +23,7 @@ export default {
   providers: { myprovider: chatFn },  // custom providers; config `provider = "myprovider"` selects
   themes: { mytheme: {...} },         // TUI themes, selectable via /theme or theme = "mytheme"
   mcpServers: { name: {...} },        // packed MCP servers (explicit config entries win)
-  agents: { name: {...} },            // packed task targets (ACP command or A2A url)
+  agents: { name: {...} },            // packed task targets (ACP command)
   commands: [ ... ],                  // slash commands through the same result path as built-ins
   statusSegments: { seg: () => "…" }, // status bar slots; statusBar = "... seg ..." shows them
   regions: { name: {...} },           // TUI compositing planes (paint per frame, clip to a rect)

@@ -4,18 +4,15 @@
  * A subagent used to be an in-process child session with a deliberately reduced
  * tool registry. It is now a separate agent — by default another `fox --acp`
  * child with the *full* registry, and optionally any agent the user named in
- * `fox-agent.toml` under `[agents.<name>]`. The protocol follows the entry's
- * shape: `command` spawns a child and speaks ACP, `url` reaches a running agent
- * over HTTP and speaks A2A. There is no second code path left for "subagent":
- * a child is a real session in a real process (or a real service), reached
- * through the same protocols external tools use, so anything fox-agent can do
- * for a user it can do for its parent.
+ * `fox-agent.toml` under `[agents.<name>]`. Each entry's `command` spawns a
+ * child and speaks ACP. There is no second code path left for "subagent":
+ * a child is a real session in a real process, reached through the same
+ * protocol external tools use, so anything fox-agent can do for a user it can
+ * do for its parent.
  *
  * The visible upgrade on ACP: the child's updates stream into the parent's
  * event stream as they happen, so the TUI shows the subagent's tool calls live
- * instead of nothing until it finishes. A2A agents that implement
- * `message/stream` (SSE) report state transitions the same way; servers
- * without it fall back to polling and only the final report arrives.
+ * instead of nothing until it finishes.
  */
 import { kvGet, kvSet } from "../../store/db.ts";
 import { selfCommand } from "../../core/selfexec.ts";
@@ -51,7 +48,7 @@ function capTaskResult(text: string): string {
 export const taskDef: ToolDef = {
   name: "task",
   description:
-    "Delegate a self-contained subtask to a subagent: a separate agent with its own context window and session — a spawned child process spoken to over ACP, or a remote agent at a configured url spoken to over A2A. It has the same full tool access you do and cannot see this conversation, so give it complete standalone instructions. Returns its final report. For background subagents and polling, use the repl tool's `jobs` API.",
+    "Delegate a self-contained subtask to a subagent: a separate agent with its own context window and session — a spawned child process spoken to over ACP. It has the same full tool access you do and cannot see this conversation, so give it complete standalone instructions. Returns its final report. For background subagents and polling, use the repl tool's `jobs` API.",
   parameters: {
     type: "object",
     properties: {
@@ -59,7 +56,7 @@ export const taskDef: ToolDef = {
       prompt: { type: "string", description: "Complete, standalone instructions for the subagent" },
       agent: {
         type: "string",
-        description: 'Which agent to delegate to: "default" (another fox-agent) or a name configured in fox-agent.toml [agents.*] (an ACP command or an A2A url)',
+        description: 'Which agent to delegate to: "default" (another fox-agent) or a name configured in fox-agent.toml [agents.*] (an ACP command)',
       },
     },
     required: [],
@@ -106,29 +103,6 @@ export async function executeTask(
   const children = kvGet<string[]>(ctx.sessionId, "children") ?? [];
   const label = args.description!.trim();
   try {
-    // A2A: the entry points at a running agent over HTTP. Streams when the
-    // server speaks SendStreamingMessage (SSE), polls otherwise.
-    if (spec.url) {
-      const { runA2aAgent } = await import("../../a2a/client.ts");
-      const { TERMINAL_STATES } = await import("../../a2a/types.ts");
-      const text = (
-        await runA2aAgent(spec.url, args.prompt!, {
-          signal: ctx.signal,
-          headers: spec.headers,
-          // forward remote state transitions the way an ACP child's tool calls
-          // are forwarded — the TUI shows only completions, --json shows all
-          onEvent: ctx.emit
-            ? (ev) => {
-                if (!ev.state) return;
-                const done = TERMINAL_STATES.has(ev.state) || ev.state === "TASK_STATE_INPUT_REQUIRED" || ev.state === "TASK_STATE_AUTH_REQUIRED";
-                ctx.emit?.({ type: "child_tool", session: label, name: `remote ${ev.state}`, done, ok: ev.state !== "TASK_STATE_FAILED" });
-              }
-            : undefined,
-        })
-      ).trim();
-      return ok(text ? `${capTaskResult(text)}\n\n[a2a task on ${args.agent ?? spec.url}]` : `[a2a agent ${args.agent ?? spec.url} finished without a final message]`);
-    }
-
     // ACP: spawn a child process and stream its tool activity into the parent's
     // stream as it happens. Lazy-imported so the ACP SDK stays off TUI startup.
     if (!spec.command) return fail(`error: agent "${args.agent ?? "default"}" has neither command nor url — fix fox-agent.toml [agents.${args.agent}]`);

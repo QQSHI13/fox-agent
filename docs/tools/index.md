@@ -32,7 +32,7 @@ These are the harness itself (`src/tools/index.ts` → `baseRegistry`):
 | [`fetch`](fetch-repl.md) | `bundled:fetch` | HTTP(S) → readable text, with the local network refused |
 | [`repl`](fetch-repl.md) | `bundled:repl` | In-process JavaScript scratchpad with persistent variables and background jobs |
 | [`todo`](index.md#todo) | `bundled:todo` | The session's task list, shown in the runtime header |
-| [`task`](task.md) | `bundled:task` | Delegate a subtask to another agent over ACP or A2A |
+| [`task`](task.md) | `bundled:task` | Delegate a subtask to another agent over ACP |
 | `lsp` | `bundled:lsp` | Definition / references / hover / symbols from a real language server |
 | `question` | `bundled:question` | Ask the user a structured question mid-run and wait |
 | `mcp` | `bundled:mcp` | Tools from every configured MCP server |

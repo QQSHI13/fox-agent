@@ -29,7 +29,7 @@
  * 2. Exactly one drainer acts on a given steer: draining is atomic, and
  *    dispatch is suppressed while `running`.
  * 3. A session is QUIESCENT only when no turn runs, no steer is queued and no
- *    background job is live. One-shot clients (ACP prompt, A2A send) and
+ *    background job is live. One-shot clients (ACP prompt, --print) and
  *    `--print` wait for that before finishing — see `waitQuiescent`.
  */
 import type { AgentEvent } from "../core/events.ts";
@@ -197,7 +197,7 @@ export function adoptTurnController(sessionId: string, ctl: AbortController): vo
 
 /**
  * Abort the running turn for this session, if any. Here rather than in each
- * client so a cancel path (TUI esc, ACP `session/cancel`, A2A watchdog) is one
+ * client so a cancel path (TUI esc, ACP `session/cancel`) is one
  * implementation.
  */
 export function abortTurn(sessionId: string, reason = "cancelled"): boolean {
@@ -237,7 +237,7 @@ export function backgroundCount(sessionId: string): number {
  * Nothing left to do: no turn, no queued steer, no live background job.
  *
  * One-shot surfaces wait for this before finishing. `fox -p`, an ACP prompt and
- * an A2A `message/send` all want the same semantics — "answer, and keep going
+ * an ACP prompt all want the same semantics — "answer, and keep going
  * while the answer is still producing work" — and that is exactly this
  * predicate, so it cannot drift between them.
  */

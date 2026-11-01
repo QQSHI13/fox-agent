@@ -30,7 +30,7 @@ your full user privileges in your cwd. That is a deliberate design choice with a
 matching [security model](architecture/index.md#security-model) — read it before
 pointing fox-agent at code you did not write.
 
-**One turn loop, three protocols.** The TUI, `-p`/`fox json`, ACP and A2A all run
+**One turn loop, two protocols.** The TUI, `-p`/`fox json` and ACP all run
 through the same `runTurnCore`. Compaction, hooks and budget behave identically
 whichever surface drives a session.
 
@@ -49,7 +49,7 @@ can be shadowed or switched off exactly like third-party ones.
 | [The TUI](tui/index.md) | Keybindings, mouse, themes |
 | [Plugins](plugins/index.md) | Writing and managing a plugin |
 | [Sessions](sessions/index.md) | Where state lives, forks, prune, delete |
-| [Protocols](protocols/index.md) | ACP (server and client), A2A |
+| [Protocols](protocols/index.md) | ACP (server and client) |
 | [Architecture](architecture/index.md) | Layout, the event contract, the security model |
 
 ## Performance

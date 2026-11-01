@@ -83,7 +83,7 @@ Model, theme and reasoning effort have their own commands (`/model`, `/theme`,
 | Key | Default | Meaning |
 |---|---|---|
 | `acpHistory` | `"full"` | How much history `session/load` replays: `"full"`, `"last"` (latest exchange only), or a trailing-node count |
-| `[agents.<name>]` | — | `task` delegation targets: `command` = spawn an ACP child, `url` = a remote A2A agent. `default` is fox-agent itself and is always available |
+| `[agents.<name>]` | — | `task` delegation targets: `command` = spawn an ACP child. `default` is fox-agent itself and is always available |
 | `[mcpServers.<name>]` | — | MCP servers to spawn; their tools join the registry |
 | `[lsp.<name>]` | — | Extra language servers beyond the three built in |
 

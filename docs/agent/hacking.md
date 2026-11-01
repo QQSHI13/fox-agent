@@ -29,7 +29,7 @@ markers, and do not add a path that renders those tables from an old
 
 - **No emoji in UI output.** Plain ASCII markers (`·`, `✓`, `✗` are established).
 - **Tests are hermetic.** Set `FOX_AGENT_HOME` and `FOX_AGENT_CONFIG` to tmp paths; never touch real `~/.config/fox-agent` or `~/.local/share/fox-agent` from a test.
-- **`src/core/events.ts` is the single event contract.** TUI, ACP, A2A and the CLI all map from it — add a field there, then map it in each sink.
+- **`src/core/events.ts` is the single event contract.** TUI, ACP and the CLI all map from it — add a field there, then map it in each sink.
 - **Plugins load from the global config only** — security boundary, never weaken it.
 - **Version lives in `package.json`**; `src/core/version.ts` re-exports it; nothing else hardcodes a version string.
 - **Minimal diffs.** Match surrounding style; do not reformat/rename what the task doesn't touch.
@@ -43,7 +43,7 @@ markers, and do not add a path that renders those tables from an old
 - `src/tools/` — tool definitions (read/write/edit/glob/grep/exec/ctx) plus the bundled-plugin tools (pty/repl/todo/task/fetch/question/lsp)
 - `src/tui/` — renderer (`layout.ts` virtualized frame, `rows.ts` stream/plain row kernels, `app.ts` host), `themes.ts`, `picker.ts` (the one modal chooser)
 - `src/commands.ts` — slash command table + `runSlashCommand` (single source; the hint popup and /help derive from it)
-- `src/acp/`, `src/a2a/` — protocol server/client
+- `src/acp/` — protocol server/client
 - `src/plugins/` — plugin loader, `FoxPlugin` interface, bundled plugins (`bundled.ts`), gateway
 - `src/gateway/` — `fox gateway` web chat host
 - `src/store/db.ts` — sqlite sessions (append-only messages/ops/refs)

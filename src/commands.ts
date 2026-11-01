@@ -198,7 +198,7 @@ export interface HarnessState {
    */
   pickSessionOnBoot?: boolean;
   /**
-   * This process opened a session another live process (TUI, ACP, A2A) already
+   * This process opened a session another live process (TUI, ACP) already
    * holds — see src/store/lock.ts. The viewer may draft and run read-only
    * commands, but nothing may be sent and nothing may mutate the session.
    */
