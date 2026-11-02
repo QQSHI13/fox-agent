@@ -515,6 +515,22 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     pushTranscriptFrame();
     schedulePaint();
   };
+  /**
+   * Schedule a flush WITHOUT re-pushing any region.
+   *
+   * For a callback that runs INSIDE a region push (the transcript's onLanded).
+   * markDirty() is wrong there and was a hard spin: it re-enters
+   * pushTranscriptFrame(), pushFrame sees its own deriveRunning and sets
+   * deriveQueued, and the do/while never drains — measured 725 full Frame
+   * derives per second on a TOTALLY IDLE session, which was the standing CPU
+   * load and the RSS sawtooth (every pass allocates a Frame's rows + segs).
+   * The landed frame only needs presenting; the dependent regions already
+   * re-push through screen.pushGeometry when the layout split actually moved.
+   */
+  const requestPaint = () => {
+    dirty = true;
+    schedulePaint();
+  };
   // a Shiki block finished tokenizing off-thread: cached-flat rows must repaint
   // in their grammar colors, so re-run the frame on the version bump
   setHighlightDone(() => markDirty());
@@ -3650,7 +3666,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           stick: fr.stick,
         });
       },
-      () => markDirty(), // a new Frame landed: schedule a flush to show it
+      requestPaint, // a new Frame landed: schedule a flush to show it
     );
   }
 

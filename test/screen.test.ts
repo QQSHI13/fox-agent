@@ -460,3 +460,34 @@ describe("damage tracking: composite rebuilds only touched rows", () => {
     expect(((scr as any).chars as (string | undefined)[]).slice(5 * 12, 6 * 12).every((c) => c === undefined)).toBe(true);
   });
 });
+
+describe("PushCompositor.pushFrame: onLanded must not re-enter its own derive", () => {
+  // Regression: app.ts wired pushFrame's `onLanded` to markDirty(), which
+  // re-enters pushTranscriptFrame(). pushFrame then saw its own deriveRunning,
+  // set deriveQueued, and the do/while never drained — a permanent async spin
+  // at setTimeout(0) cadence on a completely IDLE session (measured ~725 full
+  // Frame derives/sec). That was the standing idle CPU load and the RSS
+  // sawtooth, since every pass allocates a Frame's rows and segs.
+  test("a landing callback that schedules another push still terminates", async () => {
+    const { PushCompositor } = await import("../src/tui/screen.ts");
+    const comp = new PushCompositor({ write: () => {}, flush: () => {} } as any);
+    let derives = 0;
+    // stands in for markDirty(): it pushes the transcript frame again
+    const onLanded = () => {
+      void comp.pushFrame(
+        () => ++derives,
+        () => {},
+        onLanded,
+      );
+    };
+    void comp.pushFrame(
+      () => ++derives,
+      () => {},
+      onLanded,
+    );
+    await new Promise((r) => setTimeout(r, 50));
+    // A self-feeding onLanded would be in the hundreds by now; the derive must
+    // stop once the queued re-push has been consumed.
+    expect(derives).toBeLessThan(10);
+  });
+});
