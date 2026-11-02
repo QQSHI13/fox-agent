@@ -221,7 +221,22 @@ async function tokenizeBlock(lang: string, text: string): Promise<void> {
         else last.push({ t: piece, ...(fg ? { fg } : {}) });
       }
     });
-    if (blockCache.size >= BLOCK_CACHE_MAX) blockCache.clear();
+    if (blockCache.size >= BLOCK_CACHE_MAX) {
+      // Evict the OLDEST entry, not the whole cache.
+      //
+      // `clear()` here was a permanent-spin bug of the same shape as the one
+      // in PushCompositor: tokenizeBlock is declared async but contains no
+      // await, so `onDone()` runs SYNCHRONOUSLY inside the frame derive. onDone
+      // is markDirty(), which queues another derive. On the next pass the block
+      // IS cached, so nothing re-tokenizes — unless clear() emptied the cache
+      // again, in which case every visible fence re-tokenizes, bumps `version`,
+      // and schedules yet another derive. With >BLOCK_CACHE_MAX distinct fences
+      // in a session (any normal coding session, since countItem walks the whole
+      // history) the cache was full on every pass, so the loop could never
+      // converge: one core pegged forever on an idle session.
+      const oldest = blockCache.keys().next();
+      if (!oldest.done) blockCache.delete(oldest.value);
+    }
     blockCache.set(key, lines.map((segs) => (segs.length ? segs : null)));
     version++; // a block landed — cached flat rows must re-render
     onDone?.();
@@ -240,7 +255,16 @@ async function tokenizeBlock(lang: string, text: string): Promise<void> {
  */
 export function highlightBlockRich(lang: string, text: string): (Seg[] | null)[] | null {
   const key = lang + "\0" + text;
-  if (blockCache.has(key)) return blockCache.get(key) ?? null;
+  const hit = blockCache.get(key);
+  if (hit !== undefined) {
+    // LRU touch — Map preserves insertion order, so delete+set moves this entry
+    // to the young end. Without it the eviction above drops whatever was cached
+    // first (often a block still on screen), which is what made the cache churn
+    // instead of settling.
+    blockCache.delete(key);
+    blockCache.set(key, hit);
+    return hit;
+  }
   if (!shikiLang(lang)) return null;
   if (!pendingBlocks.has(key) && (pendingBlocks.size === 0 || Date.now() - lastKick >= KICK_MS)) {
     lastKick = Date.now();

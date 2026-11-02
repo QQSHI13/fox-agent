@@ -446,21 +446,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   const displayBusy = () => busy || remoteBusy;
 
   const revs = new Map<number, number>();
-  // Running total of every touch() — transcriptSig reads this instead of
-  // re-summing all items per frame (the O(n)/frame cost on long sessions).
-  let revSum = 0;
   const touch = (k: number) => {
     revs.set(k, (revs.get(k) ?? 0) + 1);
-    revSum++;
   };
-  /**
-   * Render-signature of a settled item, keyed by its stable `k`. Used by
-   * refresh() to touch ONLY the nodes that actually changed, so a rebuild does
-   * not re-render the whole history. Prior nodes are append-only — their stored
-   * content never changes — so a cached row stays valid until its text, kind, or
-   * expand/policy inputs move. Without this, refresh() touched every item and
-   * the stable-key cache was defeated (O(history) re-wrap each rebuild).
-   */
   const itemSigs = new Map<number, string>();
   const itemSig = (it: Item): string => `${it.kind}|${it.text}|${it.expanded ? 1 : 0}|${it.mdBody ? 1 : 0}|${it.detail ?? ""}`;
   /**
@@ -742,6 +730,13 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     if (lineCache.size > items.length) {
       const live = new Set(items.map((i) => i.k));
       for (const k of lineCache.keys()) if (!live.has(k)) lineCache.delete(k);
+      // `revs` needs the same sweep. Every minted item (a notice on each session
+      // switch, a warning, each streaming md fragment) takes a NEW key from a
+      // monotonically increasing counter, and nothing ever deleted from this
+      // map — so a TUI left open for days accumulated one permanent entry per
+      // item it had ever minted. `lineCache` and `itemSigs` were already
+      // pruned here; this was the one that leaked.
+      for (const k of revs.keys()) if (!live.has(k)) revs.delete(k);
     }
     // Diff-and-touch: bump the revision ONLY of nodes whose render signature
     // changed, so a rebuild re-renders just the tail that moved — not the whole

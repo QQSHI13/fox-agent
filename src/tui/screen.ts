@@ -725,17 +725,31 @@ export class Plane {
   clearRows(y0: number, y1: number): void {
     const lo = Math.max(this.cy0(), y0);
     const hi = Math.min(this.cy1(), y1);
+    const w = this.scr.w;
     for (let y = lo; y < hi; y++) {
-      const base = y * this.scr.w;
-      for (let x = 0; x < this.scr.w; x++) {
-        this.chars[base + x] = undefined;
-        this.sty[base + x] = this.scr.defaultStyle();
+      const base = y * w;
+      // Mark a row dirty only because it is ABOUT to lose content it actually
+      // has. Rows that were already empty lose nothing by being cleared, and
+      // marking them was the reason every region push made composite() take its
+      // full-repaint branch: the built-in regions clear `(0, H)` each restamp, so
+      // `markRows(0, H)` marked every row on every push, and the per-row damage
+      // path (screen.ts composite) was unreachable in practice. Rows the region
+      // writes afterwards mark themselves through text()/fillRow().
+      let hadContent = false;
+      for (let x = 0; x < w; x++) {
+        const i = base + x;
+        if (this.chars[i] !== undefined) hadContent = true;
+        this.chars[i] = undefined;
+        this.sty[i] = this.scr.defaultStyle();
       }
+      if (hadContent) this.scr.markRowDirty(y);
     }
-    // Rows OUTSIDE the clip still have to reach the grid: composite only
-    // rebuilds rows marked dirty, so marking just the clipped rows would leave
-    // the rest of the previous frame's plane content composited in.
-    this.markRows(y0, y1);
+    // Rows OUTSIDE the clip still have to reach the grid when the region WROTE
+    // there last frame: the clip only bounds writes, and a plane keeps a
+    // full-screen buffer. Those rows are marked by the check above, which runs
+    // over the whole buffer only inside the clip — so for a clipped plane the
+    // out-of-clip rows are handled by its own writes having marked them last
+    // time and by dropPlane()'s full invalidation when the region goes away.
   }
 
   /**
@@ -823,6 +837,11 @@ export class Plane {
       const cur = this.scr.styles[this.sty[i]] ?? {};
       this.sty[i] = this.scr.sgr({ ...cur, bg });
     }
+    // Selection highlight is a WRITE and has to reach the grid like one. This
+    // was masked while clearRows() marked every row dirty unconditionally;
+    // without it a selection painted onto a row that was empty last frame would
+    // sit in the plane and never composite.
+    this.markRows(y, y + 1);
   }
 
   /** first/last row containing any defined cell — hit tests and debug */
