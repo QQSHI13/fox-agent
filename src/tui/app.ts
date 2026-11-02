@@ -319,8 +319,14 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           text: (x: number, y: number, str: string, style: Style) => void plane.text(x, y, str, screen.sgr(style)),
           fillRow: (y: number, x0: number, x1: number, style: Style) => plane.fillRow(y, x0, x1, screen.sgr(style)),
           restyle: (y: number, x0: number, x1: number, bg: string) => plane.restyle(y, x0, x1, bg),
-          w: W,
-          h: H,
+          // GETTERS, not copied values. The handle is created ONCE per
+          // statsRev and the plugin keeps it for the session's life, so `w: W`
+          // froze the size the region registered at: after the first resize
+          // every plugin that laid out against `p.w` kept wrapping to the old
+          // width — the documented "live screen size" was live until the window
+          // moved, and a widened terminal left the panel stranded mid-screen.
+          get w() { return W; },
+          get h() { return H; },
           wrap: (text: string, width: number, opts?: TuiWrapOptions) => wrapText(text, width, opts),
         };
         try {
