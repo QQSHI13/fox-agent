@@ -12,9 +12,88 @@
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { ok, fail } from "../core/tool.ts";
 import type { FoxPlugin } from "./types.ts";
 
 export type { FoxPlugin } from "./types.ts";
+
+/**
+ * The runtime half of the `fox-agent/sdk` surface, handed to a plugin through a
+ * global so it can import the SDK without a `node_modules` beside it.
+ *
+ * Type-only imports (`import type { FoxPlugin }`) erase at compile time and need
+ * nothing. This exists for the VALUE imports — `ok`, `fail`, `createAgent` —
+ * which a plugin genuinely calls.
+ */
+function sdkRuntime(): Record<string, unknown> {
+  return { ok, fail };
+}
+
+const SDK_SHIM = `
+const s = globalThis.__FOX_SDK__;
+if (!s) throw new Error("fox-agent: the SDK runtime is not installed (plugin loaded outside the host)");
+export const ok = s.ok;
+export const fail = s.fail;
+export const createAgent = s.createAgent;
+`;
+
+/**
+ * Import a plugin module, resolving `fox-agent/sdk` even where it is not
+ * installed.
+ *
+ * A plugin is one file the user dropped somewhere — `~/my-fox-plugin.ts` — with
+ * no `node_modules` beside it. A bare `import("…")` therefore resolves nothing
+ * for `fox-agent/sdk`, so a plugin that VALUE-imports the SDK (`ok`/`fail`)
+ * failed outright with "Cannot find package 'fox-agent'". Worse, it did so only
+ * in the shipped binary: in a repo checkout the path sometimes resolved off the
+ * repo's own `node_modules`, so the failure was invisible during development
+ * and total after `fox install`. That is the one gap that stopped "add a feature
+ * by adding a plugin" from being true for the packaged product.
+ *
+ * So: try the plain import first (a plugin inside a project that DOES have
+ * fox-agent installed keeps working exactly as before), and on a resolution
+ * failure re-bundle the single file with the SDK aliased to a shim that reads a
+ * global. `Bun.build` is available in the compiled binary — verified — so this
+ * needs no toolchain on the user's machine.
+ */
+async function importPlugin(href: string, fresh: boolean, raw: string): Promise<unknown> {
+  const spec = fresh ? `${href}?foxreload=${Date.now()}` : href;
+  try {
+    return await import(spec);
+  } catch (e) {
+    // Only a module RESOLUTION failure is retried. A plugin that throws on its
+    // own line 3 is a real bug in the plugin and must report as one.
+    if (!/Cannot find (package|module) 'fox-agent/i.test((e as Error).message)) throw e;
+    (globalThis as { __FOX_SDK__?: unknown }).__FOX_SDK__ = sdkRuntime();
+    const dir = mkdtempSync(join(tmpdir(), "fox-plugin-"));
+    try {
+      const res = await Bun.build({
+        entrypoints: [decodeURIComponent(new URL(href).pathname)],
+        target: "bun",
+        format: "esm",
+        plugins: [{
+          name: "fox-sdk-shim",
+          setup(build) {
+            build.onResolve({ filter: /^fox-agent(\/sdk)?$/ }, () => ({ path: "fox-sdk", namespace: "foxsdk" }));
+            build.onLoad({ filter: /.*/, namespace: "foxsdk" }, () => ({ contents: SDK_SHIM, loader: "js" }));
+          },
+        }],
+      });
+      if (!res.success) throw new Error(res.logs.map(String).join("; ") || "could not bundle");
+      const out = join(dir, "plugin.mjs");
+      await Bun.write(out, await res.outputs[0]!.text());
+      // imported, not copied into memory: the module keeps its own state, and
+      // the temp dir is removed once the import has been evaluated
+      return await import(`${pathToFileURL(out).href}${fresh ? `?foxreload=${Date.now()}` : ""}`);
+    } catch (inner) {
+      throw new Error(`${(e as Error).message} (and the SDK-shim fallback failed: ${(inner as Error).message}) for '${raw}'`);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+}
 
 let cache: { key: string; plugins: FoxPlugin[]; warnings: string[]; files: { path: string; name: string | null; disabled: boolean }[] } | null = null;
 
@@ -126,7 +205,7 @@ export async function loadPlugins(
       // specifier but a Windows one does not, and the URL form is correct on both.
       // A /reload import gets a cache-busting query so edited plugin code lands.
       const href = pathToFileURL(path).href;
-      mod = await import(fresh ? `${href}?foxreload=${Date.now()}` : href);
+      mod = await importPlugin(href, fresh, raw);
     } catch (e) {
       const w = `plugin '${raw}' failed to load: ${(e as Error).message.slice(0, 200)}`;
       warnings.push(w);

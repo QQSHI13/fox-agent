@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import type { AgentEvent } from "../src/core/events.ts";
 import type { ChatFn, ProviderConfig } from "../src/providers/types.ts";
 import type { TurnOptions } from "../src/loop/turn.ts";
@@ -20,6 +21,7 @@ import { APPENDED_SYSTEM, AFTER_TOOL_PREFIX, PING_OUTPUT } from "./fixtures/plug
 const FIX_OK = join(import.meta.dir, "fixtures", "plugin-ok.ts");
 const FIX_THROWS = join(import.meta.dir, "fixtures", "plugin-throws.ts");
 const FIX_INVALID = join(import.meta.dir, "fixtures", "plugin-invalid.ts");
+const FIX_SDK_IMPORT = join(import.meta.dir, "fixtures", "plugin-sdk-import.ts");
 
 let home: string;
 let work: string;
@@ -179,6 +181,45 @@ describe("plugin loader", () => {
     const { warnings } = await loadPlugins(["~/definitely-not-here.ts"]);
     expect(warnings).toHaveLength(1);
     expect(warnings[0]).not.toContain("/~/");
+  });
+
+  test("a plugin that value-imports fox-agent/sdk loads even with no node_modules beside it", async () => {
+    // The shipped binary ships no `node_modules`, and a plugin is one file a
+    // user dropped in their home directory. `import { ok } from "fox-agent/sdk"`
+    // therefore resolved nothing — and it failed ONLY in the packaged product,
+    // because in a repo checkout the bare specifier resolves off the repo's OWN
+    // package self-reference (package.json `exports`), so a test that loaded the
+    // fixture in place would pass without ever touching the fallback. Hence the
+    // copy out to `home` (a tmpdir): that is the only arrangement that
+    // reproduces what a user actually has.
+    //
+    // Asserted on the tool actually RUNNING, not just on the module importing:
+    // a shim that resolves but exports undefined would pass a load-only check
+    // and then throw inside the first turn.
+    const { loadPlugins } = await import("../src/plugins/load.ts");
+    // the fixture's type-import path is repo-relative, so rewrite it to the
+    // absolute source location as it is copied out
+    const source = readFileSync(FIX_SDK_IMPORT, "utf8").replace(
+      "../../src/plugins/types.ts",
+      join(import.meta.dir, "..", "src", "plugins", "types.ts"),
+    );
+    const isolated = join(home, "isolated-plugin.ts");
+    writeFileSync(isolated, source);
+    // prove the arrangement really is unresolvable first — otherwise the test
+    // silently reverts to passing through the self-reference path
+    await expect(import(pathToFileURL(isolated).href)).rejects.toThrow(/fox-agent/);
+
+    const { plugins, warnings } = await loadPlugins([isolated]);
+    expect(warnings).toEqual([]);
+    expect(plugins).toHaveLength(1);
+    const tool = plugins[0].tools?.[0];
+    expect(tool?.def.name).toBe("sdk_ping");
+    const res = await tool!.run({}, {} as never);
+    // a tool may legally return a bare string; narrow so the assertion is about
+    // the SDK's ok() shape rather than an unchecked cast
+    if (typeof res === "string") throw new Error(`expected a ToolResult, got ${res}`);
+    expect(res.ok).toBe(true);
+    expect(res.output).toBe("pong via sdk");
   });
 });
 
