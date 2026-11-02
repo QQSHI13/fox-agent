@@ -153,16 +153,30 @@ describe("turn manager", () => {
   });
 
   test("a tool that returns uncapped output is not silently tail-cut by the harness", async () => {
-    // exec's `full: true` sets `uncapped`: the tool already applied the
-    // caller's budget, and the turn loop's own tail cap used to re-apply the
-    // very cap full:true had just lifted (the whole output arrived tail-cut,
-    // with no marker). This pins both halves of the contract.
+    // exec's `full: true` and read's explicit limit set `uncapped`: the tool
+    // already applied the caller's budget, so presenting the result truncated
+    // would silently undo the exact thing the caller asked for.
+    //
+    // This test used to assert against the turn loop's OWN tail-cap
+    // (toolOutputCap * 2). Commit 692920c deleted that cap — discarding before
+    // the store made results non-revertible — so the old expectations described
+    // code that no longer exists and the test failed on every run. Rewritten to
+    // pin the contract as it now stands, which is the one that matters:
+    //   stored:   always whole, capped or not (storage is append-only)
+    //   presented: truncated via a revertible op UNLESS the tool said uncapped
+    // Without the second half this test would pass even if `uncapped` were
+    // ignored, because nothing else would differ between the two runs.
     const t = await setup();
     const { defaultConfig } = await import("../src/core/config.ts");
-    const harnessCap = 30_000 * 2; // turn loop tail-cap = toolOutputCap (default 30k) * 2
-    const huge = "Z".repeat(harnessCap + 25_000);
-    // presentation truncation off (0), so only the turn tail-cap is in play
-    const config = defaultConfig({ model: "test-model", baseUrl: "http://localhost:9", apiKey: "test", toolPresentationCap: 0 });
+    const presentationCap = 4_000; // resolvePresentationCap = max(4k, 2k)
+    const huge = "Z".repeat(10_000); // comfortably over the cap
+    const config = defaultConfig({
+      model: "test-model",
+      baseUrl: "http://localhost:9",
+      apiKey: "test",
+      toolOutputCap: 2_000,
+      toolPresentationCap: presentationCap,
+    });
 
     const run = async (uncapped: boolean) => {
       const s = t.createSession("/w", "m1");
@@ -179,14 +193,34 @@ describe("turn manager", () => {
         [{ type: "tool_call", call: { id: "t1", name: "bigecho", arguments: "{}" } }, { type: "done", reason: "tool_calls" }],
         textDone("done"),
       ]);
-      await collect(
+      const events = await collect(
         t.runTurnCore(s.id, cfg(), "go", undefined, { chat: mock.fn as any, registryOverride: registry, quiet: true, config }),
       );
-      return t.allMessages(s.id).find((m: any) => m.role === "tool")!;
+      const stored = t.allMessages(s.id).find((m: any) => m.role === "tool")!;
+      const { projectView, dropViewCache } = await import("../src/context/view.ts");
+      dropViewCache(s.id);
+      const view = projectView(s.id).find((n) => n.msg.seq === stored.seq)!;
+      const end: any = events.find((e) => e.type === "tool_end");
+      return { stored, view, end };
     };
 
-    expect((await run(false)).content).toBe(huge.slice(-harnessCap)); // capped, silently
-    expect((await run(true)).content).toBe(huge); // uncapped: whole, as asked
+    const capped = await run(false);
+    // storage is append-only: every byte lands, whatever the presentation does
+    expect(capped.stored.content).toBe(huge);
+    // the view the model reads is the excerpt, and it says so
+    expect(capped.view.content.length).toBeLessThan(huge.length);
+    expect(capped.view.content).toContain("chars truncated");
+    expect(capped.view.replaceVersion).toBeDefined();
+    // tool_end carries the same text the next step reads — the live UI must not
+    // show a body the model never saw
+    expect(capped.end.output.length).toBeLessThan(huge.length);
+
+    const uncapped = await run(true);
+    expect(uncapped.stored.content).toBe(huge);
+    // the whole point: `uncapped` suppresses the presentation op entirely
+    expect(uncapped.view.content).toBe(huge);
+    expect(uncapped.view.replaceVersion).toBeUndefined();
+    expect(uncapped.end.output).toBe(huge);
   });
 
   test("malformed JSON args produce an error result, not silent {}", async () => {

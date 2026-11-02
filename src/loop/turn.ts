@@ -335,7 +335,13 @@ async function execToolCall(call: ToolCall, tools: Map<string, Tool>, tctx: Tool
     // after appendMessage) is a revertible view op — ctx restore brings back the
     // full text. No tail-cap here: discarding before the store would make it
     // non-revertible, which is the bug this refactor removes.
-    return { ok: result.ok, output: result.output, media: result.media };
+    //
+    // `uncapped` MUST ride along. Rebuilding the result from a fixed set of
+    // fields silently dropped it, so the turn loop never saw the flag and
+    // presented exec `full: true` / read's explicit limit truncated — the exact
+    // behaviour those flags exist to prevent, and invisible because the stored
+    // row was still whole.
+    return { ok: result.ok, output: result.output, media: result.media, uncapped: result.uncapped };
   } catch (e) {
     return { ok: false, output: `error: ${(e as Error).message}` };
   }
