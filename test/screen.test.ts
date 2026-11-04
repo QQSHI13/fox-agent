@@ -461,33 +461,45 @@ describe("damage tracking: composite rebuilds only touched rows", () => {
   });
 });
 
-describe("PushCompositor.pushFrame: onLanded must not re-enter its own derive", () => {
-  // Regression: app.ts wired pushFrame's `onLanded` to markDirty(), which
-  // re-enters pushTranscriptFrame(). pushFrame then saw its own deriveRunning,
-  // set deriveQueued, and the do/while never drained — a permanent async spin
-  // at setTimeout(0) cadence on a completely IDLE session (measured ~725 full
-  // Frame derives/sec). That was the standing idle CPU load and the RSS
-  // sawtooth, since every pass allocates a Frame's rows and segs.
-  test("a landing callback that schedules another push still terminates", async () => {
+describe("PushCompositor.pushFrame: the landing callback contract", () => {
+  // The idle render spin (~725 full Frame derives/sec on a TOTALLY IDLE
+  // session, plus a sawtooth RSS from a Frame allocated every pass) was a CALL
+  // SITE bug: app.ts wired `onLanded` to markDirty(), and markDirty pushes the
+  // transcript frame again — so every landed frame scheduled another derive,
+  // and pushFrame's `do/while` could never drain.
+  //
+  // The fix is that the call site now passes requestPaint (flag dirty + arm the
+  // flush) instead of markDirty (re-push every region). No guard lives in the
+  // compositor: `deriveQueued = true` is CORRECT for a genuine concurrent
+  // request — a stream delta landing during the await must not be dropped — so
+  // the compositor cannot tell "a real change" from "the callback re-entered".
+  //
+  // These two tests pin that contract from both sides.
+  test("a paint-only landing callback derives exactly once", async () => {
     const { PushCompositor } = await import("../src/tui/screen.ts");
     const comp = new PushCompositor({ write: () => {}, flush: () => {} } as any);
     let derives = 0;
-    // stands in for markDirty(): it pushes the transcript frame again
-    const onLanded = () => {
-      void comp.pushFrame(
-        () => ++derives,
-        () => {},
-        onLanded,
-      );
-    };
-    void comp.pushFrame(
-      () => ++derives,
-      () => {},
-      onLanded,
-    );
+    let painted = 0;
+    // stands in for requestPaint: flags what needs showing, pushes nothing
+    const onLanded = () => { painted++; };
+    void comp.pushFrame(() => ++derives, () => {}, onLanded);
     await new Promise((r) => setTimeout(r, 50));
-    // A self-feeding onLanded would be in the hundreds by now; the derive must
-    // stop once the queued re-push has been consumed.
-    expect(derives).toBeLessThan(10);
+    expect(derives).toBe(1);
+    expect(painted).toBe(1);
+  });
+
+  test("a landing callback that re-enters the derive does NOT settle (why the call site matters)", async () => {
+    // Characterization of the HAZARD, not desired behaviour: this is what
+    // markDirty() at the call site did. It is asserted so the failure mode stays
+    // documented and visible — if someone re-wires onLanded to markDirty, this
+    // test passing is the reminder that the compositor will happily spin.
+    const { PushCompositor } = await import("../src/tui/screen.ts");
+    const comp = new PushCompositor({ write: () => {}, flush: () => {} } as any);
+    let derives = 0;
+    const onLanded = () => { void comp.pushFrame(() => ++derives, () => {}, onLanded); };
+    void comp.pushFrame(() => ++derives, () => {}, onLanded);
+    await new Promise((r) => setTimeout(r, 50));
+    // tens of passes in 50ms: unbounded, still climbing
+    expect(derives).toBeGreaterThan(5);
   });
 });

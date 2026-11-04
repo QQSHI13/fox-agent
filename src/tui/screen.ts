@@ -582,24 +582,14 @@ export class PushCompositor extends Screen {
   makeRegionPush(paint: () => void): () => void {
     let running = false;
     let queued = false;
-    let inPaint = false;
     const run = async (): Promise<void> => {
-      // Same guard as pushFrame.inLanding, same bug class: `paint()` is region
-      // code and any markDirty() it makes re-enters here, setting `queued` and
-      // spinning the do/while forever. A repaint that is already in flight
-      // cannot be improved by a request it made about itself mid-paint.
-      if (running) { if (!inPaint) queued = true; return; }
+      if (running) { queued = true; return; }
       running = true;
       try {
         do {
           queued = false;
           await this.breathe();
-          inPaint = true;
-          try {
-            paint();
-          } finally {
-            inPaint = false;
-          }
+          paint();
         } while (queued);
       } finally {
         running = false;
@@ -619,29 +609,9 @@ export class PushCompositor extends Screen {
    */
   private deriveRunning = false;
   private deriveQueued = false;
-  /**
-   * True while a landing callback runs.
-   *
-   * `onLanded` is called from INSIDE the derive loop, so anything it does that
-   * schedules another push would set `deriveQueued` and the `do/while` would
-   * never drain. That is not hypothetical: app.ts wired `onLanded` to its
-   * `markDirty()`, which pushes the transcript frame again — a permanent async
-   * spin at `breathe()` cadence on a completely IDLE session (measured ~725
-   * full Frame derives per second, and each pass allocates a Frame's rows and
-   * segs, which was both the standing CPU load and the RSS sawtooth).
-   *
-   * The invariant: a landing callback reports that a frame LANDED. It has
-   * nothing left to derive, so a schedule arriving from inside it is ignored
-   * rather than queued. Fixing only the one call site would leave the next
-   * author free to reintroduce it; the guard lives here so they cannot.
-   */
-  private inLanding = false;
 
   async pushFrame<T>(derive: () => T, stamp: (fr: T) => void, onLanded: () => void): Promise<void> {
-    if (this.deriveRunning) {
-      if (!this.inLanding) this.deriveQueued = true; // see inLanding: a landed frame asks for no more
-      return;
-    }
+    if (this.deriveRunning) { this.deriveQueued = true; return; }
     this.deriveRunning = true;
     try {
       do {
@@ -649,12 +619,7 @@ export class PushCompositor extends Screen {
         await this.breathe(); // let any pending frame/keystroke run first
         const fr = derive();
         stamp(fr);
-        this.inLanding = true;
-        try {
-          onLanded();
-        } finally {
-          this.inLanding = false;
-        }
+        onLanded();
       } while (this.deriveQueued);
     } finally {
       this.deriveRunning = false;
