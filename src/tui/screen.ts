@@ -522,7 +522,31 @@ export interface Geometry {
   queueH: number;
 }
 
-export type GeometryListener = (changed: Partial<Geometry>) => void;
+/**
+ * Geometry fields that describe WHERE THE REGIONS SIT, as opposed to what they
+ * contain.
+ *
+ * The distinction is the difference between one region repaint per streamed
+ * token and five. `total` and `scrollTop` change on every delta (the transcript
+ * grew by a row; the follow-scroll moved), but nothing else on screen moves
+ * when they do — the dock is the same height, the floats are anchored the same
+ * distance above it. Treating them as a layout change meant every token fired
+ * `onSplitMoved`, which re-pushed dock, floats AND overlay on top of the
+ * transcript push that had just happened. Only these fields can move another
+ * region, so only these notify.
+ */
+const LAYOUT_FIELDS: ReadonlySet<keyof Geometry> = new Set<keyof Geometry>([
+  "W",
+  "H",
+  "inputRows",
+  "shownCount",
+  "inputTop",
+  "firstShown",
+  "vh",
+  "queueH",
+]);
+
+export type GeometryListener = () => void;
 
 export class PushCompositor extends Screen {
   geom: Geometry = {
@@ -542,18 +566,26 @@ export class PushCompositor extends Screen {
     super(term);
   }
 
-  /** Merge a geometry patch and fire the split hook if any watched field moved. */
+  /**
+   * Merge a geometry patch; fire the split hook only if a LAYOUT field moved.
+   *
+   * The patch is merged wholesale — every field stays readable through
+   * `geom` — but notification is restricted to LAYOUT_FIELDS. A content field
+   * (`total`, `scrollTop`, `stick`) is the transcript's own business: it
+   * describes what the transcript shows, not where anything sits. Firing on
+   * those re-pushed three unrelated regions per streamed token.
+   */
   pushGeometry(patch: Partial<Geometry>): void {
-    const changed: Partial<Geometry> = {};
+    let layoutMoved = false;
     for (const k of Object.keys(patch) as (keyof Geometry)[]) {
-      if (this.geom[k] !== patch[k]) {
-        (changed as Record<string, unknown>)[k] = patch[k] as unknown;
-        (this.geom as unknown as Record<string, unknown>)[k] = patch[k] as unknown;
-      }
+      const v = patch[k];
+      if (this.geom[k] === v) continue;
+      (this.geom as unknown as Record<string, unknown>)[k] = v as unknown;
+      if (LAYOUT_FIELDS.has(k)) layoutMoved = true;
     }
-    if (Object.keys(changed).length && this.onSplitMoved) {
+    if (layoutMoved && this.onSplitMoved) {
       try {
-        this.onSplitMoved(changed);
+        this.onSplitMoved();
       } catch {
         /* a throwing hook must not break the frame that published the split */
       }
@@ -624,12 +656,6 @@ export class PushCompositor extends Screen {
     } finally {
       this.deriveRunning = false;
     }
-  }
-
-  /** True while a transcript derive is in flight (paintRegions reads this to
-   *  avoid double-scheduling a burst of sig changes). */
-  get transcriptDeriving(): boolean {
-    return this.deriveRunning;
   }
 }
 
