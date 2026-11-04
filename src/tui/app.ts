@@ -1251,6 +1251,13 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       // the real config is in.
       touch(CHROME_KEY);
       touch(CHROME_KEY - 1);
+      // statsRev, not just statsV: the status-bar SLOT LIST (`statusBar`) and
+      // the stats text are both cached against statsRev. Bumping only the signal
+      // repainted the bar but left statusBarSlots() returning the list cached at
+      // boot — from the config as it was BEFORE this load, which is often no
+      // config at all. Setting `statusBar = "cwd probe"` had no effect on a
+      // running session for exactly this reason.
+      statsRev++;
       bumpItems();
       bumpStats();
     } catch (e) {
