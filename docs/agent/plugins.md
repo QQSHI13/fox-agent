@@ -44,19 +44,57 @@ Plugin slash commands and status segments re-resolve when plugins reload (`/relo
 
 ## TUI regions
 
-A plugin can own a band of the screen: `regions: { name: { z, rect, paint } }`. The plane is clip-rect bounded, so a buggy painter cannot scribble outside `rect`, and `paint` returning `false` hides the region for that frame.
+A plugin can own a band of the screen: `regions: { name: { z, rect, paint } }`. The plane is clip-rect bounded, so a buggy painter cannot scribble outside `rect`.
+
+**`paint` is pull-based: it is a pure function of the state it reads.** It runs once at registration and again whenever a `regionSignal` it read during its previous run changed. The plane is cleared before every call, so draw the region's whole contents, not a delta.
+
+Create your state with `regionSignal` in **module scope** and read it inside `paint`. Reading subscribes; there is no dependency list to keep in sync, and no way to forget one.
+
+```ts
+import { regionSignal } from "fox-agent/sdk";
+
+// module scope: a signal created inside paint() would be a fresh one each run
+const jobs = regionSignal(0);
+
+const plugin = {
+  name: "mine",
+  regions: {
+    jobs: {
+      z: 60,
+      rect: [0, 2, 40, 6],
+      paint(p) {
+        p.text(1, 0, `jobs: ${jobs()}`, S.text); // reading jobs() subscribes
+        const lines = p.wrap(summary, p.w - 2, { reserve: 2, keepLeadSpaces: true });
+        lines.forEach((line, i) => p.text(2, 1 + i, line, S.text));
+      },
+    },
+  },
+};
+
+// from a tool, a hook, a timer -- any of them repaint the region next frame
+jobs(jobs() + 1);
+```
+
+`paint` returns nothing; returning `false` no longer hides a region — just skip drawing. A throw is caught and warned once, so a broken painter cannot take down the screen.
 
 `paint` receives a `TuiRegionPlane` with the primitives the built-in regions use — `text`, `fillRow`, `restyle`, `w`/`h`. It also has **`wrap`**, which is the TUI's own wrapper: use it instead of hand-rolling one, or the panel breaks lines one column off from the transcript and the dock.
 
-```ts
-paint(p) {
-  const lines = p.wrap(this.summary, p.w - 2, { reserve: 2, keepLeadSpaces: true });
-  lines.forEach((line, i) => p.text(2, 1 + i, line, S.text));
-  return true;
-}
-```
+Reading `p.w` or `p.h` subscribes the region to resizes, so a plugin never has to poll for them.
 
 `wrap(text, width, opts)` options: `reserve` (columns to leave free on the right), `keepLeadSpaces` (preserve indentation), `lossless` (never drop a space that does not fit) and `exactWidth` (use the final column). Wrapping is the same implementation the transcript, the input box and the question wizard use, so a line that fits in one fits in all of them.
+
+### Migrating from the push model
+
+The previous contract handed `paint` a persistent handle to write into at any time, and called it exactly once. If your region stopped updating after upgrading, it was relying on that:
+
+| before | now |
+|---|---|
+| `paint` ran once; you wrote cells later | `paint` runs on every change to what it reads |
+| you kept the handle and pushed from a timer | write a `regionSignal`; the region repaints |
+| `paint` returned `false` to hide | just don't draw |
+
+A region that owns no signals still works: it paints once and stays put.
+
 
 ## Why hooks are patch-based, not array-rewriting
 

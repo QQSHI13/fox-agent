@@ -284,11 +284,11 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     overlay: screen.createPlane("overlay", 30),
     status: screen.createPlane("status", 40),
   };
-  // plugin regions: resolved per statsRev (same live-swap cadence as
-  // statusBarSlots — /reload bumps it), each in a plane clipped to the rect
-  // the region declares, so a plugin physically cannot paint outside its
-  // region. Dropped regions just stop being created; their plane is removed
-  // and the screen underneath shows through at the next composite.
+  // Plugin regions: one plane per region, clipped to the rect the region
+  // declares, so a plugin physically cannot paint outside it. Resolved per
+  // statsRev (the same live-swap cadence as statusBarSlots — /reload bumps
+  // it), so a plugin added or removed at runtime takes effect without a
+  // restart.
   type PluginRegion = {
     key: string;
     z: number;
@@ -299,44 +299,88 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   let pluginRegionsRev = -1;
   let pluginRegions: PluginRegion[] = [];
   const regionWarned = new Set<string>();
+  /** one effect per plugin region, disposed when the region goes away */
+  const pluginRegionEffects = new Map<string, Disposable>();
+
+  /**
+   * Materialize every plugin region as a reactive effect.
+   *
+   * PULL contract, the same one the five built-in regions follow: `paint` is a
+   * pure function of the signals it reads, its plane is CLEARED before the
+   * call, and it re-runs only when something it actually read changed. Reading
+   * a plugin's `regionSignal` inside `paint` is the subscription; nothing is
+   * declared.
+   *
+   * `p.w`/`p.h` are dependencies too — they read the size signal — so a resize
+   * repaints every plugin region with no polling on the plugin's side.
+   *
+   * Called from the frame tick (cheap: it early-outs unless statsRev moved), so
+   * a reload can never leave a region's plane un-created the way the old
+   * markDirty-driven call could when its call site was removed.
+   */
   function resolvePluginRegions(): PluginRegion[] {
     if (pluginRegionsRev === statsRev) return pluginRegions;
     pluginRegionsRev = statsRev;
+
+    const wanted = new Set<string>();
+    for (const p of activePlugins()) for (const name of Object.keys(p.regions ?? {})) wanted.add(`${p.name}/${name}`);
+    // dispose the effects of regions that vanished this reload, before any
+    // plane is dropped: a live effect on a dropped plane would paint into a
+    // buffer nothing composites
+    for (const [key, d] of pluginRegionEffects) {
+      if (!wanted.has(key)) {
+        d.dispose();
+        pluginRegionEffects.delete(key);
+      }
+    }
+
     pluginRegions = [];
     for (const p of activePlugins()) {
       for (const [name, r] of Object.entries(p.regions ?? {})) {
         const key = `${p.name}/${name}`;
         const plane = screen.createPlane(`plugin:${key}`, r.z);
         plane.clip = r.rect;
-        // PUSH contract: the plugin receives ONE persistent write handle at
-        // registration and pushes content whenever it wants — a callback, a
-        // timer, a stream. The frame loop NEVER calls plugin code; it only
-        // composites whatever the plugin last pushed into its plane. A slow or
-        // stuck plugin therefore shows stale content in its own region and
-        // cannot freeze the rest of the screen. `paint`/`sig` are gone.
+        pluginRegions.push({ key, z: r.z, rect: r.rect, plane, owner: p.name });
+
+        if (pluginRegionEffects.has(key)) continue; // already wired; keep its state
         const handle: TuiRegionPlane = {
           text: (x: number, y: number, str: string, style: Style) => void plane.text(x, y, str, screen.sgr(style)),
           fillRow: (y: number, x0: number, x1: number, style: Style) => plane.fillRow(y, x0, x1, screen.sgr(style)),
           restyle: (y: number, x0: number, x1: number, bg: string) => plane.restyle(y, x0, x1, bg),
-          // GETTERS, not copied values. The handle is created ONCE per
-          // statsRev and the plugin keeps it for the session's life, so `w: W`
-          // froze the size the region registered at: after the first resize
-          // every plugin that laid out against `p.w` kept wrapping to the old
-          // width — the documented "live screen size" was live until the window
-          // moved, and a widened terminal left the panel stranded mid-screen.
-          get w() { return W; },
-          get h() { return H; },
+          // GETTERS that READ the size signal: a plugin laying out against `p.w`
+          // both learns the live width and subscribes to resizes. Copying the
+          // number here would freeze the width at registration — the bug that
+          // left a widened terminal with a panel stranded mid-screen.
+          get w() { sizeV(); return W; },
+          get h() { sizeV(); return H; },
           wrap: (text: string, width: number, opts?: TuiWrapOptions) => wrapText(text, width, opts),
         };
-        try {
-          r.paint?.(handle);
-        } catch (e) {
-          if (!regionWarned.has(key)) {
-            regionWarned.add(key);
-            push("error", `region '${key}' (${p.name}) init threw: ${(e as Error)?.message ?? e}`, { ephemeral: true });
-          }
-        }
-        pluginRegions.push({ key, z: r.z, rect: r.rect, plane, owner: p.name });
+        pluginRegionEffects.set(
+          key,
+          effect(
+            () => {
+              // A plugin that lays out against the screen size must repaint on a
+              // resize even if it never touches p.w — `paint` receives fixed
+              // coordinates in plenty of regions. One dependency read here covers
+              // every plugin without asking each to remember.
+              sizeV();
+              if (!regionsLive) return; // wiring only, until the first frame
+              plane.clear(); // PULL: paint must draw the WHOLE region, not a delta
+              inPaint = true;
+              try {
+                r.paint?.(handle);
+              } catch (e) {
+                if (!regionWarned.has(key)) {
+                  regionWarned.add(key);
+                  push("error", `region '${key}' (${p.name}) paint threw: ${(e as Error)?.message ?? e}`, { ephemeral: true });
+                }
+              } finally {
+                inPaint = false;
+              }
+            },
+            { label: `plugin:${key}` },
+          ),
+        );
       }
     }
     // drop planes whose region vanished this reload
@@ -344,11 +388,6 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     for (const name of screen.planeNames()) if (name.startsWith("plugin:") && !live.has(name)) screen.dropPlane(name);
     return pluginRegions;
   }
-  // Plugin regions are fully push-based: resolvePluginRegions() hands each a
-  // persistent handle ONCE, and the plugin pushes content whenever it wants.
-  // No plugin code runs in the frame loop — composite() merges whatever each
-  // plugin last pushed into its plane. A slow/stuck plugin shows stale content
-  // in its own region and never blocks the other planes.
   let W = 0;
   let H = 0;
 
@@ -1972,6 +2011,8 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     // closed terminal.
     for (const d of regionDisposers) d.dispose();
     regionDisposers.length = 0;
+    for (const d of pluginRegionEffects.values()) d.dispose();
+    pluginRegionEffects.clear();
     try {
       if (state.sessionId) abortTurn(state.sessionId, "user interrupt");
     } catch {}
@@ -4686,6 +4727,16 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         dirty = false;
         if (PROF) profMark = performance.now();
         try {
+          // Materialize any plugin region added/removed by a reload BEFORE the
+          // flush, so a new region's effect exists in time to paint this frame.
+          //
+          // This is also the fix for a regression: the old call site lived in
+          // markDirty(), and deleting markDirty() left resolvePluginRegions()
+          // with no caller at all — every plugin region silently stopped being
+          // created. Nothing caught it because no test exercises a region. The
+          // call now sits on the frame path, which cannot be removed without
+          // taking the whole loop with it.
+          resolvePluginRegions();
           // Drain every effect the signals invalidated, BEFORE compositing. This
           // is the whole push model in one line: signals marked regions stale,
           // the effects restamp their planes here, and the single composite below
