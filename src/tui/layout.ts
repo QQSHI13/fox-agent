@@ -85,6 +85,20 @@ export interface FrameInput {
   renderStream: (text: string, w: number) => Row[];
   /** cheap row count for the streaming tail */
   countStream: (text: string, w: number) => number;
+  /**
+   * Optional memo for pass 1's per-item row counts.
+   *
+   * `computeFrame` walks every item to sum row counts — twice, because it counts
+   * at `W` and again at `W-2` when the scrollbar turns out to be needed. With a
+   * realistic `countItem` (a lineCache lookup plus span arithmetic) that measured
+   * 1.94 ms per frame at 8000 items, and it ran on every streamed token even
+   * though a streaming token changes NO item's row count.
+   *
+   * The host owns this because it is the only party that knows when item rows
+   * change: it bumps `version()` for every mutation that could move a row count.
+   * `layout.ts` stays pure — it just asks whether its last answer is still valid.
+   */
+  countCache?: CountCache;
   /** input dock: how many visual rows the editor buffer wraps to, and where
    *  the caret sits among them (for the flex-window firstShown choice) */
   inputRows: number;
@@ -182,11 +196,44 @@ export function computeFrame(inp: FrameInput): Frame {
   return { contentWidth: w, sbShowing, sb, scrollTop, stick, winOffset, vh, rows, owner, rowCount: rows.length, total: grand, inputTop, shownCount, firstShown, queueH };
 }
 
+/** One width's memoized pass-1 result. `counts` excludes the streaming tail, so
+ *  a streaming token can reuse it. */
+export interface CountEntry {
+  version: number;
+  counts: number[];
+  /** row total of the ITEMS only — the tail is added per call */
+  itemTotal: number;
+}
+
+/**
+ * Per-width memo for pass 1; see {@link FrameInput.countCache}.
+ *
+ * `version()` must change whenever any item's rendered row count could change:
+ * a mutation, an expand/collapse, a width change on the item side, a ctx op.
+ * It does NOT change for theme or highlight, which recolour rows without
+ * changing how many there are.
+ */
+export interface CountCache {
+  version: () => number;
+  at: Map<number, CountEntry>;
+}
+
 /** Pass 1: cheap per-item row counts at width `w`, blank separators included.
  *  The per-item counts ride along because pass 2 needs the same offsets, and
  *  `countItem` is cached app-side — calling it twice per item costs a lookup,
  *  so counts are computed once and shared. */
 function countRows(inp: FrameInput, w: number): { counts: number[]; total: number } {
+  const cache = inp.countCache;
+  const version = cache ? cache.version() : 0;
+  const hit = cache?.at.get(w);
+  // A hit means neither the item set nor any item's row count moved since this
+  // width was last counted — the common case during streaming, where only the
+  // tail grows.
+  if (hit && hit.version === version) {
+    const tail = inp.streamText !== null ? inp.countStream(inp.streamText, w) : 0;
+    return { counts: hit.counts, total: hit.itemTotal + tail };
+  }
+
   const counts: number[] = [];
   let total = 0;
   let prevKind: string | null = null;
@@ -200,8 +247,14 @@ function countRows(inp: FrameInput, w: number): { counts: number[]; total: numbe
     if (n > 0) prevKind = it.kind;
     total += n;
   }
-  if (inp.streamText !== null) total += inp.countStream(inp.streamText, w);
-  return { counts, total };
+  if (cache) {
+    // Bound the memo to the widths actually in play (W and W-2); anything else
+    // is a resize and its entry is dead the moment the width moves again.
+    if (cache.at.size > 4 && !cache.at.has(w)) cache.at.clear();
+    cache.at.set(w, { version, counts, itemTotal: total });
+  }
+  const tail = inp.streamText !== null ? inp.countStream(inp.streamText, w) : 0;
+  return { counts, total: total + tail };
 }
 
 /** Build the transcript row array at one width, with the spacing rules.

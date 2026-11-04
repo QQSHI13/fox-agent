@@ -445,8 +445,23 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   const displayBusy = () => busy || remoteBusy;
 
   const revs = new Map<number, number>();
+  /**
+   * Bumped whenever any item's rendered ROW COUNT could change, which is the
+   * validity key for layout's pass-1 memo (`FrameInput.countCache`).
+   *
+   * Both write paths feed it: `touch()` marks one item re-rendered, and
+   * `bumpItems()` marks the list reshaped. Everything that can move a row count
+   * goes through one of the two — an append, a reconcile, an expand/collapse, a
+   * ctx op, a session rebuild. Theme and highlight deliberately do NOT bump it:
+   * they recolour rows without changing how many there are, and that is exactly
+   * why a streamed token (which bumps neither) can reuse the counts.
+   */
+  let countRev = 0;
+  /** per-width pass-1 memo; see FrameInput.countCache */
+  const countCache = new Map<number, { version: number; counts: number[]; itemTotal: number }>();
   const touch = (k: number) => {
     revs.set(k, (revs.get(k) ?? 0) + 1);
+    countRev++;
   };
 
   // ---- reactive state ----
@@ -483,7 +498,10 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   const paintedV = signal(0, { label: "painted" });
 
   /** Mark the transcript's item list as changed. */
-  const bumpItems = () => itemsV(itemsV.peek() + 1);
+  const bumpItems = () => {
+    countRev++;
+    itemsV(itemsV.peek() + 1);
+  };
   /** Mark the streaming tail as changed. */
   const bumpStream = () => streamV(streamV.peek() + 1);
   /** Mark the input dock's content/caret as changed. */
@@ -566,6 +584,11 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
    * correct but coarse, so it should shrink over time, not grow.
    */
   const bumpAll = () => {
+    // Goes through countRev as well: `bumpAll` is the coarse path (resize,
+    // theme, forced repaint) and a caller that reaches it may well have changed
+    // an item's row count without touching the list — a theme switch does not,
+    // but a resize does, and the cache must not outlive either.
+    countRev++;
     itemsV(itemsV.peek() + 1);
     streamV(streamV.peek() + 1);
     scrollV(scrollV.peek() + 1);
@@ -3464,6 +3487,10 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       caretRow: caret.visRow,
       INPUT_MAX_ROWS,
       pendingCount: pendingLines().length,
+      // Pass 1's per-item row counts, reused across frames while no item's row
+      // count has moved. Streaming bumps neither `countRev` path, so a token
+      // costs the tail's count and nothing else — that is the whole point.
+      countCache: { version: () => countRev, at: countCache },
     };
   }
 

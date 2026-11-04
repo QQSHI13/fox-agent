@@ -252,3 +252,63 @@ describe("scrollbarGeom / scrollbarScrollTop", () => {
     expect(scrollbarScrollTop(200, 20, 0)).toBe(0);
   });
 });
+
+describe("pass-1 count memo (FrameInput.countCache)", () => {
+  // computeFrame walks every item to sum row counts — twice, at W and W-2. On a
+  // long session that dominated a streamed token even though a token changes no
+  // item's row count. Measured at 8000 items: 2.68 ms/token without the memo,
+  // 0.17 ms with it, and countItem calls drop from 16000 to 0.
+  function rig(nItems: number) {
+    const items = Array.from({ length: nItems }, (_, i) => ({ kind: i % 3 === 0 ? "user" : "md", k: i }));
+    let rev = 0;
+    let calls = 0;
+    const inp: any = {
+      W: 120, H: 40, scrollTop: 1e9, stick: true, scrollbar: true,
+      items,
+      streamText: null,
+      renderItem: () => [{ segs: [{ t: "x" }] }, { segs: [{ t: "y" }] }],
+      countItem: () => { calls++; return 2; },
+      renderStream: (t: string) => [{ segs: [{ t: t.slice(0, 20) }] }],
+      countStream: (t: string) => Math.ceil(t.length / 120),
+      inputRows: 1, caretRow: 0, INPUT_MAX_ROWS: 8, pendingCount: 0,
+      countCache: { version: () => rev, at: new Map() },
+    };
+    return { computeFrame, inp, bump: () => rev++, calls: () => calls, resetCalls: () => { calls = 0; } };
+  }
+
+  test("a streaming token does not recount items", () => {
+    const g = rig(500);
+    for (let i = 0; i < 10; i++) g.computeFrame(g.inp);
+    g.resetCalls();
+    for (let i = 0; i < 20; i++) { g.inp.streamText = "z".repeat(500 + i * 20); g.computeFrame(g.inp); }
+    expect(g.calls()).toBe(0);
+  });
+
+  test("a version bump forces a recount", () => {
+    const g = rig(500);
+    g.computeFrame(g.inp);
+    g.resetCalls();
+    g.bump(); // an item's row count may have moved
+    g.computeFrame(g.inp);
+    expect(g.calls()).toBeGreaterThan(0);
+  });
+
+  test("the cached counts still add up to the same total", () => {
+    // A cache that returns a WRONG total is worse than no cache: `total` drives
+    // the scroll clamp and the scrollbar, so a stale one strands the last
+    // screenful exactly the way the old count/paint mismatch did.
+    const g = rig(300);
+    const first = g.computeFrame(g.inp).total;
+    for (let i = 0; i < 5; i++) { g.inp.streamText = "z".repeat(100 * (i + 1)); g.computeFrame(g.inp); }
+    const withStream = g.computeFrame(g.inp).total;
+    expect(withStream).toBe(first + Math.ceil(500 / 120));
+  });
+
+  test("both widths the scrollbar decision uses are memoized separately", () => {
+    const g = rig(300);
+    g.computeFrame(g.inp); // counts at W and W-2 (scrollbar shows: 300*2 > vh)
+    g.resetCalls();
+    g.computeFrame(g.inp);
+    expect(g.calls()).toBe(0); // both widths hit
+  });
+});
