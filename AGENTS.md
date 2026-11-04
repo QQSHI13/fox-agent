@@ -33,7 +33,7 @@ These are load-bearing. Violating one breaks a consumer you can't see.
 - **Plugins load from the global config only.** Never read `plugins` from a project `fox-agent.toml`. This is a security boundary, not a preference.
 - **The system prompt is static.** It is built once from the tool registry + project instructions. Per-step runtime state (cwd, todos, context figure) rides a runtime tail appended to the last user message — never modify the system prompt mid-turn.
 - **Context is a view, not a copy.** Messages are an append-only log. `context/view.ts` projects it. Never mutate stored rows; emit ops (delete, replace, restore) instead.
-- **The TUI is push-based.** Regions own their planes and re-stamp them on change. The frame loop only composites and flushes — it never calls paint code, computes signatures, or decides what to redraw.
+- **The TUI is push-based, with dependencies declared by reads.** Each region is an `effect` over the version signals in `src/tui/reactive.ts`; a region repaints only when something it actually read changed. The frame loop drains pending effects, then does exactly ONE composite and one flush — it never calls paint code and never decides what to redraw. Do not reintroduce a “mark everything dirty” fan-out: if a region must repaint, make its paint function read the signal that changed.
 - **Version lives in `package.json`.** `src/core/version.ts` re-exports it; nothing else hardcodes a version string.
 
 ## Testing
