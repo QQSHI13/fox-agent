@@ -498,8 +498,11 @@ describe("PushCompositor.pushFrame: the landing callback contract", () => {
     let derives = 0;
     const onLanded = () => { void comp.pushFrame(() => ++derives, () => {}, onLanded); };
     void comp.pushFrame(() => ++derives, () => {}, onLanded);
-    await new Promise((r) => setTimeout(r, 50));
-    // tens of passes in 50ms: unbounded, still climbing
-    expect(derives).toBeGreaterThan(5);
+    await new Promise((r) => setTimeout(r, 30));
+    // More than one pass = the loop re-entered, which is the whole hazard: from
+    // there it never drains. Asserting a threshold like "> 5" made this test
+    // fail under load (each pass costs a macrotask, so a busy machine did
+    // fewer); "> 1" is the property itself rather than a proxy for it.
+    expect(derives).toBeGreaterThan(1);
   });
 });
