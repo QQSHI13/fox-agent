@@ -297,8 +297,6 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   };
   let pluginRegionsRev = -1;
   let pluginRegions: PluginRegion[] = [];
-  /** last painted signature per region key — the repaint gate */
-  const lastRegionSig = new Map<string, string>();
   const regionWarned = new Set<string>();
   function resolvePluginRegions(): PluginRegion[] {
     if (pluginRegionsRev === statsRev) return pluginRegions;
