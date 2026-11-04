@@ -487,109 +487,24 @@ export class Screen {
 }
 
 /**
- * Push-based compositor — extends the proven Screen grid/planes/flush with a
- * geometry coordinator and an async-push scheduling surface.
+ * Push-based compositor — extends the proven Screen grid/planes/flush with an
+ * async-push scheduling surface for the transcript.
  *
- * The frame loop never calls panel code. Each region's expensive derive runs in
- * an async task (scheduled on change) that stamps its plane when ready; the
+ * The frame loop never calls panel code. The transcript's expensive derive runs
+ * in an async task (scheduled on change) that stamps its plane when ready; the
  * frame loop only composite()+flush()es whatever the planes last held. A slow
- * region therefore confines its cost to itself — the spinner and every other
- * region keep painting from their last-pushed state while the slow one catches
- * up. That is the fix for "one slow plane freezes the whole screen".
+ * derive therefore confines its cost to itself — every other region keeps
+ * painting from its last-pushed state while it catches up.
  *
- * Geometry (who gets how many rows, where each region sits) is a shared,
- * cooperative record — one layout coordinator owns the split as pure integer
- * math (never a panel draw). When the dock's row count moves, the coordinator
- * recomputes the derived fields (inputTop, vh, queueH) and notifies the
- * regions that depend on them so they re-push at their new geometry. The
- * transcript and floats read their sizes from here; hit-tests read the
- * last-pushed Frame for row content and this record for layout.
+ * The geometry coordinator that used to live here (`Geometry`,
+ * `pushGeometry`, `onSplitMoved`, `LAYOUT_FIELDS`) is gone: regions now
+ * subscribe to state directly through src/tui/reactive.ts, so "who must repaint
+ * when the split moves" is answered by what each paint function reads rather
+ * than by a field list maintained by hand.
  */
-export interface Geometry {
-  W: number;
-  H: number;
-  /** dock-owned */
-  inputRows: number;
-  shownCount: number;
-  inputTop: number;
-  firstShown: number;
-  /** transcript-owned */
-  vh: number;
-  total: number;
-  scrollTop: number;
-  stick: boolean;
-  /** floats-owned */
-  queueH: number;
-}
-
-/**
- * Geometry fields that describe WHERE THE REGIONS SIT, as opposed to what they
- * contain.
- *
- * The distinction is the difference between one region repaint per streamed
- * token and five. `total` and `scrollTop` change on every delta (the transcript
- * grew by a row; the follow-scroll moved), but nothing else on screen moves
- * when they do — the dock is the same height, the floats are anchored the same
- * distance above it. Treating them as a layout change meant every token fired
- * `onSplitMoved`, which re-pushed dock, floats AND overlay on top of the
- * transcript push that had just happened. Only these fields can move another
- * region, so only these notify.
- */
-const LAYOUT_FIELDS: ReadonlySet<keyof Geometry> = new Set<keyof Geometry>([
-  "W",
-  "H",
-  "inputRows",
-  "shownCount",
-  "inputTop",
-  "firstShown",
-  "vh",
-  "queueH",
-]);
-
-export type GeometryListener = () => void;
-
 export class PushCompositor extends Screen {
-  geom: Geometry = {
-    W: 0, H: 0,
-    inputRows: 1, shownCount: 1, inputTop: 0, firstShown: 0,
-    vh: 0, total: 0, scrollTop: 0, stick: true,
-    queueH: 0,
-  };
-  /**
-   * Single hook the transcript frame calls when its published split changes.
-   * One consumer (floats/overlay/dock re-push in app.ts) — a one-slot callback
-   * replaces the general listener array, which only ever had one entry.
-   */
-  onSplitMoved: GeometryListener | null = null;
-
   constructor(term: Term) {
     super(term);
-  }
-
-  /**
-   * Merge a geometry patch; fire the split hook only if a LAYOUT field moved.
-   *
-   * The patch is merged wholesale — every field stays readable through
-   * `geom` — but notification is restricted to LAYOUT_FIELDS. A content field
-   * (`total`, `scrollTop`, `stick`) is the transcript's own business: it
-   * describes what the transcript shows, not where anything sits. Firing on
-   * those re-pushed three unrelated regions per streamed token.
-   */
-  pushGeometry(patch: Partial<Geometry>): void {
-    let layoutMoved = false;
-    for (const k of Object.keys(patch) as (keyof Geometry)[]) {
-      const v = patch[k];
-      if (this.geom[k] === v) continue;
-      (this.geom as unknown as Record<string, unknown>)[k] = v as unknown;
-      if (LAYOUT_FIELDS.has(k)) layoutMoved = true;
-    }
-    if (layoutMoved && this.onSplitMoved) {
-      try {
-        this.onSplitMoved();
-      } catch {
-        /* a throwing hook must not break the frame that published the split */
-      }
-    }
   }
 
   /**
