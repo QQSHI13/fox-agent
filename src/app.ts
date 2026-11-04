@@ -366,6 +366,30 @@ export async function run(parsed: Parsed): Promise<void> {
   // ---- TUI ----
   if (tuiMode) {
     try {
+      // Plugins must be active BEFORE the first frame, not after the first turn.
+      //
+      // `setActivePlugins` used to be called only from `buildRegistry` (which
+      // runs inside a turn), so `activePlugins()` was EMPTY while the TUI booted:
+      // every plugin region resolved to nothing and a plugin's `regions` were
+      // invisible until the user sent a message — and on a session where they
+      // never did, never at all. A plugin panel is exactly the thing a user
+      // expects to see before typing anything.
+      //
+      // Errors are swallowed on purpose: a broken plugin must not stop the TUI
+      // from opening. The loader already reports each failure as a warning, and
+      // the registry build during the first turn loads them again (it is cached
+      // on the path list, so this costs one import).
+      try {
+        const { loadPlugins, setActivePlugins } = await import("./plugins/load.ts");
+        const { bundledPlugins, bundledDisabled } = await import("./plugins/bundled.ts");
+        const cfg = config ?? loadConfig(configOverrides);
+        const disabled = cfg.disabledPlugins ?? [];
+        const loaded = await loadPlugins(cfg.plugins ?? [], undefined, disabled);
+        setActivePlugins([...bundledPlugins().filter((p) => !bundledDisabled(p.name, disabled)), ...loaded.plugins]);
+      } catch {
+        /* plugin load failed — the TUI still opens, plugins just contribute nothing */
+      }
+
       // lazy: headless/-p/--acp runs should not pay for the renderer's modules
       const { startTui } = await import("./tui/app.ts");
       await startTui(state, () => {
