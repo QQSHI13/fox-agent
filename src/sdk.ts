@@ -30,6 +30,21 @@ export { ok, fail } from "./core/tool.ts";
 export type { UiBridge, UiStep } from "./core/ui.ts";
 export type { ChatFn, ChatMessage, ProviderConfig, StreamEvent, ToolDef } from "./providers/types.ts";
 
+/**
+ * State a plugin region can depend on.
+ *
+ * This is the ONLY reactive primitive a plugin gets. `signal` creates readable,
+ * writable state; reading it inside `regions.*.paint` subscribes the region to
+ * it, and writing it repaints that region on the next frame.
+ *
+ * `effect` is deliberately not exported. A plugin-owned effect would run on its
+ * own schedule, outside the TUI's single flush, and could repaint the terminal
+ * mid-composite — which is exactly the invariant the pull model exists to hold.
+ * A region's `paint` IS its effect: the host owns when it runs.
+ */
+export { signal as regionSignal } from "./tui/reactive.ts";
+export type { Signal as RegionSignal } from "./tui/reactive.ts";
+
 export interface AgentRunResult {
   text: string;
   reason: string;

@@ -162,14 +162,20 @@ export interface BeforeToolPatch {
  * region can never paint outside `rect`, however buggy its writer, because
  * the clamp lives in the plane's write primitives.
  *
- * PUSH contract: `paint` is called ONCE at registration with a persistent
- * `TuiRegionPlane` handle. The plugin keeps the handle and writes content
- * whenever it wants — from a callback, a timer, a stream — then calls nothing:
- * the frame loop composites whatever the region last pushed, on its own
- * schedule. The frame NEVER calls plugin code, so a slow or stuck plugin shows
- * stale content in its own region and cannot freeze the rest of the screen.
- * There is no per-frame `sig` probe and no return value; the plugin owns its
- * own update timing entirely.
+ * PULL contract: `paint` is a pure function of the signals it reads. It runs
+ * once at registration and again whenever a signal it read during its previous
+ * run changed; the plane is cleared before every call, so `paint` must draw a
+ * complete picture of the region rather than a delta. Dependencies are never
+ * declared — reading a signal IS subscribing to it — so a region cannot go
+ * stale because someone forgot to list a dependency.
+ *
+ * Create state with `regionSignal` in MODULE scope, not inside `paint`: a signal
+ * created during a run would be a fresh one every frame, resetting to its
+ * initial value and subscribing to nothing.
+ *
+ * A slow or stuck plugin still cannot freeze the screen: its effect runs inside
+ * the flush with every other region, and a throw from `paint` is caught and
+ * warned about once per region.
  */
 export interface TuiRegion {
   /** stack order among regions; plugin regions should stay >= 50 (above all built-ins) */
@@ -182,11 +188,13 @@ export interface TuiRegion {
    */
   rect: [number, number, number, number];
   /**
-   * Called once at registration. Store the `TuiRegionPlane` handle and push
-   * content through it (`p.text`, `p.fillRow`, `p.restyle`) whenever the
-   * region's data changes. Throwing is contained: the region is warned once.
-   * `p.w`/`p.h` are the live screen size; `p.wrap` breaks lines exactly where
-   * the transcript and input box do.
+   * Draw the region. Called at registration and on every change to a signal it
+   * read last time. Throwing is contained: the region is warned once and keeps
+   * the rest of the screen alive.
+   *
+   * `p.w`/`p.h` are the live screen size and are also dependencies — a resize
+   * repaints every region automatically, so a plugin never has to poll for it.
+   * `p.wrap` breaks lines exactly where the transcript and input box do.
    */
   paint: (p: TuiRegionPlane) => void;
 }
@@ -200,7 +208,11 @@ export interface TuiRegionPlane {
   fillRow(y: number, x0: number, x1: number, style: Style): void;
   /** highlight existing content with a background (selection-style) */
   restyle(y: number, x0: number, x1: number, bg: string): void;
-  /** screen width/height this frame */
+  /**
+   * Screen width/height. Reading either SUBSCRIBES the region to resizes, so a
+   * plugin that lays out against them repaints when the terminal moves and
+   * never has to poll for it.
+   */
   readonly w: number;
   readonly h: number;
   /**

@@ -15,6 +15,7 @@ import { pathToFileURL } from "node:url";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { ok, fail } from "../core/tool.ts";
+import { signal } from "../tui/reactive.ts";
 import type { FoxPlugin } from "./types.ts";
 
 export type { FoxPlugin } from "./types.ts";
@@ -28,7 +29,10 @@ export type { FoxPlugin } from "./types.ts";
  * which a plugin genuinely calls.
  */
 function sdkRuntime(): Record<string, unknown> {
-  return { ok, fail };
+  // `regionSignal` is the host's OWN signal, not a copy: writing it must
+  // schedule a frame through the same scheduler every built-in region uses.
+  // A separate implementation would accept the write and never repaint.
+  return { ok, fail, regionSignal: signal };
 }
 
 const SDK_SHIM = `
@@ -37,6 +41,7 @@ if (!s) throw new Error("fox-agent: the SDK runtime is not installed (plugin loa
 export const ok = s.ok;
 export const fail = s.fail;
 export const createAgent = s.createAgent;
+export const regionSignal = s.regionSignal;
 `;
 
 /**
