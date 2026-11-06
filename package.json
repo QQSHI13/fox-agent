@@ -30,12 +30,12 @@
     "typescript": "7.0.2"
   },
   "dependencies": {
-    "@agentclientprotocol/sdk": "2.0.2",
+    "@agentclientprotocol/sdk": "2.4.0",
     "@ai-sdk/anthropic": "4.0.91",
     "@ai-sdk/google": "4.0.107",
     "@ai-sdk/openai": "4.0.104",
     "@ai-sdk/openai-compatible": "3.0.80",
-    "@modelcontextprotocol/sdk": "1.31.0",
+    "@modelcontextprotocol/sdk": "1.32.2",
     "@speed-highlight/core": "2.1.0",
     "ai": "7.0.156"
   },
