@@ -112,6 +112,11 @@ resolve_version() {
   fi
 }
 
+if [[ -n "$VERSION" && "$BETA" == true ]]; then
+  echo "${Y}! ignoring --beta: --version ${VERSION} was given${R}" >&2
+  BETA=false
+fi
+
 if [[ -z "$VERSION" ]]; then
   VERSION="$(resolve_version)"
   if [[ -z "$VERSION" ]]; then
@@ -246,15 +251,47 @@ for ATTEMPT in 1 2 3; do
   done
   [[ -z "$TOTAL_BYTES" || "$TOTAL_BYTES" == "0" ]] && TOTAL_BYTES=0
 
-  # animate progress bar while download runs
+  # animate progress bar while download runs; a stall guard bounds the wait so
+  # a connection that stays open without delivering bytes can't spin the
+  # spinner forever (an eternal spinner was the only failure mode here)
   START_TIME=$(date +%s 2>/dev/null || echo 0)
   PREV_SIZE=0
   PREV_TIME=$START_TIME
+  STALL_SIZE=0
+  LAST_GROWTH=$START_TIME
   SPEED=0
+  # seconds without a single byte before we call it a stall; generous enough
+  # not to kill a slow-but-alive connection, bounded so a stalled one can't
+  # spin the spinner forever
+  STALL_LIMIT=30
 
   while kill -0 "$DL_PID" 2>/dev/null; do
     CURRENT_SIZE=$(stat -c%s "${TMP_DIR}/${ASSET}" 2>/dev/null || stat -f%z "${TMP_DIR}/${ASSET}" 2>/dev/null || echo 0)
     NOW=$(date +%s 2>/dev/null || echo 0)
+
+    # stall guard FIRST, before the speed calc below clobbers PREV_SIZE:
+    # if the file hasn't grown since the last tick, count the seconds; a
+    # connection that stays open without delivering bytes used to spin the
+    # spinner forever, so kill it and let the retry loop take over.
+    if (( CURRENT_SIZE > STALL_SIZE )); then
+      LAST_GROWTH=$NOW
+      STALL_SIZE=$CURRENT_SIZE
+    elif (( NOW - LAST_GROWTH >= STALL_LIMIT )); then
+      kill "$DL_PID" 2>/dev/null || true
+      wait "$DL_PID" 2>/dev/null
+      DL_EXIT=1
+      printf "\r\033[2K"
+      if (( ATTEMPT < MAX_RETRIES )); then
+        echo "  ${Y}! download stalled for ${STALL_LIMIT}s, retrying (${ATTEMPT}/${MAX_RETRIES})${R}"
+        rm -f "${TMP_DIR}/${ASSET}"
+        sleep 1
+        continue 2
+      fi
+      echo "  ${CROSS} download stalled for ${STALL_LIMIT}s after ${MAX_RETRIES} attempts" >&2
+      echo "    URL: ${DOWNLOAD_URL}" >&2
+      echo "    check your network connection or try again later" >&2
+      exit 1
+    fi
 
     # re-read TOTAL_BYTES in case Content-Length arrived late
     if (( TOTAL_BYTES == 0 )); then
