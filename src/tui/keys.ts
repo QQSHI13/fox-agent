@@ -98,6 +98,28 @@ function mouseMods(btn: number): { shift?: boolean; meta?: boolean; ctrl?: boole
 }
 
 /**
+ * Name the wheel event for a button code that has bit 6 set.
+ *
+ * Bit 6 only says "this is a wheel, not a button". The axis is the next bit and
+ * the direction is bit 0, giving four codes:
+ *
+ *   64 wheelup    65 wheeldown    66 wheelleft    67 wheelright
+ *
+ * The old code tested `btn & 1` alone, so 66 (horizontal left) was reported as
+ * `wheelup` and 67 (horizontal right) as `wheeldown` — a horizontal scroll was
+ * silently turned into a vertical one at the far end of the content, which is
+ * why tilting a wheel or shift-scrolling looked like nothing happened. Only
+ * bits 0-1 carry wheel information here; the modifier bits above are masked off
+ * by the caller's `mouseMods`.
+ */
+function wheelName(btn: number): "wheelup" | "wheeldown" | "wheelleft" | "wheelright" {
+  const vertical = !(btn & 2);
+  const forward = (btn & 1) === 1;
+  if (vertical) return forward ? "wheeldown" : "wheelup";
+  return forward ? "wheelright" : "wheelleft";
+}
+
+/**
  * xterm encodes modifiers as a second CSI parameter, 1 + a bitmask:
  * shift=1, alt=2, ctrl=4. So ctrl+right is ESC [ 1 ; 5 C and alt+shift+up
  * is ESC [ 1 ; 4 A. Without decoding this, ctrl+left arrives looking exactly
@@ -329,7 +351,7 @@ export function createDecoder(emit: (k: Key) => void) {
       const mods = mouseMods(btn);
       if (btn & 64) {
         if (mm[4] === "m") return true;
-        emit({ type: "named", name: btn & 1 ? "wheeldown" : "wheelup", x, y, ...mods });
+        emit({ type: "named", name: wheelName(btn), x, y, ...mods });
         return true;
       } else if (mm[4] === "m") emit({ type: "mouse", action: "up", x, y, button: (btn & 3) as 0 | 1 | 2, ...mods });
       else if (btn & 32) emit({ type: "mouse", action: "drag", x, y, button: (btn & 3) as 0 | 1 | 2, ...mods });
@@ -353,10 +375,8 @@ export function createDecoder(emit: (k: Key) => void) {
       buf = buf.slice(6);
       if (cb >= 0 && cx >= 0 && cy >= 0) {
         const mods = mouseMods(cb);
-        if (cb & 64) {
-          if (!(cb & 1)) emit({ type: "named", name: "wheelup", x: cx - 1, y: cy - 1, ...mods });
-          else emit({ type: "named", name: "wheeldown", x: cx - 1, y: cy - 1, ...mods });
-        } else if (cb & 32) emit({ type: "mouse", action: "drag", x: cx - 1, y: cy - 1, button: (cb & 3) as 0 | 1 | 2, ...mods });
+        if (cb & 64) emit({ type: "named", name: wheelName(cb), x: cx - 1, y: cy - 1, ...mods });
+        else if (cb & 32) emit({ type: "mouse", action: "drag", x: cx - 1, y: cy - 1, button: (cb & 3) as 0 | 1 | 2, ...mods });
         else emit({ type: "mouse", action: "down", x: cx - 1, y: cy - 1, button: (cb & 3) as 0 | 1 | 2, ...mods });
       }
       return true;

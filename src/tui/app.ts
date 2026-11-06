@@ -2323,6 +2323,26 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     }
     const { name, ctrl } = k;
 
+    if (name === "wheelleft" || name === "wheelright") {
+      // Horizontal wheel: there is no horizontal scroll anywhere in the TUI —
+      // prose is wrapped, not panned — so the only surface where a sideways
+      // notch means something is the input dock, where it moves the caret the
+      // same way the vertical notch does. Elsewhere it is deliberately inert
+      // rather than reinterpreted, which is exactly the bug this replaces.
+      const wy = k.y ?? lastMouse.y;
+      lastMouse = { x: k.x ?? lastMouse.x, y: wy };
+      if (wy >= dockTopY()) {
+        const dir = name === "wheelleft" ? -1 : 1;
+        const next = Math.max(0, Math.min(buf.length, cur + dir * SCROLL_STEP));
+        if (next !== cur) {
+          cur = next;
+          inSelAnchor = null;
+          bumpBuf();
+        }
+      }
+      return;
+    }
+
     if (name === "wheelup" || name === "wheeldown") {
       const up = name === "wheelup";
       // With the slash-command roster showing, the wheel walks the hint list —
@@ -2342,8 +2362,15 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       const wy = k.y ?? lastMouse.y;
       lastMouse = { x: k.x ?? lastMouse.x, y: wy };
       if (wy >= dockTopY()) {
+        // Only claim the notch if the caret can actually move. At the first or
+        // last visual row `moveCaretVertical` clamps to the index it is already
+        // on, so consuming the event unconditionally left the wheel dead at the
+        // boundary: the box was at its row cap, nothing scrolled, and out of
+        // sync with the dock the notch did nothing at all. Falling through makes
+        // the edge of the buffer feel like the end of a scroll.
+        const before = cur;
         moveCaretVertical(up ? -1 : 1, false);
-        return;
+        if (cur !== before) return;
       }
       const dir = up ? -SCROLL_STEP : SCROLL_STEP; // tuiScrollStep rows per wheel tick
       if (stick && dir < 0) stick = false;
