@@ -266,11 +266,38 @@ export function activePlugins(): FoxPlugin[] {
  * Fire `onSessionEnd` on every active plugin. Failures are logged, never
  * thrown — cleanup is no place to take the harness down with a plugin.
  */
+/**
+ * How long all plugin cleanup hooks get, together, before shutdown stops
+ * waiting for them.
+ *
+ * A plugin is third-party code, and `onSessionEnd` is its last chance to hang
+ * the harness: the return value is `await`ed, so a promise that never settles
+ * blocks the exit forever — the TUI tears down, prints the resume hint, and the
+ * shell never comes back. That is an unbounded wait on someone else's code, so
+ * it gets a deadline like every other cross-boundary call here.
+ *
+ * Generous, because a legitimate hook may kill a tmux session or flush a file.
+ */
+const SESSION_END_TIMEOUT_MS = 2_000;
+
 export async function fireSessionEnd(sessionId: string, reason: "exit" | "switch" | "delete"): Promise<void> {
   for (const p of active) {
     if (!p.hooks?.onSessionEnd) continue;
     try {
-      await p.hooks.onSessionEnd({ sessionId, reason });
+      // Raced, not merely awaited: a hook that never resolves must cost one
+      // warn line, not the process.
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([
+        p.hooks.onSessionEnd({ sessionId, reason }),
+        new Promise<void>((resolve) => {
+          timer = setTimeout(() => {
+            console.error(`fox-agent: plugin '${p.name}' onSessionEnd timed out after ${SESSION_END_TIMEOUT_MS}ms — continuing shutdown`);
+            resolve();
+          }, SESSION_END_TIMEOUT_MS);
+          (timer as { unref?: () => void }).unref?.();
+        }),
+      ]);
+      if (timer) clearTimeout(timer);
     } catch (e) {
       console.error(`fox-agent: plugin '${p.name}' onSessionEnd failed: ${(e as Error).message}`);
     }

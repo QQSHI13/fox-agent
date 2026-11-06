@@ -9,7 +9,7 @@ import { cleanupPty, ptySessionName } from "../plugins/bundled/pty.ts";
 
 import { ctxDef, ctxRun } from "./ctx.ts";
 import { mcpTools, closeMcp } from "../mcp/client.ts";
-import { poolTools } from "../mcp/pool.ts";
+import { poolTools, closePool } from "../mcp/pool.ts";
 import { loadPlugins, setActivePlugins } from "../plugins/load.ts";
 import { bundledPlugins, bundledDisabled } from "../plugins/bundled.ts";
 import { BUNDLED_PROVIDER_PLUGIN_NAMES, bundledProviderPlugins } from "../providers/bundled.ts";
@@ -241,6 +241,8 @@ export async function shutdownTools(sessionId: string): Promise<void> {
   await cleanupPty(ptySessionName(sessionId)); // belt and braces when no registry was ever built
   const { cleanupRepl } = await import("../plugins/bundled/repl.ts");
   cleanupRepl(sessionId); // drops the scratchpad AND any repl jobs still running under it
+  closePool(); // drop cached pool sockets: they hold the event loop open, and closing
+  // them is what lets the daemon's own idle timer start counting
   closeMcp(); // detached: hands the terminal back while children reap in the background
   // an idle tsserver holds a project's worth of memory; leaving one per fox-agent run
   // behind would accumulate across a day of sessions in the same shell

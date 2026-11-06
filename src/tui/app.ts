@@ -146,6 +146,15 @@ function profLine(line: string): void {
 
 /** transcript rows moved per wheel notch / drag-edge tick (config `tuiScrollStep`). */
 let SCROLL_STEP = 1;
+/**
+ * How long shutdown gets before the process exits regardless.
+ *
+ * Every shutdown closer is bounded individually (plugin hooks 2 s, the LSP
+ * polite window 1.5 s, a tmux kill), so a healthy exit finishes in well under
+ * this. Reaching it means something outside our control ignored its deadline,
+ * which is exactly when the user is staring at a shell that never returned.
+ */
+const EXIT_BACKSTOP_MS = 5_000;
 let clearKeyRef: () => void = () => {}; // set in startTui: forces full repaint
 /**
  * Re-arms the frame loop — set from inside startTui, exactly like clearKeyRef.
@@ -2012,6 +2021,37 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     if (exiting) return;
     exiting = true;
     exitCode = code;
+    /**
+     * Hard-exit backstop.
+     *
+     * Shutdown is cooperative: the terminal is torn down, `finish()` resolves,
+     * and the caller's `finally` awaits `shutdownTools`. Nothing calls
+     * `process.exit()` on a normal exit — the process is expected to reach
+     * natural exit once every await settles and no handles remain.
+     *
+     * That makes one stuck await fatal, with no way out: the resume hint is the
+     * LAST thing printed, so the user sees it and then sits at a shell that
+     * never returns. The suspects are all third-party or subprocess code — a
+     * plugin hook, a tmux call, an LSP server that ignores SIGKILL.
+     *
+     * So the ladder gets a floor. REF'd on purpose (this is the one timer that
+     * must outlive the teardown it is guarding), and generous enough that a
+     * normal exit — plugin hooks, tmux kill, the 1.5 s LSP window — finishes
+     * long before it. Reaching it is a bug, so it says so on stderr.
+     */
+    const backstop = setTimeout(() => {
+      try {
+        // the terminal may already be restored; term.end() is safe to repeat
+        term.end();
+      } catch {}
+      console.error(
+        "fox-agent: shutdown did not finish within " +
+          `${EXIT_BACKSTOP_MS / 1000}s (a plugin hook, pty or LSP child is stuck) — exiting anyway`,
+      );
+      process.exit(code);
+    }, EXIT_BACKSTOP_MS);
+    backstop.unref?.(); // …but never on its own keep the process alive waiting to fire
+
     // Unsubscribe every region before the terminal goes down. A disposed effect
     // cannot be resurrected by a late signal write, and without this a write
     // arriving between term.end() and process exit would try to paint into a

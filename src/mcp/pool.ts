@@ -232,29 +232,10 @@ export async function poolTools(
   if (!Object.keys(servers).length) return { tools: new Map(), warnings: [] };
 
   const sockPath = poolSocketPath(servers);
-  /**
-   * ONE socket per pool, reused for the life of the process.
-   *
-   * Without this cache every turn opened a fresh connection and abandoned the
-   * old one: `buildRegistry` runs per turn (`loop/turn.ts`), so a 20-turn
-   * session left 20 live sockets on the daemon. Two consequences, both visible:
-   *
-   *   - an fd leak that grows with session length;
-   *   - the daemon's `conns` counter only ever went UP, so it could never reach
-   *     zero and its idle-exit timer could never fire. The daemon was immortal
-   *     no matter how long you stopped using it — the exact opposite of
-   *     "lifetime managed".
-   *
-   * A closed link (daemon restarted, socket dropped) is dropped on read and
-   * redialed, so this cannot pin a dead connection.
-   */
-  let link = poolLinks.get(sockPath);
-  if (link?.closed) link = undefined;
-  if (!link) {
-    link = (await connectOrSpawn(sockPath)) ?? undefined;
-    if (!link) return null;
-    poolLinks.set(sockPath, link);
-  }
+  // The socket is cached inside connectOrSpawn, so both this and warmPool share
+  // one connection instead of opening their own and abandoning it.
+  const link = await connectOrSpawn(sockPath);
+  if (!link) return null;
 
   const res = (await link.request({ method: "catalog", servers })) as
     | { catalog?: Record<string, string[]>; error?: string }
@@ -292,12 +273,41 @@ export async function poolTools(
 /** One socket per pool socket path, reused for the life of the process. */
 const poolLinks = new Map<string, Link>();
 
+/**
+ * Close every cached pool connection.
+ *
+ * Called from `shutdownTools`. Without it the cached links are REFERENCED
+ * handles holding the event loop open, so the process never reaches natural
+ * exit — the TUI tears down, prints the resume hint, and then sits there. The
+ * sockets are also `unref`'d where created, which makes that impossible even if
+ * this is never called; destroying them here is what drops the daemon's
+ * connection count so its own idle timer can run.
+ */
+export function closePool(): void {
+  for (const link of poolLinks.values()) {
+    try {
+      link.sock.destroy();
+    } catch {}
+  }
+  poolLinks.clear();
+}
+
 /** Reuse a live pool, else spawn one and wait for its socket. */
 async function connectOrSpawn(sockPath: string): Promise<Link | null> {
+  // Cache at the source, so BOTH callers share one socket: `poolTools` per turn
+  // and `warmPool` at startup. warmPool used to drop the Link on the floor,
+  // leaving a connected socket nobody could close.
+  const cached = poolLinks.get(sockPath);
+  if (cached && !cached.closed) return cached;
+  if (cached) poolLinks.delete(sockPath);
+
   // Reuse first: a daemon that already answers needs no spawn at all, and this
   // is the path a warm pool takes on every turn.
   const hit = await connect(sockPath);
-  if (hit) return hit;
+  if (hit) {
+    poolLinks.set(sockPath, hit);
+    return hit;
+  }
 
   const { selfCommand, canSelfExec } = await import("../core/selfexec.ts");
   // Under `bun test`, the SDK, or any embedder, `Bun.main` is the embedder's
@@ -326,7 +336,10 @@ async function connectOrSpawn(sockPath: string): Promise<Link | null> {
   while (Date.now() < deadline) {
     await Bun.sleep(25);
     const c = await connect(sockPath);
-    if (c) return c;
+    if (c) {
+      poolLinks.set(sockPath, c);
+      return c;
+    }
   }
   return null;
 }
@@ -347,6 +360,12 @@ export function warmPool(servers: Record<string, McpServerConfig>, enabled: bool
 function connect(sockPath: string): Promise<Link | null> {
   return new Promise((resolve) => {
     const sock = netConnect(sockPath);
+    // `unref` so a cached pool socket never keeps the process alive on its own.
+    // A connected socket is a referenced handle; without this the TUI could
+    // finish tearing down and still never reach natural exit, because one live
+    // socket remained in the event loop. I/O still works — unref only affects
+    // keep-alive, and during a session stdin and the frame timer hold the loop.
+    (sock as unknown as { unref?: () => void }).unref?.();
     let settled = false;
     sock.once("connect", () => {
       settled = true;

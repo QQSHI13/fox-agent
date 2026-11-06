@@ -401,7 +401,22 @@ export async function closeClients(clients: LiveClient[]): Promise<void> {
   await Promise.all(
     clients.map(async (c) => {
       try {
-        await Promise.race([c.close(), Bun.sleep(MCP_CLOSE_TIMEOUT_MS)]);
+        // A cleared timer, not Bun.sleep: see exitedWithin. The sleep's timer is
+        // referenced, so an instant close still held the loop for the full 3 s.
+        await new Promise<void>((resolve) => {
+          const t = setTimeout(resolve, MCP_CLOSE_TIMEOUT_MS);
+          t.unref?.();
+          void Promise.resolve(c.close()).then(
+            () => {
+              clearTimeout(t);
+              resolve();
+            },
+            () => {
+              clearTimeout(t);
+              resolve();
+            },
+          );
+        });
       } catch {}
       // still alive after the polite window (close rejected, hung, or the
       // promise settled while the child lingers) — the kill is unconditional:

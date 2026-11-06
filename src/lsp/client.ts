@@ -175,7 +175,24 @@ function wake(s: Session) {
 
 /** True when the child exits within `ms`. */
 function exitedWithin(proc: ReturnType<typeof Bun.spawn>, ms: number): Promise<boolean> {
-  return Promise.race([proc.exited.then(() => true), Bun.sleep(ms).then(() => false)]);
+  // NOT `Promise.race([proc.exited, Bun.sleep(ms)])`: a Bun.sleep timer is
+  // referenced and keeps running (and the event loop alive) for the full
+  // duration after the race is already decided. During shutdown that pins the
+  // process open for up to 1.5 s per server even when the kill landed instantly.
+  return new Promise<boolean>((resolve) => {
+    const t = setTimeout(() => resolve(false), ms);
+    t.unref?.();
+    proc.exited.then(
+      () => {
+        clearTimeout(t);
+        resolve(true);
+      },
+      () => {
+        clearTimeout(t);
+        resolve(true); // a process we cannot wait on is gone as far as we care
+      },
+    );
+  });
 }
 
 /**
