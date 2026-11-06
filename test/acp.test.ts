@@ -512,21 +512,31 @@ describe("acp server: session lifecycle", () => {
     expect(replayed.find((u) => u.sessionUpdate === "tool_call_update")).toMatchObject({ status: "failed" });
   });
 
-  test("load, resume, fork and delete of an unknown session are all errors", async () => {
-    const errs = await withAgent(await build([]), async (agent) => {
+  test("an unknown session is an error for load/resume/fork but a no-op delete", async () => {
+    // `session/delete` is the exception, and it is the CLIENT that decides so:
+    // since @agentclientprotocol/sdk 2.2.0 `treatSessionNotFoundAsSuccess` maps
+    // a -32002 on session/close or session/delete to success, because the spec
+    // says deleting a session that is already gone leaves the same end state.
+    // The server still answers resourceNotFound; the SDK just stops surfacing it.
+    // Asserting "all four reject" described the pre-2.2 client and broke on the
+    // bump, so pin what each side actually owes.
+    const { errs, deleted } = await withAgent(await build([]), async (agent) => {
       const attempt = (p: Promise<unknown>) =>
         p.then(
           () => null,
           (e) => e as Error,
         );
-      return Promise.all([
-        attempt(agent.request(acp.methods.agent.session.load, { sessionId: "ghost", cwd: work, mcpServers: [] })),
-        attempt(agent.request(acp.methods.agent.session.resume, { sessionId: "ghost", cwd: work, mcpServers: [] })),
-        attempt(agent.request(acp.methods.agent.session.fork, { sessionId: "ghost", cwd: work })),
-        attempt(agent.request(acp.methods.agent.session.delete, { sessionId: "ghost" })),
-      ]);
+      return {
+        errs: await Promise.all([
+          attempt(agent.request(acp.methods.agent.session.load, { sessionId: "ghost", cwd: work, mcpServers: [] })),
+          attempt(agent.request(acp.methods.agent.session.resume, { sessionId: "ghost", cwd: work, mcpServers: [] })),
+          attempt(agent.request(acp.methods.agent.session.fork, { sessionId: "ghost", cwd: work })),
+        ]),
+        deleted: await attempt(agent.request(acp.methods.agent.session.delete, { sessionId: "ghost" })),
+      };
     });
     for (const e of errs) expect(e).toBeTruthy();
+    expect(deleted).toBeNull();
   });
 
   test("session/close is safe on an idle session", async () => {
