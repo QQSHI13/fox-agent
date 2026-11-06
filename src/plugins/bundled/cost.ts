@@ -13,7 +13,7 @@
  * via costSegment(), since plugin segments resolve without session context).
  */
 import type { FoxPlugin } from "../types.ts";
-import { sessionUsage } from "../../store/db.ts";
+import { getSession, sessionUsage } from "../../store/db.ts";
 import { lookupCatalogModel } from "../../providers/modelsdev.ts";
 
 /** Active model per session, snapshotted at turn start (the turn's model is fixed for its steps). */
@@ -103,12 +103,44 @@ const costPlugin: FoxPlugin = {
   ],
 };
 
-/** Cost line for a session; null hides the segment (no model yet, or no rate, or nothing spent). */
+/**
+ * Cost line for a session; null hides the segment (no model yet, or no rate, or
+ * nothing spent).
+ *
+ * Reads the session's INDEX ROW, not its usage table: `recordUsage` already
+ * maintains running totals there (`prompt_tokens` / `completion_tokens` /
+ * `cached_tokens`), so this is a primary-key lookup instead of an aggregate.
+ *
+ * That matters because `paintStatus` calls this on EVERY status repaint and
+ * again on every 140 ms spinner tick during a turn — roughly seven times a
+ * second for a number that only moves when a request completes. The old version
+ * ran `SELECT SUM(...) FROM usage` each time, an O(rows) scan of a table that
+ * grows with the session.
+ *
+ * A NULL total means a pre-migration row that was never backfilled, so the
+ * slow path is kept for exactly those and never for a session this build wrote.
+ */
 export function costSegment(sessionId: string): string | null {
   const model = activeModel.get(sessionId);
   if (!model) return null;
-  const usd = sessionCost(sessionId, model);
+  const usd = sessionCostFast(sessionId, model);
   return usd == null || usd === 0 ? null : fmt(usd);
+}
+
+/** `sessionCost`, but sourced from the index row when it has totals. */
+function sessionCostFast(sessionId: string, model: string): number | null {
+  const r = rateFor(model);
+  if (!r) return null;
+  const row = getSession(sessionId);
+  // fall back to the aggregate only for a legacy row (NULL means "never
+  // backfilled", which is different from "zero spent")
+  if (row?.prompt_tokens == null && row?.completion_tokens == null) return sessionCost(sessionId, model);
+  const prompt = row?.prompt_tokens ?? 0;
+  const completion = row?.completion_tokens ?? 0;
+  const cached = Math.min(row?.cached_tokens ?? 0, prompt);
+  const fresh = prompt - cached;
+  const cachedRate = r.cacheRead ?? r.input;
+  return (fresh * r.input + cached * cachedRate + completion * r.output) / 1e6;
 }
 
 export default costPlugin;

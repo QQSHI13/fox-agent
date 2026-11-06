@@ -21,7 +21,7 @@
  * been recycled... accepted risk, pid reuse is rare inside a session's life)
  * is treated as stale and its file removed on sight.
  */
-import { mkdirSync, readFileSync, rmSync, writeFileSync, linkSync, unlinkSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync, linkSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { agentHome, assertSafeSessionId } from "../core/paths.ts";
 import { pidAlive } from "../core/proc.ts";
@@ -41,25 +41,32 @@ function lockPath(id: string): string {
 /** The live holder of this session's lock, or null (stale files are cleaned up). */
 export function lockHolder(id: string): SessionLock | null {
   let l: SessionLock;
+  const p = lockPath(id);
+  // Stat before open. The common case is NO lock — the marker is turn-scoped,
+  // so an idle session has none — and `readFileSync` on a missing path throws.
+  // The TUI polls this every 500 ms, so that was a caught exception twice a
+  // second forever, which is the expensive way to ask "does this file exist".
+  if (!existsSync(p)) return null;
   try {
-    l = JSON.parse(readFileSync(lockPath(id), "utf8"));
+    l = JSON.parse(readFileSync(p, "utf8"));
   } catch (e) {
-    // ENOENT is simply "no lock". Anything else is an unusable file — a crash
+    // ENOENT here is a race with a holder releasing between the stat and the
+    // read: simply "no lock". Anything else is an unusable file — a crash
     // between the O_EXCL create and the write leaves it empty, and a file we
     // cannot read is not evidence of a holder. Removing it matters: left in
     // place it is immortal, and every later opener would ALSO be told the lock
     // is free while never owning it (two writers on one session).
-    if ((e as NodeJS.ErrnoException)?.code !== "ENOENT") rmSync(lockPath(id), { force: true });
+    if ((e as NodeJS.ErrnoException)?.code !== "ENOENT") rmSync(p, { force: true });
     return null;
   }
   if (typeof l?.pid !== "number") {
     // parses, but is not a lock (truncated write, a foreign file)
-    rmSync(lockPath(id), { force: true });
+    rmSync(p, { force: true });
     return null;
   }
   if (l.pid === process.pid) return l;
   if (!pidAlive(l.pid)) {
-    rmSync(lockPath(id), { force: true });
+    rmSync(p, { force: true });
     return null;
   }
   return l;

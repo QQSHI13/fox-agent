@@ -232,14 +232,38 @@ export async function poolTools(
   if (!Object.keys(servers).length) return { tools: new Map(), warnings: [] };
 
   const sockPath = poolSocketPath(servers);
-  const link = await connectOrSpawn(sockPath);
-  if (!link) return null;
+  /**
+   * ONE socket per pool, reused for the life of the process.
+   *
+   * Without this cache every turn opened a fresh connection and abandoned the
+   * old one: `buildRegistry` runs per turn (`loop/turn.ts`), so a 20-turn
+   * session left 20 live sockets on the daemon. Two consequences, both visible:
+   *
+   *   - an fd leak that grows with session length;
+   *   - the daemon's `conns` counter only ever went UP, so it could never reach
+   *     zero and its idle-exit timer could never fire. The daemon was immortal
+   *     no matter how long you stopped using it — the exact opposite of
+   *     "lifetime managed".
+   *
+   * A closed link (daemon restarted, socket dropped) is dropped on read and
+   * redialed, so this cannot pin a dead connection.
+   */
+  let link = poolLinks.get(sockPath);
+  if (link?.closed) link = undefined;
+  if (!link) {
+    link = (await connectOrSpawn(sockPath)) ?? undefined;
+    if (!link) return null;
+    poolLinks.set(sockPath, link);
+  }
 
   const res = (await link.request({ method: "catalog", servers })) as
     | { catalog?: Record<string, string[]>; error?: string }
     | undefined;
   if (!res || res.error || !res.catalog) {
+    // a failed catalog is not a reusable connection: drop it so the next call
+    // redials instead of repeating the same failure forever
     link.sock.destroy();
+    poolLinks.delete(sockPath);
     return null;
   }
   const catalog = res.catalog;
@@ -265,8 +289,13 @@ export async function poolTools(
   return { tools: new Map([[def.name, tool]]), warnings: [] };
 }
 
+/** One socket per pool socket path, reused for the life of the process. */
+const poolLinks = new Map<string, Link>();
+
 /** Reuse a live pool, else spawn one and wait for its socket. */
 async function connectOrSpawn(sockPath: string): Promise<Link | null> {
+  // Reuse first: a daemon that already answers needs no spawn at all, and this
+  // is the path a warm pool takes on every turn.
   const hit = await connect(sockPath);
   if (hit) return hit;
 
