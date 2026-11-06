@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { PushCompositor, Plane, charWidth, type Style } from "./screen.ts";
-import { computed, effect, flushNow, setScheduler, signal, type Disposable } from "./reactive.ts";
+import { computed, counter, effect, flushNow, setScheduler, signal, type Disposable } from "./reactive.ts";
 import { computeFrame, dockRows, itemEdgeSpan, scrollbarScrollTop, viewportHeight, chipGutter, contentOrigin, contentOriginForChip, contentWidth, type Frame, type FrameInput, type Row } from "./layout.ts";
 import { activePlugins } from "../plugins/load.ts";
 import type { TuiRegionPlane, TuiWrapOptions } from "../plugins/types.ts";
@@ -295,9 +295,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   };
   // Plugin regions: one plane per region, clipped to the rect the region
   // declares, so a plugin physically cannot paint outside it. Resolved per
-  // statsRev (the same live-swap cadence as statusBarSlots — /reload bumps
-  // it), so a plugin added or removed at runtime takes effect without a
-  // restart.
+  // statsRev() (the same live-swap cadence as statusBarSlots — /reload bumps
+  // the stats signal), so a plugin added or removed at runtime takes effect
+  // without a restart.
   type PluginRegion = {
     key: string;
     z: number;
@@ -328,8 +328,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
    * markDirty-driven call could when its call site was removed.
    */
   function resolvePluginRegions(): PluginRegion[] {
-    if (pluginRegionsRev === statsRev) return pluginRegions;
-    pluginRegionsRev = statsRev;
+    const rev = statsRev();
+    if (pluginRegionsRev === rev) return pluginRegions;
+    pluginRegionsRev = rev;
 
     const wanted = new Set<string>();
     for (const p of activePlugins()) for (const name of Object.keys(p.regions ?? {})) wanted.add(`${p.name}/${name}`);
@@ -523,37 +524,37 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   // rendered rows per item key, so a signal per item would add a closure and a
   // Set per node — tens of thousands of allocations on a long session — to
   // duplicate work that is already cached.
-  const itemsV = signal(0, { label: "items" });
-  const streamV = signal(0, { label: "stream" });
-  const scrollV = signal(0, { label: "scroll" });
+  const itemsV = counter("items");
+  const streamV = counter("stream");
+  const scrollV = counter("scroll");
   const sizeV = signal({ w: 0, h: 0 }, { label: "size", equals: (a, b) => a.w === b.w && a.h === b.h });
   const scrollbarV = signal(true, { label: "scrollbar" });
   const themeV = signal("", { label: "theme" });
   const highlightV = signal(0, { label: "highlight" });
-  const statsV = signal(0, { label: "stats" });
+  const statsV = counter("stats");
   const busyV = signal(false, { label: "busy" });
   const remoteBusyV = signal(false, { label: "remoteBusy" });
-  const flashV = signal(0, { label: "flash" });
-  const cmdOutV = signal(0, { label: "cmdOut" });
-  const hintSelV = signal(0, { label: "hintSel" });
+  const flashV = counter("flash");
+  const cmdOutV = counter("cmdOut");
+  const hintSelV = counter("hintSel");
   /** bumps whenever the input buffer, caret or selection changes */
-  const bufV = signal(0, { label: "buf" });
+  const bufV = counter("buf");
   /** bumps when an overlay (picker) opens, closes, or its selection moves */
-  const overlayV = signal(0, { label: "overlay" });
+  const overlayV = counter("overlay");
   /** bumps when the wizard's prompt/step advances */
-  const promptV = signal(0, { label: "prompt" });
+  const promptV = counter("prompt");
   /** bumps when `painted` is replaced — hit-tests and float anchoring read it */
-  const paintedV = signal(0, { label: "painted" });
+  const paintedV = counter("painted");
 
   /** Mark the transcript's item list as changed. */
   const bumpItems = () => {
     countRev++;
-    itemsV(itemsV.peek() + 1);
+    itemsV.bump();
   };
   /** Mark the streaming tail as changed. */
-  const bumpStream = () => streamV(streamV.peek() + 1);
+  const bumpStream = () => streamV.bump();
   /** Mark the input dock's content/caret as changed. */
-  const bumpBuf = () => bufV(bufV.peek() + 1);
+  const bumpBuf = () => bufV.bump();
   /**
    * How many visual rows the input currently wraps to.
    *
@@ -637,30 +638,30 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     // an item's row count without touching the list — a theme switch does not,
     // but a resize does, and the cache must not outlive either.
     countRev++;
-    itemsV(itemsV.peek() + 1);
-    streamV(streamV.peek() + 1);
-    scrollV(scrollV.peek() + 1);
+    itemsV.bump();
+    streamV.bump();
+    scrollV.bump();
     sizeV({ w: W, h: H });
     scrollbarV(SCROLLBAR);
     themeV(themeName());
     highlightV(highlightVersion());
-    statsV(statsV.peek() + 1);
+    statsV.bump();
     busyV(displayBusy());
     remoteBusyV(remoteBusy);
-    flashV(flashV.peek() + 1);
-    cmdOutV(cmdOutV.peek() + 1);
-    hintSelV(hintSelV.peek() + 1);
-    bufV(bufV.peek() + 1);
-    overlayV(overlayV.peek() + 1);
-    promptV(promptV.peek() + 1);
+    flashV.bump();
+    cmdOutV.bump();
+    hintSelV.bump();
+    bufV.bump();
+    overlayV.bump();
+    promptV.bump();
   };
-  const bumpScroll = () => scrollV(scrollV.peek() + 1);
-  const bumpStats = () => statsV(statsV.peek() + 1);
-  const bumpFlash = () => flashV(flashV.peek() + 1);
-  const bumpCmdOut = () => cmdOutV(cmdOutV.peek() + 1);
-  const bumpHintSel = () => hintSelV(hintSelV.peek() + 1);
-  const bumpOverlay = () => overlayV(overlayV.peek() + 1);
-  const bumpPrompt = () => promptV(promptV.peek() + 1);
+  const bumpScroll = () => scrollV.bump();
+  const bumpStats = () => statsV.bump();
+  const bumpFlash = () => flashV.bump();
+  const bumpCmdOut = () => cmdOutV.bump();
+  const bumpHintSel = () => hintSelV.bump();
+  const bumpOverlay = () => overlayV.bump();
+  const bumpPrompt = () => promptV.bump();
   const bumpBusy = () => { busyV(displayBusy()); remoteBusyV(remoteBusy); };
   // The scheduler: the reactive core asks for a flush, and the existing
   // frame-slot logic decides when. Without this the core would fall back to a
@@ -916,7 +917,6 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     // test/difftouch.test.ts).
     for (const k of diffTouchKeys(prev, items, (i) => i.k, itemSig, itemSigs)) touch(k);
     // the rebuild drops any chrome header lifetime — it re-derives from state
-    statsRev++;
     bumpItems();
     bumpStats();
   }
@@ -1161,17 +1161,21 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     // a wizard's run may itself answer with another wizard — chain it
     if (res.prompt) startPrompt(res.prompt);
     // a command may have changed provider/model (/login, /model) — the status
-    // bar caches per statsRev, and an idle session never re-polls on its own.
+    // bar caches per statsRev(), and an idle session never re-polls on its own.
     // Same for the startup block: it is pushed once and would otherwise freeze
     // the pre-command provider, key state and model on screen.
-    statsRev++;
+    bumpStats();
     // a command that rewrote the stored log (/prune compact) must be followed
     // by a replay, or the screen keeps showing seqs/rows that no longer exist
     if (res.storeChanged) refresh();
     // A command result may have changed the model/cwd the virtual chrome header
-    // shows — bump its revision so it re-renders. The chrome is transcript
-    // content (it renders as items), so this is an items change.
+    // shows. The header is TWO items: the banner line (CHROME_KEY) and the
+    // detail block below it (CHROME_KEY - 1) that actually prints
+    // "model X (Nk ctx)". Touching only the banner left the detail block frozen
+    // at the pre-switch model after /model — the banner re-rendered and the
+    // line under it did not.
     touch(CHROME_KEY);
+    touch(CHROME_KEY - 1);
     bumpItems();
     bumpStats();
     bumpCmdOut();
@@ -1260,13 +1264,12 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       // the real config is in.
       touch(CHROME_KEY);
       touch(CHROME_KEY - 1);
-      // statsRev, not just statsV: the status-bar SLOT LIST (`statusBar`) and
-      // the stats text are both cached against statsRev. Bumping only the signal
-      // repainted the bar but left statusBarSlots() returning the list cached at
-      // boot — from the config as it was BEFORE this load, which is often no
-      // config at all. Setting `statusBar = "cwd probe"` had no effect on a
-      // running session for exactly this reason.
-      statsRev++;
+      // Bumping the stats signal both invalidates the status caches and
+      // repaints the bar: the SLOT LIST (`statusBar`) and the stats text are
+      // cached against statsRev(), which reads that same signal. They used to be
+      // a separate counter, and bumping only the signal left statusBarSlots()
+      // returning the list cached at boot — from the config as it was BEFORE
+      // this load, which is often no config at all.
       bumpItems();
       bumpStats();
     } catch (e) {
@@ -1333,7 +1336,6 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     const ro = !!holder;
     if (ro === state.readOnly) return;
     state.readOnly = ro;
-    statsRev++;
     bumpStats(); // the status bar's readOnly segment just changed meaning
     if (!ro) {
       // Stand down the mirrored owner state. A crashed owner leaves its `live`
@@ -1662,7 +1664,10 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         } else if (ev.type === "usage") {
           lastPromptTokens = ev.prompt_tokens; // provider-reported context size
           hitTotals = null; // recordUsage already stored this call's totals
-          statsRev++;
+          // The ctx figure in the status bar is derived from this number. It
+          // used to invalidate a cache and notify nobody, so the bar kept
+          // showing the pre-turn figure until some unrelated event moved.
+          bumpStats();
         } else if (ev.type === "tool_start") {
           callLabels.set(ev.id, `${ev.name}${argsSummary(ev.args)}`);
           callArgs.set(ev.id, ev.args);
@@ -1791,7 +1796,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
               push("toolbody", keepTail(ev.output, KEPT_TOOL_CHARS * 4), { ref: ev.seq, expanded: bodyOpenFinal, toolResult: true });
             }
           }
-          statsRev++;
+          // a tool result grows the ctx estimate — the status bar must repaint,
+          // same reason as the `usage` branch above
+          bumpStats();
         } else if (ev.type === "child_tool") {
           // A subagent's progress: ONE line per delegated session, updated in
           // place with a running count — a 40-call subagent used to print 40
@@ -3658,30 +3665,48 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     }
   }
 
+  /**
+   * Revision the status caches key on.
+   *
+   * This used to be a second counter (`let statsRev = 0`) bumped beside the
+   * `statsV` signal, on the theory that a cache key and a repaint trigger are
+   * different things. They are not: both answer "has anything the status bar
+   * shows changed?". Keeping two meant every writer had to remember BOTH, and
+   * three did not — the `usage` event and `tool_end` bumped the cache key and
+   * never notified the region, so the provider-reported ctx figure sat frozen
+   * while the number it was derived from moved. One counter that BOTH
+   * invalidates and notifies cannot drift by omission.
+   *
+   * `peek` on purpose: reading a signal inside a derive would subscribe the
+   * caller, and the caller here is the cache, not a region.
+   */
+  const statsRev = (): number => statsV.peek();
+
   // stats involve a full log replay — cache per revision, never per frame
-  let statsRev = 0;
   let statsCacheRev = -1;
   let statsCacheSegs: string[] = [];
   function cachedStats(): string[] {
     // re-poll on an explicit revision bump, or on a timer only while a turn is
     // running (an idle session's log can't change under us)
     const stale = busy && Date.now() - lastStatsAt > 2_000;
-    if (statsCacheRev !== statsRev || stale) {
+    const rev = statsRev();
+    if (statsCacheRev !== rev || stale) {
       statsCacheSegs = statusText();
-      statsCacheRev = statsRev;
+      statsCacheRev = rev;
       lastStatsAt = Date.now();
     }
     return statsCacheSegs;
   }
   let lastStatsAt = 0;
 
-  /** config `statusBar` parsed once per revision — /settings bumps statsRev */
+  /** config `statusBar` parsed once per revision — any stats bump refreshes it */
   let statusBarCacheRev = -1;
   let statusBarCacheSlots: string[] = [];
   function statusBarSlots(): string[] {
-    if (statusBarCacheRev !== statsRev) {
+    const rev = statsRev();
+    if (statusBarCacheRev !== rev) {
       statusBarCacheSlots = (state.config?.statusBar ?? "cwd provider model ctx").trim().split(/\s+/);
-      statusBarCacheRev = statsRev;
+      statusBarCacheRev = rev;
     }
     return statusBarCacheSlots;
   }
@@ -3997,7 +4022,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         // dock/floats/overlay effects do not run. That is the hand-maintained
         // `LAYOUT_FIELDS` set replaced by a value comparison — no field list to
         // update when one is added.
-        paintedV(paintedV.peek() + 1);
+        paintedV.bump();
       },
       // A new Frame landed and the grid is already current (the stamp above
       // wrote it), so this only arms the flush. Re-pushing a region here is

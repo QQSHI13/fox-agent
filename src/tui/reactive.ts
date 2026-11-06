@@ -200,6 +200,29 @@ export interface Signal<T> {
   peek(): T;
 }
 
+/**
+ * A signal whose value is a monotonically rising revision number.
+ *
+ * `counter()` exists because the TUI's coarse state slices are almost all
+ * revision numbers, and the bare `signal(0)` spelling forced every one of them
+ * to be written out by hand:
+ *
+ *   const statsV = signal(0, { label: "stats" });
+ *   const bumpStats = () => statsV(statsV.peek() + 1);
+ *   // ...ten more, each identical except for the name
+ *
+ * That repetition was not just noise. Its perfect symmetry made a SECOND
+ * counter look like a legitimate part of the pattern, so `statsRev++` ended up
+ * sitting beside `bumpStats()` — two numbers describing one fact, and only one
+ * of them wired to a repaint. Three call sites forgot half the pair and the
+ * status bar silently froze. A `.bump()` that cannot be separated from its
+ * signal is the fix: there is no second number to get out of step.
+ */
+export interface Counter extends Signal<number> {
+  /** Increment by one and notify every subscriber. Returns the new value. */
+  bump(): number;
+}
+
 export interface SignalOptions<T> {
   /** human name, used only in cycle reports */
   label?: string;
@@ -236,6 +259,18 @@ export function signal<T>(initial: T, opts: SignalOptions<T> = {}): Signal<T> {
   // previous value without subscribing the writer to its own signal.
   (sig as { peek: () => T }).peek = () => value;
   return sig;
+}
+
+/**
+ * A revision counter: `signal(0)` plus `.bump()`.
+ *
+ * Numeric, so "raise the revision" and "read the revision" can never be
+ * written as two separate things that drift apart.
+ */
+export function counter(label?: string): Counter {
+  const s = signal(0, { label }) as Counter;
+  (s as { bump: () => number }).bump = () => s(s.peek() + 1);
+  return s;
 }
 
 // ---------------------------------------------------------------------------
