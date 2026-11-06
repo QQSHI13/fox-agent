@@ -57,7 +57,17 @@ export function contentOriginForChip(chipW: number): number {
 }
 
 /**
- * Width available to a marked row's content: the full width minus the gutter.
+ * Width available to a row's content.
+ *
+ * `total` is the width rows are built at (W, or W-2 when the scrollbar strip
+ * shows), and text paints from `contentOrigin`. wrapSegs keeps a ragged right
+ * edge (`fit = cols - 1`), so `cols` must span from the origin THROUGH the last
+ * writable column — that is exactly `total` for an unmarked row (origin 1) and
+ * `total - gutter` for a marked one (origin gutter + 1). The `-1` inside
+ * wrapSegs is then the one column left empty at the end, the same for both.
+ * Subtracting the gutter AND a column here would wrap marked rows one column
+ * earlier than unmarked ones.
+ *
  * The 8 is a floor so a very narrow terminal still leaves a usable wrap column
  * instead of a negative one.
  */

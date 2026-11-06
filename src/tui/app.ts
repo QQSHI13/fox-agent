@@ -710,10 +710,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       bufV();
       sizeV();
       promptV();
-      return inputLayout().rows.length;
+      return inputMod.inputLayout().rows.length;
     }, { label: "inputRows" });
   }
-  const inSelRange = (): [number, number] | null => inputMod.inSelRange(inSelAnchor, cur);
   function deleteInSel(): boolean {
     const r = inputMod.deleteInSel(buf, cur, inSelAnchor);
     if (!r.did) return false;
@@ -722,18 +721,11 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     inSelAnchor = r.anchor;
     return true;
   }
-  function inputText(): string { return inputMod.inputText(); }
-  function inputLayout(): InputLayout { return inputMod.inputLayout(); }
-  function caretPos(layout: InputLayout): { visRow: number; colW: number } { return inputMod.caretPos(layout, cur); }
-  function rowBufRange(layout: InputLayout, v: number): [number, number] { return inputMod.rowBufRange(layout, v); }
-  function inputIndexAt(x: number, y: number, round = false): number | null { return inputMod.inputIndexAt(x, y, round); }
   function moveCaretVertical(dir: -1 | 1, extend: boolean) {
     const r = inputMod.moveCaretVertical(dir, extend, cur, inSelAnchor);
     cur = r.cur;
     inSelAnchor = r.anchor;
   }
-  const wrapByWidth = (s: string, maxCols: number): string[] => inputMod.wrapByWidth(s, maxCols);
-  const indexAtWidth = (s: string, targetW: number): number => inputMod.indexAtWidth(s, targetW);
 
   // ---- mouse / selection state ----
   /**
@@ -1193,8 +1185,6 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   // The interaction logic lives in ./wizard.ts; these just delegate.
   /** The wizard's live state, read by paint/dock/key routing. Delegates to the module. */
   const getPrompt = (): PromptState | null => wizard.state();
-  /** Visible option count for the active select step (floats signature). */
-  const wizardOptionsCount = (): number => wizard.rows().rows.filter((r) => r.opt >= 0).length;
   function startPrompt(req: PromptRequest) {
     // Capture the command's run handler; the wizard calls it via deps.run on finish.
     promptHandler = (answers) => {
@@ -2389,7 +2379,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       // through the same copyText path as the transcript, so both report the
       // same confirmation. The selection is dropped: what was copied is staged
       // nowhere, and a stale highlight would lie about that.
-      const ir = inSelRange();
+      const ir = inputMod.inSelRange(inSelAnchor, cur);
       if (ir) {
         const text = buf.slice(ir[0], ir[1]).map((c) => c.c).join("");
         inSelAnchor = null;
@@ -2511,7 +2501,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         bumpCmdOut();
         return;
       }
-      if (inSelRange()) {
+      if (inputMod.inSelRange(inSelAnchor, cur)) {
         inSelAnchor = null;
         bumpBuf();
         return;
@@ -2615,7 +2605,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         if (inSelAnchor === null) inSelAnchor = cur;
         cur = ctrl || k.meta ? wordBoundary(dir) : Math.max(0, Math.min(buf.length, cur + dir));
       } else {
-        const r = inSelRange();
+        const r = inputMod.inSelRange(inSelAnchor, cur);
         inSelAnchor = null;
         if (r) cur = dir < 0 ? r[0] : r[1]; // a plain arrow collapses to an edge
         // ctrl/alt+arrow = word-wise motion (the decoder reports CSI modifiers)
@@ -2773,7 +2763,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       // extends an input selection instead of a transcript one. One selection
       // at a time, region-scoped: the dock owns the press, so any transcript
       // selection dies here.
-      const ii = inputIndexAt(x, y);
+      const ii = inputMod.inputIndexAt(x, y);
       if (ii !== null) {
         clearSel();
         cur = ii;
@@ -2810,7 +2800,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       if (press?.input) {
         // round=true: the caret sits BETWEEN chars (a selection edge), so a drag
         // snaps at the half-cell — the first cell moved now selects 1 char, not 0
-        const ii = inputIndexAt(x, y, true);
+        const ii = inputMod.inputIndexAt(x, y, true);
         if (ii !== null && ii !== cur) {
           cur = ii; // anchor stays where the press landed
           press.moved = true;
@@ -2851,7 +2841,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     if (wasInput) {
       if (inSelAnchor === cur) inSelAnchor = null; // a tap, not a drag
       else if (inSelAnchor !== null) {
-        const it = inputText();
+        const it = inputMod.inputText();
         const [a, b] = [Math.min(inSelAnchor, cur), Math.max(inSelAnchor, cur)];
         void copyText(it.slice(a, b));
       }
@@ -3142,7 +3132,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       if (!vr) return;
       const targetW = Math.max(0, x - 3) + vr.startCol;
       const line = g.layout.logical[vr.logical];
-      const idx = indexAtWidth(line, targetW);
+      const idx = inputMod.indexAtWidth(line, targetW);
       cur = Math.min(g.layout.lineStarts[vr.logical] + idx, buf.length);
       inputMod.bumpRev(); // caret moved -> layout/caret recompute is a no-op but keep rev honest
       bumpBuf();
@@ -3574,8 +3564,8 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   let painted: Frame | null = null;
 
   function frameInput(): FrameInput {
-    const layout = inputLayout();
-    const caret = caretPos(layout);
+    const layout = inputMod.inputLayout();
+    const caret = inputMod.caretPos(layout, cur);
     return {
       W,
       H,
@@ -3830,8 +3820,8 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   /** shared dock geometry for paint + click mapping */
   let nextCaret: { x: number; y: number } | null = null;
   function dockGeom() {
-    const layout = inputLayout();
-    const caret = caretPos(layout);
+    const layout = inputMod.inputLayout();
+    const caret = inputMod.caretPos(layout, cur);
     // dock geometry from the PAINTED frame when one is up (hit-tests must not
     // disagree with the pixels); before the first paint, compute directly
     const fr = painted;
@@ -4182,11 +4172,11 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         P.dock.text(3, yy, vr.text, S.inputFg);
       }
       // input selection: same restyle-over-cells trick as the transcript
-      const ir = inSelRange();
+      const ir = inputMod.inSelRange(inSelAnchor, cur);
       if (ir) {
-        const it = inputText();
+        const it = inputMod.inputText();
         for (let v = firstShown; v < Math.min(totalVis, firstShown + shownCount); v++) {
-          const [rs, re] = rowBufRange(layout, v);
+          const [rs, re] = inputMod.rowBufRange(layout, v);
           const a = Math.max(rs, ir[0]);
           const b = Math.min(re, ir[1]);
           if (a >= b) continue;
@@ -4413,7 +4403,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     return out;
   }
 
-  /** Display width of the first `upto` buffer indices of `s` (inverse of indexAtWidth). */
+  /** Display width of the first `upto` buffer indices of `s` (inverse of inputMod.indexAtWidth). */
   function widthOf(s: string, upto: number): number {
     let w = 0;
     let i = 0;
