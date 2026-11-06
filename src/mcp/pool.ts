@@ -1,5 +1,6 @@
 /**
- * ONE MCP pool per config, shared by every fox instance.
+ * ONE MCP pool for the whole machine, shared by every fox instance and every
+ * config.
  *
  * `buildRegistry` runs per turn (`loop/turn.ts:501`), so before this file every
  * fox process dialed its own MCP children: N TUI windows, a `--acp` server and
@@ -10,38 +11,53 @@
  *
  * Shape: a detached `fox --mcp-pool <sock>` owns the clients and answers over a
  * unix socket. Each instance still sees the single `mcp` tool it always had.
- * The socket path carries a hash of the server config, so two configs cannot
- * share (and silently cross-route) one pool. If the socket cannot be reached the
- * caller dials its own children exactly as before, so MCP never depends on the
- * daemon being spawnable.
+ *
+ * There is exactly ONE daemon (fixed socket name, no config hash). It holds
+ * every server any instance has ever asked for, keyed by SERVER NAME, and dials
+ * incrementally — so two configs that both name `chrome` share one child
+ * instead of spawning two. Each caller still only SEES the servers its own
+ * config declares: the daemon filters the catalog it returns, so a user with
+ * `[mcpServers.chrome]` never gets `pg` tools appearing because another window
+ * configured postgres.
+ *
+ * Lifetime is the daemon's own: it exits after IDLE_EXIT_MS with no connections
+ * and kills what it owns. An instance shutting down closes its socket and
+ * nothing else — a session ending must not stop servers another session is
+ * using.
  *
  * Deliberately NOT shared: tool execution generally, the loop, the session store.
  * Those are ~3.4 MiB of private memory per instance and a protocol each; the MCP
  * pool is ~58 MiB per instance and needs only two messages.
  */
-import { createHash } from "node:crypto";
 import { existsSync, rmSync } from "node:fs";
 import { connect as netConnect, createServer, type Socket } from "node:net";
 import { join } from "node:path";
 import { agentHome } from "../core/paths.ts";
 import { childEnv } from "../core/childenv.ts";
 import type { McpServerConfig } from "../core/config.ts";
-import type { Tool, ToolContext, ToolResult } from "../core/tool.ts";
+import type { Tool, ToolResult } from "../core/tool.ts";
 import { fail } from "../core/tool.ts";
 
 /** argv flag the daemon entry point (and the spawner) agree on. */
 export const POOL_FLAG = "--mcp-pool";
 
-/** No clients for this long and the daemon exits: nothing outlives its users forever. */
+/** No connections for this long and the daemon exits: nothing outlives its users forever. */
 const IDLE_EXIT_MS = 10 * 60_000;
 /** How long a spawner waits for the daemon's socket, or for a concurrent one's bind. */
 const CONNECT_DEADLINE_MS = 5_000;
 /** A single MCP call can legitimately take minutes (a browser navigation). */
 const CALL_TIMEOUT_MS = 15 * 60_000;
 
-export function poolSocketPath(servers: Record<string, McpServerConfig>): string {
-  const h = createHash("sha256").update(JSON.stringify(servers)).digest("hex").slice(0, 16);
-  return join(agentHome(), `mcp-pool-${h}.sock`);
+/**
+ * The daemon's socket. ONE name, not a config hash.
+ *
+ * The old path carried `sha256(config).slice(0,16)`, which meant every distinct
+ * server set got its own daemon — so `{chrome}` and `{chrome,pg}` each spawned a
+ * daemon and `chrome` ran TWICE, on the same profile, which is the exact
+ * duplication the pool exists to prevent.
+ */
+export function poolSocketPath(): string {
+  return join(agentHome(), "mcp-pool.sock");
 }
 
 /** One newline-delimited JSON request/response channel. Client asks, daemon answers. */
@@ -133,17 +149,22 @@ export async function runPoolDaemon(sockPath: string): Promise<void> {
     if (existsSync(sockPath)) rmSync(sockPath, { force: true });
   } catch {}
 
-  let dialing: Promise<Map<string, Tool>> | null = null;
-  const tools = (servers: Record<string, McpServerConfig>) =>
-    (dialing ??= (async () => {
-      const { mcpTools } = await import("./client.ts");
-      const { tools: map, warnings } = await mcpTools(servers);
-      for (const w of warnings) process.stderr.write(`fox-agent: ${w}\n`);
-      return map;
-    })().catch((e) => {
-      dialing = null; // a failed dial must not poison the daemon for later callers
-      throw e;
-    }));
+  /**
+   * Bring the pool up to the union of every config seen so far, then answer
+   * from it.
+   *
+   * INCREMENTAL on purpose. The old daemon memoized ONE dial behind
+   * `dialing ??= …`, keyed on the first caller's config and never invalidated —
+   * so a second instance asking for one more server silently received the first
+   * instance's tool set, forever. `mcpAddServers` dials only what is genuinely
+   * new or changed, so a `chrome` bridge already running for one window is not
+   * re-dialed because another window mentions postgres.
+   */
+  const ensure = async (servers: Record<string, McpServerConfig> | undefined): Promise<void> => {
+    if (!servers || !Object.keys(servers).length) return;
+    const { mcpAddServers } = await import("./client.ts");
+    for (const w of await mcpAddServers(servers)) process.stderr.write(`fox-agent: ${w}\n`);
+  };
 
   let conns = 0;
   let idle: ReturnType<typeof setTimeout> | undefined;
@@ -154,7 +175,9 @@ export async function runPoolDaemon(sockPath: string): Promise<void> {
       void (async () => {
         const { closeMcp } = await import("./client.ts");
         closeMcp();
-        rmSync(sockPath, { force: true });
+        try {
+          rmSync(sockPath, { force: true });
+        } catch {}
         process.exit(0);
       })();
     }, IDLE_EXIT_MS);
@@ -166,35 +189,36 @@ export async function runPoolDaemon(sockPath: string): Promise<void> {
     if (idle) clearTimeout(idle);
     const link = new Link(sock, async (msg) => {
       const method = msg.method;
+      const servers = msg.servers as Record<string, McpServerConfig> | undefined;
+      const declared = Object.keys(servers ?? {});
+
       if (method === "catalog") {
-        const servers = msg.servers as Record<string, McpServerConfig> | undefined;
         if (!servers) throw new Error("catalog requires the server config");
-        const map = await tools(servers);
+        await ensure(servers);
         const { mcpCatalog } = await import("./client.ts");
-        return { catalog: mcpCatalog() };
+        const full = mcpCatalog();
+        // FILTER to what THIS caller declared. The pool holds the union of every
+        // instance's servers; without this, a window configured only with
+        // `chrome` would advertise `pg` tools because another window had
+        // postgres — a tool the model can see but this session never asked for.
+        const mine: Record<string, string[]> = {};
+        for (const name of declared) if (full[name]) mine[name] = full[name]!;
+        return { catalog: mine };
       }
+
       if (method === "call") {
-        const serversCfg = msg.servers as Record<string, McpServerConfig>;
-        const map = await tools(serversCfg);
-        const mcp = map.get("mcp");
-        // The map is empty when no server holds a tool — which is NOT the same
-        // as "could not reach it". Name the configured servers so the caller
-        // can tell a missing config from a server that failed to start.
-        if (!mcp) {
-          const names = Object.keys(serversCfg ?? {});
-          return fail(
-            names.length
-              ? `error: none of the configured MCP servers are up (${names.join(", ")}) — each failed to start or advertised no tools; check the server command and /reload`
-              : "error: no MCP servers are configured",
-          );
-        }
-        return await mcp.run(
-          { server: msg.server as string, tool: msg.tool as string, arguments: msg.arguments },
-          // The bridge's own run() only reads its arguments — the context is
-          // never touched, and the daemon has no session to give it anyway.
-          { sessionId: "mcp-pool", cwd: agentHome() } as ToolContext,
+        await ensure(servers);
+        const { mcpRunTool } = await import("./client.ts");
+        // `declared` is the authorization list: the daemon holds servers this
+        // caller never configured, and it must not run one on request.
+        return await mcpRunTool(
+          msg.server as string,
+          msg.tool as string,
+          msg.arguments,
+          declared,
         );
       }
+
       throw new Error(`unknown pool method ${String(method)}`);
     });
     const done = () => {
@@ -231,7 +255,7 @@ export async function poolTools(
   // dropped — 359 ms and a process, for nothing.
   if (!Object.keys(servers).length) return { tools: new Map(), warnings: [] };
 
-  const sockPath = poolSocketPath(servers);
+  const sockPath = poolSocketPath();
   // The socket is cached inside connectOrSpawn, so both this and warmPool share
   // one connection instead of opening their own and abandoning it.
   const link = await connectOrSpawn(sockPath);
@@ -354,7 +378,7 @@ async function connectOrSpawn(sockPath: string): Promise<Link | null> {
  */
 export function warmPool(servers: Record<string, McpServerConfig>, enabled: boolean | undefined): void {
   if (enabled === false || !Object.keys(servers).length) return;
-  void connectOrSpawn(poolSocketPath(servers)).catch(() => {});
+  void connectOrSpawn(poolSocketPath()).catch(() => {});
 }
 
 function connect(sockPath: string): Promise<Link | null> {

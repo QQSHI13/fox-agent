@@ -279,6 +279,104 @@ export function mcpCatalog(): Record<string, string[]> {
 }
 
 /**
+ * Add servers to the live pool INCREMENTALLY, keyed by name.
+ *
+ * The daemon serves one machine-wide pool, so it accumulates the union of every
+ * config any instance has declared. `mcpTools` cannot express that: its cache
+ * key is the WHOLE config, so a second caller naming one extra server
+ * invalidated everything and closed every child — re-dialing a 30-45 s Chrome
+ * bridge because someone else's window mentioned postgres.
+ *
+ * So this dials only what is genuinely new (or whose config text changed) and
+ * leaves every other slot untouched. Returns one warning per server that could
+ * not come up.
+ */
+export async function mcpAddServers(incoming: Record<string, McpServerConfig>): Promise<string[]> {
+  const warnings: string[] = [];
+  if (!cache) cache = { key: "", warnings: [], clients: [], servers: new Map(), slots: new Map(), tools: new Map() };
+  const pool = cache;
+
+  const toDial: [string, McpServerConfig][] = [];
+  for (const [name, cfg] of Object.entries(incoming)) {
+    const existing = pool.slots.get(name);
+    if (!existing) {
+      toDial.push([name, cfg]);
+      continue;
+    }
+    // Same name, different command/args/env: the caller changed this server, so
+    // replace just this slot. Every other server keeps its child.
+    if (JSON.stringify(existing.cfg) !== JSON.stringify(cfg)) {
+      const i = pool.clients.indexOf(existing.client as LiveClient);
+      if (i >= 0) pool.clients.splice(i, 1);
+      if (existing.client) void closeClients([existing.client]);
+      toDial.push([name, cfg]);
+    }
+  }
+
+  await Promise.all(
+    toDial.map(async ([name, cfg]) => {
+      const slot: ServerSlot = { name, cfg, client: null, tools: [], lastError: null, failures: 0, nextAttemptAt: 0, dialing: null };
+      pool.slots.set(name, slot);
+      const up = await dialSlot(pool, slot);
+      if (!up && slot.lastError) warnings.push(`mcp server '${name}' unavailable: ${slot.lastError.slice(0, 200)}`);
+    }),
+  );
+
+  // Keep `key` equal to the union that is now live, so a later whole-config
+  // `mcpTools()` call for exactly that set still hits the cache instead of
+  // tearing the pool down.
+  const union: Record<string, McpServerConfig> = {};
+  for (const [n, s] of pool.slots) union[n] = s.cfg;
+  pool.key = JSON.stringify(union);
+  pool.warnings = [...pool.warnings, ...warnings];
+  rebuildToolFace(pool);
+  return warnings;
+}
+
+/**
+ * Run one tool on one server, optionally restricted to a caller's own servers.
+ *
+ * `allowed` is the daemon's cross-config guard: the pool holds every server any
+ * instance declared, so without it a caller could invoke a server it never
+ * configured (and never sees in its catalog).
+ */
+export async function mcpRunTool(server: string, tool: string, args: unknown, allowed?: readonly string[]): Promise<ToolResult> {
+  const pool = cache;
+  if (!pool) return fail("error: the MCP pool is not initialized");
+  if (allowed && !allowed.includes(server)) {
+    return fail(`error: no MCP server '${server}' configured here`);
+  }
+  const slot = pool.slots.get(server);
+  if (!slot) {
+    const known = [...pool.slots.keys()];
+    return fail(
+      known.length
+        ? `error: no MCP server '${server}' configured (configured: ${known.join(", ")})`
+        : "error: no MCP servers are configured — add [mcpServers.*] to fox-agent.toml, then /reload",
+    );
+  }
+  const up = await ensureSlot(pool, slot);
+  if (!up) {
+    const wait = Math.max(0, slot.nextAttemptAt - Date.now());
+    const why = slot.lastError ? `last error: ${slot.lastError}` : "not connected";
+    return fail(
+      `error: mcp server '${server}' is down — ${why}` +
+        (wait > 0 ? `; next reconnect attempt in ${Math.ceil(wait / 1000)}s` : ""),
+    );
+  }
+  const st = slot.tools.find((t) => t.name === tool);
+  if (!st) {
+    const have = slot.tools.map((t) => t.name);
+    return fail(
+      have.length
+        ? `error: server '${server}' has no tool '${tool}' (available: ${have.join(", ")})`
+        : `error: server '${server}' connected but advertises no tools`,
+    );
+  }
+  return st.call(args ?? {});
+}
+
+/**
  * The single registry entry's definition, built from a catalog alone.
  *
  * Shared with `mcp/pool.ts`: the daemon publishes the catalog, each instance

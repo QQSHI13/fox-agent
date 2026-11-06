@@ -71,7 +71,7 @@ describe.skipIf(!CAN_RUN)("the shared MCP pool", () => {
   test("two instances share one set of children, and both can call", async () => {
     const { poolSocketPath, poolTools } = await import("../src/mcp/pool.ts");
     const servers = fixtureCfg();
-    const sockPath = poolSocketPath(servers);
+    const sockPath = poolSocketPath();
     await startDaemon(sockPath);
 
     // two independent "instances" — separate connections, separate tool objects
@@ -91,15 +91,62 @@ describe.skipIf(!CAN_RUN)("the shared MCP pool", () => {
     expect(fixtureProcs()).toBe(1);
   }, 60_000);
 
-  test("the socket path is keyed by the server config", async () => {
+  test("there is ONE daemon: the socket path does not depend on the config", async () => {
+    // This used to be the opposite assertion — the path carried
+    // sha256(config).slice(0,16), so two configs got two daemons and a server
+    // both of them named (a `chrome` bridge) was spawned TWICE on the same
+    // profile. One machine-wide daemon is the whole point.
     const { poolSocketPath } = await import("../src/mcp/pool.ts");
-    const one = poolSocketPath({ fix: { command: "x", args: ["a"] } });
-    const same = poolSocketPath({ fix: { command: "x", args: ["a"] } });
-    const other = poolSocketPath({ fix: { command: "x", args: ["b"] } });
-    expect(one).toBe(same);
-    // two different configs must never share a pool: they would cross-route calls
-    expect(other).not.toBe(one);
+    expect(poolSocketPath()).toBe(poolSocketPath());
+    expect(poolSocketPath()).toContain("mcp-pool.sock");
   });
+
+  test("two configs naming different servers share one daemon", async () => {
+    const { poolSocketPath, poolTools } = await import("../src/mcp/pool.ts");
+    const sockPath = poolSocketPath();
+    await startDaemon(sockPath);
+
+    // instance A declares only `fix`
+    const a = await poolTools(fixtureCfg());
+    expect(a).not.toBeNull();
+    expect(fixtureProcs()).toBe(1);
+
+    // instance B declares `fix` PLUS a second server. The daemon must
+    // accumulate, not restart: `fix` is untouched, so its child count stays 1.
+    const both = { ...fixtureCfg(), fix2: { command: process.execPath, args: ["run", FIXTURE] } };
+    const b = await poolTools(both);
+    expect(b).not.toBeNull();
+    // two DIFFERENT server names => two children; the point is that `fix` was
+    // not re-dialed and no second daemon appeared
+    expect(fixtureProcs()).toBe(2);
+
+    // A caller only sees the servers ITS config declared.
+    const aCatalog = a!.tools.get("mcp")!.def.parameters as { properties: { server: { enum: string[] } } };
+    expect(aCatalog.properties.server.enum).toEqual(["fix"]);
+    const bCatalog = b!.tools.get("mcp")!.def.parameters as { properties: { server: { enum: string[] } } };
+    expect(bCatalog.properties.server.enum.sort()).toEqual(["fix", "fix2"]);
+  }, 90_000);
+
+  test("a caller cannot invoke a server another instance configured", async () => {
+    // The daemon holds the union of every config; `declared` is the
+    // authorization list, so a window that never configured `fix2` cannot call
+    // it just because it is running in the pool.
+    const { poolSocketPath, poolTools } = await import("../src/mcp/pool.ts");
+    const sockPath = poolSocketPath();
+    await startDaemon(sockPath);
+
+    const both = { ...fixtureCfg(), fix2: { command: process.execPath, args: ["run", FIXTURE] } };
+    await poolTools(both); // bring fix2 up in the pool
+
+    const onlyFix = await poolTools(fixtureCfg());
+    const res = await onlyFix!.tools.get("mcp")!.run({ server: "fix2", tool: "echo", arguments: { message: "x" } }, {} as never);
+    // a tool may legally return a bare string; narrow so the assertions are
+    // about the failure shape rather than an unchecked cast
+    if (typeof res === "string") throw new Error(`expected a ToolResult, got ${res}`);
+    expect(res.ok).toBe(false);
+    expect(res.output).toContain("fix2");
+    expect(res.output).toContain("configured here");
+  }, 90_000);
 
   test("an empty config never starts a daemon", async () => {
     // It used to: {} hashed to its own socket path and spawned a pool that
@@ -115,7 +162,7 @@ describe.skipIf(!CAN_RUN)("the shared MCP pool", () => {
 
   test("warmPool is a no-op when the pool is switched off", async () => {
     const { warmPool, poolSocketPath } = await import("../src/mcp/pool.ts");
-    const sock = poolSocketPath(fixtureCfg());
+    const sock = poolSocketPath();
     warmPool(fixtureCfg(), false);
     await Bun.sleep(500);
     expect(existsSync(sock)).toBe(false);
