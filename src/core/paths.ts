@@ -40,11 +40,6 @@ export function ptyDir(): string {
   return join(agentHome(), "pty");
 }
 
-/** Pre-1.0 single-file store. Deleted on first open; never migrated. */
-export function legacyDbPath(): string {
-  return join(agentHome(), "sessions.db");
-}
-
 /** Create every directory the layout needs. Idempotent. */
 export function ensureLayout(): void {
   mkdirSync(sessionsDir(), { recursive: true });

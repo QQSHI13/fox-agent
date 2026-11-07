@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 import { existsSync, rmSync } from "node:fs";
 import { estimateTokens } from "../providers/models.ts";
-import { ensureLayout, agentHome, indexDbPath, legacyDbPath, sessionDbPath } from "../core/paths.ts";
+import { ensureLayout, agentHome, indexDbPath, sessionDbPath } from "../core/paths.ts";
 
 export type Role = "system" | "user" | "assistant" | "tool" | "think";
 
@@ -207,7 +207,6 @@ const MAX_OPEN_SESSIONS = 8;
  * is driving and unpins on switch, which is the entire lifecycle.
  */
 const _pinned = new Set<string>();
-let _legacyChecked = false;
 /** FOX_AGENT_HOME the open handles belong to; if it moves, they are the wrong files. */
 let _home: string | null = null;
 
@@ -273,22 +272,6 @@ function ready(): void {
   if (_home !== null && _home !== home) closeAll();
   _home = home;
   ensureLayout();
-  dropLegacy();
-}
-
-/**
- * Remove the pre-1.0 single-file store. Deliberately destructive and not
- * migrated — the layout change was requested with old data explicitly declared
- * disposable, and a stale sessions.db would otherwise sit there forever looking
- * like it still mattered.
- */
-function dropLegacy(): void {
-  if (_legacyChecked) return;
-  _legacyChecked = true;
-  const legacy = legacyDbPath();
-  if (!existsSync(legacy)) return;
-  for (const p of [legacy, `${legacy}-wal`, `${legacy}-shm`]) rmSync(p, { force: true });
-  console.error(`fox-agent: removed pre-1.0 ${legacy} (sessions are per-file now; old history was not migrated)`);
 }
 
 export function indexDb(): Database {
@@ -388,7 +371,6 @@ export function closeAll(): void {
   _pinned.clear();
   _index?.close();
   _index = null;
-  _legacyChecked = false;
   _home = null;
   _stmtCache.clear();
 }

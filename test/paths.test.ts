@@ -1,7 +1,7 @@
-// The on-disk layout is a contract: FOX_AGENT_HOME is honored, one file per session,
-// and the pre-1.0 single-file store is removed rather than left to rot.
+// The on-disk layout is a contract: FOX_AGENT_HOME is honored and every session
+// gets its own file.
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -25,12 +25,11 @@ afterEach(() => {
 
 describe("paths", () => {
   test("every path derives from FOX_AGENT_HOME, read live", async () => {
-    const { agentHome, indexDbPath, sessionDbPath, ptyDir, legacyDbPath } = await import("../src/core/paths.ts");
+    const { agentHome, indexDbPath, sessionDbPath, ptyDir } = await import("../src/core/paths.ts");
     expect(agentHome()).toBe(dir);
     expect(indexDbPath()).toBe(join(dir, "index.db"));
     expect(sessionDbPath("abc")).toBe(join(dir, "sessions", "abc.db"));
     expect(ptyDir()).toBe(join(dir, "pty"));
-    expect(legacyDbPath()).toBe(join(dir, "sessions.db"));
 
     // read on every call, not captured at import: the store and pty tool both
     // depend on this to follow a FOX_AGENT_HOME that changes between test cases
@@ -89,29 +88,4 @@ describe("per-session files", () => {
   });
 });
 
-describe("legacy store", () => {
-  test("a pre-1.0 sessions.db is deleted on first open, not migrated", async () => {
-    const { closeAll } = await import("../src/store/db.ts");
-    closeAll(); // drop handles so this case starts clean
 
-    const legacy = join(dir, "sessions.db");
-    writeFileSync(legacy, "pretend sqlite");
-    writeFileSync(`${legacy}-wal`, "wal");
-    writeFileSync(`${legacy}-shm`, "shm");
-
-    const { createSession } = await import("../src/store/db.ts");
-    createSession("/w", "m1");
-
-    expect(existsSync(legacy)).toBe(false);
-    expect(existsSync(`${legacy}-wal`)).toBe(false);
-    expect(existsSync(`${legacy}-shm`)).toBe(false);
-  });
-
-  test("no legacy file is a silent no-op", async () => {
-    const { closeAll, createSession, listSessions } = await import("../src/store/db.ts");
-    closeAll();
-    mkdirSync(join(dir, "sessions"), { recursive: true });
-    const s = createSession("/w", "m1");
-    expect(listSessions().map((r) => r.id)).toContain(s.id);
-  });
-});
