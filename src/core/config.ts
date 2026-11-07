@@ -394,14 +394,10 @@ function applyEnv(cfg: Config, env: Record<string, string | undefined>) {
  * tell a global file from a project one — both are applied through here.
  */
 /**
- * Keys fox-agent once accepted, with what replaced them. Not in `KNOWN_KEYS`, so
- * they are never applied — this only changes the WARNING a stale config gets, so
- * an upgrade does not greet every turn with an unexplained "unknown key".
+ * Keys fox-agent accepts. Anything else warns — never silently applied, never
+ * silently dropped: a typo'd key would otherwise leave the user on defaults with
+ * no explanation.
  */
-const REMOVED_KEYS: Record<string, string> = {
-  tuiRich: "syntax-tinted code fences and diff-colored tool output are always on now, nothing to set",
-};
-
 const KNOWN_KEYS = new Set([
   "model", "baseUrl", "apiKey", "provider", "maxSteps", "retryLimit", "compactWarnAt", "compactCtxOnlyAt",
   "requestTimeoutMs", "diagnostics", "mcpServers", "mcpSharedPool", "agents", "lsp", "plugins", "skills",
@@ -456,13 +452,7 @@ function applyTable(cfg: Config, t: Record<string, unknown> | null, scope: "glob
   // a typo'd key used to vanish silently, leaving the user on defaults with no
   // idea why — name it the way a project-file plugin entry already is
   for (const k of Object.keys(t)) {
-    if (!KNOWN_KEYS.has(k)) {
-      // A key we REMOVED is not a typo, and "unknown key 'x' — ignored (typo?)"
-      // in every turn's warnings would be both wrong and unrestorable: the user
-      // has no reason to know the knob went away. Name what happened instead.
-      if (REMOVED_KEYS[k]) cfg.warnings.push(`${scope} config: '${k}' was removed — ${REMOVED_KEYS[k]}`);
-      else cfg.warnings.push(`${scope} config: unknown key '${k}' — ignored (typo?)`);
-    }
+    if (!KNOWN_KEYS.has(k)) cfg.warnings.push(`${scope} config: unknown key '${k}' — ignored (typo?)`);
   }
   if (typeof t.model === "string") cfg.model = t.model;
   if (typeof t.baseUrl === "string") {
