@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, test } from "bun:test";
-import { batch, computed, effect, flushNow, setScheduler, signal, untrack } from "../src/tui/reactive.ts";
+import { batch, computed, counter, effect, flushNow, setScheduler, signal, untrack } from "../src/tui/reactive.ts";
 
 // Every test drives flushing explicitly: no scheduler is installed, and these
 // bail out of the microtask fallback by calling flushNow() themselves. That
@@ -63,6 +63,64 @@ describe("signal", () => {
     expect(scheduled).toBe(0);
   });
 });
+
+describe("counter", () => {
+  test("bump raises by one and notifies", () => {
+    const c = counter("t");
+    expect(c()).toBe(0);
+    let seen = -1;
+    let runs = 0;
+    effect(() => {
+      seen = c();
+      runs++;
+    });
+    expect(runs).toBe(1);
+    c.bump();
+    flushNow();
+    expect(c.peek()).toBe(1);
+    expect(seen).toBe(1);
+    expect(runs).toBe(2);
+  });
+
+  test("every bump is observed — a revision cannot be missed by an equal write", () => {
+    // The bug this pins: `statsRev` was a plain counter bumped beside the stats
+    // signal, and three call sites bumped one and not the other, so a cache
+    // invalidated while the region that renders it never repainted. A counter
+    // whose value IS the revision cannot lose a bump to an equality check.
+    const c = counter("rev");
+    let observed = -1;
+    effect(() => {
+      observed = c();
+    });
+    for (let i = 1; i <= 5; i++) {
+      c.bump();
+      flushNow();
+      expect(observed).toBe(i);
+    }
+  });
+
+  test("bump returns the new value", () => {
+    const c = counter();
+    expect(c.bump()).toBe(1);
+    expect(c.bump()).toBe(2);
+    expect(c()).toBe(2);
+  });
+
+  test("peek does not subscribe, so a cache key can be read in a derive", () => {
+    // statsRev() reads statsV.peek(): a cache must see the revision without
+    // subscribing the region that happens to be running
+    const c = counter();
+    let runs = 0;
+    effect(() => {
+      c.peek();
+      runs++;
+    });
+    c.bump();
+    flushNow();
+    expect(runs).toBe(1);
+  });
+});
+
 
 describe("computed", () => {
   test("derives lazily and memoizes until a dependency moves", () => {

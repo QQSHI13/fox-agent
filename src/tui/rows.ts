@@ -82,17 +82,6 @@ export interface StreamRows {
   resize(w: number): void;
 }
 
-/** Index of the seg containing character offset `pos` of the concatenated
- *  seg text; segs.length when pos is at/after the end. */
-function segIndexOf(segs: Seg[], pos: number): number {
-  let acc = 0;
-  for (let i = 0; i < segs.length; i++) {
-    acc += segs[i].t.length;
-    if (pos < acc) return i;
-  }
-  return segs.length;
-}
-
 export function createStreamRows(w: number): StreamRows {
   let width = w;
   let text = "";

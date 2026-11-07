@@ -12,7 +12,7 @@
  */
 import { openTerm, type Term } from "./term.ts";
 import { Screen, charWidth } from "./screen.ts";
-import { createDecoder } from "./keys.ts";
+import { createDecoder, isWheel } from "./keys.ts";
 import { Picker, type PickerAction, type PickerRow } from "./picker.ts";
 
 import { liveTheme } from "./themes.ts";
@@ -140,12 +140,19 @@ export async function runPicker(
     }
     if (k.type === "mouse") return;
     let action: PickerAction | null;
-    if (k.type === "named" && (k.name === "wheelup" || k.name === "wheeldown")) {
+    if (k.type === "named" && isWheel(k.name)) {
+      // A picker list is one-dimensional, so ANY wheel notch scrolls it —
+      // including the horizontal axis. This is deliberately NOT the transcript's
+      // rule: there a tilt is inert (reinterpreting an axis is the bug that made
+      // 66/67 arrive as up/down), but before that decode fix a tilt DID scroll
+      // these lists, and silently dropping it would be a regression for anyone
+      // who tilts rather than rolls.
       // one notch = tuiScrollStep rows, same as the transcript; a returned
       // action (delete confirm etc.) ends the repeat early
+      const dir = k.name === "wheelup" || k.name === "wheelleft" ? "up" : "down";
       action = null;
       for (let i = 0; i < WHEEL_STEP && !action; i++) {
-        action = picker.key({ name: k.name === "wheelup" ? "up" : "down" });
+        action = picker.key({ name: dir });
       }
     } else if (k.type === "char") action = picker.key({ ch: k.ch });
     else action = picker.key({ name: k.name, ctrl: k.ctrl });

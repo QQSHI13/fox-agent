@@ -56,6 +56,46 @@ describe("key decoder", () => {
     ]);
   });
 
+  test("the horizontal wheel axis decodes as left/right, not as up/down", () => {
+    // The bug this pins: the decoder tested `btn & 1` alone to pick a
+    // direction, but bit 6 only says "this is a wheel" — the axis is bit 1.
+    // So 66 (wheel-left) arrived as `wheelup` and 67 (wheel-right) as
+    // `wheeldown`, and a tilt-wheel or shift-scroll silently scrolled the
+    // transcript vertically at the far end of the content.
+    expect(feedKeys("\x1b[<66;10;5M\x1b[<67;3;2M")).toEqual([
+      { type: "named", name: "wheelleft", x: 9, y: 4 },
+      { type: "named", name: "wheelright", x: 2, y: 1 },
+    ]);
+  });
+
+  test("all four wheel codes keep their own axis and direction", () => {
+    // 64 up, 65 down, 66 left, 67 right — the whole table in one assertion so a
+    // future bit-mask change cannot quietly collapse two of them together
+    const ks = feedKeys("\x1b[<64;1;1M\x1b[<65;1;1M\x1b[<66;1;1M\x1b[<67;1;1M");
+    expect(ks.map((k) => (k as { name: string }).name)).toEqual([
+      "wheelup",
+      "wheeldown",
+      "wheelleft",
+      "wheelright",
+    ]);
+  });
+
+  test("X10 mouse encoding also decodes the horizontal wheel", () => {
+    // The fallback dialect has the same bit layout; it used to hardcode
+    // up/down for every wheel code, so it had the identical bug.
+    // ESC [ M <cb> <cx> <cy> with cb = 32 + code, coords = 32 + 1-based
+    const k = feedKeys("\x1b[M\x62\x21\x21"); // cb 66 -> wheelleft at (0,0)
+    expect(k).toEqual([{ type: "named", name: "wheelleft", x: 0, y: 0 }]);
+  });
+
+  test("a horizontal wheel release scrolls nothing, same as the vertical one", () => {
+    expect(feedKeys("\x1b[<66;10;5M\x1b[<66;10;5m\x1b[<67;3;2M\x1b[<67;3;2m")).toEqual([
+      { type: "named", name: "wheelleft", x: 9, y: 4 },
+      { type: "named", name: "wheelright", x: 2, y: 1 },
+    ]);
+  });
+
+
   test("plain keys still decode alongside mouse", () => {
     const ks = feedKeys("h\x1b[<64;1;1M\x1b[A");
     expect(ks.map((k) => (k.type === "char" ? k.ch : k.type === "named" ? k.name : k.type))).toEqual([

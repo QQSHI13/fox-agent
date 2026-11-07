@@ -18,6 +18,7 @@
 import type { UiStep } from "../core/ui.ts";
 import { resolveField, visibleOptions, isCustomOption } from "../core/ui.ts";
 import type { Key } from "./keys.ts";
+import { isWheel } from "./keys.ts";
 
 /** One painted wizard row. `opt` is the option it belongs to, or a sentinel:
  *  -1 header/placeholder, -2 "… N more above", -3 "… N more below". */
@@ -375,9 +376,12 @@ export function createWizard(deps: WizardDeps): Wizard {
       if (name === "up" || name === "down") {
         p.sel = (p.sel + (name === "up" ? -1 : 1) + n) % Math.max(1, n);
         deps.markDirty();
-      } else if (name === "wheelup" || name === "wheeldown") {
+      } else if (isWheel(name)) {
+        // Any notch scrolls the option list: it is one-dimensional, so a
+        // horizontal tilt has nowhere else to go (see isWheel's note).
         // tuiScrollStep rows per notch, like every other scroll surface
-        p.sel = Math.max(0, Math.min(Math.max(0, n - 1), p.sel + (name === "wheelup" ? -SCROLL_STEP : SCROLL_STEP)));
+        const back = name === "wheelup" || name === "wheelleft";
+        p.sel = Math.max(0, Math.min(Math.max(0, n - 1), p.sel + (back ? -SCROLL_STEP : SCROLL_STEP)));
         deps.markDirty();
       } else if (name === "backspace") {
         if (p.filter) {

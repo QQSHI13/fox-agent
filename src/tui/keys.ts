@@ -120,6 +120,21 @@ function wheelName(btn: number): "wheelup" | "wheeldown" | "wheelleft" | "wheelr
 }
 
 /**
+ * Whether a named key is any wheel notch, on either axis.
+ *
+ * One-dimensional surfaces (a picker list, the wizard's option list) scroll on
+ * ANY notch — they have no sideways dimension for a horizontal tilt to mean
+ * something in, and silently ignoring it would be a regression for anyone whose
+ * wheel tilts instead of rolls. Two-dimensional surfaces must NOT use this: the
+ * transcript routes the axes differently, and collapsing them there is exactly
+ * the bug `wheelName` fixed.
+ */
+export function isWheel(name: string | undefined): boolean {
+  return name === "wheelup" || name === "wheeldown" || name === "wheelleft" || name === "wheelright";
+}
+
+
+/**
  * xterm encodes modifiers as a second CSI parameter, 1 + a bitmask:
  * shift=1, alt=2, ctrl=4. So ctrl+right is ESC [ 1 ; 5 C and alt+shift+up
  * is ESC [ 1 ; 4 A. Without decoding this, ctrl+left arrives looking exactly

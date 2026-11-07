@@ -266,6 +266,25 @@ const seqKey = (seq: number, slot: number) => seq * 4 + slot;
 const CHROME_KEY = SEQ_KEY_SPACE - 1;
 
 /**
+ * Every key the virtual chrome header occupies.
+ *
+ * The header is TWO items, not one: the banner line at `CHROME_KEY` and the
+ * detail block at `CHROME_KEY - 1` — the block that actually prints
+ * `model X (Nk ctx)`. Invalidating a header therefore means invalidating this
+ * whole list.
+ *
+ * This exists because it was spelled out by hand at two call sites and one of
+ * them listed only the first key. After a `/model` switch the banner
+ * re-rendered and the model/context line under it stayed frozen at the
+ * pre-switch value until something unrelated dirtied the screen. A single
+ * exported list is a thing a test can pin; two hand-written `touch()` calls
+ * that must agree are not.
+ */
+export function chromeKeys(): readonly number[] {
+  return [CHROME_KEY, CHROME_KEY - 1];
+}
+
+/**
  * Diff-and-touch, as a pure helper so it is unit-testable without reaching into
  * startTui's closure. Given the previous and current item list, return the keys
  * whose render signature CHANGED (and so must be re-rendered). A prior node is
@@ -1118,7 +1137,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       // (chromeItem) re-renders from state (new model/cwd), so just bump its
       // revision; no welcome items to push.
       applyRuntimeConfig();
-      touch(CHROME_KEY);
+      for (const k of chromeKeys()) touch(k);
     }
     const doReload = () => {
       // plugins re-import on the next turn's buildRegistry — /reload exists so
@@ -1166,8 +1185,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     // "model X (Nk ctx)". Touching only the banner left the detail block frozen
     // at the pre-switch model after /model — the banner re-rendered and the
     // line under it did not.
-    touch(CHROME_KEY);
-    touch(CHROME_KEY - 1);
+    for (const k of chromeKeys()) touch(k);
     bumpItems();
     bumpStats();
     bumpCmdOut();
@@ -1252,8 +1270,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       // configured") until something else happened to dirty the screen. Invalidate
       // both chrome keys and ask for a repaint, so the block updates the moment
       // the real config is in.
-      touch(CHROME_KEY);
-      touch(CHROME_KEY - 1);
+      for (const k of chromeKeys()) touch(k);
       // Bumping the stats signal both invalidates the status caches and
       // repaints the bar: the SLOT LIST (`statusBar`) and the stats text are
       // cached against statsRev(), which reads that same signal. They used to be

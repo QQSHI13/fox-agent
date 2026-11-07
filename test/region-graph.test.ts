@@ -25,6 +25,8 @@ interface Harness {
   runs: Record<string, number>;
   bump: Record<string, () => void>;
   setSplit: (v: string) => void;
+  /** the status revision the caches key on — the same number the region reads */
+  revision: () => number;
   dispose: () => void;
 }
 
@@ -94,6 +96,7 @@ function buildGraph(): Harness {
       prompt: () => promptV(promptV.peek() + 1),
     },
     setSplit: (v: string) => paintedV(v),
+    revision: () => statsV.peek(),
     dispose: () => disposers.forEach((d) => d.dispose()),
   };
 }
@@ -182,6 +185,35 @@ describe("region dependency graph", () => {
     expect(g.runs.dock).toBe(before.dock);
     expect(g.runs.status).toBe(before.status);
     g.dispose();
+  });
+
+  test("a stats bump repaints the status bar — the frozen ctx figure", () => {
+    // The bug this pins: the status bar kept TWO numbers for one fact — `statsV`
+    // (which notified the region) and a plain `statsRev` (which keyed its
+    // caches). The `usage` and `tool_end` handlers bumped the cache key and not
+    // the signal, so the provider-reported context figure invalidated a cache
+    // nobody re-read and repainted NOTHING. From outside: switch models, the ctx
+    // size never updates.
+    //
+    // The model below asserts the property that makes that impossible: one bump
+    // reaches both the cache key and the region.
+    const g = buildGraph();
+    const before = g.runs.status;
+    g.bump.stats();
+    flushNow();
+    expect(g.runs.status).toBe(before + 1);
+    expect(g.revision()).toBe(1); // the cache key moved by exactly the same bump
+    g.dispose();
+  });
+
+  test("every stats bump is seen, however many arrive in one flush", () => {
+    // A revision that can be skipped is a revision that can miss a repaint. The
+    // counter's value IS the revision, so coalescing many bumps into one repaint
+    // must still land on the final value.
+    const g = buildGraph();
+    for (let i = 0; i < 5; i++) g.bump.stats();
+    flushNow();
+    expect(g.revision()).toBe(5);
   });
 
   test("dispose stops every region", () => {
