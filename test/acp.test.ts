@@ -63,6 +63,7 @@ const cfg = (): Config => ({
   toolOutputCap: 30_000,
   readCap: 50_000,
   toolPresentationCap: 60_000,
+  autoBackgroundMs: 0, // tests drive tool completion explicitly
   searchLimit: 500,
   searchHidden: false,
   sessionListLimit: 50,

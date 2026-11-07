@@ -157,6 +157,20 @@ export interface Config {
    */
   searchHidden: boolean;
   /**
+   * Stop WAITING on a tool call after this many ms (default 3000, 0 = never).
+   *
+   * The call keeps running and still appends its result row when it finishes —
+   * `tool_end` fires then, so the transcript shows the real output. What changes
+   * is that the turn stops blocking on it: the next step begins without it, and
+   * the result is simply in the context for the following turn. Nothing steers,
+   * nothing notifies, and the agent is never told a call was detached, so a slow
+   * build does not cost a turn's worth of waiting.
+   *
+   * This is deliberately NOT the `repl` background feature: that one is explicit,
+   * returns a job id, and can be polled. This is just "stop waiting".
+   */
+  autoBackgroundMs: number;
+  /**
    * How much of one tool result the VIEW shows, in chars (default 60000,
    * 0 = no truncation). The stored row is always whole: exceeding this cap
    * appends a `replace` view op carrying a head+tail excerpt, which `/undo` and
@@ -282,6 +296,7 @@ const DEFAULTS: Omit<Config, "projectInstructions"> = {
   readCap: 50_000,
   searchLimit: 500,
   searchHidden: false,
+  autoBackgroundMs: 3_000,
   toolPresentationCap: 60_000,
   sessionListLimit: 0,
   tuiCollapsedChars: 240,
@@ -402,7 +417,7 @@ const KNOWN_KEYS = new Set([
   "model", "baseUrl", "apiKey", "provider", "maxSteps", "retryLimit", "compactWarnAt", "compactCtxOnlyAt",
   "requestTimeoutMs", "diagnostics", "mcpServers", "mcpSharedPool", "agents", "lsp", "plugins", "skills",
   "providers", "disabledPlugins", "toolOutputCap", "readCap", "toolPresentationCap", "sessionListLimit",
-  "searchLimit", "searchHidden",
+  "searchLimit", "searchHidden", "autoBackgroundMs",
   "tuiCollapsedChars", "tuiKeptChars", "tuiScrollbar", "tuiScrollStep", "statusBar", "tuiFrameMs", "theme", "contextMarkers", "acpHistory",
   "reasoningEffort",
 ]);
@@ -483,6 +498,7 @@ function applyTable(cfg: Config, t: Record<string, unknown> | null, scope: "glob
   if (typeof t.readCap === "number" && t.readCap >= 1000) cfg.readCap = Math.floor(t.readCap);
   if (typeof t.searchLimit === "number" && t.searchLimit >= 1) cfg.searchLimit = Math.floor(t.searchLimit);
   if (typeof t.searchHidden === "boolean") cfg.searchHidden = t.searchHidden;
+  if (typeof t.autoBackgroundMs === "number" && t.autoBackgroundMs >= 0) cfg.autoBackgroundMs = Math.floor(t.autoBackgroundMs);
   // 0 is meaningful here (no presentation truncation), so it must pass
   if (typeof t.toolPresentationCap === "number" && t.toolPresentationCap >= 0)
     cfg.toolPresentationCap = Math.floor(t.toolPresentationCap);

@@ -1,4 +1,4 @@
-import { appendMessage, appendOps, getSession, recordUsage } from "../store/db.ts";
+import { appendMessage, appendOps, getSession, recordUsage, type MessageRow } from "../store/db.ts";
 import { estimateTokens } from "../providers/models.ts";
 import type { ProviderConfig, ChatMessage, ToolDef, ToolCall, ChatFn } from "../providers/types.ts";
 import { resolveChat } from "../providers/index.ts";
@@ -860,10 +860,25 @@ async function* turnBody(
     }
 
     const liveEvents = new EventQueue();
+    /**
+     * Calls whose result we stopped WAITING for (see `autoBackgroundMs`).
+     *
+     * The promise keeps running: it appends its row and pushes its `tool_end`
+     * exactly as a waited-on call does, so the transcript shows the real output
+     * whenever it lands. The only difference is that this turn does not block on
+     * it, and the model does not read it until the next turn — which is the
+     * whole point (a slow build should not cost a turn of wall-clock), and also
+     * why nothing steers or notifies: the agent is never told, and never has to
+     * poll.
+     */
+    const autoBgMs = effCfg.autoBackgroundMs ?? 0;
+
     const settled = Promise.all(
       prepared.map(async ({ call, veto }) => {
+        const runOne = async (): Promise<{ call: typeof call; node: MessageRow; res: ToolResult }> => {
         let res: ToolResult | undefined = veto;
         res ??= await execToolCall(call, tools, {
+
           sessionId,
           cwd: session.cwd,
           signal,
@@ -965,6 +980,30 @@ async function* turnBody(
         // the same text the next step reads.
         liveEvents.push({ type: "tool_end", id: call.id, seq: node.seq, name: call.name, args: eventArgs(call.arguments), output: res.output, ok: res.ok });
         return { call, node, res };
+        };
+
+        const work = runOne();
+        if (!autoBgMs) return work;
+        // Stop WAITING, not stop working: `work` keeps running and still appends
+        // its row and emits its `tool_end`, so the transcript shows the real
+        // output when it lands. This turn just stops blocking on it.
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const expiry = new Promise<null>((r) => {
+          timer = setTimeout(() => r(null), autoBgMs);
+          timer.unref?.();
+        });
+        try {
+          const winner = await Promise.race([work, expiry]);
+          if (winner === null) {
+            // the orphan keeps running; swallow its eventual rejection so a
+            // failed detached tool cannot become an unhandled rejection
+            void work.catch(() => {});
+            return null;
+          }
+          return winner;
+        } finally {
+          if (timer) clearTimeout(timer);
+        }
       }),
     );
 
@@ -1008,13 +1047,18 @@ async function* turnBody(
     }
     const results = await finished;
 
+    // A detached call settles as `null` — its own row and `tool_end` still land
+    // when the work finishes, but this step must not wait for it, so it is not a
+    // parent candidate and not a result the model sees this turn.
+    const landed = results.filter((r): r is NonNullable<typeof r> => r !== null);
+
     // No second `tool_end` pass here: each call emitted its own through
     // `liveEvents` the moment it settled (see the closure above). Emitting again
     // would double every result, and emitting them HERE instead would re-impose
     // the original bug — everything appearing only once the slowest call ended.
 
     // next step's assistant hangs off the last tool result of this step
-    stepParentId = results[results.length - 1]?.node.id ?? asstNode.id;
+    stepParentId = landed[landed.length - 1]?.node.id ?? asstNode.id;
 
     if (signal?.aborted) {
       // A steer parked while the tool ran (ctrl+s mid-tool, a background job

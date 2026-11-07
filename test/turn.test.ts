@@ -505,6 +505,60 @@ describe("turn manager", () => {
     expect(ends).toHaveLength(2); // exactly one per call, not a second pass
   });
 
+  test("autoBackgroundMs stops the turn waiting on a slow call without telling the agent", async () => {
+    // A slow build should not cost a turn of wall-clock. Past the threshold the
+    // loop stops WAITING on the call: it keeps running, still appends its row and
+    // still emits its own `tool_end` when it lands — but this step stops blocking.
+    // Nothing steers and nothing notifies, so the agent never learns it was
+    // detached and never has to poll.
+    const t = await setup();
+    const s = t.createSession("/w", "m1");
+    let release = () => {};
+    const gate = new Promise<void>((r) => (release = r));
+    const registry = new Map([
+      [
+        "slowtool",
+        {
+          def: { name: "slowtool", description: "", parameters: { type: "object" } },
+          run: async () => {
+            await gate;
+            return "slow finished";
+          },
+        },
+      ],
+    ]) as any;
+    const mock = mockChat([
+      [
+        { type: "tool_call", call: { id: "a", name: "slowtool", arguments: "{}" } },
+        { type: "done", reason: "tool_calls" },
+      ],
+      textDone("moved on"),
+    ]);
+    const { defaultConfig } = await import("../src/core/config.ts");
+    const c = defaultConfig({
+      model: "test-model",
+      baseUrl: "http://localhost:9",
+      apiKey: "test",
+      autoBackgroundMs: 20,
+    });
+    const events = await collect(
+      t.runTurnCore(s.id, cfg(), "go", undefined, { chat: mock.fn as any, registryOverride: registry, quiet: true, config: c }),
+    );
+
+    // the turn completed while the tool was still gated
+    expect(events.some((e) => e.type === "done")).toBe(true);
+    const text = events.filter((e): e is Extract<typeof e, { type: "text" }> => e.type === "text").map((e) => e.delta).join("");
+    expect(text).toContain("moved on");
+    // and it did NOT announce a result it does not have yet
+    expect(events.some((e) => e.type === "tool_end" && e.name === "slowtool")).toBe(false);
+    // nothing told the agent it was detached
+    expect(events.some((e) => e.type === "steered")).toBe(false);
+
+    // releasing afterwards must not throw or leak an unhandled rejection
+    release();
+    await Bun.sleep(30);
+  });
+
   test("the assistant node is announced BEFORE its tool calls start", async () => {
     // An assistant node that carries tool calls has no text of its own — the
     // reply IS the calls. A live UI can only anchor that node when it hears
