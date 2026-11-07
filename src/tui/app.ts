@@ -238,6 +238,90 @@ export function chromeKeys(): readonly number[] {
   return [CHROME_KEY, CHROME_KEY - 1];
 }
 
+type PluginRegion = {
+    key: string;
+    z: number;
+    rect: [number, number, number, number];
+    plane: Plane;
+    owner: string;
+  };
+
+/**
+ * Every piece of state the TUI controller owns.
+ *
+ * These were 61 separate `let`s inside startTui's closure. They are one record
+ * because 112 of the 117 closure members read them: the closure WAS the
+ * coupling, and no function could move to its own file without being handed a
+ * dozen live variables.
+ *
+ * A field here is mutable controller state. Anything derivable belongs in a
+ * `computed` instead — this record is the bottom of the dependency graph, not a
+ * place to cache.
+ */
+interface TuiState {
+  pluginRegionsRev: number;
+  pluginRegions: PluginRegion[];
+  W: number;
+  H: number;
+  items: Item[];
+  streamText: string | null;
+  streamSeq: number;
+  buf: Ch[];
+  cur: number;
+  inSelAnchor: number | null;
+  busy: boolean;
+  frameIdx: number;
+  startedAt: number;
+  flashMsg: string;
+  flashUntil: number;
+  busyMsg: string | null;
+  hintSel: number;
+  stick: boolean;
+  scrollTop: number;
+  ac: AbortController | null;
+  exiting: boolean;
+  exitCode: number;
+  mirrorTimer: ReturnType<typeof setInterval> | null;
+  finish: (() => void) | null;
+  liveThink: Item | null;
+  expandMode: boolean | null;
+  lastPromptTokens: number;
+  hitTotals: { id: string; prompt: number; cached: number } | null;
+  remoteBusy: boolean;
+  countRev: number;
+  inputRowsV: ReturnType<typeof computed<number>>;
+  inPaint: boolean;
+  dirty: boolean;
+  paintTimer: ReturnType<typeof setTimeout> | null;
+  tickRef: (() => void | Promise<void>) | null;
+  lastTickAt: number;
+  microPending: boolean;
+  inputMod: InputModule;
+  press: PressState | null;
+  selA: Anchor | null;
+  selB: Anchor | null;
+  lastMouse: { x: number; y: number; };
+  overlay: Picker | null;
+  sessAllDirs: boolean;
+  promptHandler: ((a: Record<string, string>) => unknown) | null;
+  banner: string | null;
+  restoreOutputRef: (() => void) | null;
+  lastPublishAt: number;
+  cmdOut: string[] | null;
+  paintScheduled: boolean;
+  painted: Frame | null;
+  statsCacheRev: number;
+  statsCacheSegs: string[];
+  lastStatsAt: number;
+  statusBarCacheRev: number;
+  statusBarCacheSlots: string[];
+  nextCaret: { x: number; y: number } | null;
+  regionsLive: boolean;
+  resizing: boolean;
+  paintedTheme: string;
+  lastSpinAt: number;
+}
+
 /**
  * Diff-and-touch, as a pure helper so it is unit-testable without reaching into
  * startTui's closure. Given the previous and current item list, return the keys
@@ -251,6 +335,70 @@ export function chromeKeys(): readonly number[] {
  * key -> signature, mutated in place so it stays in sync across rebuilds.
  */
 export async function startTui(state: HarnessState, applyConfig?: () => { warnings: string[] }) {
+  const tui: TuiState = {
+    pluginRegionsRev: -1,
+    pluginRegions: [],
+    W: 0,
+    H: 0,
+    items: [],
+    streamText: null,
+    streamSeq: -1,
+    buf: [],
+    cur: 0,
+    inSelAnchor: null,
+    busy: false,
+    frameIdx: 0,
+    startedAt: 0,
+    flashMsg: "",
+    flashUntil: 0,
+    busyMsg: null,
+    hintSel: 0,
+    stick: true,
+    scrollTop: 0,
+    ac: null,
+    exiting: false,
+    exitCode: 0,
+    mirrorTimer: null,
+    finish: null,
+    liveThink: null,
+    expandMode: null,
+    lastPromptTokens: 0,
+    hitTotals: null,
+    remoteBusy: false,
+    countRev: 0,
+    inputRowsV: undefined as unknown as ReturnType<typeof computed<number>>,
+    inPaint: false,
+    dirty: true,
+    paintTimer: null,
+    tickRef: null,
+    lastTickAt: 0,
+    microPending: false,
+    inputMod: undefined as unknown as InputModule,
+    press: null,
+    selA: null,
+    selB: null,
+    lastMouse: { x: 0, y: 0 },
+    overlay: null,
+    sessAllDirs: false,
+    promptHandler: null,
+    banner: null,
+    restoreOutputRef: null,
+    lastPublishAt: 0,
+    cmdOut: null,
+    paintScheduled: false,
+    painted: null,
+    statsCacheRev: -1,
+    statsCacheSegs: [],
+    lastStatsAt: 0,
+    statusBarCacheRev: -1,
+    statusBarCacheSlots: [],
+    nextCaret: null,
+    regionsLive: false,
+    resizing: false,
+    paintedTheme: "",
+    lastSpinAt: 0,
+  };
+
   const term: Term = openTerm();
   const screen = new PushCompositor(term);
   // ---- planes: one per screen region, composited into the grid each paint ----
@@ -271,15 +419,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   // statsRev() (the same live-swap cadence as statusBarSlots — /reload bumps
   // the stats signal), so a plugin added or removed at runtime takes effect
   // without a restart.
-  type PluginRegion = {
-    key: string;
-    z: number;
-    rect: [number, number, number, number];
-    plane: Plane;
-    owner: string;
-  };
-  let pluginRegionsRev = -1;
-  let pluginRegions: PluginRegion[] = [];
+  
+  
+  
   const regionWarned = new Set<string>();
   /** one effect per plugin region, disposed when the region goes away */
   const pluginRegionEffects = new Map<string, Disposable>();
@@ -302,8 +444,8 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
    */
   function resolvePluginRegions(): PluginRegion[] {
     const rev = statsRev();
-    if (pluginRegionsRev === rev) return pluginRegions;
-    pluginRegionsRev = rev;
+    if (tui.pluginRegionsRev === rev) return tui.pluginRegions;
+    tui.pluginRegionsRev = rev;
 
     const wanted = new Set<string>();
     for (const p of activePlugins()) for (const name of Object.keys(p.regions ?? {})) wanted.add(`${p.name}/${name}`);
@@ -317,13 +459,13 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       }
     }
 
-    pluginRegions = [];
+    tui.pluginRegions = [];
     for (const p of activePlugins()) {
       for (const [name, r] of Object.entries(p.regions ?? {})) {
         const key = `${p.name}/${name}`;
         const plane = screen.createPlane(`plugin:${key}`, r.z);
         plane.clip = r.rect;
-        pluginRegions.push({ key, z: r.z, rect: r.rect, plane, owner: p.name });
+        tui.pluginRegions.push({ key, z: r.z, rect: r.rect, plane, owner: p.name });
 
         if (pluginRegionEffects.has(key)) continue; // already wired; keep its state
         const handle: TuiRegionPlane = {
@@ -334,8 +476,8 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           // both learns the live width and subscribes to resizes. Copying the
           // number here would freeze the width at registration — the bug that
           // left a widened terminal with a panel stranded mid-screen.
-          get w() { sizeV(); return W; },
-          get h() { sizeV(); return H; },
+          get w() { sizeV(); return tui.W; },
+          get h() { sizeV(); return tui.H; },
           wrap: (text: string, width: number, opts?: TuiWrapOptions) => wrapText(text, width, opts),
         };
         pluginRegionEffects.set(
@@ -347,9 +489,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
               // coordinates in plenty of regions. One dependency read here covers
               // every plugin without asking each to remember.
               sizeV();
-              if (!regionsLive) return; // wiring only, until the first frame
+              if (!tui.regionsLive) return; // wiring only, until the first frame
               plane.clear(); // PULL: paint must draw the WHOLE region, not a delta
-              inPaint = true;
+              tui.inPaint = true;
               try {
                 r.paint?.(handle);
               } catch (e) {
@@ -358,7 +500,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
                   push("error", `region '${key}' (${p.name}) paint threw: ${(e as Error)?.message ?? e}`, { ephemeral: true });
                 }
               } finally {
-                inPaint = false;
+                tui.inPaint = false;
               }
             },
             { label: `plugin:${key}` },
@@ -367,23 +509,23 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       }
     }
     // drop planes whose region vanished this reload
-    const live = new Set(pluginRegions.map((r) => `plugin:${r.key}`));
+    const live = new Set(tui.pluginRegions.map((r) => `plugin:${r.key}`));
     for (const name of screen.planeNames()) if (name.startsWith("plugin:") && !live.has(name)) screen.dropPlane(name);
-    return pluginRegions;
+    return tui.pluginRegions;
   }
-  let W = 0;
-  let H = 0;
+  
+  
 
   // ---- state ----
-  let items: Item[] = [];
-  let streamText: string | null = null;
+  
+  
   /**
    * The seq the in-flight streaming tail WILL get once its assistant node is
    * appended — predicted as last-persisted-seq + 1 (appendMessage assigns
    * MAX(seq)+1). Lets the streaming tail show its [N] marker live, matching the
    * settled item it becomes. -1 = not streaming / no prediction.
    */
-  let streamSeq = -1;
+  
   /**
    * Whether the current step's assistant marker has been spent.
    *
@@ -394,30 +536,30 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
    * fragment wore the same [N] — the 'repeated marker' report — and the chips
    * collapsed to one only when refresh() rebuilt from the store at end of turn.
    */
-  let buf: Ch[] = []; // input buffer; lit chars are literal newlines
-  let cur = 0; // cursor index into buf
+   // input buffer; lit chars are literal newlines
+   // cursor index into buf
   /** The anchored end of an input selection; the caret is the moving end. */
-  let inSelAnchor: number | null = null;
+  
   /** Max visual rows the input dock flexes to before scrolling. */
   const INPUT_MAX_ROWS = 8;
-  let busy = false;
-  let frameIdx = 0;
-  let startedAt = 0;
-  let flashMsg = "";
-  let flashUntil = 0;
+  
+  
+  
+  
+  
   /** last-seen running tool name for the busy label ("thinking — exec") */
-  let busyMsg: string | null = null;
-  let hintSel = 0;
-  let stick = true;
-  let scrollTop = 0;
-  let ac: AbortController | null = null;
+  
+  
+  
+  
+  
   // exit is cooperative: gracefulExit resolves run()'s promise so startTui
   // returns normally and the caller can clean up tools
-  let exiting = false;
-  let exitCode = 0;
+  
+  
   /** the read-only viewer's live-status poll (created in run(), cleared here) */
-  let mirrorTimer: ReturnType<typeof setInterval> | null = null;
-  let finish: (() => void) | null = null;
+  
+  
   const queued: { raw: string; lit: boolean }[] = [];
   /**
    * The think item the current reasoning stream is writing into, or null.
@@ -428,7 +570,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
    * breaks exactly where a step breaks: any tool event or steered line clears
    * it, so thinking between tool calls always starts its own visible block.
    */
-  let liveThink: Item | null = null;
+  
   const expandedRefs = new Set<number>(); // think nodes expanded across refreshes
   /**
    * Persistent expand mode from ctrl+t: true = "unfold all" (new thinking and
@@ -438,10 +580,10 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
    * itself again and unfold-all left new thinking collapsed, so the toggle
    * appeared to keep losing.
    */
-  let expandMode: boolean | null = null;
+  
   // provider-reported usage for the CURRENT turn's last step (real numbers,
   // not estimates) — the only token figure the status bar is willing to show
-  let lastPromptTokens = 0;
+  
   /**
    * Session-cumulative cache hit for the status bar, held in memory so a frame
    * costs no query. Seeded from the sessions *index* row (a primary-key lookup
@@ -450,21 +592,21 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
    * next stamp reads the total `recordUsage` has already written instead of
    * guessing whether it has.
    */
-  let hitTotals: { id: string; prompt: number; cached: number } | null = null;
+  
   function cacheHit(): { prompt: number; cached: number } {
     if (!state.sessionId) return { prompt: 0, cached: 0 };
-    if (!hitTotals || hitTotals.id !== state.sessionId) {
+    if (!tui.hitTotals || tui.hitTotals.id !== state.sessionId) {
       const row = getSession(state.sessionId);
-      hitTotals = { id: state.sessionId, prompt: row?.prompt_tokens ?? 0, cached: row?.cached_tokens ?? 0 };
+      tui.hitTotals = { id: state.sessionId, prompt: row?.prompt_tokens ?? 0, cached: row?.cached_tokens ?? 0 };
     }
-    return hitTotals;
+    return tui.hitTotals;
   }
   /** a read-only viewer's mirror of the owner's live status (see the poll in
    *  run()); local `busy` stays false so the viewer can still type/queue */
-  let remoteBusy = false;
+  
   /** what the status bar + spinner + title treat as "a turn is running" — the
    *  owner's own turn locally, or the mirrored owner turn in a viewer */
-  const displayBusy = () => busy || remoteBusy;
+  const displayBusy = () => tui.busy || tui.remoteBusy;
 
   const revs = new Map<number, number>();
   /**
@@ -478,12 +620,12 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
    * they recolour rows without changing how many there are, and that is exactly
    * why a streamed token (which bumps neither) can reuse the counts.
    */
-  let countRev = 0;
+  
   /** per-width pass-1 memo; see FrameInput.countCache */
   const countCache = new Map<number, { version: number; counts: number[]; itemTotal: number }>();
   const touch = (k: number) => {
     revs.set(k, (revs.get(k) ?? 0) + 1);
-    countRev++;
+    tui.countRev++;
   };
 
   // ---- reactive state ----
@@ -521,7 +663,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
 
   /** Mark the transcript's item list as changed. */
   const bumpItems = () => {
-    countRev++;
+    tui.countRev++;
     itemsV.bump();
   };
   /** Mark the streaming tail as changed. */
@@ -541,7 +683,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
    * The expensive frame never runs. That is O(1) instead of O(session) per
    * keystroke — the whole point of this rewrite.
    */
-  let inputRowsV: ReturnType<typeof computed<number>>;
+  
   const itemSigs = new Map<number, string>();
   const itemSig = (it: Item): string => `${it.kind}|${it.text}|${it.expanded ? 1 : 0}|${it.mdBody ? 1 : 0}|${it.detail ?? ""}`;
   /**
@@ -550,7 +692,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
    * that writes to stdout on every paint would re-arm the loop from inside a
    * paint and spin. Inside a paint, the invalidation alone is enough.
    */
-  let inPaint = false;
+  
   /**
    * PUSH model: every state mutation calls markDirty (or a direct push*). The
    * push fans out to ALL region restampers — each is async + coalesced, so a
@@ -567,30 +709,30 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
    * the window produce ONE flush at the final offset. setInterval remains for
    * spinner pacing and as a missed-event safety net.
    */
-  let dirty = true; // set on every push; cleared by the tick after flush
-  let paintTimer: ReturnType<typeof setTimeout> | null = null;
-  let tickRef: (() => void | Promise<void>) | null = null;
-  let lastTickAt = 0;
+   // set on every push; cleared by the tick after flush
+  
+  
+  
   const BURST_MS = 8;
   const IDLE_MS = 24;
-  let microPending = false;
+  
   const schedulePaint = (ms = BURST_MS) => {
-    if (paintTimer || microPending) return;
-    if (performance.now() - lastTickAt >= IDLE_MS) {
-      microPending = true;
+    if (tui.paintTimer || tui.microPending) return;
+    if (performance.now() - tui.lastTickAt >= IDLE_MS) {
+      tui.microPending = true;
       queueMicrotask(() => {
-        microPending = false;
-        if (exiting) return;
-        tickRef?.();
+        tui.microPending = false;
+        if (tui.exiting) return;
+        tui.tickRef?.();
       });
       return;
     }
-    paintTimer = setTimeout(() => {
-      paintTimer = null;
-      if (exiting) return;
-      tickRef?.();
+    tui.paintTimer = setTimeout(() => {
+      tui.paintTimer = null;
+      if (tui.exiting) return;
+      tui.tickRef?.();
     }, ms);
-    paintTimer.unref?.();
+    tui.paintTimer.unref?.();
   };
   /**
    * Targeted invalidation.
@@ -610,17 +752,17 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     // theme, forced repaint) and a caller that reaches it may well have changed
     // an item's row count without touching the list — a theme switch does not,
     // but a resize does, and the cache must not outlive either.
-    countRev++;
+    tui.countRev++;
     itemsV.bump();
     streamV.bump();
     scrollV.bump();
-    sizeV({ w: W, h: H });
+    sizeV({ w: tui.W, h: tui.H });
     scrollbarV(SCROLLBAR);
     themeV(themeName());
     highlightV(highlightVersion());
     statsV.bump();
     busyV(displayBusy());
-    remoteBusyV(remoteBusy);
+    remoteBusyV(tui.remoteBusy);
     flashV.bump();
     cmdOutV.bump();
     hintSelV.bump();
@@ -635,7 +777,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   const bumpHintSel = () => hintSelV.bump();
   const bumpOverlay = () => overlayV.bump();
   const bumpPrompt = () => promptV.bump();
-  const bumpBusy = () => { busyV(displayBusy()); remoteBusyV(remoteBusy); };
+  const bumpBusy = () => { busyV(displayBusy()); remoteBusyV(tui.remoteBusy); };
   // The scheduler: the reactive core asks for a flush, and the existing
   // frame-slot logic decides when. Without this the core would fall back to a
   // microtask, which repaints outside the frame budget.
@@ -645,7 +787,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   // queue effects that the tick then refuses to drain — the panel would update
   // one frame late, or never if nothing else dirtied the screen.
   setScheduler(() => {
-    dirty = true;
+    tui.dirty = true;
     schedulePaint();
   });
 
@@ -654,13 +796,13 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   // mutable buf/cur/inSelAnchor state and keep the ~30 call sites unchanged.
   // dockGeom is deferred: it is declared below (hoisted) and reads `painted`,
   // which is null until the first frame; the module only calls it on a hit-test.
-  let inputMod: InputModule;
+  
   {
     let dockGeomRef: () => { layout: InputLayout; caret: { visRow: number; colW: number }; shownCount: number; firstShown: number; inputTop: number };
-    inputMod = createInputModule({
-      display: () => buf.map((c) => c.c).join(""),
+    tui.inputMod = createInputModule({
+      display: () => tui.buf.map((c) => c.c).join(""),
       isSecret: () => { const st = getPrompt()?.steps[getPrompt()!.idx]; return !!st?.secret; },
-      width: () => W,
+      width: () => tui.W,
       markDirty: bumpBuf,
       dockGeom: () => dockGeomRef(),
     });
@@ -673,7 +815,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     // same count, and the computed stops — so the O(session) frame derive never
     // runs on a keystroke. Reading `bufV` in the frame effect directly would
     // re-derive the whole transcript on every character.
-    inputRowsV = computed(() => {
+    tui.inputRowsV = computed(() => {
       // All three inputs, or the count goes stale: the buffer (text changed),
       // the width (a resize re-wraps the same text to a different row count),
       // and the prompt (a secret step masks the buffer to bullets, which wraps
@@ -683,21 +825,21 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       bufV();
       sizeV();
       promptV();
-      return inputMod.inputLayout().rows.length;
+      return tui.inputMod.inputLayout().rows.length;
     }, { label: "inputRows" });
   }
   function deleteInSel(): boolean {
-    const r = inputMod.deleteInSel(buf, cur, inSelAnchor);
+    const r = tui.inputMod.deleteInSel(tui.buf, tui.cur, tui.inSelAnchor);
     if (!r.did) return false;
-    buf = r.buf;
-    cur = r.cur;
-    inSelAnchor = r.anchor;
+    tui.buf = r.buf;
+    tui.cur = r.cur;
+    tui.inSelAnchor = r.anchor;
     return true;
   }
   function moveCaretVertical(dir: -1 | 1, extend: boolean) {
-    const r = inputMod.moveCaretVertical(dir, extend, cur, inSelAnchor);
-    cur = r.cur;
-    inSelAnchor = r.anchor;
+    const r = tui.inputMod.moveCaretVertical(dir, extend, tui.cur, tui.inSelAnchor);
+    tui.cur = r.cur;
+    tui.inSelAnchor = r.anchor;
   }
 
   // ---- mouse / selection state ----
@@ -710,12 +852,12 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
    * the press here and acting on release fixes both halves: the toggle happens
    * on release, and a release somewhere else is a drag, which never toggles.
    */
-  let press: PressState | null = null;
-  let selA: Anchor | null = null;
-  let selB: Anchor | null = null;
+  
+  
+  
   /** last pointer position seen (any button/wheel event) — keyboard page keys,
    *  which carry no position of their own, route by where the pointer sits */
-  let lastMouse = { x: 0, y: 0 };
+  
   /** multi-click tracking: same spot inside the window extends the streak */
   const clickStreak = { x: -1, y: -1, at: 0, count: 0 };
 
@@ -728,8 +870,8 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
    * the turn loop and a streaming response all keep running underneath, which is
    * deliberate: opening the list mid-turn must not interrupt the turn.
    */
-  let overlay: Picker | null = null;
-  let sessAllDirs = false; // session overlay scope: this directory vs everywhere
+  
+   // session overlay scope: this directory vs everywhere
 
   /**
    * The active question wizard, or null.
@@ -754,16 +896,16 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
    * core/ui.ts).
    */
   const wizard: Wizard = createWizard({
-    getBuf: () => ({ buf, cur, inputRev: inputMod.rev() }),
+    getBuf: () => ({ buf: tui.buf, cur: tui.cur, inputRev: tui.inputMod.rev() }),
     setBuf: (b, c) => {
-      buf = b as Ch[];
-      cur = c;
-      inputMod.bumpRev();
+      tui.buf = b as Ch[];
+      tui.cur = c;
+      tui.inputMod.bumpRev();
     },
     chsSet: (...a) => chsSet(...a),
     display: (...a) => display(...a),
     insertText: (...a) => insertText(...a),
-    width: () => W,
+    width: () => tui.W,
     dockTop: () => dockFloats().top,
     scrollStep: () => SCROLL_STEP,
     wrapText: (s: string, cols: number) => wrapProse(s, cols),
@@ -773,17 +915,17 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     reportError: (...a) => reportError(...a),
   });
   /** The command's run handler, captured when startPrompt opens the wizard. */
-  let promptHandler: ((a: Record<string, string>) => unknown) | null = null;
+  
   function runPromptHandler(answers: Record<string, string>): unknown {
-    const h = promptHandler;
-    promptHandler = null;
+    const h = tui.promptHandler;
+    tui.promptHandler = null;
     return h ? h(answers) : undefined;
   }
-  const hasSel = () => selA !== null && selB !== null && !(selA.row === selB.row && selA.col === selB.col);
+  const hasSel = () => tui.selA !== null && tui.selB !== null && !(tui.selA.row === tui.selB.row && tui.selA.col === tui.selB.col);
   function clearSel() {
-    if (selA || selB) {
-      selA = null;
-      selB = null;
+    if (tui.selA || tui.selB) {
+      tui.selA = null;
+      tui.selB = null;
       // a selection only restyles transcript cells — it cannot change what the
       // transcript contains, so this is a scroll-region repaint, not an items
       // change, and must not invalidate the O(session) frame derive
@@ -794,7 +936,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   // ---- item mutations ----
   function push(kind: ItemKind, text: string, opts?: { ref?: number; seq?: number; expanded?: boolean; ephemeral?: boolean; toolResult?: boolean; detail?: string; welcome?: boolean; mdBody?: boolean; markerCont?: boolean }) {
     const it: Item = { k: nk(), kind, text, ref: opts?.ref, seq: opts?.seq, expanded: opts?.expanded, ephemeral: opts?.ephemeral, toolResult: opts?.toolResult, detail: opts?.detail, welcome: opts?.welcome, mdBody: opts?.mdBody, markerCont: opts?.markerCont };
-    items.push(it);
+    tui.items.push(it);
     touch(it.k);
     bumpItems();
     return it;
@@ -804,20 +946,20 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     // it, so a new stream never merges into a think item from before a tool
     // ran (or from a previous turn's replayed transcript). liveThink is that
     // seal — set on creation, cleared by any tool/steer event (see runAgent).
-    if (liveThink) {
-      liveThink.text += delta;
-      touch(liveThink.k);
+    if (tui.liveThink) {
+      tui.liveThink.text += delta;
+      touch(tui.liveThink.k);
     } else {
-      liveThink = push("think", delta, { expanded: expandMode ?? false });
+      tui.liveThink = push("think", delta, { expanded: tui.expandMode ?? false });
       // a new think block will persist BEFORE the streaming text (turn.ts appends
       // reasoning first), so the reply's seq is one higher than predicted — bump it
-      if (streamSeq > 0) streamSeq++;
+      if (tui.streamSeq > 0) tui.streamSeq++;
     }
     bumpItems();
   }
 
   function refresh() {
-    const prev = items;
+    const prev = tui.items;
     // Stage 4: re-attach the genuinely LIVE items by reference — the in-flight
     // think block, running tool pairs, subagent lines — never by a heuristic.
     // The old `seq === undefined && ref === undefined` filter caught EVERY minted
@@ -829,7 +971,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     // settled node at its true position; only the currently-referenced live set
     // must survive, re-inserted where it sits.
     const liveRefs = new Set<Item>();
-    if (liveThink) liveRefs.add(liveThink);
+    if (tui.liveThink) liveRefs.add(tui.liveThink);
     for (const [, live] of liveTools) {
       liveRefs.add(live.head);
       liveRefs.add(live.body);
@@ -853,17 +995,17 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       }
       liveSlots.push({ item: it, afterKey });
     }
-    items = [...rebuilt];
+    tui.items = [...rebuilt];
     for (const { item, afterKey } of liveSlots) {
-      const at = afterKey === null ? 0 : items.findIndex((a) => a.k === afterKey) + 1;
-      items.splice(at < 0 ? items.length : at, 0, item);
+      const at = afterKey === null ? 0 : tui.items.findIndex((a) => a.k === afterKey) + 1;
+      tui.items.splice(at < 0 ? tui.items.length : at, 0, item);
     }
     // log items keep stable seq-derived keys, so their cache entries stay
     // warm across rebuilds (the whole point); minted-key items (welcome,
     // ephemeral, streaming) die here — sweep their entries once per rebuild
     // rather than paying an eviction scan on every cache insert every frame
-    if (lineCache.size > items.length) {
-      const live = new Set(items.map((i) => i.k));
+    if (lineCache.size > tui.items.length) {
+      const live = new Set(tui.items.map((i) => i.k));
       for (const k of lineCache.keys()) if (!live.has(k)) lineCache.delete(k);
       // `revs` needs the same sweep. Every minted item (a notice on each session
       // switch, a warning, each streaming md fragment) takes a NEW key from a
@@ -880,7 +1022,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     // `for (it of items) touch(it.k)` invalidated everything and made refresh()
     // O(history) re-wrap each time. The pure helper is unit-testable (see
     // test/difftouch.test.ts).
-    for (const k of diffTouchKeys(prev, items, (i) => i.k, itemSig, itemSigs)) touch(k);
+    for (const k of diffTouchKeys(prev, tui.items, (i) => i.k, itemSig, itemSigs)) touch(k);
     // the rebuild drops any chrome header lifetime — it re-derives from state
     bumpItems();
     bumpStats();
@@ -930,10 +1072,10 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     const row = getMessage(state.sessionId, seq);
     if (!row) return null;
     const anchored = nodeToItems(row, callMaps);
-    const at = replace.length ? items.indexOf(replace[0]) : -1;
-    items = items.filter((i) => !replace.includes(i));
-    if (at >= 0) items.splice(at, 0, ...anchored);
-    else items.push(...anchored);
+    const at = replace.length ? tui.items.indexOf(replace[0]) : -1;
+    tui.items = tui.items.filter((i) => !replace.includes(i));
+    if (at >= 0) tui.items.splice(at, 0, ...anchored);
+    else tui.items.push(...anchored);
     for (const it of anchored) touch(it.k);
     return anchored;
   }
@@ -1023,7 +1165,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     // re-interpreted as !shell or /slash), queued when a turn is running —
     // the same lane a user's typed message takes mid-turn
     if (res.submit) {
-      if (busy) {
+      if (tui.busy) {
         queued.push({ raw: res.submit, lit: true });
         bumpCmdOut();
       } else {
@@ -1105,7 +1247,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   const getPrompt = (): PromptState | null => wizard.state();
   function startPrompt(req: PromptRequest) {
     // Capture the command's run handler; the wizard calls it via deps.run on finish.
-    promptHandler = (answers) => {
+    tui.promptHandler = (answers) => {
       try {
         applyResult(req.run(answers, state));
       } catch (e) {
@@ -1194,7 +1336,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
    * the Option A root fix for chrome sinking/duplicating. Renders as items[0]
    * via frameInput's prepend.
    */
-  let banner: string | null = null;
+  
   /** The virtual chrome header, as TWO items: the banner line (info,
    * highlighted) and the detail block (toolbody, dim) — so only the first
    * line carries the highlight, matching the original welcome. */
@@ -1202,10 +1344,10 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     // Welcome banner only — for a genuinely fresh launch (pendingSession). A
     // bound session's info line is an EPHEMERAL notice (pushed on create/switch),
     // not a persistent virtual header.
-    if (!banner) banner = BANNERS[Math.floor(Math.random() * BANNERS.length)];
+    if (!tui.banner) tui.banner = BANNERS[Math.floor(Math.random() * BANNERS.length)];
     const info = lookupModel(state.provider.model);
     return [
-      { k: CHROME_KEY, kind: "info", text: `fox-agent v${VERSION} — ${banner}` },
+      { k: CHROME_KEY, kind: "info", text: `fox-agent v${VERSION} — ${tui.banner}` },
       {
         k: CHROME_KEY - 1,
         kind: "toolbody",
@@ -1248,11 +1390,11 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       // Stand down the mirrored owner state. A crashed owner leaves its `live`
       // kv saying busy:true forever, and the mirror only refreshes while
       // readOnly — so without this the spinner would run with no turn behind it.
-      if (remoteBusy) {
-        remoteBusy = false;
-        busyMsg = null;
-        streamText = null;
-        startedAt = 0;
+      if (tui.remoteBusy) {
+        tui.remoteBusy = false;
+        tui.busyMsg = null;
+        tui.streamText = null;
+        tui.startedAt = 0;
         bumpBusy();
         bumpStream();
       }
@@ -1279,7 +1421,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
    */
   function switchSession(id: string) {
     if (id === state.sessionId) return;
-    if (busy) {
+    if (tui.busy) {
       // a running turn still writes to the old session's store handle and its
       // events are mid-flight — unpinning/releasing here would orphan it
       flash("busy — esc interrupts first");
@@ -1299,12 +1441,12 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     pinSession(id);
     attachTuiHost(id);
     expandedRefs.clear(); // refs are per-session seqs; carrying them over expands unrelated nodes
-    expandMode = null; // likewise the ctrl+t fold direction — the new session starts on defaults
+    tui.expandMode = null; // likewise the ctrl+t fold direction — the new session starts on defaults
     // per-session token state, same reasoning: statusText() prefers the live
     // figure over the persisted one, so a stale one would override the new
     // session's stored last report until its first call lands
-    lastPromptTokens = 0;
-    hitTotals = null;
+    tui.lastPromptTokens = 0;
+    tui.hitTotals = null;
     refresh();
     refreshLock(id);
     // The ephemeral session-info line announces the switch, then dies on the
@@ -1316,8 +1458,8 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   /** Build and show the session overlay. */
   function openPicker(req: PickerRequest) {
     if (req.kind !== "sessions") return;
-    sessAllDirs = false;
-    overlay = new Picker(currentSessionRows(), {
+    tui.sessAllDirs = false;
+    tui.overlay = new Picker(currentSessionRows(), {
       title: "sessions — most recently used first",
       // a read-only viewer may create and fork: both write to a NEW session,
       // never the one locked by the owner — after the switch this TUI owns the
@@ -1357,11 +1499,11 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   }
 
   function currentSessionRows(): PickerRow[] {
-    const scope = sessAllDirs ? {} : { cwd: process.cwd() };
+    const scope = tui.sessAllDirs ? {} : { cwd: process.cwd() };
     return sessionRows(
       sessionList({ currentId: state.sessionId, limit: state.config?.sessionListLimit, ...scope }),
       relTime,
-      sessAllDirs,
+      tui.sessAllDirs,
     );
   }
 
@@ -1372,10 +1514,10 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
    * both close the picker and clear the input.
    */
   function overlayKey(k: Key): boolean {
-    if (!overlay) return false;
+    if (!tui.overlay) return false;
     if (k.type === "mouse") return true; // the modal owns the screen; clicks do nothing
     if (k.type === "paste") {
-      for (const ch of k.text.replace(/\s+/g, "")) overlay.key({ ch });
+      for (const ch of k.text.replace(/\s+/g, "")) tui.overlay.key({ ch });
       bumpOverlay();
       return true;
     }
@@ -1384,29 +1526,29 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       // tuiScrollStep rows per notch, same repeat as the standalone picker;
       // an action (delete confirm etc.) ends the repeat early
       for (let i = 0; i < SCROLL_STEP && !action; i++) {
-        action = overlay.key({ name: k.name === "wheelup" ? "up" : "down" });
+        action = tui.overlay.key({ name: k.name === "wheelup" ? "up" : "down" });
       }
-    } else if (k.type === "char") action = overlay.key({ ch: k.ch });
-    else action = overlay.key({ name: k.name, ctrl: k.ctrl });
+    } else if (k.type === "char") action = tui.overlay.key({ ch: k.ch });
+    else action = tui.overlay.key({ name: k.name, ctrl: k.ctrl });
     bumpOverlay();
     if (!action) return true;
     switch (action.kind) {
       case "cancel":
-        overlay = null;
+        tui.overlay = null;
         break;
       case "choose":
-        overlay = null;
+        tui.overlay = null;
         switchSession(action.id);
         break;
       case "new": {
-        overlay = null;
+        tui.overlay = null;
         const res = runSlashCommand("/new", state);
         if (res?.newSessionId) switchSession(res.newSessionId);
         if (res?.output) push("info", res.output);
         break;
       }
       case "fork": {
-        overlay = null;
+        tui.overlay = null;
         const res = runSlashCommand(`/fork ${action.id}`, state);
         if (res?.output) push("info", res.output);
         if (res?.newSessionId) switchSession(res.newSessionId);
@@ -1417,13 +1559,13 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         // list between each one. The confirm already happened inside the picker.
         const res = runSlashCommand(`/delete ${action.id} yes`, state);
         if (res?.output) flash(res.output);
-        overlay.setRows(currentSessionRows());
+        tui.overlay.setRows(currentSessionRows());
         break;
       }
       case "all":
-        sessAllDirs = !sessAllDirs;
-        overlay.opts.title = sessAllDirs ? "sessions — all directories" : "sessions — most recently used first";
-        overlay.setRows(currentSessionRows());
+        tui.sessAllDirs = !tui.sessAllDirs;
+        tui.overlay.opts.title = tui.sessAllDirs ? "sessions — all directories" : "sessions — most recently used first";
+        tui.overlay.setRows(currentSessionRows());
         break;
     }
     return true;
@@ -1487,7 +1629,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     const callArgs = new Map<string, string>();
     // a new turn seals the previous stream: its first reasoning delta must not
     // merge into a replayed think item from history (see liveThink)
-    liveThink = null;
+    tui.liveThink = null;
     // childItems is module-scoped now (Stage 4): refresh() re-attaches subagent
     // lines across a rebuild. Clear any from a previous turn — their lifetime
     // is the delegation's run.
@@ -1505,7 +1647,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           // the reply streaming in now will be the NEXT persisted seq — predict it
           // so the streaming tail shows its marker live too (refined when the
           // assistant node actually lands, in case thinking took a slot first)
-          streamSeq = ev.seq + 1;
+          tui.streamSeq = ev.seq + 1;
           touch(userItem.k);
           bumpItems();
         } else if (ev.type === "assistant") {
@@ -1515,24 +1657,24 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           // click width are exact, not estimated.
           // It also opens the NEXT step: the reply after a tool call is a new
           // assistant node, so the marker budget resets here.
-          if (streamSeq !== ev.seq) {
-            streamSeq = ev.seq;
+          if (tui.streamSeq !== ev.seq) {
+            tui.streamSeq = ev.seq;
             bumpItems();
           }
           // Stage 3 think-anchor: the step's think row is persisted just before
           // the assistant node; thinkSeq names it. reconcileNode swaps the minted
           // liveThink for the anchored item (same construction as loadItems) so
           // the store rebuild and the live view cannot drift on the think block.
-          if (ev.thinkSeq > 0 && liveThink && state.sessionId) {
+          if (ev.thinkSeq > 0 && tui.liveThink && state.sessionId) {
             // Capture the expand state BEFORE reconcileNode — reconcileNode reads
             // the live item's position, and a function call resets TS's narrowing
             // of the captured `let liveThink` (read after → typed never).
-            const liveItem: Item = liveThink as Item;
+            const liveItem: Item = tui.liveThink as Item;
             const wasExpanded = !!liveItem.expanded;
             const anchored = reconcileNode(ev.thinkSeq, { label: new Map(), raw: new Map(), name: new Map() }, [liveItem]);
             if (anchored) {
               if (wasExpanded) expandedRefs.add(ev.thinkSeq);
-              liveThink = null;
+              tui.liveThink = null;
             }
           }
           // Stage 3b md-collapse: the store holds ONE assistant row per step,
@@ -1543,7 +1685,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
             reconcileNode(ev.seq, { label: new Map(), raw: new Map(), name: new Map() }, [...mdFragments]);
             mdFragments.length = 0;
             md = "";
-            streamText = null;
+            tui.streamText = null;
           } else if (state.sessionId) {
             // An assistant node that carries tool calls has NO text of its own —
             // the reply IS the calls. Nothing streamed, so nothing above anchored
@@ -1562,15 +1704,15 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           publishLive(); // think deltas markDirty anyway; piggyback the status
         } else if (ev.type === "text") {
           md += ev.delta;
-          if (streamText !== md) {
-            streamText = md;
+          if (tui.streamText !== md) {
+            tui.streamText = md;
             publishLive(); // viewers mirror the streaming text
             bumpStream();
             bumpStats(); // the status bar's "responding" state and ctx figure
           }
         } else if (ev.type === "usage") {
-          lastPromptTokens = ev.prompt_tokens; // provider-reported context size
-          hitTotals = null; // recordUsage already stored this call's totals
+          tui.lastPromptTokens = ev.prompt_tokens; // provider-reported context size
+          tui.hitTotals = null; // recordUsage already stored this call's totals
           // The ctx figure in the status bar is derived from this number. It
           // used to invalidate a cache and notify nobody, so the bar kept
           // showing the pre-turn figure until some unrelated event moved.
@@ -1578,16 +1720,16 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         } else if (ev.type === "tool_start") {
           callLabels.set(ev.id, `${ev.name}${argsSummary(ev.args)}`);
           callArgs.set(ev.id, ev.args);
-          liveThink = null; // a tool boundary seals the thinking block before it
+          tui.liveThink = null; // a tool boundary seals the thinking block before it
           // Flush the reply text FIRST so the tool head lands UNDER the message
           // it answers — not above it. (A tool_start with no flush pushed the
           // head ahead of the still-buffered md, inverting the order.)
           if (md) {
             mdFragments.push(push("md", md, {}));
             md = "";
-            streamText = null;
+            tui.streamText = null;
           }
-          busyMsg = ev.name;
+          tui.busyMsg = ev.name;
           // Create the head HERE, on tool_start, not on first output: a tool
           // that takes a while and streams nothing (a long build, a test run)
           // would otherwise show nothing at all and the agent looked hung. The
@@ -1603,9 +1745,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
             liveTools.set(ev.id, {
               head: push("toolhead", `» ${callLabels.get(ev.id) ?? ev.name}`, {
                 detail: argsJson(callArgs.get(ev.id) ?? ""),
-                expanded: expandMode === true || undefined,
+                expanded: tui.expandMode === true || undefined,
               }),
-              body: push("toolbody", "", { toolResult: true, expanded: expandMode === true }),
+              body: push("toolbody", "", { toolResult: true, expanded: tui.expandMode === true }),
               text: "",
             });
           }
@@ -1617,11 +1759,11 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           // The pair renders through the same itemRows path as settled items —
           // same head label + expandable input, same body — so streaming and
           // settled show the same content.
-          liveThink = null;
+          tui.liveThink = null;
           if (md) {
             mdFragments.push(push("md", md, {}));
             md = "";
-            streamText = null;
+            tui.streamText = null;
           }
           let live = liveTools.get(ev.id);
           if (!live) {
@@ -1632,7 +1774,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
             live = {
               head: push("toolhead", `» ${callLabels.get(ev.id) ?? "exec"}`, {
                 detail: argsJson(callArgs.get(ev.id) ?? ""),
-                expanded: expandMode === true || undefined,
+                expanded: tui.expandMode === true || undefined,
               }),
               // folded by default while in flight: a running tool's output is
               // noise until it settles, and the expanded tail would otherwise
@@ -1647,7 +1789,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           touch(live.body.k);
           bumpItems();
         } else if (ev.type === "tool_end") {
-          liveThink = null;
+          tui.liveThink = null;
           // swap the live pair for the settled result, keeping whatever the
           // user unfolded mid-stream open — output you were watching must not
           // snap shut the moment the tool finishes
@@ -1657,13 +1799,13 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           if (live) {
             headOpen = !!live.head.expanded;
             bodyOpen = !!live.body.expanded;
-            items = items.filter((i) => i !== live.head && i !== live.body);
+            tui.items = tui.items.filter((i) => i !== live.head && i !== live.body);
             liveTools.delete(ev.id);
           }
           if (md) {
             mdFragments.push(push("md", md, {}));
             md = "";
-            streamText = null;
+            tui.streamText = null;
           }
           // Stage 2 converge: reconcileNode builds the settled pair the SAME way
           // loadItems does (nodeToItems), so the live view and the store rebuild
@@ -1681,9 +1823,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           if (anchoredPair) {
             // carry mid-stream expand into expandedRefs (the mechanism loadItems
             // honors), so output you were watching does not snap shut
-            if (bodyOpen || expandMode === true || headOpen) expandedRefs.add(ev.seq);
+            if (bodyOpen || tui.expandMode === true || headOpen) expandedRefs.add(ev.seq);
             for (const it of anchoredPair) {
-              if (it.kind === "toolhead" && (headOpen || expandMode === true)) it.expanded = true;
+              if (it.kind === "toolhead" && (headOpen || tui.expandMode === true)) it.expanded = true;
             }
           } else {
             // raw text, newlines intact: collapsed rendering shows an arrow line,
@@ -1691,8 +1833,8 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
             // rides `seq` (rendered as the column-0 gutter chip), NOT baked into
             // text like the old prefix.
             const detail = argsJson(ev.args);
-            push("toolhead", `» ${callLabels.get(ev.id) ?? `${ev.name}${argsSummary(ev.args)}`}${ev.ok ? "" : " — failed"}`, { seq: ev.seq, detail, expanded: headOpen || expandMode === true || undefined });
-            const bodyOpenFinal = expandedRefs.has(ev.seq) || bodyOpen || expandMode === true;
+            push("toolhead", `» ${callLabels.get(ev.id) ?? `${ev.name}${argsSummary(ev.args)}`}${ev.ok ? "" : " — failed"}`, { seq: ev.seq, detail, expanded: headOpen || tui.expandMode === true || undefined });
+            const bodyOpenFinal = expandedRefs.has(ev.seq) || bodyOpen || tui.expandMode === true;
             if (bodyOpenFinal) expandedRefs.add(ev.seq);
             // todo bodies are markdown task lists — always visible, rendered
             // as md (see itemRows mdBody); a task list hidden behind a click is
@@ -1712,11 +1854,11 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           // identical "session · exec" lines down the transcript. The key drops
           // any "(retry N)" suffix so a retried delegation keeps its one line.
           // A tool boundary like any other: it seals the thinking block.
-          liveThink = null;
+          tui.liveThink = null;
           if (md) {
             mdFragments.push(push("md", md, {}));
             md = "";
-            streamText = null;
+            tui.streamText = null;
           }
           const ckey = ev.session.replace(/ \(retry \d+\)$/, "");
           let child = childItems.get(ckey);
@@ -1730,11 +1872,11 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           touch(child.item.k);
           bumpItems();
         } else if (ev.type === "steered") {
-          liveThink = null;
+          tui.liveThink = null;
           if (md) {
             mdFragments.push(push("md", md, {}));
             md = "";
-            streamText = null;
+            tui.streamText = null;
           }
           push("user", `❯ ${ev.text}`);
         } else if (ev.type === "done") {
@@ -1749,9 +1891,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       else reportError(`fox-agent error: ${(e as Error).message ?? e}`, e);
     } finally {
       if (md) mdFragments.push(push("md", md, {}));
-      streamText = null;
-      streamSeq = -1; // the turn's stream is over; the settled item carries the real seq
-      liveThink = null; // refresh() rebuilds items; no reference may survive it
+      tui.streamText = null;
+      tui.streamSeq = -1; // the turn's stream is over; the settled item carries the real seq
+      tui.liveThink = null; // refresh() rebuilds items; no reference may survive it
       // Settle any still-running live tool as interrupted: on abort its result
       // is never persisted (no tool_end), so the pair would otherwise keep its
       // "running" look forever with an empty body. Mark the head so a partially
@@ -1762,18 +1904,18 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         // the transcript. Delete from items — the '[interrupted]' error line
         // already tells the user the turn stopped.
         for (const [, live] of liveTools) {
-          items = items.filter((i) => i !== live.head && i !== live.body);
+          tui.items = tui.items.filter((i) => i !== live.head && i !== live.body);
         }
       }
       liveTools.clear();
       setBusy(false);
-      ac = null;
+      tui.ac = null;
       // end-of-turn notification (OSC 9): a turn that ran long enough to walk
       // away from deserves a toast when it lands; errors always announce —
       // even a fast failure is exactly what the user is waiting on. Terminals
       // without OSC 9 drop the sequence silently.
-      const ran = Date.now() - startedAt;
-      const errored = items[items.length - 1]?.kind === "error";
+      const ran = Date.now() - tui.startedAt;
+      const errored = tui.items[tui.items.length - 1]?.kind === "error";
       if (errored || ran >= 10_000) {
         const secs = Math.round(ran / 1000);
         term.notify(errored ? `fox-agent — turn failed (${secs}s)` : `fox-agent — turn done (${secs}s)`);
@@ -1801,13 +1943,13 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
    */
   async function sendToAgent(text: string) {
     const ctl = new AbortController();
-    ac = ctl;
+    tui.ac = ctl;
     try {
       for await (const _ev of turnStream(text, ctl.signal, ctl)) {
         // rendering happens inside turnStream; nothing to do with the events here
       }
     } finally {
-      if (ac === ctl) ac = null;
+      if (tui.ac === ctl) tui.ac = null;
     }
   }
 
@@ -1826,7 +1968,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       chat: undefined, // let runTurnCore resolve it
       ui: uiBridge,
       turn: (text, ctl) => {
-        ac = ctl; // esc interrupts a steered turn exactly like a typed one
+        tui.ac = ctl; // esc interrupts a steered turn exactly like a typed one
         bumpCmdOut(); // the steering float disappears as the text is claimed
         return turnStream(text, ctl.signal, ctl);
       },
@@ -1856,17 +1998,17 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     await sendToAgent(expandMentions(raw, state.cwd).text);
   }
 
-  const display = () => buf.map((c) => c.c).join("");
-  const firstCharLit = () => buf.find((c) => c.c.trim().length > 0)?.lit ?? false;
+  const display = () => tui.buf.map((c) => c.c).join("");
+  const firstCharLit = () => tui.buf.find((c) => c.c.trim().length > 0)?.lit ?? false;
 
   function chsSet(text: string) {
     // iterate code points, not UTF-16 units: `split("")` would tear an emoji
     // into surrogate halves, and every later width/delete calculation inherits
     // the damage
-    inSelAnchor = null;
-    buf = [...text].map((x) => ({ c: x, lit: false }));
-    cur = buf.length;
-    inputMod.bumpRev();
+    tui.inSelAnchor = null;
+    tui.buf = [...text].map((x) => ({ c: x, lit: false }));
+    tui.cur = tui.buf.length;
+    tui.inputMod.bumpRev();
     bumpBuf();
   }
 
@@ -1885,10 +2027,10 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     if (state.readOnly && (lit || !t0.startsWith("/"))) {
       return flash("read-only — a turn is running in another process here; drafting is fine, sending waits");
     }
-    inSelAnchor = null;
-    buf = [];
-    cur = 0; // a stale index past the new (empty) buffer crashes graphemeBack on the next backspace
-    inputMod.bumpRev(); // the layout cache is keyed on this — without it a multi-line message leaves a multi-line input box
+    tui.inSelAnchor = null;
+    tui.buf = [];
+    tui.cur = 0; // a stale index past the new (empty) buffer crashes graphemeBack on the next backspace
+    tui.inputMod.bumpRev(); // the layout cache is keyed on this — without it a multi-line message leaves a multi-line input box
     bumpBuf();
     const t = t0;
 
@@ -1899,8 +2041,8 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       const matches = matchCommands(t);
       const exact = matches.length === 1 && matches[0].name === t;
       if (!exact && matches.length) {
-        const target = matches[Math.min(hintSel, matches.length - 1)];
-        hintSel = 0;
+        const target = matches[Math.min(tui.hintSel, matches.length - 1)];
+        tui.hintSel = 0;
         // a command that wants an argument gets completed, not fired — running
         // `/delete` on enter with no id would just print a usage line
         if (target.usage) {
@@ -1911,7 +2053,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       }
     }
 
-    if (busy) {
+    if (tui.busy) {
       // slash commands don't need the agent idle — /todo, /sessions, the prompt
       // wizards all work mid-turn. Only agent-bound text (and !shell, which
       // shares the busy guard) waits in line.
@@ -1924,7 +2066,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   }
 
   /** set by run() once the quarantine is installed; gracefulExit replays it */
-  let restoreOutputRef: (() => void) | null = null;
+  
 
   /**
    * Tear down the terminal and let startTui() return, so the caller's
@@ -1932,9 +2074,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
    * would skip it and leak tmux/MCP children.
    */
   function gracefulExit(code = 0): void {
-    if (exiting) return;
-    exiting = true;
-    exitCode = code;
+    if (tui.exiting) return;
+    tui.exiting = true;
+    tui.exitCode = code;
     /**
      * Hard-exit backstop.
      *
@@ -2001,19 +2143,19 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       // cancel a frame scheduled before exit: the tick gate stops a fresh
       // paint, but clearing here also releases the timer during the teardown
       // window so nothing paints between term.end() and process exit
-      if (paintTimer) {
-        clearTimeout(paintTimer);
-        paintTimer = null;
+      if (tui.paintTimer) {
+        clearTimeout(tui.paintTimer);
+        tui.paintTimer = null;
       }
     } catch {}
     try {
       term.end();
     } catch {}
     try {
-      if (mirrorTimer) clearInterval(mirrorTimer); // viewer's live-status poll
+      if (tui.mirrorTimer) clearInterval(tui.mirrorTimer); // viewer's live-status poll
     } catch {}
     try {
-      restoreOutputRef?.(); // replay anything captured while the grid was up
+      tui.restoreOutputRef?.(); // replay anything captured while the grid was up
     } catch {}
     // leave a resume hint on the shell — the session is one id away. the
     // numeric index is what `fox -c N` resolves against (same list length,
@@ -2029,23 +2171,23 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         console.error(`\x1b[90mto resume: fox -c ${short}\x1b[0m (or fox -c ${state.sessionId})`);
       }
     } catch {}
-    finish?.();
+    tui.finish?.();
   }
 
   function flash(msg: string) {
-    flashMsg = msg;
-    flashUntil = Date.now() + 900;
+    tui.flashMsg = msg;
+    tui.flashUntil = Date.now() + 900;
     bumpFlash();
     setTimeout(() => {
-      if (Date.now() >= flashUntil) bumpFlash();
+      if (Date.now() >= tui.flashUntil) bumpFlash();
     }, 950);
   }
 
   function setBusy(v: boolean) {
-    busy = v;
+    tui.busy = v;
     if (v) {
-      startedAt = Date.now();
-      busyMsg = null;
+      tui.startedAt = Date.now();
+      tui.busyMsg = null;
       // OSC 9;4 indeterminate: the tab/taskbar shows activity from turn start
       // until end, even when the TUI is in the background
       term.progress(3);
@@ -2075,18 +2217,18 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     startedAt: number;
     at: number;
   }
-  let lastPublishAt = 0;
+  
   function publishLive(force = false) {
     if (!state.sessionId) return;
     const now = Date.now();
-    if (!force && now - lastPublishAt < 250) return; // throttle stream writes
-    lastPublishAt = now;
+    if (!force && now - tui.lastPublishAt < 250) return; // throttle stream writes
+    tui.lastPublishAt = now;
     try {
       kvSet(state.sessionId, "live", {
-        busy,
-        busyMsg,
-        streaming: streamText,
-        startedAt,
+        busy: tui.busy,
+        busyMsg: tui.busyMsg,
+        streaming: tui.streamText,
+        startedAt: tui.startedAt,
         at: now,
       } satisfies LiveStatus);
     } catch {}
@@ -2097,21 +2239,21 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     deleteInSel(); // pasting over a selection replaces it
     const chars: Ch[] = [];
     for (const ch of text) chars.push({ c: ch === "\t" ? " " : ch, lit });
-    buf.splice(cur, 0, ...chars);
-    cur += chars.length;
-    inputMod.bumpRev();
+    tui.buf.splice(tui.cur, 0, ...chars);
+    tui.cur += chars.length;
+    tui.inputMod.bumpRev();
     bumpBuf();
   }
   /** next cursor position one word away in `dir` (-1 left, +1 right) */
   function wordBoundary(dir: -1 | 1): number {
-    const isWord = (i: number) => /\S/.test(buf[i]?.c ?? " ");
-    let i = cur;
+    const isWord = (i: number) => /\S/.test(tui.buf[i]?.c ?? " ");
+    let i = tui.cur;
     if (dir < 0) {
       while (i > 0 && !isWord(i - 1)) i--;
       while (i > 0 && isWord(i - 1)) i--;
     } else {
-      while (i < buf.length && !isWord(i)) i++;
-      while (i < buf.length && isWord(i)) i++;
+      while (i < tui.buf.length && !isWord(i)) i++;
+      while (i < tui.buf.length && isWord(i)) i++;
     }
     return i;
   }
@@ -2163,7 +2305,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       fillDetail(it); // degenerate args: cheap, and it.detail is now real
     }
     if (!it.detail || it.detail.includes("\n")) return false;
-    return 2 + Bun.stringWidth(it.text) + 3 + it.detail.length <= W;
+    return 2 + Bun.stringWidth(it.text) + 3 + it.detail.length <= tui.W;
   }
 
   /** Deferred argsJson: fill once, on first expand/degenerate width-test. */
@@ -2176,9 +2318,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   /** Floating command output (/help, /todo, /usage…): painted above the dock
    *  like the slash hints, never pushed into the transcript. Dismissed by any
    *  keypress or click. Slash hints outrank it while a "/" command is typed. */
-  let cmdOut: string[] | null = null;
+  
   function setCmdOut(text: string) {
-    cmdOut = text.split("\n");
+    tui.cmdOut = text.split("\n");
     bumpCmdOut();
   }
   function onKey(k: Key) {
@@ -2186,12 +2328,12 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     // not something to scroll past forever
     // popups shed on any key — except escape, which owns dismissal itself so
     // one press can't both close a popup and fall through to aborting the turn
-    if (cmdOut && !(k.type === "named" && k.name === "escape")) {
-      cmdOut = null;
+    if (tui.cmdOut && !(k.type === "named" && k.name === "escape")) {
+      tui.cmdOut = null;
       bumpCmdOut();
     }
-    if (items.some((i) => i.ephemeral)) {
-      items = items.filter((i) => !i.ephemeral);
+    if (tui.items.some((i) => i.ephemeral)) {
+      tui.items = tui.items.filter((i) => !i.ephemeral);
       clampScroll();
       bumpItems();
       bumpScroll();
@@ -2211,15 +2353,15 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     if (k.type === "mouse") return onMouse(k.action, k.x, k.y);
     if (k.type === "char") {
       deleteInSel(); // typing over a selection replaces it, as in any editor
-      const prev = buf[cur - 1];
+      const prev = tui.buf[tui.cur - 1];
       if (prev && prev.c === "\\" && !prev.lit) {
-        buf.splice(cur - 1, 1, { c: k.ch, lit: true }); // \x -> literal char
+        tui.buf.splice(tui.cur - 1, 1, { c: k.ch, lit: true }); // \x -> literal char
       } else {
-        buf.splice(cur, 0, { c: k.ch, lit: false });
-        cur++;
+        tui.buf.splice(tui.cur, 0, { c: k.ch, lit: false });
+        tui.cur++;
       }
-      hintSel = 0;
-      inputMod.bumpRev();
+      tui.hintSel = 0;
+      tui.inputMod.bumpRev();
       // TYPING: dock and hint popup only. Deliberately NOT bumpAll — the
       // transcript must not re-derive (O(session)) for a character the
       // transcript does not display. This single call site is the hot path the
@@ -2236,14 +2378,14 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       // notch means something is the input dock, where it moves the caret the
       // same way the vertical notch does. Elsewhere it is deliberately inert
       // rather than reinterpreted, which is exactly the bug this replaces.
-      const wy = k.y ?? lastMouse.y;
-      lastMouse = { x: k.x ?? lastMouse.x, y: wy };
+      const wy = k.y ?? tui.lastMouse.y;
+      tui.lastMouse = { x: k.x ?? tui.lastMouse.x, y: wy };
       if (wy >= dockTopY()) {
         const dir = name === "wheelleft" ? -1 : 1;
-        const next = Math.max(0, Math.min(buf.length, cur + dir * SCROLL_STEP));
-        if (next !== cur) {
-          cur = next;
-          inSelAnchor = null;
+        const next = Math.max(0, Math.min(tui.buf.length, tui.cur + dir * SCROLL_STEP));
+        if (next !== tui.cur) {
+          tui.cur = next;
+          tui.inSelAnchor = null;
           bumpBuf();
         }
       }
@@ -2258,7 +2400,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       if (hints.length > 1) {
         // tuiScrollStep hints per notch (SCROLL_STEP), matching the transcript
         // and picker — one config value drives every wheel scroll.
-        hintSel = Math.max(0, Math.min(hints.length - 1, hintSel + (up ? -SCROLL_STEP : SCROLL_STEP)));
+        tui.hintSel = Math.max(0, Math.min(hints.length - 1, tui.hintSel + (up ? -SCROLL_STEP : SCROLL_STEP)));
         bumpHintSel();
         return;
       }
@@ -2266,8 +2408,8 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       // the dock's caret-follow carries the visible window with it; anywhere
       // else it scrolls the transcript. (A modal consumed the wheel already —
       // overlayKey/promptKey run before this.)
-      const wy = k.y ?? lastMouse.y;
-      lastMouse = { x: k.x ?? lastMouse.x, y: wy };
+      const wy = k.y ?? tui.lastMouse.y;
+      tui.lastMouse = { x: k.x ?? tui.lastMouse.x, y: wy };
       if (wy >= dockTopY()) {
         // Only claim the notch if the caret can actually move. At the first or
         // last visual row `moveCaretVertical` clamps to the index it is already
@@ -2275,13 +2417,13 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         // boundary: the box was at its row cap, nothing scrolled, and out of
         // sync with the dock the notch did nothing at all. Falling through makes
         // the edge of the buffer feel like the end of a scroll.
-        const before = cur;
+        const before = tui.cur;
         moveCaretVertical(up ? -1 : 1, false);
-        if (cur !== before) return;
+        if (tui.cur !== before) return;
       }
       const dir = up ? -SCROLL_STEP : SCROLL_STEP; // tuiScrollStep rows per wheel tick
-      if (stick && dir < 0) stick = false;
-      scrollTop += dir;
+      if (tui.stick && dir < 0) tui.stick = false;
+      tui.scrollTop += dir;
       clampScroll();
       // re-stick at the bottom is paint()'s job now (scrollTop >= max)
       // The 8ms paint schedule coalesces a burst at its FINAL offset while
@@ -2296,10 +2438,10 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       // through the same copyText path as the transcript, so both report the
       // same confirmation. The selection is dropped: what was copied is staged
       // nowhere, and a stale highlight would lie about that.
-      const ir = inputMod.inSelRange(inSelAnchor, cur);
+      const ir = tui.inputMod.inSelRange(tui.inSelAnchor, tui.cur);
       if (ir) {
-        const text = buf.slice(ir[0], ir[1]).map((c) => c.c).join("");
-        inSelAnchor = null;
+        const text = tui.buf.slice(ir[0], ir[1]).map((c) => c.c).join("");
+        tui.inSelAnchor = null;
         bumpBuf();
         void copyText(text);
         return;
@@ -2316,14 +2458,14 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       // universal "get my line back" gesture), and only an EMPTY box means
       // "stop the turn". Previously a busy turn ate the keystroke and a typed
       // draft could not be cleared without also killing the agent.
-      if (buf.length) {
-        buf = [];
-        cur = 0;
-        inputMod.bumpRev();
+      if (tui.buf.length) {
+        tui.buf = [];
+        tui.cur = 0;
+        tui.inputMod.bumpRev();
         flash("cleared");
         return;
       }
-      if (busy) {
+      if (tui.busy) {
         if (state.sessionId) abortTurn(state.sessionId, "user interrupt");
         return;
       }
@@ -2338,14 +2480,14 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       // Steer: agent-bound text joins the RUNNING turn at the next step
       // boundary instead of waiting behind it. Slash and !shell keep their
       // usual meaning; with an empty box the oldest queued message goes.
-      if (busy && state.sessionId && !state.readOnly) {
+      if (tui.busy && state.sessionId && !state.readOnly) {
         const raw = display();
         const lit = firstCharLit();
         const t = raw.trim();
         if (raw && (lit || !(t.startsWith("/") || t.startsWith("!")))) {
-          buf = [];
-          cur = 0;
-          inputMod.bumpRev();
+          tui.buf = [];
+          tui.cur = 0;
+          tui.inputMod.bumpRev();
           steer(state.sessionId, raw);
           return flash("steering — delivered after the current tool");
         }
@@ -2366,11 +2508,11 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       // unfold/fold everything expandable — thinking blocks, tool outputs, long tool heads
       const expandable = (it: Item) =>
         it.kind === "think" || it.kind === "toolbody" || (it.kind === "toolhead" && (!!it.detail || it.argsRaw !== undefined));
-      const anyFolded = items.some((it) => expandable(it) && !isExpanded(it));
+      const anyFolded = tui.items.some((it) => expandable(it) && !isExpanded(it));
       // remember the direction: every expandable item born from now on
       // (a streaming tool body, the next think block, a replayed transcript)
       // must arrive in the mode the user chose, or the toggle keeps losing
-      expandMode = anyFolded;
+      tui.expandMode = anyFolded;
       // Yield to the event loop every N items so the spinner, the input bar and
       // any pending keystroke stay live while a long expand runs. Without this
       // the whole loop is one synchronous block: the screen freezes for however
@@ -2383,7 +2525,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       // at the end, so the derive runs a single time with all revs bumped.
       void (async () => {
         let n = 0;
-        for (const it of items) {
+        for (const it of tui.items) {
           if (!expandable(it)) continue;
           const want = anyFolded;
           if (isExpanded(it) !== want) {
@@ -2413,13 +2555,13 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       // the draft, so a stray esc (or the esc an SS3/alt chord degraded from)
       // wiped a typed message the user wanted back; the draft is recoverable
       // only by retyping, so escape never touches it.
-      if (cmdOut) {
-        cmdOut = null;
+      if (tui.cmdOut) {
+        tui.cmdOut = null;
         bumpCmdOut();
         return;
       }
-      if (inputMod.inSelRange(inSelAnchor, cur)) {
-        inSelAnchor = null;
+      if (tui.inputMod.inSelRange(tui.inSelAnchor, tui.cur)) {
+        tui.inSelAnchor = null;
         bumpBuf();
         return;
       }
@@ -2427,7 +2569,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         clearSel();
         return;
       }
-      if (busy) if (state.sessionId) abortTurn(state.sessionId, "user interrupt");
+      if (tui.busy) if (state.sessionId) abortTurn(state.sessionId, "user interrupt");
       return;
     }
     // Page/home/end keys are transcript-first: they scroll (pgup/pgdn by a
@@ -2445,13 +2587,13 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         return;
       }
       if (name === "pageup") {
-        stick = false;
-        scrollTop -= Math.floor(viewportH() * 0.8);
+        tui.stick = false;
+        tui.scrollTop -= Math.floor(viewportH() * 0.8);
         clampScroll();
         paintNow();
         return;
       }
-      scrollTop += Math.floor(viewportH() * 0.8);
+      tui.scrollTop += Math.floor(viewportH() * 0.8);
       clampScroll();
       // re-stick at the bottom is paint()'s job now (scrollTop >= max)
       paintNow();
@@ -2459,58 +2601,58 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     }
     if (name === "home") {
       if (ctrl) {
-        cur = 0;
-        inSelAnchor = null;
+        tui.cur = 0;
+        tui.inSelAnchor = null;
         bumpBuf();
         return;
       }
-      stick = false;
-      scrollTop = 0;
+      tui.stick = false;
+      tui.scrollTop = 0;
       paintNow();
       return;
     }
     if (name === "end") {
       if (ctrl) {
-        cur = buf.length;
-        inSelAnchor = null;
+        tui.cur = tui.buf.length;
+        tui.inSelAnchor = null;
         bumpBuf();
         return;
       }
-      stick = true;
+      tui.stick = true;
       paintNow();
       return;
     }
     if (name === "return") {
-      const prev = buf[cur - 1];
+      const prev = tui.buf[tui.cur - 1];
       if (prev && prev.c === "\\" && !prev.lit) {
-        buf.splice(cur - 1, 1, { c: "\n", lit: true });
-        inputMod.bumpRev();
+        tui.buf.splice(tui.cur - 1, 1, { c: "\n", lit: true });
+        tui.inputMod.bumpRev();
         bumpBuf();
       } else submit();
       return;
     }
     if (name === "backspace") {
-      if (!deleteInSel() && cur > 0) {
+      if (!deleteInSel() && tui.cur > 0) {
         // alt/ctrl+backspace deletes the previous word, as it does in every
         // shell and editor; plain backspace deletes one grapheme, which may be
         // several buffer entries (emoji, combining marks, flags).
-        const from = ctrl || k.meta ? wordBoundary(-1) : cur - graphemeBack(buf, cur);
-        buf.splice(from, cur - from);
-        cur = from;
-        inputMod.bumpRev();
+        const from = ctrl || k.meta ? wordBoundary(-1) : tui.cur - graphemeBack(tui.buf, tui.cur);
+        tui.buf.splice(from, tui.cur - from);
+        tui.cur = from;
+        tui.inputMod.bumpRev();
       }
-      hintSel = 0;
+      tui.hintSel = 0;
       bumpBuf();
       bumpHintSel();
       return;
     }
     if (name === "delete") {
-      if (!deleteInSel() && cur < buf.length) {
+      if (!deleteInSel() && tui.cur < tui.buf.length) {
         // forward-delete is the same problem mirrored: remove the whole cluster
         // starting here, not its first code point
-        const end = cur + graphemeForward(buf, cur);
-        buf.splice(cur, end - cur);
-        inputMod.bumpRev();
+        const end = tui.cur + graphemeForward(tui.buf, tui.cur);
+        tui.buf.splice(tui.cur, end - tui.cur);
+        tui.inputMod.bumpRev();
       }
       bumpBuf();
       return;
@@ -2519,15 +2661,15 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       const dir = name === "left" ? -1 : 1;
       if (k.shift) {
         // extend the selection; the caret is the moving end
-        if (inSelAnchor === null) inSelAnchor = cur;
-        cur = ctrl || k.meta ? wordBoundary(dir) : Math.max(0, Math.min(buf.length, cur + dir));
+        if (tui.inSelAnchor === null) tui.inSelAnchor = tui.cur;
+        tui.cur = ctrl || k.meta ? wordBoundary(dir) : Math.max(0, Math.min(tui.buf.length, tui.cur + dir));
       } else {
-        const r = inputMod.inSelRange(inSelAnchor, cur);
-        inSelAnchor = null;
-        if (r) cur = dir < 0 ? r[0] : r[1]; // a plain arrow collapses to an edge
+        const r = tui.inputMod.inSelRange(tui.inSelAnchor, tui.cur);
+        tui.inSelAnchor = null;
+        if (r) tui.cur = dir < 0 ? r[0] : r[1]; // a plain arrow collapses to an edge
         // ctrl/alt+arrow = word-wise motion (the decoder reports CSI modifiers)
-        else if (ctrl || k.meta) cur = wordBoundary(dir);
-        else cur = Math.max(0, Math.min(buf.length, cur + dir));
+        else if (ctrl || k.meta) tui.cur = wordBoundary(dir);
+        else tui.cur = Math.max(0, Math.min(tui.buf.length, tui.cur + dir));
       }
       bumpBuf();
       return;
@@ -2538,7 +2680,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       // caret through the wrapped input.
       const n = hintMatches().length;
       if (n > 1) {
-        hintSel = Math.max(0, Math.min(n - 1, hintSel + (name === "up" ? -1 : 1)));
+        tui.hintSel = Math.max(0, Math.min(n - 1, tui.hintSel + (name === "up" ? -1 : 1)));
         bumpHintSel();
         return;
       }
@@ -2548,11 +2690,11 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     if (name === "tab") {
       const all = hintMatches();
       if (all.length) {
-        const target = all[Math.min(hintSel, all.length - 1)];
+        const target = all[Math.min(tui.hintSel, all.length - 1)];
         // completing to a command that takes an argument leaves a trailing space
         // so the next keystroke starts the argument rather than extending a name
         chsSet(target.usage ? `${target.name} ` : target.name);
-        hintSel = 0;
+        tui.hintSel = 0;
       } else {
         // no completion in play — tab is just whitespace the user wants to send
         insertText("\t");
@@ -2583,7 +2725,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   function transcriptRow(y: number): number | null {
     // the PAINTED frame, not a rebuild: mid-stream a fresh layout can shift
     // rows (scrollbar flip, queue rows), and a row off is click drift
-    const fr = painted;
+    const fr = tui.painted;
     if (!fr) return null;
     if (y < 0 || y >= fr.vh) return null;
     const row = y + fr.scrollTop;
@@ -2603,7 +2745,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
    * like every other hit-test, so it cannot disagree with the pixels.
    */
   function transcriptCol(x: number, row: number): number {
-    const fr = painted;
+    const fr = tui.painted;
     // The window slice is addressed the same way paint() and the click hit-test
     // address it: rows[0] is ABSOLUTE row (scrollTop - winOffset), so the
     // viewport index is `row - winBase`. Reading `row - scrollTop` (which is
@@ -2618,7 +2760,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     // selection subtract a gutter it never painted.
     let seq: number | undefined;
     if (fr && winIdx >= 0 && winIdx < fr.owner.length) {
-      const it = items.find((i) => i.k === fr.owner[winIdx]);
+      const it = tui.items.find((i) => i.k === fr.owner[winIdx]);
       const isFirstRow = winIdx === 0 || fr.owner[winIdx - 1] !== fr.owner[winIdx];
       if (it && isFirstRow) seq = rowSeq(it);
     }
@@ -2645,7 +2787,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
    * events are the one place latency beats batching; the coalescer remains
    * for stream/spinner work.
    */
-  let paintScheduled = false;
+  
   /**
    * The name is historical: every caller used to paint synchronously, so a
    * burst of queued pointer/scroll events serialized one full (stale) paint
@@ -2659,19 +2801,19 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   }
 
   function onMouse(action: "down" | "drag" | "up", x: number, y: number) {
-    lastMouse = { x, y };
-    const g = gestureFor(action, press, x, y);
+    tui.lastMouse = { x, y };
+    const g = gestureFor(action, tui.press, x, y);
     // every mouse path below ends in syncPaint(); pointer feedback paints
     // NOW (see paintNow) instead of waiting for the frame interval
     const syncPaint = () => paintNow();
     if (action === "down") {
       // Scrollbar strip at the right edge: press jumps, drag scrubs. Dead when
       // tuiScrollbar is off — no strip is painted, so no dead click zone either.
-      const fr = painted;
-      if (SCROLLBAR && fr?.sbShowing && x >= W - 1 && y < fr.vh) {
-        press = { x, y, moved: false, scrollbar: true };
-        stick = false;
-        scrollTop = scrollbarScrollTop(fr.total, fr.vh, y);
+      const fr = tui.painted;
+      if (SCROLLBAR && fr?.sbShowing && x >= tui.W - 1 && y < fr.vh) {
+        tui.press = { x, y, moved: false, scrollbar: true };
+        tui.stick = false;
+        tui.scrollTop = scrollbarScrollTop(fr.total, fr.vh, y);
         clampScroll();
         syncPaint();
         return;
@@ -2680,47 +2822,47 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       // extends an input selection instead of a transcript one. One selection
       // at a time, region-scoped: the dock owns the press, so any transcript
       // selection dies here.
-      const ii = inputMod.inputIndexAt(x, y);
+      const ii = tui.inputMod.inputIndexAt(x, y);
       if (ii !== null) {
         clearSel();
-        cur = ii;
-        inSelAnchor = ii;
-        press = { x, y, moved: false, input: true };
+        tui.cur = ii;
+        tui.inSelAnchor = ii;
+        tui.press = { x, y, moved: false, input: true };
         syncPaint();
         return;
       }
       const row = transcriptRow(y);
-      press = { x, y, moved: false };
+      tui.press = { x, y, moved: false };
       // Any press drops the previous selection — BOTH kinds, region-scoped:
       // the transcript owns the press, so a lingering input anchor dies too,
       // or the dock would keep its highlight while the transcript selects.
       clearSel();
-      inSelAnchor = null;
+      tui.inSelAnchor = null;
       if (row !== null) {
-        selA = { row, col: transcriptCol(x, row) };
-        selB = selA;
+        tui.selA = { row, col: transcriptCol(x, row) };
+        tui.selB = tui.selA;
       }
       return;
     }
     if (action === "drag") {
-      if (press?.scrollbar) {
-        const fr = painted;
+      if (tui.press?.scrollbar) {
+        const fr = tui.painted;
         if (fr) {
-          stick = false;
-          scrollTop = scrollbarScrollTop(fr.total, fr.vh, y);
+          tui.stick = false;
+          tui.scrollTop = scrollbarScrollTop(fr.total, fr.vh, y);
           clampScroll();
         }
-        press.moved = true;
+        tui.press.moved = true;
         syncPaint();
         return;
       }
-      if (press?.input) {
+      if (tui.press?.input) {
         // round=true: the caret sits BETWEEN chars (a selection edge), so a drag
         // snaps at the half-cell — the first cell moved now selects 1 char, not 0
-        const ii = inputMod.inputIndexAt(x, y, true);
-        if (ii !== null && ii !== cur) {
-          cur = ii; // anchor stays where the press landed
-          press.moved = true;
+        const ii = tui.inputMod.inputIndexAt(x, y, true);
+        if (ii !== null && ii !== tui.cur) {
+          tui.cur = ii; // anchor stays where the press landed
+          tui.press.moved = true;
           syncPaint();
         }
         return;
@@ -2730,36 +2872,36 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       // (notably Windows Terminal) send btn-32 frames for zero-distance holds,
       // which would mark every press "moved" and turn its release into a copy
       // — clicks would never toggle. Only a real position change counts.
-      if (x !== press!.x || y !== press!.y) {
-        press!.moved = true;
-        press!.x = x;
-        press!.y = y;
+      if (x !== tui.press!.x || y !== tui.press!.y) {
+        tui.press!.moved = true;
+        tui.press!.x = x;
+        tui.press!.y = y;
       } else return;
-      if (!selA) return;
+      if (!tui.selA) return;
       // Dragging past an edge scrolls, so a selection can outrun the screen.
       if (y < 0 || y >= viewportH()) {
-        stick = false;
-        scrollTop += y < 0 ? -SCROLL_STEP : SCROLL_STEP;
+        tui.stick = false;
+        tui.scrollTop += y < 0 ? -SCROLL_STEP : SCROLL_STEP;
         clampScroll();
       }
       const row = transcriptRow(Math.max(0, Math.min(viewportH() - 1, y)));
       if (row === null) return;
-      selB = { row, col: transcriptCol(x, row) };
+      tui.selB = { row, col: transcriptCol(x, row) };
         syncPaint();
       return;
     }
-    const wasInput = press?.input;
-    const wasScrollbar = press?.scrollbar;
-    press = null;
+    const wasInput = tui.press?.input;
+    const wasScrollbar = tui.press?.scrollbar;
+    tui.press = null;
     if (wasScrollbar) return; // a scrub is not a click
     // An input-dock gesture: a drag leaves its selection AND copies it (same
     // contract as a transcript drag); a tap just moved the caret, so drop the
     // zero-width anchor.
     if (wasInput) {
-      if (inSelAnchor === cur) inSelAnchor = null; // a tap, not a drag
-      else if (inSelAnchor !== null) {
-        const it = inputMod.inputText();
-        const [a, b] = [Math.min(inSelAnchor, cur), Math.max(inSelAnchor, cur)];
+      if (tui.inSelAnchor === tui.cur) tui.inSelAnchor = null; // a tap, not a drag
+      else if (tui.inSelAnchor !== null) {
+        const it = tui.inputMod.inputText();
+        const [a, b] = [Math.min(tui.inSelAnchor, tui.cur), Math.max(tui.inSelAnchor, tui.cur)];
         void copyText(it.slice(a, b));
       }
       syncPaint();
@@ -2787,7 +2929,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       const phase = (clickStreak.count - 2) % 3;
       const row = transcriptRow(y);
       if (phase === 2 || row === null) return; // quad-click: no selection, no toggle
-      const fr = painted;
+      const fr = tui.painted;
       if (!fr) return;
       const winBase2 = fr.scrollTop - fr.winOffset;
       const winIdx = row - winBase2;
@@ -2796,13 +2938,13 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       if (phase === 0) {
         const w = wordRangeAt(cells, transcriptCol(x, row));
         if (!w) return;
-        selA = { row, col: w.from };
-        selB = { row, col: w.to };
+        tui.selA = { row, col: w.from };
+        tui.selB = { row, col: w.to };
       } else {
         const width = cells.start.length;
         if (!width) return;
-        selA = { row, col: 0 };
-        selB = { row, col: width - 1 };
+        tui.selA = { row, col: 0 };
+        tui.selB = { row, col: width - 1 };
       }
       syncPaint();
       return;
@@ -2811,13 +2953,13 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   }
 
   async function copySelection() {
-    if (!selA || !selB) return;
-    const fr = painted;
+    if (!tui.selA || !tui.selB) return;
+    const fr = tui.painted;
     if (!fr) return;
     // selection rows are ABSOLUTE; the window base shifts the built slice
     const winBase = fr.scrollTop - fr.winOffset;
-    const selA2 = { row: selA!.row - winBase, col: selA!.col };
-    const selB2 = { row: selB!.row - winBase, col: selB!.col };
+    const selA2 = { row: tui.selA!.row - winBase, col: tui.selA!.col };
+    const selB2 = { row: tui.selB!.row - winBase, col: tui.selB!.col };
     const text = extractSelection(fr.rows.map((r) => r.segs), selA2, selB2);
     if (!text) return;
     await copyText(text);
@@ -2934,10 +3076,10 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
    * markdown.ts's classifiers; this side only walks.
    */
   function codeBlockAround(winIdx: number): string | null {
-    const fr = painted;
+    const fr = tui.painted;
     if (!fr) return null;
     const k0 = fr.owner[winIdx];
-    const i0 = items.findIndex((it) => it.k === k0);
+    const i0 = tui.items.findIndex((it) => it.k === k0);
     if (i0 < 0) return null;
     let first = winIdx;
     while (first > 0 && fr.owner[first - 1] === k0) first--;
@@ -2954,7 +3096,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     const rowsOf = (i: number): Row[] => {
       let rows = cache.get(i);
       if (!rows) {
-        rows = itemRows(items[i], w).rows;
+        rows = itemRows(tui.items[i], w).rows;
         cache.set(i, rows);
       }
       return rows;
@@ -2985,7 +3127,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         picked.add(`${i}:${r}`);
         r++;
       }
-      if (r < rows.length || i === items.length - 1) break;
+      if (r < rows.length || i === tui.items.length - 1) break;
       const next = rowsOf(i + 1);
       r = 0;
       if (!isCode(next[0]?.segs ?? [])) break;
@@ -3007,9 +3149,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     // floating command output dies on click, same as a keypress — and the
     // click is consumed by the dismissal, never also toggling whatever
     // transcript row the overlay was painted over
-    const dismissedCmd = !!cmdOut;
-    if (cmdOut) {
-      cmdOut = null;
+    const dismissedCmd = !!tui.cmdOut;
+    if (tui.cmdOut) {
+      tui.cmdOut = null;
       bumpCmdOut();
     }
 
@@ -3035,7 +3177,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           // (submit() avoids the same rewrite for the same reason)
           if (!display().includes(" ")) {
             chsSet(target.usage ? `${target.name} ` : target.name);
-            hintSel = 0;
+            tui.hintSel = 0;
           }
         }
         return;
@@ -3043,15 +3185,15 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     }
 
     // inside the input box: place the cursor
-    if (y >= inputTop && y < H - 1) {
+    if (y >= inputTop && y < tui.H - 1) {
       const g = dockGeom();
       const vr = g.layout.rows[g.firstShown + (y - inputTop)];
       if (!vr) return;
       const targetW = Math.max(0, x - 3) + vr.startCol;
       const line = g.layout.logical[vr.logical];
-      const idx = inputMod.indexAtWidth(line, targetW);
-      cur = Math.min(g.layout.lineStarts[vr.logical] + idx, buf.length);
-      inputMod.bumpRev(); // caret moved -> layout/caret recompute is a no-op but keep rev honest
+      const idx = tui.inputMod.indexAtWidth(line, targetW);
+      tui.cur = Math.min(g.layout.lineStarts[vr.logical] + idx, tui.buf.length);
+      tui.inputMod.bumpRev(); // caret moved -> layout/caret recompute is a no-op but keep rev honest
       bumpBuf();
       return;
     }
@@ -3060,20 +3202,20 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     // overlay (see above): without the guard the same click both cleared the
     // float and flipped something it never touched.
     if (dismissedCmd) return;
-    const fr = painted;
+    const fr = tui.painted;
     if (!fr) return;
     const row = y + fr.scrollTop;
     if (y >= vh || row < 0 || row >= fr.total) return;
     const winBase = fr.scrollTop - fr.winOffset;
     const winIdx = row - winBase;
     if (winIdx < 0 || winIdx >= fr.owner.length) return;
-    const it = items.find((i) => i.k === fr.owner[winIdx]);
+    const it = tui.items.find((i) => i.k === fr.owner[winIdx]);
     // a streaming tail row owns no item yet (owner -1) but carries a predicted
     // streamSeq — its [N] marker is still clickable, opening the same ops wizard
     // (the wizard's ops read the settled node once the turn lands it)
     if (!it) {
-      if (fr.owner[winIdx] === -1 && streamSeq > 0 && x < MARKER_W(streamSeq)) {
-        void markerOps(streamSeq);
+      if (fr.owner[winIdx] === -1 && tui.streamSeq > 0 && x < MARKER_W(tui.streamSeq)) {
+        void markerOps(tui.streamSeq);
       }
       return;
     }
@@ -3374,7 +3516,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
 
 
   function clampScroll() {
-    scrollTop = Math.max(0, Math.min(scrollTop, Math.max(0, totalRows() - viewportH())));
+    tui.scrollTop = Math.max(0, Math.min(tui.scrollTop, Math.max(0, totalRows() - viewportH())));
   }
 
   /**
@@ -3408,7 +3550,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       thinkKernels.set(it.k, e);
       if (thinkKernels.size > 8) {
         // items are re-minted on refresh(); drop kernels nothing points at
-        const live = new Set(items.map((i) => i.k));
+        const live = new Set(tui.items.map((i) => i.k));
         for (const key of thinkKernels.keys()) if (!live.has(key)) thinkKernels.delete(key);
       }
     }
@@ -3434,7 +3576,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     // when the tail carries a [N] marker it must wrap inside the gutter, so the
     // chip can ride column 0 without the content overflowing the full width.
     // Same reservation as itemRows: the chip PLUS its one gap column.
-    const innerW = contentWidth(w, streamSeq > 0 ? streamSeq : undefined);
+    const innerW = contentWidth(w, tui.streamSeq > 0 ? tui.streamSeq : undefined);
     let entry = streamKernels.get(innerW);
     // a SHRINK or mid-prefix change means a rewind — the kernel's accumulated
     // state is invalid, start fresh
@@ -3450,13 +3592,13 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     const rows = entry.k.rows as Row[];
     // the streaming tail predicts its eventual seq (see streamSeq) so its [N]
     // marker renders live like every settled item, not just after the turn ends
-    return streamSeq > 0 ? withMarker(rows, streamSeq) : rows;
+    return tui.streamSeq > 0 ? withMarker(rows, tui.streamSeq) : rows;
   }
 
   /** total transcript rows: the painted frame's count, or a one-off compute
    *  when no frame is up yet (scroll keys can fire before the first paint) */
   function totalRows(): number {
-    if (painted) return painted.total;
+    if (tui.painted) return tui.painted.total;
     return computeFrame(frameInput()).total;
   }
 
@@ -3478,21 +3620,21 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
    * never rebuilds. One source of truth, so a click can't drift off the pixels
    * the way separate recomputation allowed.
    */
-  let painted: Frame | null = null;
+  
 
   function frameInput(): FrameInput {
-    const layout = inputMod.inputLayout();
-    const caret = inputMod.caretPos(layout, cur);
+    const layout = tui.inputMod.inputLayout();
+    const caret = tui.inputMod.caretPos(layout, tui.cur);
     return {
-      W,
-      H,
-      scrollTop,
-      stick,
+      W: tui.W,
+      H: tui.H,
+      scrollTop: tui.scrollTop,
+      stick: tui.stick,
       scrollbar: SCROLLBAR,
       // Chrome (welcome/session-info) renders as a VIRTUAL first item computed
       // from state — never stored in items[], so refresh() never rebuilds it.
-      items: chromeVisible() ? [...chromeItems(), ...items] : items,
-      streamText,
+      items: chromeVisible() ? [...chromeItems(), ...tui.items] : tui.items,
+      streamText: tui.streamText,
       renderItem: (it, w) => {
         // edge-stripped, the very same span `countItem` reports — layout's
         // spacing contract is "count and paint agree", and they cannot drift
@@ -3519,7 +3661,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       // Pass 1's per-item row counts, reused across frames while no item's row
       // count has moved. Streaming bumps neither `countRev` path, so a token
       // costs the tail's count and nothing else — that is the whole point.
-      countCache: { version: () => countRev, at: countCache },
+      countCache: { version: () => tui.countRev, at: countCache },
     };
   }
 
@@ -3533,7 +3675,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
    * above the dock — the window into the match list is sized by the hardware,
    * not by a fixed preset.
    */
-  function hintText(maxRows = H - 3): {
+  function hintText(maxRows = tui.H - 3): {
     rows: { text: string; sel: boolean }[];
     active: boolean;
     matches?: CommandSpec[];
@@ -3557,7 +3699,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       };
     }
     const win = Math.max(1, maxRows);
-    const sel = Math.max(0, Math.min(matches.length - 1, hintSel));
+    const sel = Math.max(0, Math.min(matches.length - 1, tui.hintSel));
     const start = Math.max(0, Math.min(sel - win + 1, matches.length - win));
     return {
       rows: matches.slice(start, start + win).map((c, i) => ({
@@ -3578,7 +3720,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       // endpoints report only uncached input, so the raw report alone reads
       // far below what is actually on the wire. The in-turn live figure
       // (lastPromptTokens) is replaced by that combined view.
-      const reported = state.sessionId ? sessionContextTokens(state.sessionId) : lastPromptTokens;
+      const reported = state.sessionId ? sessionContextTokens(state.sessionId) : tui.lastPromptTokens;
       const info = lookupModel(state.provider.model);
       const k = (n: number) => `${Math.round(n / 1000)}k`;
       const ctx = reported
@@ -3617,32 +3759,32 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   const statsRev = (): number => statsV.peek();
 
   // stats involve a full log replay — cache per revision, never per frame
-  let statsCacheRev = -1;
-  let statsCacheSegs: string[] = [];
+  
+  
   function cachedStats(): string[] {
     // re-poll on an explicit revision bump, or on a timer only while a turn is
     // running (an idle session's log can't change under us)
-    const stale = busy && Date.now() - lastStatsAt > 2_000;
+    const stale = tui.busy && Date.now() - tui.lastStatsAt > 2_000;
     const rev = statsRev();
-    if (statsCacheRev !== rev || stale) {
-      statsCacheSegs = statusText();
-      statsCacheRev = rev;
-      lastStatsAt = Date.now();
+    if (tui.statsCacheRev !== rev || stale) {
+      tui.statsCacheSegs = statusText();
+      tui.statsCacheRev = rev;
+      tui.lastStatsAt = Date.now();
     }
-    return statsCacheSegs;
+    return tui.statsCacheSegs;
   }
-  let lastStatsAt = 0;
+  
 
   /** config `statusBar` parsed once per revision — any stats bump refreshes it */
-  let statusBarCacheRev = -1;
-  let statusBarCacheSlots: string[] = [];
+  
+  
   function statusBarSlots(): string[] {
     const rev = statsRev();
-    if (statusBarCacheRev !== rev) {
-      statusBarCacheSlots = (state.config?.statusBar ?? "cwd provider model ctx").trim().split(/\s+/);
-      statusBarCacheRev = rev;
+    if (tui.statusBarCacheRev !== rev) {
+      tui.statusBarCacheSlots = (state.config?.statusBar ?? "cwd provider model ctx").trim().split(/\s+/);
+      tui.statusBarCacheRev = rev;
     }
-    return statusBarCacheSlots;
+    return tui.statusBarCacheSlots;
   }
 
   /** plugin `statusSegments` lookup; a throwing segment is dropped, warned once per name */
@@ -3665,8 +3807,8 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   }
 
   function elapsed(): string {
-    if (!startedAt) return "";
-    const s = Math.floor((Date.now() - startedAt) / 1000);
+    if (!tui.startedAt) return "";
+    const s = Math.floor((Date.now() - tui.startedAt) / 1000);
     return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m${s % 60}s`;
   }
 
@@ -3735,22 +3877,22 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   }
 
   /** shared dock geometry for paint + click mapping */
-  let nextCaret: { x: number; y: number } | null = null;
+  
   function dockGeom() {
-    const layout = inputMod.inputLayout();
-    const caret = inputMod.caretPos(layout, cur);
+    const layout = tui.inputMod.inputLayout();
+    const caret = tui.inputMod.caretPos(layout, tui.cur);
     // dock geometry from the PAINTED frame when one is up (hit-tests must not
     // disagree with the pixels); before the first paint, compute directly
-    const fr = painted;
+    const fr = tui.painted;
     if (fr) return { layout, caret, shownCount: fr.shownCount, firstShown: fr.firstShown, inputTop: fr.inputTop };
     const totalVis = layout.rows.length;
-    const shownCount = dockRows(H, totalVis, INPUT_MAX_ROWS); // matches computeFrame
+    const shownCount = dockRows(tui.H, totalVis, INPUT_MAX_ROWS); // matches computeFrame
     let firstShown = 0;
     if (totalVis > shownCount) {
       firstShown = Math.max(0, Math.min(caret.visRow - (shownCount - 1), totalVis - shownCount));
       if (caret.visRow < firstShown) firstShown = caret.visRow;
     }
-    return { layout, caret, shownCount, firstShown, inputTop: H - 1 - shownCount };
+    return { layout, caret, shownCount, firstShown, inputTop: tui.H - 1 - shownCount };
   }
 
   /**
@@ -3762,9 +3904,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   function dockFloats(): { queueH: number; cmdH: number; top: number } {
     const { inputTop } = dockGeom();
     // painted frame's stack height when one is up (hit-tests match pixels)
-    const queueH = painted ? painted.queueH : queueStackH();
-    const cAvail = cmdOut?.length ? Math.max(1, inputTop - queueH - 1) : 0;
-    const cmdH = cmdOut?.length ? Math.min(cmdOut.length, cAvail) + (cmdOut.length > cAvail ? 1 : 0) : 0;
+    const queueH = tui.painted ? tui.painted.queueH : queueStackH();
+    const cAvail = tui.cmdOut?.length ? Math.max(1, inputTop - queueH - 1) : 0;
+    const cmdH = tui.cmdOut?.length ? Math.min(tui.cmdOut.length, cAvail) + (tui.cmdOut.length > cAvail ? 1 : 0) : 0;
     return { queueH, cmdH, top: inputTop - queueH - cmdH };
   }
 
@@ -3777,7 +3919,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
    */
   function dockTopY(): number {
     const { inputTop } = dockGeom();
-    return inputTop - (painted ? painted.queueH : queueStackH());
+    return inputTop - (tui.painted ? tui.painted.queueH : queueStackH());
   }
 
   /** Height of the queued/steering stack, exactly as viewportH reserves it. */
@@ -3828,7 +3970,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     // the computed would compute once and never recompute — every dependent
     // region would stay stamped at the very first frame's geometry.
     paintedV();
-    const fr = painted;
+    const fr = tui.painted;
     if (!fr) return "";
     return `${fr.inputTop}:${fr.shownCount}:${fr.firstShown}:${fr.queueH}:${fr.vh}`;
   }, { label: "split" });
@@ -3846,19 +3988,19 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
    * after an early return would subscribe nothing and the region would never
    * paint again.
    */
-  let regionsLive = false;
+  
   const regionDisposers: Disposable[] = [];
   const region = (label: string, deps: () => void, paint: () => void) => {
     regionDisposers.push(
       effect(
         () => {
           deps();
-          if (!regionsLive) return;
-          inPaint = true;
+          if (!tui.regionsLive) return;
+          tui.inPaint = true;
           try {
             paint();
           } finally {
-            inPaint = false;
+            tui.inPaint = false;
           }
         },
         { label },
@@ -3879,7 +4021,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       highlightV();
       promptV();
       cmdOutV();
-      inputRowsV();
+      tui.inputRowsV();
     },
     () => void pushTranscriptFrame(),
   );
@@ -3923,7 +4065,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       sizeV();
       themeV();
     },
-    () => paintOverlay(painted?.inputTop ?? H - 2),
+    () => paintOverlay(tui.painted?.inputTop ?? tui.H - 2),
   );
 
   region(
@@ -3945,11 +4087,11 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     return screen.pushFrame(
       () => computeFrame(frameInput()),
       (fr) => {
-        scrollTop = fr.scrollTop;
-        stick = fr.stick;
-        painted = fr;
-        inPaint = true;
-        try { stampTranscript(fr); } finally { inPaint = false; }
+        tui.scrollTop = fr.scrollTop;
+        tui.stick = fr.stick;
+        tui.painted = fr;
+        tui.inPaint = true;
+        try { stampTranscript(fr); } finally { tui.inPaint = false; }
         // Tell the dependent regions the geometry of record moved. `splitV`
         // compares the layout fields by VALUE, so a frame that only grew the
         // transcript (every streamed token) produces an identical split and the
@@ -3962,7 +4104,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       // wrote it), so this only arms the flush. Re-pushing a region here is
       // exactly the idle spin fixed earlier in this file's history.
       () => {
-        dirty = true;
+        tui.dirty = true;
         schedulePaint();
       },
     );
@@ -3974,13 +4116,13 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       if (!seg.fg && !seg.bg && !seg.bold && !seg.italic && !seg.strike && !seg.href) return fallback;
       return screen.sgr(seg);
     };
-    P.transcript.clearRows(0, H);
+    P.transcript.clearRows(0, tui.H);
     const winBase = fr.scrollTop - fr.winOffset;
     let y = 0;
     for (let i = fr.winOffset; i < fr.rowCount && y < fr.vh; i++, y++) {
       const row = fr.rows[i];
       const absolute = winBase + i;
-      if (row.bg) P.transcript.fillRow(y, 0, SCROLLBAR ? W - 1 : W, row.bg);
+      if (row.bg) P.transcript.fillRow(y, 0, SCROLLBAR ? tui.W - 1 : tui.W, row.bg);
       const mk = row.marker;
       const chipW = mk && "w" in mk ? mk.w : 0;
       if (mk && "label" in mk) {
@@ -3991,19 +4133,19 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       let x = x0;
       for (const seg of row.segs) x = P.transcript.text(x, y, seg.t, st(seg, S.base));
       if (hasSel()) {
-        const range = selRangeForRow(absolute, selA!, selB!, rowCells(row.segs));
+        const range = selRangeForRow(absolute, tui.selA!, tui.selB!, rowCells(row.segs));
         if (range) P.transcript.restyle(y, x0 + range.from, x0 + range.to + 1, C.selBg);
       }
     }
     if (SCROLLBAR && fr.sbShowing) {
       for (let sy = 0; sy < fr.vh; sy++)
-        P.transcript.fillRow(sy, W - 1, W, sy >= fr.sb.ty && sy < fr.sb.ty + fr.sb.th ? S.sbThumb : S.sbTrack);
+        P.transcript.fillRow(sy, tui.W - 1, tui.W, sy >= fr.sb.ty && sy < fr.sb.ty + fr.sb.th ? S.sbThumb : S.sbTrack);
     }
   }
 
 
   function paintDock() {
-    const fr = painted;
+    const fr = tui.painted;
     // NULL-FRAME FALLBACK: on the very first paint `painted` is still null (the
     // transcript's async computeFrame has not landed), but the dock must still
     // stamp the input box — derive the geometry directly, exactly as dockGeom's
@@ -4016,16 +4158,16 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     // plane restamps fully: shrinking from 4 wrapped rows to 1 cannot leave
     // old text behind, because last frame's cells lived in the plane, not in
     // the grid — no prev-extent wipe, no scrollbar-column footnote
-    P.dock.clearRows(0, H);
+    P.dock.clearRows(0, tui.H);
 
     // input box background
-    for (let i = 0; i < shownCount; i++) P.dock.fillRow(inputTop + i, 0, W, S.inputBgRow);
+    for (let i = 0; i < shownCount; i++) P.dock.fillRow(inputTop + i, 0, tui.W, S.inputBgRow);
 
     const d = display();
     void d;
     // any real char — even whitespace — is content; the placeholder only fills
     // a truly empty box, or it paints over leading indentation the user typed
-    const empty = !buf.length;
+    const empty = !tui.buf.length;
     const st0 = getPrompt()?.steps[getPrompt()!.idx];
     // with the custom box open the dock shows what is being typed, not the
     // filter — the two would otherwise fight over the same line
@@ -4037,7 +4179,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     // unescaped leading / (slash command) or ! (shell escape) gets its own
     // marker color; the rest of the line stays inputFg. Escaped (\/) stays
     // plain. Detection mirrors dispatch(): first non-whitespace char + !lit.
-    const leadCh = buf.find((c) => c.c.trim().length > 0);
+    const leadCh = tui.buf.find((c) => c.c.trim().length > 0);
     const dockMode =
       !getPrompt() && leadCh && !leadCh.lit && leadCh.c === "/" ? "cmd" : !getPrompt() && leadCh && !leadCh.lit && leadCh.c === "!" ? "shell" : "plain";
     // the arrow itself carries the mode color (cmd=info, shell=ok, else accent);
@@ -4089,11 +4231,11 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         P.dock.text(3, yy, vr.text, S.inputFg);
       }
       // input selection: same restyle-over-cells trick as the transcript
-      const ir = inputMod.inSelRange(inSelAnchor, cur);
+      const ir = tui.inputMod.inSelRange(tui.inSelAnchor, tui.cur);
       if (ir) {
-        const it = inputMod.inputText();
+        const it = tui.inputMod.inputText();
         for (let v = firstShown; v < Math.min(totalVis, firstShown + shownCount); v++) {
-          const [rs, re] = inputMod.rowBufRange(layout, v);
+          const [rs, re] = tui.inputMod.rowBufRange(layout, v);
           const a = Math.max(rs, ir[0]);
           const b = Math.min(re, ir[1]);
           if (a >= b) continue;
@@ -4111,20 +4253,20 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       const cy = inputTop + Math.max(0, Math.min(shownCount - 1, caret.visRow - firstShown));
       pendingCaret = { x: 3 + caret.colW, y: cy };
     }
-    nextCaret = pendingCaret;
+    tui.nextCaret = pendingCaret;
   }
 
   /** Row ranges floats actually painted last frame — ONLY these may be
    *  cleaned on re-derive (queue rows are transparent over the transcript;
    *  clearing the whole band would wipe transcript content under it). */
   function paintFloats() {
-    const fr = painted;
+    const fr = tui.painted;
     if (!fr) return;
     const { inputTop } = fr;
     // the plane replaces the floatPainted bookkeeping: restamping from an
     // empty buffer is the complete picture — a float that vanished is just
     // absent, and the transcript underneath was never touched
-    P.floats.clearRows(0, H);
+    P.floats.clearRows(0, tui.H);
 
     // the question wizard floats where the command hints would (it supersedes
     // them — the dock is an answer field while a prompt is open)
@@ -4134,8 +4276,8 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       const { rows, menuTop } = wizard.rows();
       const hTop = menuTop - rows.length;
       for (let i = 0; i < rows.length; i++) {
-        P.floats.fillRow(hTop + i, 0, W, S.barBgRow);
-        P.floats.text(1, hTop + i, clipW(rows[i].text, W - 2), rows[i].sel ? S.hintSel : S.hintDim);
+        P.floats.fillRow(hTop + i, 0, tui.W, S.barBgRow);
+        P.floats.text(1, hTop + i, clipW(rows[i].text, tui.W - 2), rows[i].sel ? S.hintSel : S.hintDim);
       }
     }
 
@@ -4148,16 +4290,16 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       const qTop = inputTop - queueRowsH;
       const extra = pend.length > shown.length ? 1 : 0;
       for (let i = 0; i < shown.length; i++) {
-        P.floats.text(1, qTop + i, clipW(shown[i], W - 2), S.hintOnBase);
+        P.floats.text(1, qTop + i, clipW(shown[i], tui.W - 2), S.hintOnBase);
       }
       if (extra) {
-        P.floats.text(1, qTop + shown.length, clipW(`… ${pend.length - shown.length} more — ctrl+up withdraws last`, W - 2), S.hintOnBase);
+        P.floats.text(1, qTop + shown.length, clipW(`… ${pend.length - shown.length} more — ctrl+up withdraws last`, tui.W - 2), S.hintOnBase);
       }
     }
 
     // floating command output
     let cmdRowsH = 0;
-    if (cmdOut?.length) {
+    if (tui.cmdOut?.length) {
       const avail = Math.max(1, inputTop - queueRowsH - 1);
       // Rendered through the SAME markdown path the transcript uses (renderMarkdown
       // → wrapCodeAware, copied from itemRows' md branch) so a command that PRINTS
@@ -4166,14 +4308,14 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       // NOT made global — a plain notice (/usage, /reload) has no markdown syntax,
       // so it round-trips to the same single plain segment as before.
       const panelBg = C.panelBg ?? C.inputBg;
-      const mdRows = renderMarkdown(cmdOut.join("\n")).flatMap((r) => wrapCodeAware(r, W - 2));
+      const mdRows = renderMarkdown(tui.cmdOut.join("\n")).flatMap((r) => wrapCodeAware(r, tui.W - 2));
       const shown = mdRows.slice(0, avail);
       cmdRowsH = shown.length + (mdRows.length > avail ? 1 : 0);
       const cTop = inputTop - queueRowsH - cmdRowsH;
       for (let i = 0; i < shown.length; i++) {
         // themed panel fill first: the box used to sit on the terminal's own
         // background (plain black), unrelated to the theme
-        P.floats.fillRow(cTop + i, 0, W, S.panelBgRow);
+        P.floats.fillRow(cTop + i, 0, tui.W, S.panelBgRow);
         // one style per segment, so task-list glyphs and dimmed done items keep
         // their colors against the panel background instead of flattening to it
         let x = 1;
@@ -4189,8 +4331,8 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         }
       }
       if (mdRows.length > avail) {
-        P.floats.fillRow(cTop + shown.length, 0, W, S.panelBgRow);
-        P.floats.text(1, cTop + shown.length, clipW(`… ${mdRows.length - avail} more lines`, W - 2), S.panelBgRow);
+        P.floats.fillRow(cTop + shown.length, 0, tui.W, S.panelBgRow);
+        P.floats.text(1, cTop + shown.length, clipW(`… ${mdRows.length - avail} more lines`, tui.W - 2), S.panelBgRow);
       }
     }
 
@@ -4198,7 +4340,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     if (hints.active && hints.rows.length) {
       const hTop = inputTop - queueRowsH - cmdRowsH - hints.rows.length;
       for (let i = 0; i < hints.rows.length; i++) {
-        P.floats.fillRow(hTop + i, 0, W, S.barBgRow);
+        P.floats.fillRow(hTop + i, 0, tui.W, S.barBgRow);
         P.floats.text(1, hTop + i, hints.rows[i].text, hints.rows[i].sel ? S.hintSel : S.hintDim);
       }
     }
@@ -4206,15 +4348,15 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   }
 
   function paintStatus() {
-    const barY = H - 1;
-    P.status.clearRows(0, H);
-    P.status.fillRow(barY, 0, W, S.barBgRow);
+    const barY = tui.H - 1;
+    P.status.clearRows(0, tui.H);
+    P.status.fillRow(barY, 0, tui.W, S.barBgRow);
     let lx = 1;
-    if (Date.now() < flashUntil && flashMsg) {
-      lx = P.status.text(lx, barY, `${flashMsg}`, displayBusy() ? S.accent : S.ok);
+    if (Date.now() < tui.flashUntil && tui.flashMsg) {
+      lx = P.status.text(lx, barY, `${tui.flashMsg}`, displayBusy() ? S.accent : S.ok);
     } else if (displayBusy()) {
       const frames = spinFrames();
-      lx = P.status.text(lx, barY, clipW(`${frames[frameIdx % frames.length]} ${streamText !== null ? "responding" : "thinking"}${busyMsg ? ` — ${busyMsg}` : ""} ${elapsed()}`, W - 2), S.spin);
+      lx = P.status.text(lx, barY, clipW(`${frames[tui.frameIdx % frames.length]} ${tui.streamText !== null ? "responding" : "thinking"}${tui.busyMsg ? ` — ${tui.busyMsg}` : ""} ${elapsed()}`, tui.W - 2), S.spin);
     } else {
       lx = P.status.text(lx, barY, `ready`, S.ok);
     }
@@ -4224,7 +4366,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     // DROPS whole segments from the LEFT (cwd first) only as many as needed —
     // dropping everything because one segment overflows, or clipping
     // mid-text ("ctx 9…"), both read as corruption.
-    const avail = W - lx - 2;
+    const avail = tui.W - lx - 2;
     const ro = state.readOnly ? "read-only" : null;
     const stats = cachedStats(); // [cwd, provider, model, ctx+cache] least-first
     const segs: string[] = [];
@@ -4254,7 +4396,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       if (Bun.stringWidth(right) <= avail || from >= segs.length) break;
       from++;
     }
-    if (right && from < segs.length) P.status.text(W - 1 - Bun.stringWidth(right), barY, right, S.chromeOnBar);
+    if (right && from < segs.length) P.status.text(tui.W - 1 - Bun.stringWidth(right), barY, right, S.chromeOnBar);
   }
 
   /**
@@ -4280,31 +4422,31 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     // stamps "nothing" the same way a plugin's idle plane holds nothing. Without
     // this, a dismissed overlay left its last frame composited over the
     // transcript until something else happened to repaint those rows.
-    const p = overlay;
-    P.overlay.clearRows(0, H);
+    const p = tui.overlay;
+    P.overlay.clearRows(0, tui.H);
     if (!p) return;
     const bodyH = Math.max(1, inputTop - 3); // every row the hardware leaves free
     const top = Math.max(0, inputTop - bodyH - 2);
     const win = p.window(bodyH);
     const q = p.filter();
-    P.overlay.clearRows(0, H);
-    P.overlay.fillRow(top, 0, W, S.barBgRow);
-    P.overlay.text(1, top, clipW(`sessions ${q ? `· filter: ${q}` : "· type to filter"}`, W - 2), S.accent);
+    P.overlay.clearRows(0, tui.H);
+    P.overlay.fillRow(top, 0, tui.W, S.barBgRow);
+    P.overlay.text(1, top, clipW(`sessions ${q ? `· filter: ${q}` : "· type to filter"}`, tui.W - 2), S.accent);
     for (let i = 0; i < bodyH; i++) {
       const y = top + 1 + i;
       const r = win.rows[i];
       const on = i === win.selRow;
-      P.overlay.fillRow(y, 0, W, on ? S.overlaySel : S.overlayRow);
+      P.overlay.fillRow(y, 0, tui.W, on ? S.overlaySel : S.overlayRow);
       if (!r) {
         if (i === 0 && !win.rows.length) P.overlay.text(1, y, q ? `no match for "${q}"` : "(no sessions)", S.dim);
         continue;
       }
       const mark = r.current ? "*" : on ? "›" : " ";
-      P.overlay.text(1, y, clipW(`${mark} ${r.cells.join("  ")}`, W - 2), on ? S.overlaySel : S.overlayRow);
+      P.overlay.text(1, y, clipW(`${mark} ${r.cells.join("  ")}`, tui.W - 2), on ? S.overlaySel : S.overlayRow);
     }
     const y = top + 1 + bodyH;
-    P.overlay.fillRow(y, 0, W, S.barBgRow);
-    P.overlay.text(1, y, clipW(p.footer(), W - 2), p.pendingConfirm() ? S.err : S.hintDim);
+    P.overlay.fillRow(y, 0, tui.W, S.barBgRow);
+    P.overlay.text(1, y, clipW(p.footer(), tui.W - 2), p.pendingConfirm() ? S.err : S.hintDim);
   }
 
   function clipW(s: string, cols: number): string {
@@ -4333,18 +4475,18 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   }
 
   // ---- loop ----
-  let resizing = false;
-  let paintedTheme = ""; // themeName() the current styles were built from
+  
+   // themeName() the current styles were built from
   function doResize(w: number, h: number) {
     if (w < 5 || h < 3) return;
-    if (w === W && h === H) return;
-    W = Math.max(20, w);
-    H = Math.max(8, h);
-    screen.resize(W, H); // zeroes the grid; forceRepaintAll makes flush re-emit every row
+    if (w === tui.W && h === tui.H) return;
+    tui.W = Math.max(20, w);
+    tui.H = Math.max(8, h);
+    screen.resize(tui.W, tui.H); // zeroes the grid; forceRepaintAll makes flush re-emit every row
     initStyles();
-    paintedTheme = themeName();
+    tui.paintedTheme = themeName();
     lineCache.clear();
-    inputMod.invalidate(); // the input wrap is width-keyed — a stale wrap kept
+    tui.inputMod.invalidate(); // the input wrap is width-keyed — a stale wrap kept
     // the dock at the old width's row breaks until the next edit
     streamKernels.clear(); // stream rows are width-keyed too
     screen.forceRepaintAll();
@@ -4353,9 +4495,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
 
   /** A /theme switch must rebuild every cached style id, not just the next row. */
   function rethemeIfNeeded() {
-    if (themeName() === paintedTheme) return;
+    if (themeName() === tui.paintedTheme) return;
     initStyles();
-    paintedTheme = themeName();
+    tui.paintedTheme = themeName();
     lineCache.clear();
     streamKernels.clear(); // cached stream rows carry old-theme seg colors
     thinkKernels.clear(); // so do think kernels: C.think is baked into their segs at creation
@@ -4363,18 +4505,18 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     bumpAll();
   }
 
-  let lastSpinAt = 0;
+  
   function tickSpinner() {
     rethemeIfNeeded();
     if (!displayBusy()) return; // a viewer's spinner mirrors the owner's turn
     const now = Date.now();
-    if (now - lastSpinAt < 140) return;
-    lastSpinAt = now;
+    if (now - tui.lastSpinAt < 140) return;
+    tui.lastSpinAt = now;
     // Resolve the frame set here too: it is theme-driven (spinFrames), so the
     // tick must ask the theme for the count, not reuse a paint-scope local.
     // Reading a name only paintStatus() declared threw ReferenceError the first
     // time a turn went busy — the crash that emptied the screen.
-    frameIdx = (frameIdx + 1) % spinFrames().length;
+    tui.frameIdx = (tui.frameIdx + 1) % spinFrames().length;
     // spinner tick: the status region re-derives from current state. It is an
     // effect subscribed to statsV, so bumping that is the whole push — the
     // frame it lands in owns the composite and the flush.
@@ -4443,7 +4585,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         // plugin region that writes every frame would otherwise re-arm the
         // frame loop from within itself and spin forever.
         screen.forceRepaintAll();
-        if (!inPaint) bumpAll();
+        if (!tui.inPaint) bumpAll();
         (rest.find((x) => typeof x === "function") as (() => void) | undefined)?.();
         return true;
       };
@@ -4572,7 +4714,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           );
         }
       };
-      restoreOutputRef = restoreOutput;
+      tui.restoreOutputRef = restoreOutput;
 
       // Synchronous throws: Bun's default prints the stack over the grid and
       // exits with the terminal in raw mode. Route it through the exit path.
@@ -4590,7 +4732,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         // rejection may have come from an unrelated floating promise, and
         // resetting a live turn's busy flag here would let a queued message
         // dispatch into it
-        if (!busy) {
+        if (!tui.busy) {
           setBusy(false);
           drainQueue();
         } else {
@@ -4622,7 +4764,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       // first grid is complete before the first flush. Before this point the
       // effects exist but skip painting (see `regionsLive`): their dependency
       // wiring is already established, they just have nothing to draw into yet.
-      regionsLive = true;
+      tui.regionsLive = true;
       bumpAll();
       refresh();
       flushNow(); // every region stamps its plane now, synchronously
@@ -4632,10 +4774,10 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       // show the input caret from the very first frame, not only after the
       // first keypress — the frame loop's moved-check starts from null and
       // would otherwise leave the cursor hidden until something dirties it
-      const caret0 = nextCaret ?? { x: 3, y: H - 2 };
+      const caret0 = tui.nextCaret ?? { x: 3, y: tui.H - 2 };
       term.setCursor(caret0.x, caret0.y);
       term.flush();
-      dirty = false;
+      tui.dirty = false;
       applyRuntimeConfig();
       // The startup block comes AFTER refresh() (see welcomeBlock's comment),
       // and only for a genuinely fresh launch — a resumed session has its
@@ -4675,23 +4817,23 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
               // switched (or left) sessions: this poll is about the one it
               // was seeded from — switchSession re-runs refreshLock for the new
               // one, and a stale id would mirror the wrong transcript
-              if (mirrorTimer) clearInterval(mirrorTimer);
-              mirrorTimer = null;
+              if (tui.mirrorTimer) clearInterval(tui.mirrorTimer);
+              tui.mirrorTimer = null;
               return;
             }
             // never mirror over a turn this process is running itself
-            if (state.readOnly && !busy) {
+            if (state.readOnly && !tui.busy) {
               const live = kvGet<LiveStatus>(state.sessionId!, "live");
               if (live && live.at !== lastLiveAt) {
                 lastLiveAt = live.at;
-                remoteBusy = live.busy;
-                busyMsg = live.busyMsg;
+                tui.remoteBusy = live.busy;
+                tui.busyMsg = live.busyMsg;
                 const st = live.streaming;
-                if (st !== streamText) {
-                  streamText = st;
+                if (st !== tui.streamText) {
+                  tui.streamText = st;
                   streamKernels.clear(); // a new stream: all width kernels rebuild
                 }
-                startedAt = live.startedAt;
+                tui.startedAt = live.startedAt;
                 // a mirrored owner turn changes exactly what the status bar and
                 // the streaming tail show — not the item list, which refresh()
                 // below owns when new rows actually land
@@ -4713,8 +4855,8 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           } catch {}
         };
         mirror(); // seed lastSeq before the first frame, so history is not "new"
-        mirrorTimer = setInterval(mirror, 500);
-        mirrorTimer.unref?.();
+        tui.mirrorTimer = setInterval(mirror, 500);
+        tui.mirrorTimer.unref?.();
       }
 
       let lastCaretKey: string | null = null;
@@ -4729,8 +4871,8 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       // for one, 18.13 ms for five, against a 16.7 ms frame budget.
       const frameTick = async () => {
         tickSpinner();
-        if (!dirty) return;
-        dirty = false;
+        if (!tui.dirty) return;
+        tui.dirty = false;
         if (PROF) profMark = performance.now();
         try {
           // Materialize any plugin region added/removed by a reload BEFORE the
@@ -4749,16 +4891,16 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           // folds them. A region whose dependencies did not move never runs —
           // which is what stops a keystroke from re-deriving the transcript.
           flushNow();
-          lastTickAt = performance.now();
+          tui.lastTickAt = performance.now();
           const q0 = PROF ? performance.now() : 0;
-          const caret = nextCaret ?? { x: 3, y: H - 2 };
+          const caret = tui.nextCaret ?? { x: 3, y: tui.H - 2 };
           const caretKey = `${caret.x},${caret.y}`;
           const moved = caretKey !== lastCaretKey;
           if (moved) term.hideCursor(); // visible cursor mid-repaint ghosts on Windows Terminal
           screen.composite(); // the ONE composite per frame — see the note above
           const q2 = PROF ? performance.now() : 0;
           screen.flush();
-          if (PROF) profLine(`full paint=${(q2 - q0).toFixed(1)} flush=${(performance.now() - q2).toFixed(1)} items=${items.length} ${W}x${H}`);
+          if (PROF) profLine(`full paint=${(q2 - q0).toFixed(1)} flush=${(performance.now() - q2).toFixed(1)} items=${tui.items.length} ${tui.W}x${tui.H}`);
           if (process.env.FOX_AGENT_TRACE && screen.lastDirty()) {
             try {
               appendFileSync(process.env.FOX_AGENT_TRACE + ".grid", `⟦frame⟧\n${screen.dumpGrid()}\n`);
@@ -4789,7 +4931,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           streamKernels.clear();
           thinkKernels.clear();
           frameErrors++;
-          if (frameErrors <= 1 && !exitCode) {
+          if (frameErrors <= 1 && !tui.exitCode) {
             try {
               // include the first stack frame so the transcript shows WHERE,
               // not just THAT — a bare "render error" with a minified-bundle
@@ -4799,7 +4941,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
               push("error", `render error: ${what}${where ? ` — ${where}` : ""}`);
             } catch {}
           }
-          dirty = true; // next tick repaints everything from clean caches
+          tui.dirty = true; // next tick repaints everything from clean caches
         }
       };
       let frameErrors = 0; // a second consecutive render error stays panel-only
@@ -4808,23 +4950,23 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         if (frameTimer) clearInterval(frameTimer);
         frameTimer = setInterval(frameTick, Math.max(8, Math.min(250, Math.floor(ms))));
       };
-      tickRef = frameTick;
+      tui.tickRef = frameTick;
       frameArmRef = armFrameTimer;
       armFrameTimer(state.config?.tuiFrameMs ?? 16);
 
       try {
         await new Promise<void>((resolve) => {
-          finish = resolve;
-          if (exiting) resolve(); // exited during startup
+          tui.finish = resolve;
+          if (tui.exiting) resolve(); // exited during startup
         });
       } finally {
         if (frameTimer) clearInterval(frameTimer);
         frameArmRef = null;
       }
-      if (exitCode) process.exitCode = exitCode;
+      if (tui.exitCode) process.exitCode = tui.exitCode;
     } catch (e) {
       try {
-        restoreOutputRef?.();
+        tui.restoreOutputRef?.();
       } catch {}
       console.error("[fox-agent] fatal:", (e as Error)?.message ?? e);
       try {
