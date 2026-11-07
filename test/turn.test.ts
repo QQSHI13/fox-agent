@@ -450,6 +450,61 @@ describe("turn manager", () => {
     expect(ends.find((e) => e.name === "boom")!.output).toContain("exploded");
   });
 
+  test("a fast tool's result is announced before a slow sibling finishes", async () => {
+    // The bug this pins: every call of one step runs in a Promise.all, and the
+    // `tool_end` events were emitted from ONE loop after awaiting it — so a fast
+    // `read` next to a 30 s build stayed invisible for the full 30 s, and a
+    // batch's results all appeared at once at the end.
+    const t = await setup();
+    const s = t.createSession("/w", "m1");
+
+    let releaseFast = () => {};
+    let releaseSlow = () => {};
+    const fastGate = new Promise<void>((r) => (releaseFast = r));
+    const slowGate = new Promise<void>((r) => (releaseSlow = r));
+    const done: string[] = [];
+
+    const mk = (name: string, gate: Promise<void>) =>
+      [
+        name,
+        {
+          def: { name, description: "", parameters: { type: "object" } },
+          run: async () => {
+            await gate;
+            done.push(name);
+            return `${name} finished`;
+          },
+        },
+      ] as const;
+
+    const registry = new Map([mk("fast", fastGate), mk("slow", slowGate)]) as any;
+    const mock = mockChat([
+      [
+        { type: "tool_call", call: { id: "a", name: "fast", arguments: "{}" } },
+        { type: "tool_call", call: { id: "b", name: "slow", arguments: "{}" } },
+        { type: "done", reason: "tool_calls" },
+      ],
+      textDone("done"),
+    ]);
+
+    const gen = t.runTurnCore(s.id, cfg(), "go", undefined, { chat: mock.fn as any, registryOverride: registry, quiet: true });
+    const events: any[] = [];
+    for await (const ev of gen) {
+      events.push(ev);
+      // both calls are in flight by the time tool_starts are done
+      if (ev.type === "tool_start" && ev.name === "slow") releaseFast();
+      if (ev.type === "tool_end" && ev.name === "fast") {
+        // fast landed while slow was still gated — the whole point
+        expect(done).toEqual(["fast"]);
+        releaseSlow();
+      }
+    }
+
+    const ends = events.filter((e) => e.type === "tool_end");
+    expect(ends.map((e) => e.name)).toEqual(["fast", "slow"]); // settle order
+    expect(ends).toHaveLength(2); // exactly one per call, not a second pass
+  });
+
   test("the assistant node is announced BEFORE its tool calls start", async () => {
     // An assistant node that carries tool calls has no text of its own — the
     // reply IS the calls. A live UI can only anchor that node when it hears

@@ -352,5 +352,5 @@
 <text x="46" y="816" fill="#8a8578" font-size="12">fox-agent</text>
 <rect x="136" y="806" width="11" height="11" rx="2" fill="#5b7fa6"/>
 <text x="154" y="816" fill="#8a8578" font-size="12">other tools</text>
-<text x="264" y="816" fill="#8a8578" font-size="12" opacity="0.85">lower is better · sqrt-scaled bars (values printed) · n/a collapsed, full list in table · 4 cpu, load 0.88</text>
+<text x="264" y="816" fill="#8a8578" font-size="12" opacity="0.85">lower is better · sqrt-scaled bars (values printed) · n/a collapsed, full list in table · 4 cpu, load 0.58</text>
 </svg>
