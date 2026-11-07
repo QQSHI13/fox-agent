@@ -11,7 +11,7 @@ import { randomUUID } from "node:crypto";
 import { PushCompositor, Plane, charWidth, type Style } from "./screen.ts";
 import { computed, counter, effect, flushNow, setScheduler, signal, type Disposable } from "./reactive.ts";
 import { computeFrame, dockRows, itemEdgeSpan, scrollbarScrollTop, viewportHeight, chipGutter, contentOrigin, contentOriginForChip, contentWidth, type Frame, type FrameInput, type Row } from "./layout.ts";
-import { activePlugins } from "../plugins/load.ts";
+import { activePlugins, setRepaintHandler } from "../plugins/load.ts";
 import type { TuiRegionPlane, TuiWrapOptions } from "../plugins/types.ts";
 import { createDecoder, type Key } from "./keys.ts";
 import { graphemeBack, graphemeForward, type Ch } from "./edit.ts";
@@ -778,6 +778,23 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   const bumpOverlay = () => overlayV.bump();
   const bumpPrompt = () => promptV.bump();
   const bumpBusy = () => { busyV(displayBusy()); remoteBusyV(tui.remoteBusy); };
+  /**
+   * The queue/steering stack changed shape.
+   *
+   * That stack shrinks the transcript viewport (`pendingCount` -> `queueH`), so
+   * the transcript must re-derive. It subscribes to `cmdOutV` already — the
+   * queue box is a floats concern, and this counter was the only thing that
+   * happened to be in both lists — so bumping it here is the fix, not a new
+   * signal.
+   *
+   * The bug this closes: `steer()` (ctrl+s) changed the stack and bumped only
+   * `flashV`, which the transcript does not read, so the bottom rows kept the
+   * old height until an unrelated event repainted them. `push`/`drainQueue` were
+   * covered by accident because they call `bumpCmdOut()` directly.
+   */
+  const bumpQueue = () => cmdOutV.bump();
+
+
   // The scheduler: the reactive core asks for a flush, and the existing
   // frame-slot logic decides when. Without this the core would fall back to a
   // microtask, which repaints outside the frame budget.
@@ -1484,7 +1501,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     const last = queued.pop();
     if (last) {
       chsSet(last.raw);
-      bumpCmdOut();
+      bumpQueue(); // the stack shrank: the transcript viewport grew
       return flash("withdrawn — enter resends, esc drops");
     }
     if (state.sessionId) {
@@ -2489,12 +2506,14 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           tui.cur = 0;
           tui.inputMod.bumpRev();
           steer(state.sessionId, raw);
+          // the steering stack just grew, which shrinks the transcript viewport
+          bumpQueue();
           return flash("steering — delivered after the current tool");
         }
         if (!raw && queued.length) {
           const [m] = queued.splice(0, 1);
           steer(state.sessionId, m.raw);
-          bumpCmdOut();
+          bumpQueue(); // one queue row out, one steering row in: same height, new text
           return flash("steering queued message — delivered after the current tool");
         }
       }
@@ -3951,6 +3970,45 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     screen.forceRepaintAll();
     bumpAll();
   };
+
+  /**
+   * The plugin-facing door: `foxHost.repaint(region)` re-derives a region the
+   * caller does not own.
+   *
+   * A plugin's own `paint` already re-runs on the signals it reads, so it needs
+   * nothing for its own band. This is for the other case — a plugin that changed
+   * something ANOTHER region renders (the transcript's viewport, the dock's
+   * contents) has no signal to write, because that state is the host's. It asks
+   * instead, and the host decides what re-deriving means.
+   *
+   * Same shape as `clearKeyRef`/`frameArmRef` above: assigned here, invoked from
+   * anywhere, and `requestRepaint` refuses politely when no TUI is attached.
+   * "transcript" routes through `itemsV` because that is what the transcript
+   * region subscribes to; the rest map to their own counters.
+   */
+  setRepaintHandler((region) => {
+    switch (region) {
+      case "dock":
+        bufV.bump();
+        return;
+      case "floats":
+        cmdOutV.bump();
+        return;
+      case "overlay":
+        overlayV.bump();
+        return;
+      case "status":
+        statsV.bump();
+        return;
+      case "transcript":
+        itemsV.bump();
+        return;
+      default:
+        // no region named: the coarse path, same as a resize
+        bumpAll();
+    }
+  });
+
 
   /**
    * The layout split, as a comparable value.
