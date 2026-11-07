@@ -155,11 +155,41 @@ report({ before, after: existsSync(own.capturePath) });
 });
 
 describe("ownTerminal: it declines rather than guessing", () => {
-  test("without a TTY it takes nothing — the runner's own fds stay intact", () => {
-    // `bun test` gives us a pipe. Redirecting here would swallow the report,
-    // which is the bug this suite hit before the guard existed.
-    expect(process.stdout.isTTY).toBeFalsy();
-    expect(ownTerminal()).toBeNull();
+  test("without a TTY it takes nothing — the runner's own fds stay intact", async () => {
+    // This asserts the DECLINE, in a child whose stdout is a pipe. It used to
+    // assert `process.stdout.isTTY` was falsy in the runner itself, which is
+    // wrong twice over:
+    //
+    //   1. it tested the ENVIRONMENT, not the code. Run `bun test` under a pty
+    //      (tmux, `script`, an IDE terminal, some CI runners) and the assertion
+    //      fails while `ownTerminal` behaves perfectly — which is exactly the
+    //      false failure this replaces.
+    //   2. reading `process.stdout.isTTY` at all is the footgun `src/tui/own.ts`
+    //      documents: it makes Bun CONSTRUCT its stdout sink and cache the
+    //      descriptor, so a later redirect is bypassed.
+    //
+    // A child with a piped stdout has no TTY no matter how the suite was
+    // launched, so the condition is established rather than assumed.
+    const dir = mkdtempSync(join(tmpdir(), "fox-own-"));
+    const verdictFile = join(dir, "verdict.json");
+    const file = join(dir, "probe.ts");
+    writeFileSync(
+      file,
+      `
+import { writeFileSync } from "node:fs";
+import { ownTerminal } from ${JSON.stringify(join(ROOT, "src/tui/own.ts"))};
+const own = ownTerminal();
+writeFileSync(${JSON.stringify(verdictFile)}, JSON.stringify({ took: own !== null }));
+`,
+    );
+    // stdout/stderr piped (the default): the child sees no terminal
+    const proc = Bun.spawnSync(["bun", file], { stdout: "pipe", stderr: "pipe" });
+    try {
+      expect(proc.exitCode).toBe(0);
+      expect(JSON.parse(readFileSync(verdictFile, "utf8"))).toEqual({ took: false });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test("an unsupported platform degrades to null instead of throwing", () => {
