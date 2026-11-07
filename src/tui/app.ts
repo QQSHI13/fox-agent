@@ -69,54 +69,8 @@ import { diffSegs, jsonSegs, statusSegs, pathSegs, wordDiff, ansiSegs, highlight
 import { argsSummary, argsFull, argsJson, keepTail, diffTouchKeys } from "./helpers.ts";
 export { argsSummary, argsFull, argsJson, keepTail, diffTouchKeys };
 
-type ItemKind = "user" | "toolhead" | "toolbody" | "info" | "error" | "md" | "think";
-interface Item {
-  k: number;
-  kind: ItemKind;
-  text: string;
-  /** storage seq for items loaded from the log — survives refresh() */
-  ref?: number;
-  /** expandable: thinking + long tool output */
-  expanded?: boolean;
-  /** transient (/help): removed on the next keypress or click */
-  ephemeral?: boolean;
-  /** a real tool result body — collapses to an arrow line; plain info lines in the
-   *  toolbody style (welcome, hints) don't */
-  toolResult?: boolean;
-  /** full untruncated tool input — the head line is clickable to reveal it */
-  detail?: string;
-  /** part of the startup block — rebuilt live when config changes, and dropped
-   *  (with the block's lifetime) by the next refresh() */
-  welcome?: boolean;
-  /** tool result whose body is markdown (todo task lists) — expanded
-   *  rendering goes through the markdown parser instead of plain lines */
-  mdBody?: boolean;
-  /** raw tool-call arguments; argsJson (the pretty-print) is deferred to first
-   *  render/expand — pretty-printing every call in history at load was 416ms
-   *  on a 4k-message session for data only an expanded head ever shows */
-  argsRaw?: string;
-  /**
-   * The view holds a PRESENTATION-TRUNCATED body for this tool result (a
-   * harness-authored replace op, see context/truncate.ts) while storage holds
-   * the whole original. Expanding such a body re-reads `ref` from SQLite so the
-   * user sees everything the tool actually returned — the excerpt is a default
-   * view, never a ceiling on what can be inspected.
-   */
-  truncated?: boolean;
-  /** storage seq rendered as the leading [N] gutter marker. Settled items get
-   *  it from loadItems; a live item gets it as soon as the turn assigns one
-   *  (the user message's seq, a tool_end's seq) so the marker appears in-flight
-   *  instead of only after refresh() rebuilds from history. */
-  seq?: number;
-  /** the second row of a multi-row logical unit (a tool's body behind its head):
-   *  indents under the unit's marker instead of repeating the chip, so a tool
-   *  pair shows ONE [N], not two. */
-  markerCont?: boolean;
-  /** set by a revert (ctx delete) op — the node is hidden from the MODEL's
-   *  context but the transcript keeps it (storage is append-only). Rendered
-   *  dimmed so the op is visible; /undo clears it. */
-  hidden?: boolean;
-}
+import { nodeToItems as buildNodeItems, callMaps as buildCallMaps, type Item, type ItemKind, type CallMaps } from "../view/model.ts";
+export type { Item, ItemKind };
 
 /**
  * TUI display caps — configurable via tuiCollapsedChars / tuiKeptChars. Set by
@@ -951,56 +905,15 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     }
   }
 
-  /** Per-message items for ONE stored node — the single definition of what a
-   * user/think/assistant/tool node looks like as transcript items. loadItems()
-   * maps the whole log through this; the per-node converge path (Stage 2+)
-   * uses it to reconcile a just-settled node against the SAME construction, so
-   * the live view and the store rebuild can never drift. `callMaps` is the
-   * assistant→tool lookup (label/raw/name per tool_call id). */
-  function nodeToItems(m: MessageRow, callMaps: { label: Map<string, string>; raw: Map<string, string>; name: Map<string, string> }, hidden?: boolean, modelTruncated?: boolean): Item[] {
-    // the [N] marker is not baked into text — it rides `it.seq` as a gutter
-    // chip (see itemRows/withMarker). Text here is the bare content.
-    // `hidden` (a revert hid this node from the model's context) marks every
-    // item so itemRows renders them dimmed — the op stays visible in the
-    // transcript even though storage is append-only.
-    if (m.role === "user") return [{ k: seqKey(m.seq, 0), kind: "user", seq: m.seq, text: `❯ ${m.content}`, hidden }];
-    if (m.role === "tool") {
-      // todo bodies are markdown task lists — rendered as md, always visible.
-      // ctx bodies stay expanded too: the per-op report is the audit trail for
-      // what the model just did to its view.
-      const name = callMaps.name.get(m.tool_call_id ?? "");
-      const isTodo = name === "todo";
-      const isCtx = name === "ctx";
-      const pinned = isTodo || isCtx;
-      const failed = m.error != null;
-      // The TRANSCRIPT shows the whole stored body. Truncation is a model-facing
-      // presentation (see context/truncate.ts, which appends a replace op); the
-      // row itself is never cut, so a reader who wants the full output should
-      // get it. `keepTail` here is only a memory guard for pathological bodies;
-      // expanding re-reads the row from SQLite (see fullBody) and shows it all.
-      const shown = isTodo || isCtx ? m.content : keepTail(m.content, KEPT_TOOL_CHARS * 4);
-      return [
-        { k: seqKey(m.seq, 1), kind: "toolhead", seq: m.seq, text: `» ${callMaps.label.get(m.tool_call_id ?? "") ?? "tool"}${failed ? " — failed" : ""}`, argsRaw: callMaps.raw.get(m.tool_call_id ?? ""), hidden },
-        {
-          k: seqKey(m.seq, 2),
-          kind: "toolbody",
-          seq: m.seq,
-          markerCont: true, // indents under the head's [N]; a tool pair shows ONE chip
-          text: shown,
-          ref: m.seq,
-          toolResult: true,
-          mdBody: isTodo || undefined,
-          expanded: pinned || expandedRefs.has(m.seq),
-          hidden,
-          // the model read an excerpt while the row holds everything: say so on
-          // the head line, so "the assistant missed X" has a visible reason
-          truncated: modelTruncated || shown.length < m.content.length,
-        },
-      ];
-    }
-    if (m.role === "think")
-      return [{ k: seqKey(m.seq, 0), kind: "think", seq: m.seq, text: m.content, ref: m.seq, expanded: expandedRefs.has(m.seq), hidden }];
-    return [{ k: seqKey(m.seq, 0), kind: "md", seq: m.seq, text: m.content || "", hidden }];
+  /**
+   * One stored row -> the items it renders as. The mapping itself lives in
+   * src/view/model.ts, shared with every other front end (the gateway and ACP
+   * each grew their own copy of this join). What stays here is only the TUI's
+   * answer to the model's three host questions: how to mint a cache key, which
+   * seqs are expanded, and the configured body cap.
+   */
+  function nodeToItems(m: MessageRow, cm: CallMaps, hidden?: boolean, modelTruncated?: boolean): Item[] {
+    return buildNodeItems(m, cm, { key: seqKey, expanded: (seq) => expandedRefs.has(seq), keptChars: KEPT_TOOL_CHARS }, hidden, modelTruncated);
   }
 
   /**
@@ -1039,23 +952,10 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     // never become items; `hiddenSeqs` no longer needs tagging for rendering.
     const nodes = projectView(state.sessionId).filter((n) => !n.deleted);
     const msgs = nodes.map((n) => n.msg);
-    const callMaps = { label: new Map<string, string>(), raw: new Map<string, string>(), name: new Map<string, string>() };
-    for (const m of msgs) {
-      if (m.role === "assistant" && m.tool_calls) {
-        try {
-          for (const c of JSON.parse(m.tool_calls) as { id: string; name: string; arguments: string }[]) {
-            callMaps.label.set(c.id, `${c.name}${argsSummary(c.arguments ?? "")}`);
-            // the expanded view shows the FULL JSON call, pretty-printed —
-            // not a reconstructed summary. What the model actually sent is
-            // the ground truth, and it is what you want when auditing.
-            // argsJson runs lazily (fillDetail) — only a head someone actually
-            // expands (or that must be width-tested) ever pays for it.
-            callMaps.raw.set(c.id, c.arguments ?? "");
-            callMaps.name.set(c.id, c.name);
-          }
-        } catch {}
-      }
-    }
+    // the assistant -> tool join, written once in the shared model. `raw` keeps
+    // the full JSON so an expanded head shows what the model actually sent
+    // (argsJson is deferred — only a head someone expands ever pays for it).
+    const callMaps = buildCallMaps(msgs, (name, args) => `${name}${argsSummary(args)}`);
     // Iterate NODES, not msgs: a node carries `replaceVersion`, which is how the
     // transcript learns that the model is reading a harness-truncated excerpt of
     // this row rather than the row itself. Passing only the message would lose
