@@ -32,7 +32,7 @@ function sdkRuntime(): Record<string, unknown> {
   // `regionSignal` is the host's OWN signal, not a copy: writing it must
   // schedule a frame through the same scheduler every built-in region uses.
   // A separate implementation would accept the write and never repaint.
-  return { ok, fail, regionSignal: signal };
+  return { ok, fail, regionSignal: signal, repaint: requestRepaint };
 }
 
 const SDK_SHIM = `
@@ -42,7 +42,53 @@ export const ok = s.ok;
 export const fail = s.fail;
 export const createAgent = s.createAgent;
 export const regionSignal = s.regionSignal;
+export const repaint = s.repaint;
 `;
+
+/**
+ * Ask the host to re-derive a region.
+ *
+ * ## Why this exists at all
+ *
+ * The transcript's frame is O(rows in view): it re-wraps, re-marks and
+ * re-composites. What it reacts to is therefore an explicit list of causes, not
+ * a scan of everything that could matter. Anything that CHANGES one of those
+ * causes has to say so — and that includes a plugin, which could otherwise only
+ * repaint its own band.
+ *
+ * Concrete case this closes: the transcript's viewport height is
+ * `pendingCount` (the queued/steering stack above the dock). `steer()` changed
+ * that stack and bumped nothing the transcript read, so the bottom rows stayed
+ * at the old height until some unrelated event repainted. The same door is what
+ * a plugin needs to say "I changed something the transcript renders".
+ *
+ * ## Shape
+ *
+ * Registered from inside the TUI, exactly like `clearKeyRef`/`frameArmRef` in
+ * app.ts: a module-level slot assigned by `setRepaintHandler`, invoked from
+ * anywhere, and a no-op before a TUI exists. A headless host leaves it null —
+ * there is nothing to paint, and `requestRepaint` returning false is the honest
+ * answer rather than an error.
+ */
+export type RepaintRegion = "transcript" | "dock" | "floats" | "overlay" | "status";
+
+let repaintHandler: ((region?: RepaintRegion) => void) | null = null;
+
+/** Installed by the TUI once its regions exist; cleared on teardown. */
+export function setRepaintHandler(fn: ((region?: RepaintRegion) => void) | null): void {
+  repaintHandler = fn;
+}
+
+/**
+ * Re-derive `region` (or everything when omitted). Returns whether a TUI was
+ * attached to take the request — false on a headless host, which is not an
+ * error.
+ */
+export function requestRepaint(region?: RepaintRegion): boolean {
+  if (!repaintHandler) return false;
+  repaintHandler(region);
+  return true;
+}
 
 /**
  * Import a plugin module, resolving `fox-agent/sdk` even where it is not

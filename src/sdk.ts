@@ -44,6 +44,19 @@ export type { ChatFn, ChatMessage, ProviderConfig, StreamEvent, ToolDef } from "
  */
 export { signal as regionSignal } from "./tui/reactive.ts";
 export type { Signal as RegionSignal } from "./tui/reactive.ts";
+/**
+ * Ask the host to re-derive a region (or everything, when omitted).
+ *
+ * A region's `paint` re-runs on its own reads, so a plugin that only changes its
+ * own band needs nothing more. This is for the other case: a plugin that changed
+ * something ANOTHER region renders — the transcript's viewport height, say — has
+ * no way to subscribe to it, because that state is the host's. The host owns the
+ * re-derive; the plugin just asks.
+ *
+ * Returns false when no TUI is attached (a headless run), which is not an error.
+ */
+export { requestRepaint as repaint } from "./plugins/load.ts";
+export type { RepaintRegion } from "./plugins/load.ts";
 
 export interface AgentRunResult {
   text: string;
