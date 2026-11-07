@@ -132,7 +132,7 @@ function safeSize(ownerFd?: number): { width: number; height: number } | null {
   return reconcileSize(ttySize(ownerFd), altCols, altRows, ownerFd !== undefined);
 }
 
-export function openTerm(): Term {
+export function openTerm(opts?: { capture?: boolean; size?: () => { width: number; height: number } | null }): Term {
   /**
    * Take the terminal before anything else runs. From here on fd 1 and fd 2 are
    * a capture file: every other writer in this process, every child it spawns,
@@ -142,8 +142,26 @@ export function openTerm(): Term {
    *
    * Null on a platform without libc: the caller keeps `Bun.stdout.writer()`
    * and relies on the patches. Hardening that can fail must not fail the TUI.
+   *
+   * ## Why `capture` is a parameter, and not just "always take it"
+   *
+   * Ownership redirects the CALLER's real fd 1/2. That is correct for the one
+   * caller that is a TUI — and catastrophic for a test runner, where fd 1 is the
+   * report channel: every `console.log`, every bun diagnostic, and every OTHER
+   * test file's output disappears into a capture file. It also breaks any sink a
+   * test stubbed beforehand, because the stub is bypassed the moment a private
+   * descriptor exists.
+   *
+   * That is a real bug, not a test artefact: `bun test` under a pty had stdout
+   * with a terminal, `ownTerminal()` succeeded, and the run went silent —
+   * measured as `Received: ""` on assertions that only needed a write to reach
+   * the stub.
+   *
+   * So the default is "own it", because that is what the TUI must do and what it
+   * did before; a harness whose fds are not the TUI's sets `capture: false` and
+   * keeps every write going to the sink it provided.
    */
-  const owner: TerminalOwnership | null = ownTerminal();
+  const owner: TerminalOwnership | null = (opts?.capture ?? true) ? ownTerminal() : null;
   const out = owner ? null : Bun.stdout.writer({ highWaterMark: 1 << 16 });
   const ownerFd = owner?.ownerFd;
   const stdin = process.stdin;
@@ -151,7 +169,19 @@ export function openTerm(): Term {
   /** the live `data` listener, kept so `end()` can detach it (see end()) */
   let onData: ((chunk: Uint8Array) => void) | null = null;
 
-  let cached = safeSize(ownerFd) ?? { width: 80, height: 24 };
+  /**
+   * Where a size comes from.
+   *
+   * Defaults to the terminal. A caller may pin it, and the tests must: without
+   * a pinned source, `safeSize` ioctls fd 1/0/2 — the REAL terminal — so a test
+   * that stubs `process.stdout.columns` still gets the real window size back on
+   * any machine where the suite is launched from a tty. That made
+   * "onResize reports single-dimension changes" pass under a pipe and fail in
+   * every real terminal, which is the worst possible shape for a failure.
+   */
+  const sizeSource = opts?.size ?? (() => safeSize(ownerFd));
+
+  let cached = sizeSource() ?? { width: 80, height: 24 };
   /** the resize poll interval, cleared in end() — an uncleared handle kept the
    *  event loop alive after the TUI was gone */
   let resizeTimer: ReturnType<typeof setInterval> | null = null;
@@ -193,7 +223,7 @@ export function openTerm(): Term {
       return owner?.capturePath ?? null;
     },
     size() {
-      const fresh = safeSize(ownerFd);
+      const fresh = sizeSource();
       if (fresh) cached = fresh;
       return cached;
     },
@@ -246,7 +276,7 @@ export function openTerm(): Term {
        */
       let last = "";
       const report = () => {
-        const s = safeSize(ownerFd);
+        const s = sizeSource();
         if (!s) return;
         const key = `${s.width}x${s.height}`;
         if (key === last) return;

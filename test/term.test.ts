@@ -71,7 +71,7 @@ describe("term: end() releases stdin so the process can exit", () => {
     stub = stubStdin();
     const before = process.stdin.listenerCount("data");
 
-    const term = openTerm();
+    const term = openTerm({ capture: false });
     term.onKey(() => {});
     expect(process.stdin.listenerCount("data")).toBe(before + 1);
 
@@ -83,7 +83,7 @@ describe("term: end() releases stdin so the process can exit", () => {
   test("end pauses and unrefs stdin", async () => {
     const { openTerm } = await import("../src/tui/term.ts");
     stub = stubStdin();
-    const term = openTerm();
+    const term = openTerm({ capture: false });
     term.onKey(() => {});
     expect(stub.calls.resume).toBeGreaterThan(0); // attaching a listener also resumes
     expect(stub.calls.pause).toBe(0);
@@ -96,7 +96,7 @@ describe("term: end() releases stdin so the process can exit", () => {
   test("end restores the raw mode it found, not a hardcoded value", async () => {
     const { openTerm } = await import("../src/tui/term.ts");
     stub = stubStdin();
-    const term = openTerm();
+    const term = openTerm({ capture: false });
     term.onKey(() => {});
     term.end();
     // raw on for the TUI, back to the pre-TUI setting on the way out
@@ -107,7 +107,7 @@ describe("term: end() releases stdin so the process can exit", () => {
     const { openTerm } = await import("../src/tui/term.ts");
     stub = stubStdin();
     const before = process.stdin.listenerCount("data");
-    const term = openTerm();
+    const term = openTerm({ capture: false });
     // gracefulExit runs on paths where the TUI never started reading keys
     expect(() => term.end()).not.toThrow();
     term.onKey(() => {});
@@ -129,7 +129,7 @@ describe("term: OSC 9;4 progress + OSC 9 notification", () => {
       end: () => {},
     });
     try {
-      const term = openTerm();
+      const term = openTerm({ capture: false });
       term.progress(3);
       term.progress(1, 42);
       term.progress(1, 999); // clamped
@@ -159,7 +159,7 @@ describe("term: OSC 9;4 progress + OSC 9 notification", () => {
       end: () => {},
     });
     try {
-      const term = openTerm();
+      const term = openTerm({ capture: false });
       term.setCwd("/home/qq/my dir");
       term.setTitle("fox — s1\x1b[0m▶");
       term.end();
@@ -231,7 +231,9 @@ describe("term: onResize reports single-dimension changes", () => {
     try {
       s.columns = 80;
       s.rows = 24;
-      const term = openTerm();
+      // Pinned size source: without it `safeSize` ioctls the REAL terminal, so
+      // this test passed under a pipe and failed in every real tty.
+      const term = openTerm({ capture: false, size: () => ({ width: s.columns as number, height: s.rows as number }) });
       term.onResize((w, h) => seen.push(`${w}x${h}`));
       expect(seen).toEqual(["80x24"]); // the initial report, not a change
       s.rows = 40; // height only
