@@ -952,6 +952,18 @@ async function* turnBody(
           // full body while the next step sees the excerpt
           res.output = trunc.text;
         }
+        // Announce THIS call's completion now, not when the whole batch settles.
+        //
+        // The results are gathered by `Promise.all`, so a batch of three calls
+        // used to emit all three `tool_end`s only after the SLOWEST finished: a
+        // fast `read` next to a 30 s `bun test` stayed invisible for 30 s, and
+        // the transcript showed nothing for a call that had already completed.
+        // Pushing through the same live-event queue the tools' own progress uses
+        // means the UI sees each result the moment it lands, in settle order.
+        //
+        // It goes AFTER the truncation above on purpose: `tool_end` must carry
+        // the same text the next step reads.
+        liveEvents.push({ type: "tool_end", id: call.id, seq: node.seq, name: call.name, args: eventArgs(call.arguments), output: res.output, ok: res.ok });
         return { call, node, res };
       }),
     );
@@ -996,9 +1008,10 @@ async function* turnBody(
     }
     const results = await finished;
 
-    for (const { call, node, res } of results) {
-      yield { type: "tool_end", id: call.id, seq: node.seq, name: call.name, args: eventArgs(call.arguments), output: res.output, ok: res.ok };
-    }
+    // No second `tool_end` pass here: each call emitted its own through
+    // `liveEvents` the moment it settled (see the closure above). Emitting again
+    // would double every result, and emitting them HERE instead would re-impose
+    // the original bug — everything appearing only once the slowest call ended.
 
     // next step's assistant hangs off the last tool result of this step
     stepParentId = results[results.length - 1]?.node.id ?? asstNode.id;
