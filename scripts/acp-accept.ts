@@ -120,6 +120,13 @@ async function withRig<T>(script: FakeScript, fn: (rig: { env: Record<string, st
     return await fn({
       env: {
         FOX_AGENT_HOME: home,
+        // BOTH, or the binary loads the developer's REAL config: the temp home
+        // only moves the state dir, while the config path still defaults to
+        // ~/.config/fox-agent/config.toml. Measured consequence: the harness
+        // inherited 6 mcpServers (npx chrome-devtools, rea, wincontrol) and a
+        // real apiKey, so every acpx invocation paid an MCP handshake and the
+        // suite timed out at 102s. test/acp.test.ts documents the same trap.
+        FOX_AGENT_CONFIG: join(home, "config.toml"),
         FOX_AGENT_BASE_URL: fake.baseUrl,
         FOX_AGENT_API_KEY: "fake-key-never-leaves-this-machine",
         FOX_AGENT_PROVIDER: "openai-compatible",
@@ -156,7 +163,7 @@ async function stdoutPurityRun() {
   try {
     const p = Bun.spawn([FOX, "--acp"], {
       cwd: home,
-      env: { ...process.env, FOX_AGENT_HOME: home, FOX_AGENT_API_KEY: "fake", FOX_AGENT_MODEL: "test-model", FOX_AGENT_BASE_URL: "http://127.0.0.1:1" },
+      env: { ...process.env, FOX_AGENT_HOME: home, FOX_AGENT_CONFIG: join(home, "config.toml"), FOX_AGENT_API_KEY: "fake", FOX_AGENT_MODEL: "test-model", FOX_AGENT_BASE_URL: "http://127.0.0.1:1" },
       stdin: "pipe",
       stdout: "pipe",
       stderr: "pipe",
