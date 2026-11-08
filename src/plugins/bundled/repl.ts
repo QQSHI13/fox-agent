@@ -13,34 +13,29 @@
  * data into context. Direct calls bypass the turn loop's beforeTool/afterTool
  * hooks (documented in the def) — they are invocations, not steps.
  *
- * Background: `background: true` runs the eval detached and returns a job id;
- * `job` polls it (incremental console output + status), `signal: "kill"`
- * stops it. This is the ONE background surface — exec and task are
- * foreground-only, so a long-running process is `repl({code, background})`
- * whose code shells out via `tools.call("exec", …)` or `spawnShell`.
+ * FOREGROUND ONLY. There is no `background` flag, no job id, and no polling: a
+ * call not waited on past `autoBackgroundMs` is taken over by the turn loop,
+ * which owns the placeholder row, the kill switch and the delivery of the
+ * result. One mechanism for every tool beats a special one for this tool.
  */
 import vm from "node:vm";
 import { safeDelay, setLongTimeout, type LongTimeout } from "../../core/timers.ts";
 import type { ToolDef } from "../../providers/types.ts";
 import type { ToolContext, ToolResult } from "../../core/tool.ts";
 import { fail, ok, validateArgs } from "../../core/tool.ts";
-import { chattyCap } from "../../context/truncate.ts";
 
 
 export const replDef: ToolDef = {
   name: "repl",
   description:
-    "In-process JavaScript environment (no shell, no subprocess — works in the compiled binary with no bun on PATH). Full environment: `process`, timers, `fetch`, and dynamic `import()` all work. State persists across calls in this session: assign once (`rows = ...`), reuse for twenty turns. `return` (or a trailing expression) becomes the result; `console.log` lines are captured alongside it. Reach your tools from code as `await tools.call(name, args)` (shell included: `await tools.call(\"exec\", {cmd})`); `tools.list()` and `tools.search(\"...\")` discover them. Direct tool calls bypass the turn loop's beforeTool/afterTool hooks. There is NO default timeout: an eval runs as long as it needs, so pass `timeout_ms` when you want a bound (omit it, or 0, for none). `background: true` runs the eval detached and returns a job id immediately — it notifies you on completion, so you do NOT need to poll; poll with `job` only when the user asks for status or when everything else is finished and you are waiting on this one; stop it with `signal:\"kill\"`. This is the only tool that can be explicitly backgrounded — every other tool runs to completion on its own.",
+    "In-process JavaScript environment (no shell, no subprocess — works in the compiled binary with no bun on PATH). Full environment: `process`, timers, `fetch`, and dynamic `import()` all work. State persists across calls in this session: assign once (`rows = ...`), reuse for twenty turns. `return` (or a trailing expression) becomes the result; `console.log` lines are captured alongside it. Reach your tools from code as `await tools.call(name, args)` (shell included: `await tools.call(\"exec\", {cmd})`); `tools.list()` and `tools.search(\"...\")` discover them. Direct tool calls bypass the turn loop's beforeTool/afterTool hooks. There is NO default timeout: an eval runs as long as it needs, so pass `timeout_ms` when you want a bound (omit it, or 0, for none). There is no background flag: a call that runs past the harness's auto-background threshold is taken over by the turn loop — its result arrives as its own message and the harness tells you how to stop it, so you never poll and never manage a job id.",
+
   parameters: {
     type: "object",
     properties: {
-      code: { type: "string", description: "JavaScript to evaluate: a bare expression (or await) completes to its value; multi-statement blocks need an explicit return. Not needed when polling or killing a job." },
+      code: { type: "string", description: "JavaScript to evaluate: a bare expression (or await) completes to its value; multi-statement blocks need an explicit return." },
       reset: { type: "boolean", description: "Drop the session's scratchpad state before evaluating" },
-      timeout_ms: { type: "number", description: "Optional bound in milliseconds; there is NO default — omit it (or pass 0) to run for as long as the eval needs, with no upper bound. vm cannot preempt a running eval, so an omitted bound on a hung eval blocks the call until the turn is interrupted (foreground only — background jobs always run until they exit or you kill them)" },
-      label: { type: "string", description: "A short label for a background job (shown in poll output). Defaults to the first line of code." },
-      background: { type: "boolean", description: "Run the eval detached: returns a job id immediately. The eval keeps running while you move on; you are notified when it finishes." },
-      job: { type: "string", description: "Poll a background job: returns console output produced since your last poll plus its status (running/finished/exit). Omit code. AVOID polling: a background job notifies you on completion anyway, so polling mid-work just burns steps and leaks a restart of the same work into your context. Poll only when the user asks for status, or when you have finished and reported everything else and are waiting on this job alone." },
-      signal: { type: "string", enum: ["kill"], description: "With job: terminate that background job. Omit code." },
+      timeout_ms: { type: "number", description: "Optional bound in milliseconds; there is NO default — omit it (or pass 0) to run for as long as the eval needs, with no upper bound. vm cannot preempt a running eval, so an omitted bound on a hung eval blocks the call until the turn is interrupted." },
     },
     required: [],
   },
@@ -100,173 +95,16 @@ function sessionState(sessionId: string): ReplSession {
   return s;
 }
 
-// ---- background evals ------------------------------------------------------
-//
-// The ONE background surface. `background: true` runs `code` detached and
-// returns a job id; `job` polls it, `signal: "kill"` stops it. A job's output
-// is the console.log lines + return value, captured incrementally so a poll
-// only returns what is new. Completion steers the agent; a settled job reaps
-// after a grace window.
+// No background machinery lives here: a call the loop stops waiting on is
+// adopted by the turn loop (src/loop/background.ts), which owns the placeholder,
+// the kill switch and the delivery of the result. One mechanism, every tool.
 
-interface ReplJob {
-  id: string;
-  label: string;
-  startedAt: number;
-  done: boolean;
-  ok: boolean;
-  result: string;
-  log: string[]; // console lines captured since the last poll
-  logCursor: number; // how many of `log` the caller has already seen
-  /** lines dropped by the retention cap before the caller ever polled them */
-  lostLines: number;
-  ac: AbortController; // cancelling aborts a job awaiting a fetch/timeout
-  killed?: boolean; // suppresses the completion steer for a deliberately-killed job
-  /** The session's background count was already decremented for this job.
-   *  A job can settle on its own, be killed, or be released at session end —
-   *  whichever happens first must decrement, and the rest must not. */
-  bgEnded?: boolean;
-  reaped?: boolean;
-  readAt?: number; // when a settled job was first polled — starts the reap grace
-  /**
-   * Steer/background lifecycle closures captured from the ToolContext at job
-   * launch. A background job outlives the tool call (and its context), so the
-   * session-scoped closures must be stored on the job — the job's callbacks
-   * cannot reach back to the ctx that spawned them.
-   */
-  notifyAgent?: (text: string) => void;
-  bgStart?: () => void;
-  bgEnd?: () => void;
-}
-
-const jobs = new Map<string, Map<string, ReplJob>>(); // sessionId -> id -> job
-let jobSeq = 0;
-const MAX_JOBS_PER_SESSION = 16;
-const JOB_REAP_MS = 10 * 60_000;
-const MAX_JOB_RESULT = 50_000;
-/**
- * Bounded console retention for one background job.
- *
- * A long-lived chatty job (a watch loop, a server) used to grow `log` for its
- * whole lifetime — the RESULT was capped at 50k, the log was not. Keep the
- * newest lines: a poll is about recent progress, and 2000 lines is far more
- * than any realistic poll interval produces. Dropping unpolled lines is
- * reported once, so a poll never silently skips ahead.
- */
-const MAX_JOB_LOG_LINES = 2_000;
-/** One line's ceiling: an object dump can put megabytes on a single line. */
-const MAX_JOB_LOG_LINE = 2_000;
-
-function sessionJobs(sessionId: string): Map<string, ReplJob> {
-  let m = jobs.get(sessionId);
-  if (!m) jobs.set(sessionId, (m = new Map()));
-  return m;
-}
-
-function liveJobCount(sessionId: string): number {
-  return [...sessionJobs(sessionId).values()].filter((j) => !j.done).length;
-}
-
-/** Decrement the session's live-background count for this job, at most once.
- *  vm cannot preempt a running eval, so a killed job's promise may never
- *  settle — the kill path and session teardown must be able to release the
- *  count themselves without double-counting a job that later settles. */
-function endBackground(sessionId: string, job: ReplJob): void {
-  if (job.bgEnded) return;
-  job.bgEnded = true;
-  // Prefer the captured ctx closure; fall back to a direct import only if the
-  // job was created before the context carried these (defensive — should not
-  // happen in practice since launch always captures them).
-  job.bgEnd?.();
-}
-
-function reapJob(sessionId: string, id: string): void {
-  const job = sessionJobs(sessionId).get(id);
-  if (!job) return;
-  job.reaped = true;
-  sessionJobs(sessionId).delete(id);
-}
-
-function scheduleReap(sessionId: string, job: ReplJob): void {
-  // a settled job stays readable for a grace window after it finishes, so the
-  // model can still read the result if it polls promptly; a forgotten job must
-  // not leak the map entry for the session
-  const grace = setTimeout(() => {
-    if (!job.reaped && job.done) reapJob(sessionId, job.id);
-  }, JOB_REAP_MS);
-  (grace as { unref?: () => void }).unref?.();
-}
-
-function notifyDone(sessionId: string, job: ReplJob): void {
-  // Tell the agent it finished, wherever it is right now. steer's queue is the
-  // existing delivery path: it arrives at the next step boundary as a real
-  // message, and peekSteer shows it in the TUI meanwhile.
-  if (job.killed) return;
-  const secs = Math.floor((Date.now() - job.startedAt) / 1000);
-  job.notifyAgent?.(
-    `repl job ${job.id} (${job.label}) ${job.ok ? "finished" : "FAILED"} after ${secs}s — ` +
-      `poll it with repl({job:"${job.id}"}).`,
-  );
-}
-
-/** Session end: drop the scratchpad AND abort any background evals still running. */
+/** Session end: drop the scratchpad for this session. */
 export function cleanupRepl(sessionId: string): void {
-  const m = jobs.get(sessionId);
-  if (m) {
-    for (const j of m.values()) {
-      if (j.done) continue;
-      j.killed = true; // suppress the completion steer — the session is ending
-      j.ac.abort();
-      // vm cannot preempt a running eval, so its promise may never settle and
-      // may never release the count itself
-      endBackground(sessionId, j);
-    }
-    jobs.delete(sessionId);
-  }
   sessions.delete(sessionId);
   depths.delete(sessionId);
 }
 
-/** Poll a job's incremental console log: returns lines captured since the last poll. */
-function readJobLogTail(job: ReplJob): string {
-  const fresh = job.log.slice(job.logCursor);
-  job.logCursor = job.log.length;
-  const note =
-    job.lostLines > 0 ? `… (${job.lostLines} earlier line(s) dropped — a job keeps the last ${MAX_JOB_LOG_LINES})` : "";
-  job.lostLines = 0;
-  return (note ? [note, ...fresh] : fresh).join("\n");
-}
-
-/** Append to a job's log, keeping it bounded in both lines and line length. */
-function pushJobLine(job: ReplJob, raw: string): void {
-  job.log.push(raw.length > MAX_JOB_LOG_LINE ? `${raw.slice(0, MAX_JOB_LOG_LINE)} …` : raw);
-  const over = job.log.length - MAX_JOB_LOG_LINES;
-  if (over <= 0) return;
-  job.log.splice(0, over);
-  // a line the caller had not polled yet is gone for good; a line it already
-  // saw just shifts the cursor
-  job.lostLines += Math.max(0, over - job.logCursor);
-  job.logCursor = Math.max(0, job.logCursor - over);
-}
-
-/**
- * Run `code` as an async IIFE in the session's vm context, resolving to its
- * value, with `console` bound to THIS eval's sink.
- *
- * The context is shared by every eval in a session, so a single global
- * `console` cannot say which eval a `console.log` belongs to: it used to be
- * routed by a module-global `activeJob`, which meant one background job
- * hijacked every other eval's output (including a foreground call's, whose
- * lines then vanished from its result) and two sessions' jobs cross-talked.
- * Passing the collected object in as the IIFE's `console` parameter binds it
- * per call — the argument is read synchronously during `runInContext`, before
- * any other eval can interleave, and the async body carries it in its closure.
- *
- * `tools` is bound the same way, for the same reason plus one of its own: the
- * bridge closes over the AbortSignal its calls run under, and a background job
- * must NOT inherit the turn's (esc aborts the turn, not the job). A global
- * `tools` was re-assigned by every call, so a job parked on an await would wake
- * up holding a later call's signal.
- */
 function evalInContext(state: ReplSession, code: string, timeout: number, consoleObj: Record<string, unknown>, toolsObj: Record<string, unknown>): Promise<unknown> {
   // timeout 0 = no bound at all: vm's sync `timeout` is omitted (it means
   // "infinite" when 0, but leaving it out is explicit) and the hang timer is
@@ -339,56 +177,14 @@ function fmt(value: unknown): string {
   }
 }
 
-/**
- * Bound a background job's stored result.
- *
- * MAX_JOB_RESULT existed but was never applied, so a job returning a huge
- * value kept it all in memory for the whole reap grace window (10 minutes).
- * Keep the head (where the answer usually starts) and say it was cut.
- */
-function capJobResult(s: string): string {
-  if (s.length <= MAX_JOB_RESULT) return s;
-  return `${s.slice(0, MAX_JOB_RESULT)}\n… (job result truncated at ${MAX_JOB_RESULT} chars of ${s.length})`;
-}
-
 export async function replRun(
-  args: { code?: string; reset?: boolean; timeout_ms?: number; label?: string; background?: boolean; job?: string; signal?: string },
+  args: { code?: string; reset?: boolean; timeout_ms?: number },
   ctx: ToolContext,
 ): Promise<ToolResult> {
   if (!ctx.tools) return fail("error: repl has no tool registry in this context");
   const sessionId = ctx.sessionId;
 
-  // ---- poll / kill a background job (no code) ----
-  if (args.job !== undefined) {
-    const job = sessionJobs(sessionId).get(args.job);
-    if (!job) return fail(`error: no job ${args.job} in this session`);
-    if (args.signal === "kill") {
-      if (job.done) return ok(`job ${job.id} already ${job.ok ? "finished" : "failed"} — nothing to kill`);
-      job.killed = true;
-      job.ac.abort();
-      reapJob(sessionId, job.id);
-      // the eval may never settle after an abort (vm has no preemption), so the
-      // outstanding-work count has to be released here, not left to the promise
-      endBackground(sessionId, job);
-      return ok(`job ${job.id} (${job.label}) killed`);
-    }
-    const secs = Math.floor((Date.now() - job.startedAt) / 1000);
-    const fresh = readJobLogTail(job);
-    if (!job.done) {
-      return ok(`job ${job.id} (${job.label}) running (${secs}s)\n${fresh.trimEnd() || "(no new output)"}`);
-    }
-    // first read of a settled job starts the reap grace window
-    if (job.readAt === undefined) {
-      job.readAt = Date.now();
-      scheduleReap(sessionId, job);
-    }
-    const head = `job ${job.id} (${job.label}) ${job.ok ? "finished" : "FAILED"} after ${secs}s`;
-    const rest = fresh.trimEnd() || job.result;
-    return (job.ok ? ok : fail)(`${head}\n${rest || "(no output)"}`);
-  }
-  if (args.signal !== undefined) return fail("error: signal needs a job to act on");
-
-  if (typeof args.code !== "string" || !args.code.trim()) return fail("error: repl needs code (or a job to poll)");
+  if (typeof args.code !== "string" || !args.code.trim()) return fail("error: repl needs code");
   if ((depths.get(sessionId) ?? 0) >= MAX_REPL_DEPTH) {
     return fail(`error: repl nesting too deep (>${MAX_REPL_DEPTH}) — compute directly instead`);
   }
@@ -477,67 +273,6 @@ export async function replRun(
   // fallback for code that reaches `globalThis.console` explicitly. Each branch
   // replaces it with that eval's own console before running anything.
   sandbox.console = makeConsole(() => {});
-
-  // ---- background: run the eval detached, return the job id ----
-  if (args.background) {
-    if (liveJobCount(sessionId) >= MAX_JOBS_PER_SESSION) {
-      return fail(`error: too many live jobs in this session (${liveJobCount(sessionId)}/${MAX_JOBS_PER_SESSION}) — poll or kill one before starting more`);
-    }
-    const label = (args.label ?? args.code.split("\n")[0]).slice(0, 60);
-    const id = `r${++jobSeq}`;
-    const ac = new AbortController();
-    const job: ReplJob = {
-      id, label, startedAt: Date.now(), done: false, ok: false, result: "", log: [], logCursor: 0, lostLines: 0, ac,
-      // Capture the session-scoped steer/background closures from the live
-      // context. A background job outlives the tool call, so the closures must
-      // travel with the job — the .then/.catch callbacks cannot reach back to
-      // the ctx that spawned them.
-      notifyAgent: ctx.steer,
-      bgStart: ctx.backgroundStarted,
-      bgEnd: ctx.backgroundEnded,
-    };
-    sessionJobs(sessionId).set(id, job);
-    // A live job is outstanding work: a one-shot client (fox -p, an ACP prompt,
-    // a one-shot client) must not report "done" while this can still steer more into
-    // the session. Counted BEFORE the eval starts, so there is no window where
-    // the session looks idle.
-    job.bgStart?.();
-    // Per-job sink: a background eval's console lines belong to that job, no
-    // matter what else runs in the session meanwhile (the old module-global
-    // "active job" made the newest job swallow every other eval's output).
-    const jobConsole = makeConsole((line) => pushJobLine(job, line));
-    sandbox.console = jobConsole;
-    // The job's lifetime is the SESSION's, not the turn's — it keeps running
-    // while the agent moves on, and ends only when the session does
-    // (cleanupRepl) or a kill asks it to. vm has no way to preempt a running
-    // eval, so abort reaches a job only when it awaits.
-    //
-    // Its bridge therefore takes the JOB's controller, not ctx.signal: esc
-    // aborts the turn, and a job outliving the turn must not die with it.
-    const jobTools = makeBridge(ac.signal);
-    sandbox.tools = jobTools;
-    void evalInContext(state, args.code, timeout, jobConsole, jobTools)
-      .then((v) => {
-        job.result = capJobResult(fmt(v));
-        job.done = true;
-        job.ok = true;
-        // ORDER: notify (which queues the steer) before ending the background
-        // count. Ending first would make the session briefly quiescent and let
-        // a waiter finish before the completion notification was even queued.
-        notifyDone(sessionId, job);
-        scheduleReap(sessionId, job);
-        endBackground(sessionId, job);
-      })
-      .catch((e) => {
-        job.done = true;
-        job.ok = false;
-        job.result = capJobResult(job.killed ? "killed by request" : `error: ${(e as Error).message ?? e}`);
-        notifyDone(sessionId, job);
-        scheduleReap(sessionId, job);
-        endBackground(sessionId, job);
-      });
-    return ok(`job ${id} started (${label}) — poll with repl({job:"${id}"}), stop with repl({job:"${id}", signal:"kill"})`);
-  }
 
   // ---- foreground eval ----
   // A per-call sink: two foreground calls (tools run in parallel within a step)

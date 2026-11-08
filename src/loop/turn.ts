@@ -6,7 +6,7 @@ import { classifyProviderError, diagnoseProviderError, FoxError, isTimeout, isTr
 import type { AgentEvent } from "../core/events.ts";
 import type { Tool, ToolContext, ToolResult, PtyState } from "../core/tool.ts";
 import { validateArgs } from "../core/tool.ts";
-import { drainSteer, peekSteer, turnEnded, turnStarted, steer, backgroundStarted, backgroundEnded } from "./steer.ts";
+import { drainSteer, peekSteer, turnEnded, turnStarted, steer } from "./steer.ts";
 import { acquireTurnLock, releaseTurnLock, foreignLock } from "../store/lock.ts";
 import { adoptBackground, settleBackground } from "./background.ts";
 import { VERSION } from "../core/version.ts";
@@ -918,8 +918,6 @@ async function* turnBody(
           // so only it can populate these. Tools (repl) call them to notify the
           // agent when a detached job finishes; bare ToolContexts get undefined.
           steer: (text) => steer(sessionId, text),
-          backgroundStarted: () => backgroundStarted(sessionId),
-          backgroundEnded: () => backgroundEnded(sessionId),
           get pty() {
             return ptyState;
           },

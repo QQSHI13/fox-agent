@@ -36,6 +36,7 @@ import type { AgentEvent } from "../core/events.ts";
 import type { Config } from "../core/config.ts";
 import type { UiBridge } from "../core/ui.ts";
 import type { ProviderConfig, ChatFn } from "../providers/types.ts";
+import { listBackground, killSessionBackground, setBackgroundSettledHook } from "./background.ts";
 import { runTurnCore } from "./turn.ts";
 
 const pending = new Map<string, string[]>();
@@ -209,26 +210,16 @@ export function abortTurn(sessionId: string, reason = "cancelled"): boolean {
 
 // ---- background work -----------------------------------------------------
 //
-// A session is not finished while a background job is still running: the job
-// will steer on completion, which is what wakes the agent up. The counter
-// lives here (not in the repl tool) so quiescence is one predicate, and so the
-// repl can report its own lifecycle without this module importing it.
-
-const background = new Map<string, number>();
-
-export function backgroundStarted(sessionId: string): void {
-  background.set(sessionId, (background.get(sessionId) ?? 0) + 1);
-}
-
-export function backgroundEnded(sessionId: string): void {
-  const n = (background.get(sessionId) ?? 0) - 1;
-  if (n > 0) background.set(sessionId, n);
-  else background.delete(sessionId);
-  checkQuiescent(sessionId);
-}
-
+// A session is not finished while a tool call is still running detached: its
+// result will arrive as a message, which is what the agent still has to read.
+//
+// The count is READ from the background registry rather than mirrored here.
+// It used to be a counter that tools incremented themselves — which existed
+// only for the repl tool's manual jobs, and went stale the moment those were
+// removed. One source of truth, and it cannot drift: if a job is registered it
+// is running, and `settleBackground`/`killBackground` are the only exits.
 export function backgroundCount(sessionId: string): number {
-  return background.get(sessionId) ?? 0;
+  return listBackground(sessionId).length;
 }
 
 // ---- quiescence ----------------------------------------------------------
@@ -246,6 +237,14 @@ export function isQuiescent(sessionId: string): boolean {
 }
 
 const quiesceWaiters = new Map<string, Array<() => void>>();
+
+/**
+ * A background job left the registry: re-check whether the session is idle now.
+ *
+ * Registered here rather than imported by `background.ts`, which this module
+ * already imports for `backgroundCount` — the reverse import would be a cycle.
+ */
+setBackgroundSettledHook((sessionId) => checkQuiescent(sessionId));
 
 /** Resolve once the session is quiescent (immediately if it already is). */
 export function waitQuiescent(sessionId: string): Promise<void> {
@@ -276,7 +275,9 @@ export function releaseSteer(sessionId: string): string[] {
   controllers.delete(sessionId);
   dispatching.delete(sessionId);
   blocked.delete(sessionId);
-  background.delete(sessionId);
+  // session teardown aborts whatever is still running: a detached call whose
+  // session is gone has nowhere to write its result.
+  killSessionBackground(sessionId);
   const waiters = quiesceWaiters.get(sessionId);
   quiesceWaiters.delete(sessionId);
   for (const resolve of waiters ?? []) resolve();

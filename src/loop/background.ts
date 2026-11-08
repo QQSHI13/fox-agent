@@ -54,6 +54,19 @@ interface Entry {
 const jobs = new Map<number, Entry>();
 
 /**
+ * Notified whenever a job leaves the registry, so a session that was waiting on
+ * it can re-check quiescence.
+ *
+ * A hook rather than an import: `steer.ts` already imports this module to read
+ * `backgroundCount`, and importing it back would be a cycle. Installed from
+ * `steer.ts` at module load.
+ */
+let onSettled: ((sessionId: string) => void) | null = null;
+export function setBackgroundSettledHook(fn: ((sessionId: string) => void) | null): void {
+  onSettled = fn;
+}
+
+/**
  * Adopt a call that has just detached, keyed by the placeholder's node id.
  *
  * `ac` must be the controller whose signal the tool is already running under —
@@ -79,6 +92,7 @@ export function settleBackground(node: number): void {
   if (!e) return;
   e.settled = true;
   jobs.delete(node);
+  onSettled?.(e.job.sessionId);
 }
 
 /** Live jobs, oldest first. `sessionId` narrows to one session. */
@@ -105,6 +119,7 @@ export function killBackground(node: number): string {
     e.ac.abort(new Error(`killed by jobs({id:${node}})`));
   } catch {}
   e.onKilled?.(`[${node}] (${e.job.name}) was killed after ${age}s — no output.`);
+  onSettled?.(e.job.sessionId);
   return `killed [${node}] (${e.job.name}, ${age}s)`;
 }
 

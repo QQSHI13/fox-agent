@@ -78,14 +78,6 @@ export interface ToolContext {
    */
   steer?: (text: string) => void;
   /**
-   * Mark the session as having live background work. While any caller has
-   * started without ending, `waitQuiescent` blocks — a session is not idle
-   * while a detached eval can still produce output.
-   */
-  backgroundStarted?: () => void;
-  /** Pair to `backgroundStarted`: the background work is done. */
-  backgroundEnded?: () => void;
-  /**
    * Cap on one tool result's text in chars (config `toolOutputCap`, default
    * 30000). Tools read this to bound their own output — the tool's choice of
    * how much to return, distinct from `toolPresentationCap` which the view

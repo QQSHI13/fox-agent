@@ -1,8 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { adoptBackground, settleBackground, resetBackground } from "../src/loop/background.ts";
 import {
   attachHost,
-  backgroundEnded,
-  backgroundStarted,
   backgroundCount,
   detachHost,
   drainSteer,
@@ -162,24 +161,25 @@ describe("steer: quiescence", () => {
     drainSteer(SID);
     expect(isQuiescent(SID)).toBe(true);
 
-    backgroundStarted(SID);
+    // a live job in the real registry IS the non-quiescent condition
+    adoptBackground(1, SID, "exec", "c1", new AbortController(), () => {});
     expect(backgroundCount(SID)).toBe(1);
     expect(isQuiescent(SID)).toBe(false);
-    backgroundEnded(SID);
+    settleBackground(1);
     expect(isQuiescent(SID)).toBe(true);
   });
 
   test("waitQuiescent resolves when the last background job ends", async () => {
-    backgroundStarted(SID);
-    backgroundStarted(SID);
+    adoptBackground(1, SID, "exec", "c1", new AbortController(), () => {});
+    adoptBackground(2, SID, "exec", "c2", new AbortController(), () => {});
     let done = false;
     const p = waitQuiescent(SID).then(() => (done = true));
     await settle();
     expect(done).toBe(false);
-    backgroundEnded(SID);
+    settleBackground(1);
     await settle();
     expect(done).toBe(false); // one job still live
-    backgroundEnded(SID);
+    settleBackground(2);
     await p;
     expect(done).toBe(true);
   });
