@@ -1,22 +1,64 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 24" width="40" height="24" role="img" aria-label="fox-agent">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 8" width="20" height="8"
+     shape-rendering="crispEdges" role="img" aria-label="fox-agent">
   <!--
-    The header bar (and the drawer title) is painted with the primary color in
-    both schemes, so the mark is drawn in white and relies on negative space for
-    its features. It has to stay legible at 24px, which is why the ears are
-    chunky, angular wedges rather than curves.
+    The FOX wordmark: three 6x7 block glyphs, one unit of tracking, colored by a
+    single sweep from amber to ember running left to right (x-heavy, with a
+    small y term so it reads as a light source rather than stripes).
+
+    Every glyph is the same grid the terminal art is generated from (see
+    design.py), so the two can never disagree about the letterforms.
+
+    shape-rendering="crispEdges" is load bearing: without it a renderer smears
+    sub-pixel edges between blocks and the letterforms go soft at exactly the
+    sizes they need to be sharpest.
   -->
-  <g fill="#ffffff">
-    <!-- left ear -->
-    <path d="M2 2.4 L9.6 6.2 L6.4 13.4 Z"/>
-    <!-- right ear -->
-    <path d="M21.6 6.2 L29.2 2.4 L24.8 13.4 Z"/>
-    <!-- head: wedge narrowing to a snout -->
-    <path d="M6.2 8.1 L25 8.1 L15.6 21.6 Z"/>
+  <defs>
+    <linearGradient id="sweep" gradientUnits="userSpaceOnUse"
+                    x1="0" y1="0" x2="20" y2="3.2">
+      <stop offset="0.000" stop-color="rgb(255,194,74)"/>
+      <stop offset="0.091" stop-color="rgb(245,178,67)"/>
+      <stop offset="0.182" stop-color="rgb(242,172,64)"/>
+      <stop offset="0.273" stop-color="rgb(232,156,57)"/>
+      <stop offset="0.364" stop-color="rgb(222,140,50)"/>
+      <stop offset="0.455" stop-color="rgb(215,128,45)"/>
+      <stop offset="0.545" stop-color="rgb(208,117,41)"/>
+      <stop offset="0.636" stop-color="rgb(201,105,36)"/>
+      <stop offset="0.727" stop-color="rgb(191,89,29)"/>
+      <stop offset="0.818" stop-color="rgb(181,73,22)"/>
+      <stop offset="0.909" stop-color="rgb(178,67,19)"/>
+      <stop offset="1.000" stop-color="rgb(168,51,12)"/>
+    </linearGradient>
+  </defs>
+  <g fill="url(#sweep)">
+    <rect x="0" y="0" width="6" height="1"/>
+    <rect x="8" y="0" width="4" height="1"/>
+    <rect x="14" y="0" width="2" height="1"/>
+    <rect x="18" y="0" width="2" height="1"/>
+    <rect x="0" y="1" width="2" height="1"/>
+    <rect x="7" y="1" width="2" height="1"/>
+    <rect x="11" y="1" width="2" height="1"/>
+    <rect x="14" y="1" width="2" height="1"/>
+    <rect x="18" y="1" width="2" height="1"/>
+    <rect x="0" y="2" width="2" height="1"/>
+    <rect x="7" y="2" width="2" height="1"/>
+    <rect x="11" y="2" width="2" height="1"/>
+    <rect x="15" y="2" width="4" height="1"/>
+    <rect x="0" y="3" width="5" height="1"/>
+    <rect x="7" y="3" width="2" height="1"/>
+    <rect x="11" y="3" width="2" height="1"/>
+    <rect x="16" y="3" width="2" height="1"/>
+    <rect x="0" y="4" width="2" height="1"/>
+    <rect x="7" y="4" width="2" height="1"/>
+    <rect x="11" y="4" width="2" height="1"/>
+    <rect x="15" y="4" width="4" height="1"/>
+    <rect x="0" y="5" width="2" height="1"/>
+    <rect x="7" y="5" width="2" height="1"/>
+    <rect x="11" y="5" width="2" height="1"/>
+    <rect x="14" y="5" width="2" height="1"/>
+    <rect x="18" y="5" width="2" height="1"/>
+    <rect x="0" y="6" width="2" height="1"/>
+    <rect x="8" y="6" width="4" height="1"/>
+    <rect x="14" y="6" width="2" height="1"/>
+    <rect x="18" y="6" width="2" height="1"/>
   </g>
-  <!-- eye, punched out so the mark reads at small sizes -->
-  <circle cx="12.4" cy="11.6" r="1.25" fill="#3f51b5"/>
-  <circle cx="18.8" cy="11.6" r="1.25" fill="#3f51b5"/>
-  <!-- prompt caret: the harness mark, right of the head -->
-  <path d="M31.6 9.4 L35 12.4 L31.6 15.4" fill="none" stroke="#ffffff" stroke-width="1.9"
-        stroke-linecap="round" stroke-linejoin="round"/>
 </svg>

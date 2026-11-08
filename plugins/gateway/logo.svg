@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 8" width="20" height="8"
+     shape-rendering="crispEdges" role="img" aria-label="fox-agent">
+  <!--
+    The FOX wordmark: three 6x7 block glyphs, one unit of tracking, colored by a
+    single sweep from amber to ember running left to right (x-heavy, with a
+    small y term so it reads as a light source rather than stripes).
+
+    Every glyph is the same grid the terminal art is generated from (see
+    design.py), so the two can never disagree about the letterforms.
+
+    shape-rendering="crispEdges" is load bearing: without it a renderer smears
+    sub-pixel edges between blocks and the letterforms go soft at exactly the
+    sizes they need to be sharpest.
+  -->
+  <defs>
+    <linearGradient id="sweep" gradientUnits="userSpaceOnUse"
+                    x1="0" y1="0" x2="20" y2="3.2">
+      <stop offset="0.000" stop-color="rgb(255,194,74)"/>
+      <stop offset="0.091" stop-color="rgb(245,178,67)"/>
+      <stop offset="0.182" stop-color="rgb(242,172,64)"/>
+      <stop offset="0.273" stop-color="rgb(232,156,57)"/>
+      <stop offset="0.364" stop-color="rgb(222,140,50)"/>
+      <stop offset="0.455" stop-color="rgb(215,128,45)"/>
+      <stop offset="0.545" stop-color="rgb(208,117,41)"/>
+      <stop offset="0.636" stop-color="rgb(201,105,36)"/>
+      <stop offset="0.727" stop-color="rgb(191,89,29)"/>
+      <stop offset="0.818" stop-color="rgb(181,73,22)"/>
+      <stop offset="0.909" stop-color="rgb(178,67,19)"/>
+      <stop offset="1.000" stop-color="rgb(168,51,12)"/>
+    </linearGradient>
+  </defs>
+  <g fill="url(#sweep)">
+    <rect x="0" y="0" width="6" height="1"/>
+    <rect x="8" y="0" width="4" height="1"/>
+    <rect x="14" y="0" width="2" height="1"/>
+    <rect x="18" y="0" width="2" height="1"/>
+    <rect x="0" y="1" width="2" height="1"/>
+    <rect x="7" y="1" width="2" height="1"/>
+    <rect x="11" y="1" width="2" height="1"/>
+    <rect x="14" y="1" width="2" height="1"/>
+    <rect x="18" y="1" width="2" height="1"/>
+    <rect x="0" y="2" width="2" height="1"/>
+    <rect x="7" y="2" width="2" height="1"/>
+    <rect x="11" y="2" width="2" height="1"/>
+    <rect x="15" y="2" width="4" height="1"/>
+    <rect x="0" y="3" width="5" height="1"/>
+    <rect x="7" y="3" width="2" height="1"/>
+    <rect x="11" y="3" width="2" height="1"/>
+    <rect x="16" y="3" width="2" height="1"/>
+    <rect x="0" y="4" width="2" height="1"/>
+    <rect x="7" y="4" width="2" height="1"/>
+    <rect x="11" y="4" width="2" height="1"/>
+    <rect x="15" y="4" width="4" height="1"/>
+    <rect x="0" y="5" width="2" height="1"/>
+    <rect x="7" y="5" width="2" height="1"/>
+    <rect x="11" y="5" width="2" height="1"/>
+    <rect x="14" y="5" width="2" height="1"/>
+    <rect x="18" y="5" width="2" height="1"/>
+    <rect x="0" y="6" width="2" height="1"/>
+    <rect x="8" y="6" width="4" height="1"/>
+    <rect x="14" y="6" width="2" height="1"/>
+    <rect x="18" y="6" width="2" height="1"/>
+  </g>
+</svg>

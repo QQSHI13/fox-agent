@@ -534,7 +534,20 @@
   function showState(opts) {
     clearTranscript();
     var st = el("div", "state");
-    st.appendChild(el("div", "mark", opts.mark || "fox"));
+    // A failure state passes `mark` as a glyph ("!") and gets that glyph. A
+    // neutral state has no mark of its own, so it gets the wordmark: the same
+    // /logo.svg the docs site and the TUI's terminal art are generated from.
+    if (opts.mark) {
+      st.appendChild(el("div", "mark", opts.mark));
+    } else {
+      var logo = document.createElement("img");
+      logo.className = "mark-logo";
+      logo.src = "/logo.svg";
+      logo.alt = "fox-agent";
+      logo.width = 85;
+      logo.height = 34;
+      st.appendChild(logo);
+    }
     st.appendChild(el("h2", "", opts.title));
     if (opts.body) st.appendChild(el("p", "", opts.body));
     if (opts.spinner) {
@@ -832,7 +845,6 @@
       var run0 = S.runs.get(res.id);
       if (!run0 || !run0.live) {
         showState({
-          mark: "fox",
           title: "Empty session",
           body: "Say something to start the conversation. Type / for the command list.",
         });

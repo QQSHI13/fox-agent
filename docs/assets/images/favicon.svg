@@ -1,15 +1,58 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="fox-agent">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64"
+     shape-rendering="crispEdges" role="img" aria-label="fox-agent">
   <!--
-    Standalone tab icon: no header color behind it, so it carries its own tile.
-    Drawn at 64 with 6px padding so browsers that shrink to 16px keep the ears
-    apart instead of merging them into a blob.
+    Tab icon. The wordmark is letterboxed inside its own square tile, because a
+    20x8 mark floating on a transparent tab is unreadable at 16px: it needs the
+    tile to hold its edges.
   -->
-  <rect x="0" y="0" width="64" height="64" rx="14" fill="#3f51b5"/>
-  <g fill="#ffffff">
-    <path d="M9 12 L27 20 L20 38 Z"/>
-    <path d="M37 20 L55 12 L44 38 Z"/>
-    <path d="M18 24 L46 24 L32 52 Z"/>
+  <defs>
+    <linearGradient id="sweep" gradientUnits="userSpaceOnUse"
+                    x1="0" y1="0" x2="20" y2="3.2">
+      <stop offset="0.000" stop-color="rgb(255,194,74)"/>
+      <stop offset="0.091" stop-color="rgb(245,178,67)"/>
+      <stop offset="0.182" stop-color="rgb(242,172,64)"/>
+      <stop offset="0.273" stop-color="rgb(232,156,57)"/>
+      <stop offset="0.364" stop-color="rgb(222,140,50)"/>
+      <stop offset="0.455" stop-color="rgb(215,128,45)"/>
+      <stop offset="0.545" stop-color="rgb(208,117,41)"/>
+      <stop offset="0.636" stop-color="rgb(201,105,36)"/>
+      <stop offset="0.727" stop-color="rgb(191,89,29)"/>
+      <stop offset="0.818" stop-color="rgb(181,73,22)"/>
+      <stop offset="0.909" stop-color="rgb(178,67,19)"/>
+      <stop offset="1.000" stop-color="rgb(168,51,12)"/>
+    </linearGradient>
+  </defs>
+  <rect x="0" y="0" width="64" height="64" rx="12" fill="#141821"/>
+  <g transform="translate(6 21.60) scale(2.6000)" fill="url(#sweep)">
+    <rect x="0" y="0" width="6" height="1"/>
+    <rect x="8" y="0" width="4" height="1"/>
+    <rect x="14" y="0" width="2" height="1"/>
+    <rect x="18" y="0" width="2" height="1"/>
+    <rect x="0" y="1" width="2" height="1"/>
+    <rect x="7" y="1" width="2" height="1"/>
+    <rect x="11" y="1" width="2" height="1"/>
+    <rect x="14" y="1" width="2" height="1"/>
+    <rect x="18" y="1" width="2" height="1"/>
+    <rect x="0" y="2" width="2" height="1"/>
+    <rect x="7" y="2" width="2" height="1"/>
+    <rect x="11" y="2" width="2" height="1"/>
+    <rect x="15" y="2" width="4" height="1"/>
+    <rect x="0" y="3" width="5" height="1"/>
+    <rect x="7" y="3" width="2" height="1"/>
+    <rect x="11" y="3" width="2" height="1"/>
+    <rect x="16" y="3" width="2" height="1"/>
+    <rect x="0" y="4" width="2" height="1"/>
+    <rect x="7" y="4" width="2" height="1"/>
+    <rect x="11" y="4" width="2" height="1"/>
+    <rect x="15" y="4" width="4" height="1"/>
+    <rect x="0" y="5" width="2" height="1"/>
+    <rect x="7" y="5" width="2" height="1"/>
+    <rect x="11" y="5" width="2" height="1"/>
+    <rect x="14" y="5" width="2" height="1"/>
+    <rect x="18" y="5" width="2" height="1"/>
+    <rect x="0" y="6" width="2" height="1"/>
+    <rect x="8" y="6" width="4" height="1"/>
+    <rect x="14" y="6" width="2" height="1"/>
+    <rect x="18" y="6" width="2" height="1"/>
   </g>
-  <circle cx="26" cy="32" r="2.4" fill="#3f51b5"/>
-  <circle cx="38" cy="32" r="2.4" fill="#3f51b5"/>
 </svg>

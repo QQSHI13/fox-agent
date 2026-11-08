@@ -128,11 +128,15 @@ const ASSETS: Record<string, string> = {
   "/ui.js": "ui.js",
   "/md.js": "md.js",
   "/replay.js": "replay.js",
+  // The wordmark, served rather than inlined: it is the same file the docs
+  // site uses, so the two can never disagree about the letterforms.
+  "/logo.svg": "logo.svg",
 };
 const TYPES: Record<string, string> = {
   ".js": "text/javascript; charset=utf-8",
   ".html": "text/html; charset=utf-8",
   ".css": "text/css; charset=utf-8",
+  ".svg": "image/svg+xml",
 };
 
 function asset(path: string): Response | null {

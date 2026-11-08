@@ -7,7 +7,36 @@
 <meta name="fox-model" content="%MODEL%">
 <meta name="fox-version" content="%VERSION%">
 <title>fox-agent</title>
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%23101114'/><path d='M9 22V10h2.4v4.6h5.2V10H19v12h-2.4v-5H11.4v5z' fill='%23e8eaed'/></svg>">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64' shape-rendering='crispEdges'><defs><linearGradient id='g' gradientUnits='userSpaceOnUse' x1='0' y1='0' x2='20' y2='3.2'><stop offset='0' stop-color='%23FFC24A'/><stop offset='.55' stop-color='%23E8792A'/><stop offset='1' stop-color='%23A8330C'/></linearGradient></defs><rect width='64' height='64' rx='12' fill='%23101114'/><g transform='translate(6 22.4) scale(2.6)' fill='url(%23g)'><rect x='0' y='0' width='6' height='1'/>
+<rect x='8' y='0' width='4' height='1'/>
+<rect x='14' y='0' width='2' height='1'/>
+<rect x='18' y='0' width='2' height='1'/>
+<rect x='0' y='1' width='2' height='1'/>
+<rect x='7' y='1' width='2' height='1'/>
+<rect x='11' y='1' width='2' height='1'/>
+<rect x='14' y='1' width='2' height='1'/>
+<rect x='18' y='1' width='2' height='1'/>
+<rect x='0' y='2' width='2' height='1'/>
+<rect x='7' y='2' width='2' height='1'/>
+<rect x='11' y='2' width='2' height='1'/>
+<rect x='15' y='2' width='4' height='1'/>
+<rect x='0' y='3' width='5' height='1'/>
+<rect x='7' y='3' width='2' height='1'/>
+<rect x='11' y='3' width='2' height='1'/>
+<rect x='16' y='3' width='2' height='1'/>
+<rect x='0' y='4' width='2' height='1'/>
+<rect x='7' y='4' width='2' height='1'/>
+<rect x='11' y='4' width='2' height='1'/>
+<rect x='15' y='4' width='4' height='1'/>
+<rect x='0' y='5' width='2' height='1'/>
+<rect x='7' y='5' width='2' height='1'/>
+<rect x='11' y='5' width='2' height='1'/>
+<rect x='14' y='5' width='2' height='1'/>
+<rect x='18' y='5' width='2' height='1'/>
+<rect x='0' y='6' width='2' height='1'/>
+<rect x='8' y='6' width='4' height='1'/>
+<rect x='14' y='6' width='2' height='1'/>
+<rect x='18' y='6' width='2' height='1'/></g></svg>">
 <script src="/md.js"></script>
 <script src="/replay.js"></script>
 <style>
@@ -588,6 +617,9 @@ details[open] > summary .chev { transform: rotate(90deg); }
 /* empty / loading */
 .state { max-width: 26rem; margin: 14vh auto 0; text-align: center; padding: 0 var(--s-4); }
 .state .mark { font-family: var(--font-mono); font-size: var(--t-xl); color: var(--ink-4); margin-bottom: var(--s-3); letter-spacing: -.5px; }
+/* The wordmark, when the state block shows it instead of a one-word label.
+   Fixed height keeps the block from jumping between the image and a glyph. */
+.state .mark-logo { display: block; height: 34px; width: auto; margin: 0 auto var(--s-4); opacity: .95; }
 .state h2 { margin: 0 0 var(--s-2); font-size: var(--t-md); font-weight: 600; color: var(--ink); }
 .state p { margin: 0 0 var(--s-4); font-size: var(--t-base); line-height: 1.6; color: var(--ink-3); }
 .state .row { display: flex; gap: var(--s-2); justify-content: center; flex-wrap: wrap; }
@@ -943,7 +975,7 @@ details[open] > summary .chev { transform: rotate(90deg); }
       <div id="transcript" tabindex="0" role="log" aria-label="Conversation" aria-live="polite" aria-relevant="additions text">
         <div id="scroll">
           <div class="state" id="bootState">
-            <div class="mark">fox</div>
+            <img class="mark-logo" src="/logo.svg" alt="fox-agent" width="85" height="34">
             <h2>Connecting</h2>
             <p>Waiting for the gateway.</p>
             <div class="skeleton"><div class="skel w90"></div><div class="skel w70"></div><div class="skel w40"></div></div>
