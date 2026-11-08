@@ -12,7 +12,7 @@
 <path d="M 42 398 h 9 M 42 398 v -9" stroke="#2e2b25" stroke-width="1.5" fill="none"/>
 <path d="M 307 398 h -9 M 307 398 v -9" stroke="#2e2b25" stroke-width="1.5" fill="none"/>
 <text x="56" y="198" fill="#8a8578" font-size="14" letter-spacing="1.6">STARTUP TO FIRST BYTE</text>
-<text x="56" y="290" fill="#e6e1d8" font-size="66" font-weight="bold" letter-spacing="-2">21</text>
+<text x="56" y="290" fill="#e6e1d8" font-size="66" font-weight="bold" letter-spacing="-2">29</text>
 <text x="137" y="290" fill="#8a8578" font-size="21">ms</text>
 <rect x="56" y="310" width="93" height="30" rx="15" fill="#e0803c" fill-opacity="0.16" stroke="#e0803c" stroke-opacity="0.5"/>
 <text x="102" y="331" text-anchor="middle" fill="#e0803c" font-size="15" font-weight="bold">#2 of 22</text>
