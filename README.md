@@ -6,9 +6,9 @@
 [![license](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 [![built with bun](https://img.shields.io/badge/built%20with-bun-black)](https://bun.sh)
 
-A light coding harness with **agent-controlled context** -- the agent edits its own context window natively (`ctx_edit`), no host hacks.
+A light coding harness with **agent-controlled context** -- the agent edits its own context window natively (`ctx`), no host hacks.
 
-Full machine control, zero permission prompts. Production turn loop with step caps, retry/backoff, parallel tool execution, abort-safe partial persistence, and auto-compaction near the context limit. SQLite event-sourced sessions. OpenAI-compatible gateway first plus native Anthropic and Google providers. TUI and headless modes. ACP both ways. Plugin system.
+Full machine control, zero permission prompts. Production turn loop with step caps, retry/backoff, parallel tool execution and abort-safe partial persistence. The harness never compacts behind the agent's back: it reports the window and, at the limit, takes away every tool but `ctx`. SQLite event-sourced sessions. OpenAI-compatible gateway first plus native Anthropic and Google providers. TUI and headless modes. ACP both ways. Plugin system.
 
 ```bash
 curl -fsSL https://github.com/QQSHI13/fox-agent/raw/main/install.sh | bash   # -> /usr/local/bin/fox
@@ -114,7 +114,7 @@ by default; press `a` there to widen to all directories.
 - **TUI on a custom ANSI renderer**: streaming markdown, inline `[N]` message markers, slash commands, `!` shell mode, esc interrupt, mouse selection, themes.
 - **Headless**: `-p`, `fox json`, stdin piping, `fox mini`, plus a library API (`createAgent`).
 - **SQLite event-sourced sessions**: one database per session; append-only log + view ops + refs, so reverts and forks are queries rather than rewrites.
-- **Production turn loop**: step caps, retry/backoff on 429/5xx, parallel tool execution, abort-safe partial persistence, auto-compaction.
+- **Production turn loop**: step caps, retry/backoff on 429/5xx, parallel tool execution, abort-safe partial persistence. **No silent compaction** -- past `compactWarnAt` the runtime header tells the agent to shrink its own window; past `compactCtxOnlyAt` every tool except `ctx` is disabled, because the agent's one useful move is context surgery, not another call.
 
 ---
 
@@ -164,7 +164,8 @@ Cascade (later wins): defaults <- `~/.config/fox-agent/config.toml` <- project `
 model = "kimi-k2"
 provider = "openrouter"   # a [providers.*] profile name, or a bare API format
 maxSteps = 0              # turn step cap; 0 (default) = unlimited
-compactAt = 0.85
+compactWarnAt = 0.8       # header tells the agent to shrink its own window
+compactCtxOnlyAt = 0.9    # every tool except ctx is disabled
 retryLimit = 3
 
 # Plugins load from the GLOBAL config only -- a plugin runs in fox-agent's own
@@ -199,7 +200,8 @@ Full reference: [configuration](docs/configuration/index.md) · [environment var
 | `FOX_AGENT_API_KEY` | API key |
 | `FOX_AGENT_PROVIDER` | `openai-compatible` / `openai-responses` / `anthropic` / `google` / plugin name |
 | `FOX_AGENT_MAX_STEPS` | Turn step cap (0 = unlimited) |
-| `FOX_AGENT_COMPACT_AT` | Context compaction threshold (fraction of the window) |
+| `FOX_AGENT_COMPACT_WARN_AT` | Fraction of the window at which the header tells the agent to shrink its own context (default 0.8) |
+| `FOX_AGENT_COMPACT_CTX_ONLY_AT` | Fraction at which every tool except `ctx` is disabled (default 0.9) |
 | `FOX_AGENT_RETRY_LIMIT` | Retry count on 429/5xx |
 | `FOX_AGENT_REQUEST_TIMEOUT_MS` | Timeout without progress (default 120000, 0 disables) |
 | `FOX_AGENT_HOME` | State dir (default `~/.local/share/fox-agent`) |
@@ -297,7 +299,7 @@ $FOX_AGENT_HOME (default ~/.local/share/fox-agent)
   pty/                  tmux pipe-pane output logs
 ```
 
-`/fork` is therefore a file copy. `/delete <id|n> yes` removes a session's database and index row together; it refuses the session you are currently in (`/new` first). `/prune` reclaims the disk auto-compaction leaves behind: compaction only *hides* messages so `/undo` can bring them back, while `/prune yes` deletes those bodies for good and runs `VACUUM`.
+`/fork` is therefore a file copy. `/delete <id|n> yes` removes a session's database and index row together; it refuses the session you are currently in (`/new` first). `/prune` reclaims the disk context surgery leaves behind: a `ctx` delete only *hides* a message so `/undo` can bring it back, while `/prune yes` deletes those bodies for good and runs `VACUUM`.
 
 Full detail: [sessions](docs/sessions/index.md).
 
