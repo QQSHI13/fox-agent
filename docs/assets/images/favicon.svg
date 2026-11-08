@@ -1,14 +1,19 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64"
      shape-rendering="crispEdges" role="img" aria-label="fox-agent">
   <!--
-    Tab icon. The wordmark is letterboxed inside its own square tile, because a
-    20x8 mark floating on a transparent tab is unreadable at 16px: it needs the
-    tile to hold its edges.
+    Tab icon. NO background tile: every pixel outside the letters is
+    transparent, so the mark sits on whatever the browser draws behind it
+    (a light or dark tab strip) instead of carrying a dark rectangle that looks
+    wrong on one of them.
+
+    The square viewBox is kept because browsers size favicons by their declared
+    box, and a non-square one gets letterboxed unpredictably. The mark is scaled
+    to fill the width and centred vertically, so the declared box is honest.
   -->
   <defs>
     <linearGradient id="sweep" gradientUnits="userSpaceOnUse"
                     x1="0" y1="0" x2="20" y2="3.2">
-      <stop offset="0.000" stop-color="rgb(255,194,74)"/>
+<stop offset="0.000" stop-color="rgb(255,194,74)"/>
       <stop offset="0.091" stop-color="rgb(245,178,67)"/>
       <stop offset="0.182" stop-color="rgb(242,172,64)"/>
       <stop offset="0.273" stop-color="rgb(232,156,57)"/>
@@ -22,8 +27,8 @@
       <stop offset="1.000" stop-color="rgb(168,51,12)"/>
     </linearGradient>
   </defs>
-  <rect x="0" y="0" width="64" height="64" rx="12" fill="#141821"/>
-  <g transform="translate(6 21.60) scale(2.6000)" fill="url(#sweep)">
+  <g transform="translate(4 20.80) scale(2.8000)" fill="url(#sweep)">
+
     <rect x="0" y="0" width="6" height="1"/>
     <rect x="8" y="0" width="4" height="1"/>
     <rect x="14" y="0" width="2" height="1"/>
