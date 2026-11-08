@@ -8,6 +8,7 @@ import type { Tool, ToolContext, ToolResult, PtyState } from "../core/tool.ts";
 import { validateArgs } from "../core/tool.ts";
 import { drainSteer, peekSteer, turnEnded, turnStarted, steer, backgroundStarted, backgroundEnded } from "./steer.ts";
 import { acquireTurnLock, releaseTurnLock, foreignLock } from "../store/lock.ts";
+import { adoptBackground, settleBackground } from "./background.ts";
 import { VERSION } from "../core/version.ts";
 import type { Config } from "../core/config.ts";
 import { defaultConfig } from "../core/config.ts";
@@ -875,13 +876,22 @@ async function* turnBody(
 
     const settled = Promise.all(
       prepared.map(async ({ call, veto }) => {
+        /**
+         * The kill switch for THIS call, created before the work starts so a
+         * `jobs({id})` arriving at any moment can actually abort it. Composed
+         * with the turn's own signal, so esc still stops everything.
+         */
+        const ac = new AbortController();
+        const callSignal = signal ? AbortSignal.any([signal, ac.signal]) : ac.signal;
         const runOne = async (): Promise<{ call: typeof call; node: MessageRow; res: ToolResult }> => {
         let res: ToolResult | undefined = veto;
         res ??= await execToolCall(call, tools, {
 
+
+
           sessionId,
           cwd: session.cwd,
-          signal,
+          signal: callSignal,
           providerCfg: cfg,
           agents,
           tools,
@@ -984,9 +994,8 @@ async function* turnBody(
 
         const work = runOne();
         if (!autoBgMs) return work;
-        // Stop WAITING, not stop working: `work` keeps running and still appends
-        // its row and emits its `tool_end`, so the transcript shows the real
-        // output when it lands. This turn just stops blocking on it.
+        // Stop WAITING, not stop working: `work` keeps running and still writes
+        // its result, so the transcript shows the real output when it lands.
         let timer: ReturnType<typeof setTimeout> | undefined;
         const expiry = new Promise<null>((r) => {
           timer = setTimeout(() => r(null), autoBgMs);
@@ -994,13 +1003,58 @@ async function* turnBody(
         });
         try {
           const winner = await Promise.race([work, expiry]);
-          if (winner === null) {
-            // the orphan keeps running; swallow its eventual rejection so a
-            // failed detached tool cannot become an unhandled rejection
-            void work.catch(() => {});
-            return null;
-          }
-          return winner;
+          if (winner !== null) return winner;
+
+          // ---- the call detached -------------------------------------------
+          //
+          // A provider rejects an assistant message whose tool_calls have no
+          // matching results, so the placeholder row must exist NOW — the next
+          // step's request is built before this work can finish. The real output
+          // replaces it when it lands, as a view op, so storage stays
+          // append-only and `ctx restore` can bring the placeholder back.
+          //
+          // The row is appended BEFORE the job is adopted: the kill callback
+          // needs its seq, and capturing that in a mutable holder rather than
+          // closing over a not-yet-declared `const` keeps the order honest even
+          // if a killer ever arrives synchronously.
+          const row = { seq: 0 };
+          const job = adoptBackground(sessionId, call.name, call.id, ac, (note) => {
+            // killed: rewrite the placeholder so the model reads why
+            if (row.seq) appendOps(sessionId, [{ kind: "replace", id: row.seq, content: note }]);
+          });
+          const placeholder = appendMessage(sessionId, {
+            parent_id: asstNode.id,
+            role: "tool",
+            content:
+              `backgrounded as ${job.id} after ${autoBgMs}ms — still running.\n` +
+              `Do not poll it: its real output replaces this result when it finishes. ` +
+              `Stop it with jobs({id:"${job.id}"}).`,
+            tool_call_id: call.id,
+            tokens: estTok(`backgrounded as ${job.id}`),
+            error: null,
+          });
+          row.seq = placeholder.seq;
+          // keep the context valid for the NEXT step, and let the UI show the row
+          liveEvents.push({
+            type: "tool_end",
+            id: call.id,
+            seq: placeholder.seq,
+            name: call.name,
+            args: eventArgs(call.arguments),
+            output: placeholder.content,
+            ok: true,
+          });
+          void work
+            .then((r) => {
+              settleBackground(job.id);
+              // the real result: replace the placeholder in place
+              appendOps(sessionId, [{ kind: "replace", id: placeholder.seq, content: truncateToolResult(call.name, r.res.output, presentationCap)?.text ?? r.res.output }]);
+            })
+            .catch((e) => {
+              settleBackground(job.id);
+              appendOps(sessionId, [{ kind: "replace", id: placeholder.seq, content: `error: ${(e as Error)?.message ?? e}` }]);
+            });
+          return null;
         } finally {
           if (timer) clearTimeout(timer);
         }
