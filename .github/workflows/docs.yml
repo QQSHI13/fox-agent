@@ -81,6 +81,36 @@ jobs:
         # A warning here is not a failure; a bad nav path already fails `check`.
         run: docsforge build
 
+      - name: verify the rendered pages are not silently broken
+        # Two failure modes reach a *successful* build and are only visible in
+        # the output, which is why they are asserted here rather than trusted:
+        #
+        # 1. A `markdown_extensions:` key in docsforge.yml REPLACES the engine's
+        #    36 defaults instead of extending them (only the 3 builtins are
+        #    unioned). Declaring `toc: {permalink: true}` that way unregistered
+        #    pymdownx.emoji, and every `:material-*:` icon shipped as literal
+        #    text. Nothing warned; the build exited 0.
+        # 2. Losing permalinks the same way, which breaks deep links into the
+        #    page anchors that other pages point at.
+        #
+        # So: assert an icon rendered as SVG, and assert headings carry their
+        # anchor links. Both are cheap and both were actually broken once.
+        run: |
+          set -eu
+          # no unrendered icon syntax anywhere in the built site
+          if grep -rl ':material-\|:fontawesome-' site --include='index.html'; then
+            echo "unrendered icon syntax above — pymdownx.emoji is not registered"
+            exit 1
+          fi
+          # the landing page's cards must carry inline SVG icons
+          icons=$(grep -o 'class="twemoji' site/index.html | wc -l)
+          echo "inline icons on the landing page: $icons"
+          test "$icons" -ge 10 || { echo "only $icons icons — pymdownx.emoji did not run"; exit 1; }
+          # headings must carry permalink anchors
+          links=$(grep -o 'class=headerlink' site/index.html | wc -l)
+          echo "heading permalinks on the landing page: $links"
+          test "$links" -ge 1 || { echo "no heading permalinks — the toc hook did not apply"; exit 1; }
+
       - name: verify the build is deployable
         # A silently empty or half-written site would still publish fine and
         # take the live docs down. Assert the things that must exist.
