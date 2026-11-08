@@ -38,6 +38,7 @@ function reset() {
   writeFileSync(PROTECTED, "decoy");
   symlinkSync(PROTECTED, join(FIXTURE, "innocent-looking")); // symlink alias
   symlinkSync(join(FIXTURE, "protected"), join(FIXTURE, "aliasdir"));
+  symlinkSync(join(FIXTURE, "protected"), join(FIXTURE, "pro tected")); // dir name WITH a space
   mkdirSync(join(FIXTURE, "sub"), { recursive: true });
   writeFileSync(join(FIXTURE, "sub", "f.txt"), "x");
 }
@@ -55,7 +56,7 @@ const cases: { name: string; cmd: string; workdir?: string; note: string }[] = [
   { name: "command substitution", cmd: `rm -f "$(echo ${PROTECTED})"`, note: "path only exists at runtime" },
   { name: "variable", cmd: `P=${PROTECTED}; rm -f "$P"`, note: "shell variable" },
   { name: "glob", cmd: `rm -f ${FIXTURE}/protected/host*`, note: "glob wildcard" },
-  { name: "path with space", cmd: `rm -f "${FIXTURE}/pro tected/hosts"`, note: "space inside a quoted path" },
+  { name: "path with space", cmd: `rm -f "${FIXTURE}/pro tected/hosts"`, note: "a real path containing a space" },
   { name: "python", cmd: `python3 -c "import os;os.remove('${PROTECTED}')"`, note: "not a shell path token" },
   { name: "cat (read)", cmd: `cat ${PROTECTED}`, note: "policy breadth: is a READ refused?" },
 ];
