@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -31,6 +31,29 @@ describe("self docs", () => {
 
     // second call is a no-op path (stamp matches, files exist) — same dir
     expect(ensureAgentDocs()).toBe(d);
+  });
+
+  // Regression: the stamp used to be the bare version string, so a doc edit
+  // that shipped without a version bump was invisible to installed binaries.
+  // A2A was deleted on 2026-11-01 (ff030e7) with no bump, and every running
+  // 0.7.0 binary kept serving a sessions-acp.md describing `fox --a2a`. The
+  // stamp must therefore be a content fingerprint, and a legacy version-only
+  // stamp must never count as fresh.
+  test("the stamp fingerprints the doc content, not just the version", async () => {
+    const { ensureAgentDocs, agentDocsDir, agentDocs } = await import("../src/core/selfdocs.ts");
+    const d = ensureAgentDocs();
+    const stamp = readFileSync(join(d, ".version"), "utf-8").trim();
+    expect(stamp).toMatch(/^v\S+ [0-9a-f]{32}$/);
+
+    // a legacy stamp (bare version, which is what older builds wrote) is stale
+    // even though it names the running version
+    const legacy = stamp.split(" ")[0].slice(1);
+    writeFileSync(join(d, ".version"), legacy + "\n");
+    writeFileSync(join(d, "config.md"), "RUINED\n");
+    expect(ensureAgentDocs()).toBe(d);
+    expect(readFileSync(join(d, "config.md"), "utf-8")).toBe(agentDocs().config);
+    expect(readFileSync(join(d, ".version"), "utf-8").trim()).toBe(stamp);
+    expect(agentDocsDir()).toBe(d);
   });
 
   test("a stale stamp forces a rewrite", async () => {

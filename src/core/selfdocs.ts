@@ -8,11 +8,13 @@
  * (system-prompt routing section → files on disk) and it needs paths that
  * exist. A compiled bun binary has no package dir to read from, so the text
  * rides inside the binary (explicit `with { type: "text" }` imports — bun has
- * no import.meta.glob) and is written out, version-stamped: when the running
- * binary's version changes, the dir is wiped and rewritten, so files never
- * contradict the binary that serves them.
+ * no import.meta.glob) and is written out, fingerprint-stamped: when the
+ * embedded text changes, the dir is wiped and rewritten, so files never
+ * contradict the binary that serves them. See `docsFingerprint` for why the
+ * stamp hashes content and does not trust the version number alone.
  */
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { createHash } from "node:crypto";
 import { join } from "path";
 import { agentHome } from "../core/paths.ts";
 import { VERSION as version } from "../core/version.ts";
@@ -45,20 +47,45 @@ export function agentDocsDir(): string {
 }
 
 /**
+ * Fingerprint of the embedded doc set: the binary version plus a hash of every
+ * doc's text.
+ *
+ * The version alone is NOT enough, and relying on it shipped a real bug: A2A was
+ * deleted on 2026-11-01 (commit ff030e7) with no version bump, so a running 0.7.0
+ * binary saw its stamp match and kept serving a `sessions-acp.md` that still
+ * documented `fox --a2a` and `url = "..."` delegation. Any doc edit that lands
+ * without a release was invisible to every already-installed binary. Hashing the
+ * content makes the freshness check answer the question it claims to answer —
+ * "do the files on disk match the docs compiled into this binary?" — regardless
+ * of whether anyone bumped a version.
+ */
+function docsFingerprint(): string {
+  const h = createHash("sha256").update(version);
+  for (const name of Object.keys(EMBEDDED).sort()) {
+    // length-prefixed so a shifted boundary between two docs cannot collide
+    h.update(`\u0000${name}\u0000${EMBEDDED[name].length}\u0000`);
+    h.update(EMBEDDED[name]);
+  }
+  return `v${version} ${h.digest("hex").slice(0, 32)}`;
+}
+
+/**
  * Write the embedded docs to `agentHome()/docs/`. A stamp file carrying the
- * binary version forces a rewrite when the version changes; same version +
- * all files present = no writes (the common case — this runs per system-prompt
- * build, but its steady-state cost is a handful of stat()s, so it needs no
- * memo: a memo keyed on anything weaker than the freshness check would serve
- * a stale dir after a test or an admin deletes a file under it).
+ * fingerprint above forces a rewrite whenever the embedded text (or the version)
+ * changes; same fingerprint + all files present = no writes (the common case —
+ * this runs per system-prompt build, but its steady-state cost is a handful of
+ * stat()s, so it needs no memo: a memo keyed on anything weaker than the
+ * freshness check would serve a stale dir after a test or an admin deletes a
+ * file under it).
  */
 export function ensureAgentDocs(): string {
   const dir = agentDocsDir();
   try {
     const stamp = join(dir, ".version");
+    const expected = docsFingerprint();
     const fresh =
       existsSync(stamp) &&
-      readFileSync(stamp, "utf-8").trim() === version &&
+      readFileSync(stamp, "utf-8").trim() === expected &&
       Object.keys(EMBEDDED).every((name) => existsSync(join(dir, `${name}.md`)));
     if (fresh) return dir;
     // stale or partial: replace wholesale — a doc removed from the source tree
@@ -68,7 +95,7 @@ export function ensureAgentDocs(): string {
     for (const [name, content] of Object.entries(EMBEDDED)) {
       writeFileSync(join(dir, `${name}.md`), content);
     }
-    writeFileSync(join(dir, ".version"), version + "\n");
+    writeFileSync(stamp, expected + "\n");
     return dir;
   } catch {
     // docs are a convenience — a read-only home must not break startup
