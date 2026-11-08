@@ -27,12 +27,18 @@
  */
 
 export interface BackgroundJob {
-  /** short and stable; shown in the tool result so the agent can kill this one */
-  id: string;
+  /**
+   * The node id the agent sees as `[N]` — the placeholder tool row's seq.
+   *
+   * Jobs are addressed by node, not by a synthetic `bgN`: the agent already
+   * reads `[N]` markers on every message, so `jobs({id: 4423})` needs no second
+   * naming scheme to learn or remember.
+   */
+  node: number;
   sessionId: string;
   /** the tool's name, so a completion line is recognisable */
   name: string;
-  /** the tool_call id whose result row the placeholder occupies */
+  /** the tool_call id the placeholder answers */
   callId: string;
   startedAt: number;
 }
@@ -41,72 +47,65 @@ interface Entry {
   job: BackgroundJob;
   ac: AbortController;
   settled: boolean;
-  /** called when the job is KILLED, so the caller can rewrite its result row */
-  onKilled: ((output: string) => void) | null;
+  /** called when the job is KILLED, so the caller can report why */
+  onKilled: ((note: string) => void) | null;
 }
 
-const jobs = new Map<string, Entry>();
-let seq = 0;
+const jobs = new Map<number, Entry>();
 
 /**
- * Adopt a call that has just detached.
+ * Adopt a call that has just detached, keyed by the placeholder's node id.
  *
  * `ac` must be the controller whose signal the tool is already running under —
  * created before the call started — so killing actually aborts the work rather
- * than only forgetting it. `onKilled` rewrites the placeholder result row with
- * the kill notice; the normal completion path does its own rewrite and only
- * needs `settleBackground`.
+ * than only forgetting it.
  */
 export function adoptBackground(
+  node: number,
   sessionId: string,
   name: string,
   callId: string,
   ac: AbortController,
-  onKilled: (output: string) => void,
+  onKilled: (note: string) => void,
 ): BackgroundJob {
-  const id = `bg${++seq}`;
-  const job: BackgroundJob = { id, sessionId, name, callId, startedAt: Date.now() };
-  jobs.set(id, { job, ac, settled: false, onKilled });
+  const job: BackgroundJob = { node, sessionId, name, callId, startedAt: Date.now() };
+  jobs.set(node, { job, ac, settled: false, onKilled });
   return job;
 }
 
-/** The job for a call id, if that call is currently detached. */
-export function backgroundFor(callId: string): BackgroundJob | null {
-  for (const e of jobs.values()) if (!e.settled && e.job.callId === callId) return e.job;
-  return null;
-}
-
-/** The work finished on its own: the caller already wrote the result. Deregister. */
-export function settleBackground(id: string): void {
-  const e = jobs.get(id);
+/** The work finished on its own: deregister. The caller reports the result. */
+export function settleBackground(node: number): void {
+  const e = jobs.get(node);
   if (!e) return;
   e.settled = true;
-  jobs.delete(id);
+  jobs.delete(node);
 }
 
-/** Live jobs, newest last. `sessionId` narrows to one session. */
+/** Live jobs, oldest first. `sessionId` narrows to one session. */
 export function listBackground(sessionId?: string): BackgroundJob[] {
   return [...jobs.values()]
     .filter((e) => !e.settled && (sessionId === undefined || e.job.sessionId === sessionId))
+    .sort((a, b) => a.job.node - b.job.node)
     .map((e) => e.job);
 }
 
 /**
- * Kill one job. Always returns a line describing what happened — "no such job"
- * is information the agent needs, not an error it has to infer from silence.
+ * Kill one job by its node id. Always returns a line describing what happened —
+ * "no such job" is information the agent needs, not an error to infer from
+ * silence.
  */
-export function killBackground(id: string): string {
-  const e = jobs.get(id);
-  if (!e) return `no live job '${id}' (already finished, or never existed)`;
+export function killBackground(node: number): string {
+  const e = jobs.get(node);
+  if (!e) return `no live job [${node}] (already finished, or never existed)`;
   e.settled = true;
-  jobs.delete(id);
+  jobs.delete(node);
   const age = Math.round((Date.now() - e.job.startedAt) / 1000);
   try {
     // the tool sees this through the combined signal and stops its own work
-    e.ac.abort(new Error(`killed by jobs({id:"${id}"})`));
+    e.ac.abort(new Error(`killed by jobs({id:${node}})`));
   } catch {}
-  e.onKilled?.(`${id} (${e.job.name}) was killed after ${age}s — no output.`);
-  return `killed ${id} (${e.job.name}, ${age}s)`;
+  e.onKilled?.(`[${node}] (${e.job.name}) was killed after ${age}s — no output.`);
+  return `killed [${node}] (${e.job.name}, ${age}s)`;
 }
 
 /** Drop every job for a session — session end/switch. Returns how many. */
@@ -115,7 +114,7 @@ export function killSessionBackground(sessionId: string): number {
   for (const e of [...jobs.values()]) {
     if (e.job.sessionId !== sessionId) continue;
     e.settled = true;
-    jobs.delete(e.job.id);
+    jobs.delete(e.job.node);
     try {
       e.ac.abort(new Error("session ended"));
     } catch {}
@@ -127,5 +126,4 @@ export function killSessionBackground(sessionId: string): number {
 /** Tests only: forget everything without aborting. */
 export function resetBackground(): void {
   jobs.clear();
-  seq = 0;
 }

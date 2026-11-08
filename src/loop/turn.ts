@@ -883,7 +883,17 @@ async function* turnBody(
          */
         const ac = new AbortController();
         const callSignal = signal ? AbortSignal.any([signal, ac.signal]) : ac.signal;
-        const runOne = async (): Promise<{ call: typeof call; node: MessageRow; res: ToolResult }> => {
+        /**
+         * Set the instant this call detaches, read by the in-flight `runOne`
+         * continuation after its await.
+         *
+         * Without it, BOTH paths append a result for one `tool_call_id` — the
+         * placeholder here and the tool's own row when it finishes. The provider
+         * rejects the duplicate with a 400 naming an unrelated call id, which is
+         * exactly the failure that made a real session unrecoverable.
+         */
+        const detached = { on: false };
+        const runOne = async (): Promise<{ call: typeof call; node: MessageRow | null; res: ToolResult }> => {
         let res: ToolResult | undefined = veto;
         res ??= await execToolCall(call, tools, {
 
@@ -936,6 +946,16 @@ async function* turnBody(
           );
           if (typeof patch?.output === "string") res.output = patch.output;
         }
+
+        /**
+         * The result row.
+         *
+         * SKIPPED entirely when this call detached while the tool was running:
+         * the placeholder already answered this `tool_call_id`, and a second row
+         * for the same id is what the provider rejects as "tool call id ... is
+         * not found". The caller appends the late output as its own message.
+         */
+        if (detached.on) return { call, node: null, res };
 
         const node = appendMessage(sessionId, {
           parent_id: asstNode.id,
@@ -1008,33 +1028,37 @@ async function* turnBody(
           // ---- the call detached -------------------------------------------
           //
           // A provider rejects an assistant message whose tool_calls have no
-          // matching results, so the placeholder row must exist NOW — the next
-          // step's request is built before this work can finish. The real output
-          // replaces it when it lands, as a view op, so storage stays
-          // append-only and `ctx restore` can bring the placeholder back.
+          // matching results, so a row must answer this call NOW — the next
+          // step's request is built before the work can finish.
           //
-          // The row is appended BEFORE the job is adopted: the kill callback
-          // needs its seq, and capturing that in a mutable holder rather than
-          // closing over a not-yet-declared `const` keeps the order honest even
-          // if a killer ever arrives synchronously.
-          const row = { seq: 0 };
-          const job = adoptBackground(sessionId, call.name, call.id, ac, (note) => {
-            // killed: rewrite the placeholder so the model reads why
-            if (row.seq) appendOps(sessionId, [{ kind: "replace", id: row.seq, content: note }]);
-          });
+          // The real output cannot REPLACE this row later: rewriting a node
+          // invalidates the provider's cached prefix from that point on and
+          // re-bills the whole history behind it. So the placeholder stays as
+          // the paired result, and the output arrives as a NEW message at the
+          // end of the log when the work lands.
+          //
+          // `detached.on` is set synchronously here, before any await, so the
+          // in-flight `runOne` continuation sees it and skips its own append.
+          // Without that check one call gets TWO tool rows with the same
+          // tool_call_id — which the provider rejects with a 400 that names an
+          // unrelated call id.
+          detached.on = true;
+          // The node id need not be embedded: markers are ON, so this row's
+          // content reaches the model prefixed with its own `[N]`. Naming a
+          // number we do not know yet would force a rewrite of this row, which
+          // is the very thing we are avoiding.
           const placeholder = appendMessage(sessionId, {
             parent_id: asstNode.id,
             role: "tool",
             content:
-              `backgrounded as ${job.id} after ${autoBgMs}ms — still running.\n` +
-              `Do not poll it: its real output replaces this result when it finishes. ` +
-              `Stop it with jobs({id:"${job.id}"}).`,
+              `backgrounded after ${autoBgMs}ms — still running.\n` +
+              `Do not poll it: its output will arrive as its own message when it finishes. ` +
+              `Stop it with jobs({id: <this message's [N]>}).`,
             tool_call_id: call.id,
-            tokens: estTok(`backgrounded as ${job.id}`),
+            tokens: estTok("backgrounded"),
             error: null,
           });
-          row.seq = placeholder.seq;
-          // keep the context valid for the NEXT step, and let the UI show the row
+          adoptBackground(placeholder.seq, sessionId, call.name, call.id, ac, () => {});
           liveEvents.push({
             type: "tool_end",
             id: call.id,
@@ -1046,13 +1070,29 @@ async function* turnBody(
           });
           void work
             .then((r) => {
-              settleBackground(job.id);
-              // the real result: replace the placeholder in place
-              appendOps(sessionId, [{ kind: "replace", id: placeholder.seq, content: truncateToolResult(call.name, r.res.output, presentationCap)?.text ?? r.res.output }]);
+              settleBackground(placeholder.seq);
+              // APPEND the outcome, never rewrite the placeholder: a rewrite
+              // would invalidate the cached prefix behind it.
+              const body = truncateToolResult(call.name, r.res.output, presentationCap)?.text ?? r.res.output;
+              appendMessage(sessionId, {
+                parent_id: placeholder.id,
+                // `user`, not `tool`: a second tool row for the same call id is a
+                // duplicate the provider rejects, and a new call id would be an
+                // orphan. A user-role message is the one appendable channel that
+                // keeps the request well-formed — the same channel a steer uses.
+                role: "user",
+                content: `[${placeholder.seq}] ${call.name} finished:\n${body}`,
+                tokens: estTok(body),
+              });
             })
             .catch((e) => {
-              settleBackground(job.id);
-              appendOps(sessionId, [{ kind: "replace", id: placeholder.seq, content: `error: ${(e as Error)?.message ?? e}` }]);
+              settleBackground(placeholder.seq);
+              appendMessage(sessionId, {
+                parent_id: placeholder.id,
+                role: "user",
+                content: `[${placeholder.seq}] ${call.name} failed: ${(e as Error)?.message ?? e}`,
+                tokens: 20,
+              });
             });
           return null;
         } finally {
@@ -1112,7 +1152,7 @@ async function* turnBody(
     // the original bug — everything appearing only once the slowest call ended.
 
     // next step's assistant hangs off the last tool result of this step
-    stepParentId = landed[landed.length - 1]?.node.id ?? asstNode.id;
+    stepParentId = landed[landed.length - 1]?.node?.id ?? asstNode.id;
 
     if (signal?.aborted) {
       // A steer parked while the tool ran (ctrl+s mid-tool, a background job
