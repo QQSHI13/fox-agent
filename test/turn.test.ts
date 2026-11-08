@@ -554,19 +554,21 @@ describe("turn manager", () => {
     const text = events.filter((e): e is Extract<typeof e, { type: "text" }> => e.type === "text").map((e) => e.delta).join("");
     expect(text).toContain("moved on");
 
-    // the placeholder IS announced, and it says where to find the output
+    // the placeholder IS announced, and says the output is coming separately
     const end = events.find((e): e is Extract<typeof e, { type: "tool_end" }> => e.type === "tool_end" && e.name === "slowtool");
     expect(end).toBeDefined();
-    expect(end!.output).toContain("backgrounded");
-    expect(end!.output).toContain("jobs({id:");
-    // and it tells the agent not to poll
-    expect(end!.output.toLowerCase()).toContain("do not poll");
+    expect(end!.output).toContain("[background] still running");
+    expect(end!.output).toContain("jobs({list:true})");
+    expect(end!.output).toContain("jobs({id:N})");
+    // and it says polling is unnecessary
+    expect(end!.output.toLowerCase()).toContain("do not need to poll");
+
 
     // exactly ONE row answers this call id — the duplicate-row bug produced two,
     // which the provider rejects with a 400 naming an unrelated call
     const rows = t.allMessages(s.id).filter((m: any) => m.role === "tool" && m.tool_call_id === "a");
     expect(rows).toHaveLength(1);
-    expect(rows[0].content).toContain("backgrounded");
+    expect(rows[0].content).toContain("[background] still running");
 
 
     release();
