@@ -130,6 +130,18 @@ describe("argv parsing", () => {
     expect(parseArgv(["json", "-p", "x"]).flags.get("json")).toBe(true);
   });
 
+  // Regression: `--compact-at` was accepted by the parser and read by nobody,
+  // while the two flags app.ts actually reads (`--compact-warn-at`,
+  // `--compact-ctx-only-at`) were rejected as unknown. The documented flag did
+  // nothing and the working ones were unreachable.
+  test("the compaction-rail flags the app reads are the ones the parser accepts", async () => {
+    const { parseArgv } = await import("../src/cli.ts");
+    expect(parseArgv(["--compact-warn-at", "0.7"]).flags.get("compact-warn-at")).toBe("0.7");
+    expect(parseArgv(["--compact-ctx-only-at", "0.95"]).flags.get("compact-ctx-only-at")).toBe("0.95");
+    // the dead spelling is gone; it must not be silently accepted again
+    expect(() => parseArgv(["--compact-at", "0.7"])).toThrow();
+  });
+
   test("unknown flags still throw instead of running something unintended", async () => {
     const { parseArgv } = await import("../src/cli.ts");
     const { ConfigError } = await import("../src/core/errors.ts");

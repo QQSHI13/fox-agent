@@ -31,7 +31,12 @@ export function parseArgv(argv: string[]): Parsed {
     "--provider",
     "--max-steps",
     "--retry-limit",
-    "--compact-at",
+    // The two rails that replaced automatic compaction (cbb5794). `--compact-at`
+    // was parsed here but nothing ever read it, while app.ts read these two and
+    // the parser rejected them — so the documented flag was a no-op and the
+    // working ones were unreachable from the command line.
+    "--compact-warn-at",
+    "--compact-ctx-only-at",
     "--request-timeout-ms",
     "--config",
     "--port",

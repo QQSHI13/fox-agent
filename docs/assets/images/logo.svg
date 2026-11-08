@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 24" width="40" height="24" role="img" aria-label="fox-agent">
+  <!--
+    The header bar (and the drawer title) is painted with the primary color in
+    both schemes, so the mark is drawn in white and relies on negative space for
+    its features. It has to stay legible at 24px, which is why the ears are
+    chunky, angular wedges rather than curves.
+  -->
+  <g fill="#ffffff">
+    <!-- left ear -->
+    <path d="M2 2.4 L9.6 6.2 L6.4 13.4 Z"/>
+    <!-- right ear -->
+    <path d="M21.6 6.2 L29.2 2.4 L24.8 13.4 Z"/>
+    <!-- head: wedge narrowing to a snout -->
+    <path d="M6.2 8.1 L25 8.1 L15.6 21.6 Z"/>
+  </g>
+  <!-- eye, punched out so the mark reads at small sizes -->
+  <circle cx="12.4" cy="11.6" r="1.25" fill="#3f51b5"/>
+  <circle cx="18.8" cy="11.6" r="1.25" fill="#3f51b5"/>
+  <!-- prompt caret: the harness mark, right of the head -->
+  <path d="M31.6 9.4 L35 12.4 L31.6 15.4" fill="none" stroke="#ffffff" stroke-width="1.9"
+        stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

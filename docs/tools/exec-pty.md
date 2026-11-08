@@ -1,3 +1,9 @@
+---
+tags:
+  - tools
+  - cli
+---
+
 # exec and pty: opposite cwd rules
 
 These two tools differ deliberately, and both behaviours are load-bearing.
@@ -58,4 +64,4 @@ and the hook together.
 ## Environment
 
 Both inherit the **full** environment — no credential stripping, deliberately.
-See [Security](../architecture/index.md#security-model) for why.
+See [Security](../architecture/security.md) for why.

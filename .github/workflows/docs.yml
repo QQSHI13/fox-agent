@@ -43,7 +43,14 @@ concurrency:
 env:
   # Pin docsforge: an unpinned `pip install` lets a docsforge release change
   # the site's output on a morning nobody touched the docs.
-  DOCSFORGE_VERSION: "13.0.2"
+  #
+  # 13.0.5, not 13.0.2: the top-level `announce:` key this config uses landed in
+  # 13.0.4, and `docsforge check` rejects an unknown top-level key — so the older
+  # pin would fail the build outright rather than silently dropping the banner.
+  # The `[social]` extra is needed because `plugins.social` generates one
+  # OpenGraph card per page; without pillow+cairosvg the plugin loads and does
+  # nothing, and every page ships without a card.
+  DOCSFORGE_VERSION: "13.0.5"
   PYTHON_VERSION: "3.12"
 
 jobs:
@@ -57,9 +64,15 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
 
       - name: install docsforge
-        run: pip install --disable-pip-version-check "docsforge==${{ env.DOCSFORGE_VERSION }}"
+        run: pip install --disable-pip-version-check "docsforge[social]==${{ env.DOCSFORGE_VERSION }}"
 
       - name: validate config
+        # `check` is a separate gate from `build` on purpose: it validates the
+        # config, the nav and every internal link/anchor, and fails on a nav
+        # entry pointing at a file that no longer exists. That is exactly how
+        # this workflow broke for a week — A2A was deleted in ff030e7 and
+        # `protocols/a2a.md` stayed in the nav, so every run failed at build
+        # time with a message about a missing page rather than a bad nav entry.
         run: docsforge check
 
       - name: build site

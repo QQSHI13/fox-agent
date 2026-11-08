@@ -1,3 +1,8 @@
+---
+tags:
+  - tools
+---
+
 # `fetch` and `repl`
 
 ## `fetch`

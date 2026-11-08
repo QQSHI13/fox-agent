@@ -42,7 +42,11 @@ compactCtxOnlyAt = 0.9                 # every tool except ctx disabled at this 
 toolOutputCap = 30000                  # per-tool-result character cap
 readCap = 50000                        # `read` ceiling before it demands offset/limit
 toolPresentationCap = 60000            # chars of a result the VIEW shows (0 = never)
+autoBackgroundMs = 3000                # stop WAITING on a slow call after this; 0 = always wait
+searchLimit = 500                      # default glob/grep result cap (a call's own limit wins)
+searchHidden = false                   # include dotfiles in glob/grep
 sessionListLimit = 0                   # rows `fox ls` / the picker list (0 = all)
+mcpSharedPool = true                   # one long-lived MCP pool instead of per-turn spawns
 acpHistory = "full"                    # session/load replay: "full" | "last" | <trailing node count>
 diagnostics = true                     # post-edit LSP diagnostics
 
@@ -121,7 +125,7 @@ On interactive TUI start the working directory is confirmed (`y`/`n`/`c`, one ke
 
 ## Environment variables
 
-`FOX_AGENT_MODEL`, `FOX_AGENT_BASE_URL`, `FOX_AGENT_API_KEY`, `FOX_AGENT_PROVIDER`, `FOX_AGENT_MAX_STEPS`, `FOX_AGENT_COMPACT_AT`, `FOX_AGENT_COMPACT_AT_TOKENS`, `FOX_AGENT_RETRY_LIMIT`, `FOX_AGENT_REQUEST_TIMEOUT_MS`, `FOX_AGENT_DIAGNOSTICS`, `FOX_AGENT_HOME` (state dir, default `~/.local/share/fox-agent`), `FOX_AGENT_CONFIG` (override global config path — tests/sandboxes), `FOX_AGENT_TRACE`, `FOX_AGENT_FRAMEPROFILE`, `FOX_AGENT_NO_TRUST_CHECK`, `FOX_AGENT_NO_RESUME_HINT`, `FOX_AGENT_MODELS_OFFLINE`, `FOX_AGENT_MODELS_CACHE`, `FOX_AGENT_ANTHROPIC_CACHE`, `FOX_AGENT_ALLOW_PRIVATE_FETCH`, `FOX_AGENT_DELEGATION_DEPTH` (harness-set).
+`FOX_AGENT_MODEL`, `FOX_AGENT_BASE_URL`, `FOX_AGENT_API_KEY`, `FOX_AGENT_PROVIDER`, `FOX_AGENT_MAX_STEPS`, `FOX_AGENT_COMPACT_WARN_AT`, `FOX_AGENT_COMPACT_CTX_ONLY_AT`, `FOX_AGENT_RETRY_LIMIT`, `FOX_AGENT_REQUEST_TIMEOUT_MS`, `FOX_AGENT_TOOL_OUTPUT_CAP`, `FOX_AGENT_READ_CAP`, `FOX_AGENT_SEARCH_LIMIT`, `FOX_AGENT_SEARCH_HIDDEN`, `FOX_AGENT_THEME`, `FOX_AGENT_REASONING_EFFORT`, `FOX_AGENT_DIAGNOSTICS`, `FOX_AGENT_HOME` (state dir, default `~/.local/share/fox-agent`), `FOX_AGENT_CONFIG` (override global config path — tests/sandboxes), `FOX_AGENT_TRACE`, `FOX_AGENT_FRAMEPROFILE`, `FOX_AGENT_NO_TRUST_CHECK`, `FOX_AGENT_NO_RESUME_HINT`, `FOX_AGENT_MODELS_OFFLINE`, `FOX_AGENT_MODELS_CACHE`, `FOX_AGENT_ANTHROPIC_CACHE`, `FOX_AGENT_ALLOW_PRIVATE_FETCH`, `FOX_AGENT_DELEGATION_DEPTH` (harness-set).
 
 `OPENAI_BASE_URL`/`OPENAI_API_KEY`/`ANTHROPIC_API_KEY`/`GEMINI_API_KEY`/`GOOGLE_API_KEY` are honored as fallbacks.
 

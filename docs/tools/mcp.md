@@ -1,3 +1,9 @@
+---
+tags:
+  - tools
+  - protocols
+---
+
 # MCP (Model Context Protocol)
 
 MCP connects fox-agent **down** to its tools: a server you configure by command
@@ -32,7 +38,7 @@ called `write_file` gets a tool called `write_file` — with the model's full
 attention on it.
 
 They inherit the full environment (see
-[Security](../architecture/index.md#security-model)). Vet a server the way you
+[Security](../architecture/security.md)). Vet a server the way you
 would vet a shell script you were about to run.
 
 ## Alongside

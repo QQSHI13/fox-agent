@@ -1,3 +1,8 @@
+---
+tags:
+  - configuration
+---
+
 # Configuration
 
 ## The cascade
@@ -58,6 +63,9 @@ Model, theme and reasoning effort have their own commands (`/model`, `/theme`,
 | `toolOutputCap` | `30000` | Per-tool-result character cap |
 | `readCap` | `50000` | `read` ceiling before it refuses and asks for `offset`/`limit` |
 | `toolPresentationCap` | `60000` | Chars of one tool result the **view** shows; `0` = never truncate. The stored row is always whole — exceeding this appends a reversible `replace` op carrying a head+tail excerpt |
+| `autoBackgroundMs` | `3000` | How long a step waits on one tool call before it stops waiting for it and lets the rest of the step continue. The call keeps running and its result still lands in the transcript. `0` = always wait. See [slow calls](../tools/index.md#slow-calls) |
+| `searchLimit` | `500` | Default result cap for `glob` and `grep` when the call does not pass `limit` |
+| `searchHidden` | `false` | Include dotfiles in `glob`/`grep` results |
 
 ### Sessions
 
@@ -83,8 +91,9 @@ Model, theme and reasoning effort have their own commands (`/model`, `/theme`,
 | Key | Default | Meaning |
 |---|---|---|
 | `acpHistory` | `"full"` | How much history `session/load` replays: `"full"`, `"last"` (latest exchange only), or a trailing-node count |
-| `[agents.<name>]` | — | `task` delegation targets: `command` = spawn an ACP child. `default` is fox-agent itself and is always available |
+| `[agents.<name>]` | — | `task` delegation targets: `command` (+ `args`, `env`) spawns an ACP child. `default` is fox-agent itself and is always available |
 | `[mcpServers.<name>]` | — | MCP servers to spawn; their tools join the registry |
+| `mcpSharedPool` | `true` | Share one long-lived MCP pool across turns instead of re-spawning servers per turn |
 | `[lsp.<name>]` | — | Extra language servers beyond the three built in |
 
 ### Extensions
@@ -223,10 +232,7 @@ args = ["-y", "@modelcontextprotocol/server-fs", "/tmp"]
 [agents.reviewer]
 command = "some-other-acp-agent"
 args = ["--acp"]
-
-[agents.remote]
-url = "https://agent.example.com"
-headers = { authorization = "Bearer token" }
+# env = { REVIEW_MODE = "strict" }   # extra vars for the child's environment
 
 [lsp.gopls]
 command = "gopls"

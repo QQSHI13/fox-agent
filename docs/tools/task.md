@@ -1,3 +1,9 @@
+---
+tags:
+  - tools
+  - protocols
+---
+
 # `task`: delegation
 
 `task` hands a self-contained subtask to another agent: a separate process with

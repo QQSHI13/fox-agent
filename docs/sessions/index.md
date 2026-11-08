@@ -1,3 +1,8 @@
+---
+tags:
+  - sessions
+---
+
 # Sessions
 
 A session is one conversation with one model. Each is a **single SQLite

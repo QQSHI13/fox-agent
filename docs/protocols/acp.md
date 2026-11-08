@@ -1,3 +1,8 @@
+---
+tags:
+  - protocols
+---
+
 # ACP (Agent Client Protocol)
 
 fox-agent speaks ACP in both directions, over the same `runTurnCore` the TUI uses.
@@ -28,7 +33,7 @@ Tool calls, thoughts, token usage and compaction stream as native ACP updates;
 ### Two things a client should know
 
 - **fox-agent never sends `session/request_permission`.** It is a no-prompt
-  harness (see the [security model](../architecture/index.md#security-model)), so
+  harness (see the [security model](../architecture/security.md)), so
   tools just run. You will not be asked to approve anything.
 - **fox-agent does not use the client's `fs/*` or `terminal/*`.** Its own
   `read`/`write`/`exec`/`pty` must behave identically with no client attached at

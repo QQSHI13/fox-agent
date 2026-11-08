@@ -16,6 +16,9 @@ There is no `[plugins]` table form — `plugins` is a plain array of file paths.
 export default {
   name: "mytools",                    // required — every warning about this plugin is keyed on it
   tools: [ ... ],                     // extra tools: { def, run(args, ctx) -> ToolResult | string }
+                                      // OR a function (current) => Tool[] — receives a
+                                      // COPY of the registry at merge time, which is the
+                                      // only way to WRAP (shadow) an existing tool
   hooks: {                            // additive patches only (see below)
     onSessionStart, onTurnStart, beforeTool, afterTool,
     beforeLLMCall, onTurnEnd, onSessionEnd,

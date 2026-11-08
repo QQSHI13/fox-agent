@@ -98,7 +98,8 @@ ${flag("--provider <p>", "openai-compatible | anthropic | google | plugin-regist
 ${flag("--base-url <u>", "override API base url")}
 ${flag("--max-steps <n>", "turn step cap (default 0 = unlimited)")}
 ${flag("--retry-limit <n>", "provider retry attempts (default 3)")}
-${flag("--compact-at <f>", "auto-compact at this fraction of the context window (default 0.85)")}
+${flag("--compact-warn-at <f>", "tell the agent to compact at this fraction of the window (default 0.8)")}
+${flag("--compact-ctx-only-at <f>", "disable every tool except ctx at this fraction (default 0.9)")}
 ${flag("--request-timeout-ms <n>", "abort a provider request silent this long (default 120000, 0 = never)")}
 ${flag("--config <path>", "config file override")}
 

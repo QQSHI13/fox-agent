@@ -1,3 +1,9 @@
+---
+tags:
+  - tools
+  - context
+---
+
 # `ctx`: the agent's own context window
 
 This is the tool the project is named for. Every message in the transcript

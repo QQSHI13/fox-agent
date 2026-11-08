@@ -1,3 +1,8 @@
+---
+tags:
+  - tui
+---
+
 # The TUI
 
 The terminal UI is a custom ANSI renderer, not a widget library: streaming
