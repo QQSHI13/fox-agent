@@ -877,12 +877,21 @@ async function* turnBody(
     const settled = Promise.all(
       prepared.map(async ({ call, veto }) => {
         /**
-         * The kill switch for THIS call, created before the work starts so a
-         * `jobs({id})` arriving at any moment can actually abort it. Composed
-         * with the turn's own signal, so esc still stops everything.
+         * The kill switch for THIS call, created before the work starts.
+         *
+         * The turn's abort is FORWARDED into it rather than composed with it
+         * (`AbortSignal.any`), because composition cannot be undone: a call that
+         * outlives its turn must stop being tied to it at the moment it detaches.
+         * `AbortSignal.any` kept killing the detached work the instant the turn
+         * ended — measured: a `sleep 20` backgrounded at 3 s left no process and
+         * wrote nothing, because the turn's signal had taken it down.
          */
         const ac = new AbortController();
-        const callSignal = signal ? AbortSignal.any([signal, ac.signal]) : ac.signal;
+        const onTurnAbort = () => ac.abort();
+        signal?.addEventListener("abort", onTurnAbort, { once: true });
+        if (signal?.aborted) ac.abort();
+        /** Cut the tie to the turn. Called the instant this call detaches. */
+        const unlinkFromTurn = () => signal?.removeEventListener("abort", onTurnAbort);
         /**
          * Set the instant this call detaches, read by the in-flight `runOne`
          * continuation after its await.
@@ -901,7 +910,7 @@ async function* turnBody(
 
           sessionId,
           cwd: session.cwd,
-          signal: callSignal,
+          signal: ac.signal,
           providerCfg: cfg,
           agents,
           tools,
@@ -1041,6 +1050,9 @@ async function* turnBody(
           // tool_call_id — which the provider rejects with a 400 that names an
           // unrelated call id.
           detached.on = true;
+          // Cut the tie to the turn BEFORE anything else: from here the work
+          // belongs to the job registry, and esc must no longer take it down.
+          unlinkFromTurn();
           // The node id is NOT named here: it does not exist until the row is
           // appended, and writing it afterwards would be the rewrite this design
           // avoids. `jobs({list:true})` already reports every running job with

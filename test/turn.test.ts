@@ -575,6 +575,54 @@ describe("turn manager", () => {
     await Bun.sleep(30);
   });
 
+  test("a detached call is NOT killed when its turn ends", async () => {
+    // The bug this pins, seen twice: the turn's AbortSignal was composed into
+    // every call with `AbortSignal.any([turn, job])`. Composition cannot be
+    // undone, so when the turn ended the detached work died with it — measured
+    // on a real session: a backgrounded `sleep 20` left no process and wrote
+    // nothing, because the turn's signal had already taken it down.
+    //
+    // The tie must be a FORWARDED listener that unlinks at detach, not a
+    // composition that stays bound forever.
+    const t = await setup();
+    const s = t.createSession("/w", "m1");
+    let abortedSeen = false;
+    let finished = false;
+    const registry = new Map([
+      [
+        "slowtool",
+        {
+          def: { name: "slowtool", description: "", parameters: { type: "object" } },
+          run: async (_a: unknown, c: { signal?: AbortSignal }) => {
+            // wait past the detach point, then check whether the turn's abort
+            // reached us after we were supposed to be independent
+            await Bun.sleep(80);
+            abortedSeen = !!c.signal?.aborted;
+            finished = true;
+            return "slow finished";
+          },
+        },
+      ],
+    ]) as any;
+    const mock = mockChat([
+      [
+        { type: "tool_call", call: { id: "a", name: "slowtool", arguments: "{}" } },
+        { type: "done", reason: "tool_calls" },
+      ],
+      textDone("moved on"),
+    ]);
+    const { defaultConfig } = await import("../src/core/config.ts");
+    const c = defaultConfig({ model: "test-model", baseUrl: "http://localhost:9", apiKey: "test", autoBackgroundMs: 20 });
+    const ctl = new AbortController();
+    await collect(t.runTurnCore(s.id, cfg(), "go", ctl.signal, { chat: mock.fn as any, registryOverride: registry, quiet: true, config: c }));
+    // the turn is over; abort it as a client would on exit
+    ctl.abort();
+    await Bun.sleep(120);
+    expect(finished).toBe(true);
+    expect(abortedSeen).toBe(false); // the detached work outlived the turn
+  });
+
+
 
   test("the assistant node is announced BEFORE its tool calls start", async () => {
     // An assistant node that carries tool calls has no text of its own — the
