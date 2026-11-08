@@ -1043,19 +1043,20 @@ async function* turnBody(
           // tool_call_id — which the provider rejects with a 400 that names an
           // unrelated call id.
           detached.on = true;
-          // The node id need not be embedded: markers are ON, so this row's
-          // content reaches the model prefixed with its own `[N]`. Naming a
-          // number we do not know yet would force a rewrite of this row, which
-          // is the very thing we are avoiding.
+          // The node id is NOT named here: it does not exist until the row is
+          // appended, and writing it afterwards would be the rewrite this design
+          // avoids. `jobs({list:true})` already reports every running job with
+          // its node, so the agent has a way to find it without being told a
+          // number in advance.
           const placeholder = appendMessage(sessionId, {
             parent_id: asstNode.id,
             role: "tool",
             content:
-              `backgrounded after ${autoBgMs}ms — still running.\n` +
-              `Do not poll it: its output will arrive as its own message when it finishes. ` +
-              `Stop it with jobs({id: <this message's [N]>}).`,
+              `[background] still running after ${autoBgMs}ms — this call was NOT waited for.\n` +
+              `Its real output will arrive as a separate message when it finishes; nothing is lost and you do not need to poll.\n` +
+              `jobs({list:true}) shows what is running (each with its node number); jobs({id:N}) stops one.`,
             tool_call_id: call.id,
-            tokens: estTok("backgrounded"),
+            tokens: estTok("[background] still running"),
             error: null,
           });
           adoptBackground(placeholder.seq, sessionId, call.name, call.id, ac, () => {});
@@ -1076,12 +1077,8 @@ async function* turnBody(
               const body = truncateToolResult(call.name, r.res.output, presentationCap)?.text ?? r.res.output;
               appendMessage(sessionId, {
                 parent_id: placeholder.id,
-                // `user`, not `tool`: a second tool row for the same call id is a
-                // duplicate the provider rejects, and a new call id would be an
-                // orphan. A user-role message is the one appendable channel that
-                // keeps the request well-formed — the same channel a steer uses.
                 role: "user",
-                content: `[${placeholder.seq}] ${call.name} finished:\n${body}`,
+                content: `Result of the backgrounded ${call.name} call (node ${placeholder.seq}):\n\n${body}`,
                 tokens: estTok(body),
               });
             })
@@ -1090,7 +1087,7 @@ async function* turnBody(
               appendMessage(sessionId, {
                 parent_id: placeholder.id,
                 role: "user",
-                content: `[${placeholder.seq}] ${call.name} failed: ${(e as Error)?.message ?? e}`,
+                content: `The backgrounded ${call.name} call (node ${placeholder.seq}) failed: ${(e as Error)?.message ?? e}`,
                 tokens: 20,
               });
             });
