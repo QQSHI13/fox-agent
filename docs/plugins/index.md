@@ -1,3 +1,8 @@
+---
+tags:
+  - plugins
+---
+
 # Plugins
 
 A plugin is one TypeScript module with a default export. It can add tools, hook
@@ -34,7 +39,8 @@ import type { FoxPlugin } from "fox-agent/sdk";
 const plugin: FoxPlugin = {
   name: "mine",                    // required; every warning about this plugin is keyed on it
 
-  // structurally identical to a built-in tool — no adapter layer
+  // structurally identical to a built-in tool — no adapter layer.
+  // An array, OR a function of the registry as it stands at merge time (below).
   tools: [{
     def: { name: "ping", description: "...", parameters: { type: "object", properties: {} } },
     async run(args, ctx) { return { ok: true, output: "pong" }; },
@@ -57,7 +63,7 @@ const plugin: FoxPlugin = {
     pg: { command: "mcp-postgres", args: ["postgres://..."] },
   },
   agents: {
-    reviewer: { url: "https://agent.example.com", headers: { authorization: "Bearer ..." } },
+    reviewer: { command: "claude-code-acp", args: ["--acp"] },   // any ACP agent
   },
 
   // slash commands, run through the same result as built-ins
@@ -124,6 +130,43 @@ unreachable MCP server gets.
 
 A hook that throws mid-turn is caught per call, so a typo in `afterTool` cannot
 take down a turn that has already done real work.
+
+## Wrapping a tool instead of replacing it
+
+`tools` may be a **function** of the registry as it stands at merge time. That is
+the only moment a plugin can still *see* the tool it is about to shadow, which is
+what makes a wrapper possible — the alternative, replacing `exec` with your own
+implementation of `exec`, would have every guard reimplement the thing it guards
+and then drift from it.
+
+```ts
+export default {
+  name: "guard",
+  // current: a COPY of the registry, in precedence order (MCP → bundled → you)
+  tools: (current: ReadonlyMap<string, Tool>) => {
+    const inner = current.get("exec");
+    if (!inner) return [];
+    return [{
+      def: inner.def,                        // same def: the prompt cache is untouched
+      async run(args, ctx) {
+        const veto = check(args, ctx);        // your policy
+        return veto ?? inner.run(args, ctx);  // fall through to the real tool
+      },
+    }];
+  },
+} satisfies FoxPlugin;
+```
+
+Two rules keep this honest:
+
+- **Reuse `inner.def`.** A new description or schema for a shadowed tool changes
+  what the model sees, which invalidates the cached system prompt for no gain.
+- **The map is a copy.** Read it; mutating it does nothing. Your return value is
+  the only channel, same as every hook.
+
+Registering the tool under a *different* name (say `exec_ro` beside the real
+`exec`) works too, and costs a second entry in the model's roster — usually the
+wrong trade, since the model will pick whichever name it likes.
 
 ## Names, shadowing and collisions
 

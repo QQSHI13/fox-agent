@@ -1,3 +1,9 @@
+---
+tags:
+  - configuration
+  - reference
+---
+
 # Environment variables
 
 Every `FOX_AGENT_*` variable is also reachable through config; env wins over both
@@ -26,6 +32,10 @@ These are also honored as **fallbacks** when the `FOX_AGENT_*` form is unset:
 | `FOX_AGENT_COMPACT_WARN_AT` | Fraction of the window at which the header tells the agent to compact (default `0.8`) |
 | `FOX_AGENT_COMPACT_CTX_ONLY_AT` | Fraction at which every tool except `ctx` is disabled (default `0.9`) |
 | `FOX_AGENT_REQUEST_TIMEOUT_MS` | Time without progress before a request is aborted (default `120000`, `0` disables) |
+| `FOX_AGENT_TOOL_OUTPUT_CAP` | Per-tool-result character cap (default `30000`, minimum `1000`) |
+| `FOX_AGENT_READ_CAP` | `read`'s ceiling before it refuses and asks for `offset`/`limit` (default `50000`, minimum `1000`) |
+| `FOX_AGENT_SEARCH_LIMIT` | Default `glob`/`grep` result cap (default `500`) |
+| `FOX_AGENT_SEARCH_HIDDEN` | `1`/`true`/`yes`/`on` makes `glob`/`grep` include dotfiles |
 | `FOX_AGENT_DELEGATION_DEPTH` | Carried across the process boundary so nesting stops at 3. Set by the harness, not by you |
 
 ## Behaviour and state
@@ -35,9 +45,11 @@ These are also honored as **fallbacks** when the `FOX_AGENT_*` form is unset:
 | `FOX_AGENT_HOME` | State dir — sessions, index, pty logs, materialized docs. Default `~/.local/share/fox-agent` |
 | `FOX_AGENT_CONFIG` | Override the global config path. Tests and sandboxes use this; the writer always goes through it |
 | `FOX_AGENT_DIAGNOSTICS` | `0`/`false`/`no` turns off post-edit diagnostics |
+| `FOX_AGENT_THEME` | Theme name, same as the `theme` config key |
+| `FOX_AGENT_REASONING_EFFORT` | `off` / `minimal` / `low` / `medium` / `high` / `xhigh`; ignored when the value is not one of those |
 | `FOX_AGENT_TRACE` | Write the screen's frame dumps (`<path>.grid`) for TUI render bugs |
 | `FOX_AGENT_FRAMEPROFILE` | Write per-frame phase timings for TUI performance work |
-| `FOX_AGENT_NO_TRUST_CHECK` | `1` skips the trusted-directory prompt (scripts, CI). `0`/`false` also skips |
+| `FOX_AGENT_NO_TRUST_CHECK` | `1` skips the trusted-directory prompt (scripts, CI). `0`/`false` also skips. `FOX_AGENT_TRUST_CHECK` is the older spelling of the same switch |
 | `FOX_AGENT_NO_RESUME_HINT` | Suppress the "resume this session" hint on exit |
 | `FOX_AGENT_MODELS_OFFLINE` | Never reach the network for the models.dev catalog |
 | `FOX_AGENT_MODELS_CACHE` | Alternate path for the catalog cache |
@@ -47,7 +59,7 @@ These are also honored as **fallbacks** when the `FOX_AGENT_*` form is unset:
 
 | Variable | Meaning |
 |---|---|
-| `FOX_AGENT_ALLOW_PRIVATE_FETCH` | `1` lets the `fetch` tool reach loopback/private/link-local hosts. Off by default — see the [security model](../architecture/index.md#security-model) |
+| `FOX_AGENT_ALLOW_PRIVATE_FETCH` | `1` lets the `fetch` tool reach loopback/private/link-local hosts. Off by default — see the [security model](../architecture/security.md) |
 
 ## Terminal
 

@@ -61,5 +61,22 @@ and the `onSessionEnd` lifecycle for free, and `buildSystemPrompt` derives the
 roster from the live registry so no prompt edit is needed. A tool that needs state
 per session keys it on `ctx.sessionId` and releases it in `onSessionEnd`.
 
+A plugin's `tools` may be an **array** or a **function of the registry** as it
+stands at merge time. The function form is what makes *wrapping* possible — it is
+the only moment the tool you are about to shadow is still reachable:
+
+```ts
+tools: (current: ReadonlyMap<string, Tool>) => {
+  const inner = current.get("exec");
+  if (!inner) return [];
+  return [{ def: inner.def, run: async (a, c) => veto(a, c) ?? inner.run(a, c) }];
+}
+```
+
+Reuse `inner.def` — a new description or schema for a shadowed tool changes what
+the model sees and invalidates the cached system prompt. The map is a copy; read
+it, do not mutate it. `pluginTools` in `src/tools/index.ts` is the single place
+this union is unwrapped, so every caller agrees on the rule.
+
 Return `ok(output)` / `fail("error: …")` from `src/tools/types.ts`. Errors are
 `fail`, not throws — a throw is caught but loses the message the model needs.

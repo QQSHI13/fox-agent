@@ -1,3 +1,9 @@
+---
+tags:
+  - configuration
+  - providers
+---
+
 # Providers and profiles
 
 fox-agent talks to four wire formats and, through a catalog, 200+ named
