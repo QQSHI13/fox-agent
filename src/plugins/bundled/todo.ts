@@ -36,10 +36,27 @@ export const todoDef: ToolDef = {
 // syntax the tool result is rendered with.
 const ICON = { pending: "[ ]", in_progress: "[~]", done: "[x]" };
 
-/** Plain rendering — model-facing (runtime header, sent at the message tail). */
+/**
+ * Plain rendering — model-facing (runtime header, sent at the message tail).
+ *
+ * ONLY unfinished work is listed. The header is re-sent on EVERY step, so a
+ * completed item is pure cost: the agent already knows it finished it, and it
+ * crowds out the one open item that still matters. A run of finished items
+ * collapses to a count.
+ *
+ * Measured on a real session: 11 completed todos were 115 of the 206 tokens in
+ * the tail, re-billed on every step of the turn.
+ */
 export function renderTodos(todos: TodoItem[] | null): string {
   if (!todos?.length) return "";
-  return todos.map((t) => `${ICON[t.status] ?? "[ ]"} ${t.content}`).join("\n");
+  const open = todos.filter((t) => t.status !== "done");
+  const done = todos.length - open.length;
+  // Everything finished: one short line, not N lines of history. The agent can
+  // re-read the list with the todo tool if it wants the detail.
+  if (!open.length) return `all ${done} done — nothing in progress`;
+  const lines = open.map((t) => `${ICON[t.status] ?? "[ ]"} ${t.content}`);
+  if (done) lines.push(`(${done} done)`);
+  return lines.join("\n");
 }
 
 /**
