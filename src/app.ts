@@ -392,6 +392,21 @@ export async function run(parsed: Parsed): Promise<void> {
 
       // lazy: headless/-p/--acp runs should not pay for the renderer's modules
       const { startTui } = await import("./tui/app.ts");
+      const { foxMarkAnsi } = await import("./tui/logo.ts");
+
+      // The mark goes on the NORMAL screen, before the alt screen goes up. That
+      // is deliberate: the TUI runs on ?1049h, so whatever is printed before it
+      // is restored verbatim when the alt screen comes down. One print, and it
+      // is there both before the TUI and after it exits — no second call to
+      // keep in sync, and no chance of the two drifting.
+      //
+      // Not printed when the session resumes into a picker, where the picker is
+      // the whole screen and a mark above it would be scrolled away instantly.
+      if (!state.pickSessionOnBoot) {
+        for (const line of foxMarkAnsi(2)) process.stdout.write(line + "\n");
+        process.stdout.write("\n");
+      }
+
       await startTui(state, () => {
         // called at boot, on /new and on /reload — always re-read the files
         applyLoadedConfig(loadConfig(configOverrides));

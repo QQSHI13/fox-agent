@@ -1,33 +1,51 @@
 #!/usr/bin/env bun
 /**
- * Preview the fox-agent mark in the three places it actually appears.
+ * Preview the fox-agent mark in the places it actually appears.
  *
- * Not a screenshot tool — it prints the same strings the TUI would, at the same
- * column widths, so a layout problem shows up here instead of in a terminal at
- * 80 columns. Run it with no arguments to see all three.
+ * This is a STANDALONE renderer on purpose: it converts the mark's `Seg[]` rows
+ * to ANSI itself instead of going through the TUI, so it can run without a
+ * terminal, a session or a theme. The mark's real colours live in logo.ts as hex
+ * `fg` on each Seg; the TUI paints those through screen.ts, which always writes
+ * `38;2;` — so truecolor here is not an assumption, it is what the TUI does.
  *
  *   bun scripts/logo-preview.ts            all three contexts
  *   bun scripts/logo-preview.ts mark       just the mark
  *   bun scripts/logo-preview.ts welcome    the welcome block
  *   bun scripts/logo-preview.ts exit       the resume hint
- *   bun scripts/logo-preview.ts --plain    no color at all
- *   bun scripts/logo-preview.ts --256      256-color, for a limited terminal
+ *   bun scripts/logo-preview.ts --plain    no colour at all
+ *   bun scripts/logo-preview.ts --256      quantise to the 256-colour cube
  */
-import { foxMark, foxMarkWidth, markColor, type MarkColor } from "../src/tui/logo.ts";
+import { foxMarkSegs, foxMarkText, MARK_COLS, MARK_ROWS } from "../src/tui/logo.ts";
+import type { Seg } from "../src/tui/wrap.ts";
 
 const argv = process.argv.slice(2);
 const want = argv.find((a) => !a.startsWith("-")) ?? "all";
-const forced: MarkColor | undefined = argv.includes("--plain")
-  ? "none"
-  : argv.includes("--256")
-    ? "256"
-    : argv.includes("--truecolor")
-      ? "truecolor"
-      : undefined;
+const plain = argv.includes("--plain");
+const use256 = argv.includes("--256");
 
-const color = forced ?? markColor();
-const dim = (s: string) => (color === "none" ? s : `\x1b[90m${s}\x1b[0m`);
-const bold = (s: string) => (color === "none" ? s : `\x1b[1m${s}\x1b[0m`);
+/** hex -> xterm-256 cube index, for terminals that cannot do 24-bit colour. */
+function hexTo256(hex: string): number {
+  const n = (i: number) => parseInt(hex.slice(i, i + 2), 16);
+  const q = (v: number) => Math.round((v / 255) * 5);
+  return 16 + 36 * q(n(1)) + 6 * q(n(3)) + q(n(5));
+}
+
+/** One Seg -> its escape prefix. Mirrors screen.ts's sgrOf for the fg case. */
+function paint(segs: Seg[]): string {
+  if (plain) return segs.map((s) => s.t).join("");
+  return segs
+    .map((s) => {
+      if (!s.fg || !s.fg.startsWith("#")) return s.t;
+      const code = use256
+        ? `38;5;${hexTo256(s.fg)}`
+        : `38;2;${parseInt(s.fg.slice(1, 3), 16)};${parseInt(s.fg.slice(3, 5), 16)};${parseInt(s.fg.slice(5, 7), 16)}`;
+      return `\x1b[${code}m${s.t}\x1b[0m`;
+    })
+    .join("");
+}
+
+const dim = (s: string) => (plain ? s : `\x1b[90m${s}\x1b[0m`);
+const bold = (s: string) => (plain ? s : `\x1b[1m${s}\x1b[0m`);
 const rule = (n = 64) => dim("─".repeat(n));
 
 const VERSION = "0.7.0";
@@ -35,27 +53,22 @@ const CWD = "/home/qq/src/fox-agent";
 const MODEL = "kimi-k2";
 const BANNER = "small harness, sharp teeth";
 
-/** The mark, indented to sit on its own line above a block of text. */
-function markBlock(indent = 2): string[] {
-  return foxMark({ color, indent });
+/** The mark, indented, as printable lines. */
+function markLines(indent = 2): string[] {
+  return foxMarkSegs(indent).map(paint);
 }
 
-function banner(): void {
+// ---------------------------------------------------------------------------
+// Welcome: the mark above the version line, then the info block the TUI prints
+// on a fresh launch. The mark is MARK_COLS wide and indented 2, so it fits an
+// 80-column terminal with plenty of room for the text beside and below it.
+// ---------------------------------------------------------------------------
+function welcome(): void {
   console.log();
-  for (const line of markBlock(2)) console.log(line);
+  for (const line of markLines(2)) console.log(line);
   console.log();
   console.log(`  ${bold(`fox-agent v${VERSION}`)} ${dim("—")} ${dim(BANNER)}`);
   console.log();
-}
-
-// ---------------------------------------------------------------------------
-// Welcome screen: the mark above the version line, then the info block the TUI
-// prints on a fresh launch. The mark is 20 columns, and the info block below is
-// indented 2, so the whole thing fits an 80-column terminal with room to spare.
-// ---------------------------------------------------------------------------
-function welcome(): void {
-  banner();
-  const indent = "  ";
   const rows = [
     `working directory: ${CWD}`,
     "session none — created on first message",
@@ -64,23 +77,22 @@ function welcome(): void {
     dim("enter send · / commands · esc interrupt · ctrl+t expand all"),
     dim("/login setup · /model switch · /sessions resume · /help all"),
   ];
-  for (const r of rows) console.log(indent + r);
+  for (const r of rows) console.log("  " + r);
   console.log();
   console.log(rule());
-  console.log(dim("  the mark above is 20 columns wide, 4 rows tall"));
+  console.log(dim(`  the mark above is ${MARK_COLS} columns wide, ${MARK_ROWS} rows tall`));
   console.log();
 }
 
 // ---------------------------------------------------------------------------
-// Exit: what the shell sees after the TUI tears down. The mark is deliberately
-// NOT here — a full mark after every quit is noise, and the resume hint has to
-// survive being copied out of a pipe. So: one dim line, no color dependency.
+// Exit: what the shell sees after the TUI tears down. The resume hint must
+// survive being copied out of a pipe, so it never depends on colour.
 // ---------------------------------------------------------------------------
-function exit_(): void {
+function exitScreen(): void {
   console.log();
   console.log(rule());
   console.log();
-  for (const line of markBlock(2)) console.log(line);
+  for (const line of markLines(2)) console.log(line);
   console.log();
   console.log(`  ${dim("session mtzc7lak9 saved")}`);
   console.log(`  ${dim("to resume:")} fox -c mtzc7lak9`);
@@ -89,7 +101,7 @@ function exit_(): void {
 
 function markOnly(): void {
   console.log();
-  for (const line of markBlock(0)) console.log(line);
+  for (const line of markLines(0)) console.log(line);
   console.log();
 }
 
@@ -101,15 +113,17 @@ switch (want) {
     welcome();
     break;
   case "exit":
-    exit_();
+    exitScreen();
     break;
   default:
     markOnly();
     console.log(rule());
     welcome();
     console.log(rule());
-    exit_();
+    exitScreen();
 }
 
-// A one-line sanity check, so a broken geometry is obvious in a log too.
-console.error(dim(`[mark ${foxMarkWidth("none")}x${foxMark({ color: "none" }).length} cols x rows · color=${color}]`));
+// Sanity: the plain grid must match the coloured one column for column, or the
+// half-block packing has drifted.
+const plainRows = foxMarkText();
+console.error(dim(`[mark ${MARK_COLS}x${MARK_ROWS} · rows ${plainRows.length} · colour=${plain ? "none" : use256 ? "256" : "truecolor"}]`));
