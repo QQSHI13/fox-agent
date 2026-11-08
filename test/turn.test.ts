@@ -505,12 +505,16 @@ describe("turn manager", () => {
     expect(ends).toHaveLength(2); // exactly one per call, not a second pass
   });
 
-  test("autoBackgroundMs stops the turn waiting on a slow call without telling the agent", async () => {
+  test("autoBackgroundMs adopts a slow call as a killable job and says so", async () => {
     // A slow build should not cost a turn of wall-clock. Past the threshold the
-    // loop stops WAITING on the call: it keeps running, still appends its row and
-    // still emits its own `tool_end` when it lands — but this step stops blocking.
-    // Nothing steers and nothing notifies, so the agent never learns it was
-    // detached and never has to poll.
+    // loop stops WAITING on the call — but the agent must still be TOLD, or it
+    // can neither see the work running nor stop it:
+    //
+    //   - a placeholder result row appears immediately, naming the job id, so
+    //     the next step's request stays valid (a provider rejects an assistant
+    //     message whose tool_calls have no results)
+    //   - the result says plainly not to poll: the real output replaces it
+    //   - the job is registered, so jobs({id}) can kill it
     const t = await setup();
     const s = t.createSession("/w", "m1");
     let release = () => {};
@@ -549,15 +553,24 @@ describe("turn manager", () => {
     expect(events.some((e) => e.type === "done")).toBe(true);
     const text = events.filter((e): e is Extract<typeof e, { type: "text" }> => e.type === "text").map((e) => e.delta).join("");
     expect(text).toContain("moved on");
-    // and it did NOT announce a result it does not have yet
-    expect(events.some((e) => e.type === "tool_end" && e.name === "slowtool")).toBe(false);
-    // nothing told the agent it was detached
-    expect(events.some((e) => e.type === "steered")).toBe(false);
 
-    // releasing afterwards must not throw or leak an unhandled rejection
+    // the placeholder IS announced, and it names the job
+    const end = events.find((e): e is Extract<typeof e, { type: "tool_end" }> => e.type === "tool_end" && e.name === "slowtool");
+    expect(end).toBeDefined();
+    expect(end!.output).toContain("backgrounded as bg");
+    expect(end!.output).toContain('jobs({id:"bg');
+    // and it tells the agent not to poll
+    expect(end!.output.toLowerCase()).toContain("do not poll");
+
+    // the row is really in the store, so the next step's request is well-formed
+    const stored = t.allMessages(s.id).find((m: any) => m.role === "tool" && m.tool_call_id === "a");
+    expect(stored).toBeDefined();
+    expect(stored?.content).toContain("backgrounded");
+
     release();
     await Bun.sleep(30);
   });
+
 
   test("the assistant node is announced BEFORE its tool calls start", async () => {
     // An assistant node that carries tool calls has no text of its own — the
