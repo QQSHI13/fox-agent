@@ -1,10 +1,15 @@
+---
+tags:
+  - tools
+---
+
 # Tools
 
 The model reaches the machine through tools. Two facts shape the whole set:
 
 - **Nothing is withheld.** `exec` runs anything with your privileges, so every
   other tool is a convenience for doing the same thing *precisely*, not a sandbox
-  boundary. Read the [security model](../architecture/index.md#security-model).
+  boundary. Read the [security model](../architecture/security.md).
 - **Most of them are plugins.** `pty`, `todo`, `fetch`, `repl`, `task`, `lsp`,
   `question` and `cost` ship as bundled plugins through the same merge path a
   third-party module gets. That means each can be shadowed by name or switched
@@ -33,9 +38,15 @@ These are the harness itself (`src/tools/index.ts` → `baseRegistry`):
 | [`repl`](fetch-repl.md) | `bundled:repl` | In-process JavaScript scratchpad with persistent variables and background jobs |
 | [`todo`](index.md#todo) | `bundled:todo` | The session's task list, shown in the runtime header |
 | [`task`](task.md) | `bundled:task` | Delegate a subtask to another agent over ACP |
-| `lsp` | `bundled:lsp` | Definition / references / hover / symbols from a real language server |
-| `question` | `bundled:question` | Ask the user a structured question mid-run and wait |
-| `mcp` | `bundled:mcp` | Tools from every configured MCP server |
+| [`lsp`](lsp.md) | `bundled:lsp` | Definition / references / hover / symbols from a real language server |
+| [`question`](question.md) | `bundled:question` | Ask the user a structured question mid-run and wait |
+| [`mcp`](mcp.md) | `bundled:mcp` | Tools from every configured MCP server |
+
+`cost` and `gateway` are also bundled plugins, but contribute no tool: a slash
+command plus a status segment and a `fox gateway` subcommand respectively.
+
+Every name above is what `disabledPlugins` takes, with or without the
+`bundled:` prefix.
 
 ## Path resolution
 
@@ -43,6 +54,30 @@ Every tool that takes a path accepts a **relative** one and resolves it against
 the session's cwd. Absolute paths are for paths genuinely outside the project.
 `exec`'s `workdir` and `pty`'s starting directory follow the same rule — but only
 `pty` keeps drifting after that. See [exec vs pty](exec-pty.md).
+
+## Slow calls
+
+A step runs its tool calls in parallel and waits for all of them. One slow call —
+a 30-second build, a `read` of something on a cold network mount — therefore used
+to hold the *whole* step, and the model saw nothing until it finished.
+
+`autoBackgroundMs` (default `3000`) bounds that wait. A call still running when
+the window expires stops being waited on: the step continues, the rest of the
+results reach the model, and the slow call keeps running in the background. When
+it finishes, its own result row and `tool_end` event land normally, so the
+transcript shows the real output and a later step reads it without anyone
+polling.
+
+Three consequences worth knowing:
+
+- The model is **not told** a call detached, and does not need to poll — the
+  result arrives on its own. It is the difference between "the agent waits three
+  minutes for a test suite" and "the agent does something else and reads the
+  result next step".
+- `autoBackgroundMs = 0` disables detaching entirely: every call is waited on, as
+  before.
+- Only the *wait* is bounded. A tool that honours `ctx.signal` still stops
+  properly on interrupt; a detached call is not orphaned, it is unobserved.
 
 ## Caps
 

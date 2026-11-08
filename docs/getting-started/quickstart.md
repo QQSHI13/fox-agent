@@ -1,3 +1,8 @@
+---
+tags:
+  - getting-started
+---
+
 # Quickstart
 
 ## 1. Point it at a provider
@@ -29,7 +34,7 @@ The TUI opens in a new session bound to your current directory. It shows the
 working directory and asks whether the folder is **trusted** — one keypress,
 `y` / `n` / `c`, no enter needed. Answer `n` in a repo you have not read: an
 untrusted directory has its executable project config ignored. See
-[Security](../architecture/index.md#security-model).
+[Security](../architecture/security.md).
 
 Then type a prompt and press enter.
 

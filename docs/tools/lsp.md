@@ -1,3 +1,8 @@
+---
+tags:
+  - tools
+---
+
 # `lsp`: language-server navigation
 
 `lsp` asks a real language server where a symbol is **defined** versus merely

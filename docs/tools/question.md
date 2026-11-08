@@ -1,3 +1,8 @@
+---
+tags:
+  - tools
+---
+
 # `question`: asking the user mid-run
 
 The model asks one or more structured questions and **waits** for the answers.

@@ -1,3 +1,8 @@
+---
+tags:
+  - tools
+---
+
 # File tools: read, write, edit, glob, grep
 
 ## `read`

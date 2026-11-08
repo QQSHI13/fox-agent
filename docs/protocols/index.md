@@ -1,3 +1,8 @@
+---
+tags:
+  - protocols
+---
+
 # Protocols
 
 fox-agent speaks the Agent Client Protocol (ACP), in both directions, over the
@@ -24,7 +29,7 @@ session started in Zed shows up in `fox ls` and resumes in the TUI.
 
 `--acp` is stdio, so the editor owns the process; `fox gateway` binds
 local-only. Both run tools with full machine access. See
-[Security](../architecture/index.md#security-model) before exposing either one
+[Security](../architecture/security.md) before exposing either one
 to anything.
 
 ## Read next

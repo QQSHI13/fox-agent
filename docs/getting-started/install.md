@@ -1,3 +1,8 @@
+---
+tags:
+  - getting-started
+---
+
 # Install
 
 ## Prebuilt binary (recommended)
