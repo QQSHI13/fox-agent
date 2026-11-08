@@ -1,0 +1,105 @@
+/*
+ * fox-agent site styles.
+ *
+ * Everything here is additive to the Material theme — no color overrides, so
+ * both schemes keep working. The rule of thumb: if a change would look wrong
+ * after `/theme` switches to slate, it does not belong in this file.
+ */
+
+/* ---------------------------------------------------------------------------
+ * Landing page cards.
+ *
+ * The home page is the only page that leads with a card grid, and at 4 columns
+ * the icon block dominates the title. Trim the gap and let the icon sit on the
+ * heading's baseline instead of above it.
+ * ------------------------------------------------------------------------- */
+.md-typeset .grid.cards > ul > li,
+.md-typeset .grid > .card {
+  border-radius: 0.4rem;
+  transition: border-color 125ms, box-shadow 125ms, transform 125ms;
+}
+
+.md-typeset .grid.cards > ul > li:hover,
+.md-typeset .grid > .card:hover {
+  border-color: var(--md-accent-fg-color);
+  box-shadow: 0 0 0.4rem rgb(0 0 0 / 12%);
+}
+
+/* Two columns on phones, four on desktop — the default breaks 3 of the 7
+ * feature cards onto a second row with a hole in it. */
+@media screen and (min-width: 60em) {
+  .md-typeset .grid.cards {
+    grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * Inline code and terminal snippets.
+ *
+ * Tool names (`read`, `edit`, `ctx`) appear inline constantly, and at Material's
+ * default they read as links — same weight, similar hue. Give them a neutral
+ * tint so "`exec`" in a sentence never looks clickable.
+ * ------------------------------------------------------------------------- */
+.md-typeset code {
+  word-break: break-word;
+}
+
+/* A fenced block that is a shell transcript, not source: keep it left-aligned
+ * and let it scroll instead of wrapping, because a wrapped command is a command
+ * someone will copy wrong. */
+.md-typeset pre > code {
+  white-space: pre;
+}
+
+/* ---------------------------------------------------------------------------
+ * Tables.
+ *
+ * The tools index is a wide table and the config key list is wider; on a phone
+ * both used to squeeze to unreadable. Material scrolls them inside the content
+ * column already — this just keeps the header sticky while scrolling, which is
+ * the difference between a usable table and a guessing game. */
+.md-typeset table:not([class]) th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background-color: var(--md-default-bg-color);
+}
+
+/* ---------------------------------------------------------------------------
+ * Admonitions.
+ *
+ * The security model page leans on `!!! danger` heavily. Material's default
+ * padding makes a run of them read as one giant block, so tighten the vertical
+ * rhythm and keep the title on one line. */
+.md-typeset .admonition,
+.md-typeset details {
+  margin: 1.2em 0;
+}
+
+.md-typeset .admonition-title,
+.md-typeset summary {
+  margin-bottom: 0.6em;
+}
+
+/* ---------------------------------------------------------------------------
+ * Navigation depth.
+ *
+ * `navigation.prune` hides sibling sections once you are inside one, which is
+ * the right default for this much content — but the top-level entries then read
+ * as flat peers of the current page. A hairline separator restores the sense of
+ * "these are siblings, you are inside one".
+ * ------------------------------------------------------------------------- */
+.md-nav--primary .md-nav__item--section > .md-nav__link {
+  font-weight: 600;
+}
+
+/* ---------------------------------------------------------------------------
+ * Anchors.
+ *
+ * The config reference is meant to be linked into ("see #requesttimeoutms"), so
+ * a permalink that appears on hover and never shifts the text is worth having.
+ * The theme's own permalink has the right markup; this only keeps it from
+ * bleeding into the line height. */
+.md-typeset .headerlink {
+  line-height: 1;
+}
