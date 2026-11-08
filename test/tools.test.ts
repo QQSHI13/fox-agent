@@ -592,10 +592,19 @@ describe("todo", () => {
     // the list is already in the tool CALL's args and in the runtime header, so
     // the result is only an acknowledgement — restating it burned context
     expect(r.output).toBe("updated");
-    // the plain (model-facing) renderer is ASCII too
-    expect(renderTodos([{ content: "x", status: "done" }])).toBe("[x] x");
+    // the plain (model-facing) renderer is ASCII too, and lists only OPEN work:
+    // the header is re-sent every step, so a finished item is pure cost
     expect(renderTodos([{ content: "x", status: "in_progress" }])).toBe("[~] x");
     expect(renderTodos([{ content: "x", status: "pending" }])).toBe("[ ] x");
+    // all-done collapses to one line rather than N lines of finished history
+    expect(renderTodos([{ content: "x", status: "done" }])).toBe("all 1 done — nothing in progress");
+    // mixed: open items, then a count of what is finished
+    expect(
+      renderTodos([
+        { content: "a", status: "done" },
+        { content: "b", status: "pending" },
+      ]),
+    ).toBe("[ ] b\n(1 done)");
     // markdown helper matches
     expect(renderTodosMd([{ content: "x", status: "done" }])).toBe("- [x] x");
   });
