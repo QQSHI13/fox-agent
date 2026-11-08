@@ -70,6 +70,7 @@ import { argsSummary, argsFull, argsJson, keepTail, diffTouchKeys } from "./help
 export { argsSummary, argsFull, argsJson, keepTail, diffTouchKeys };
 
 import { nodeToItems as buildNodeItems, callMaps as buildCallMaps, type Item, type ItemKind, type CallMaps } from "../view/model.ts";
+import { foxMarkAnsi } from "./logo.ts";
 export type { Item, ItemKind };
 
 /**
@@ -2173,6 +2174,16 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     } catch {}
     try {
       tui.restoreOutputRef?.(); // replay anything captured while the grid was up
+    } catch {}
+    // The mark on the shell, after the alt screen is gone — it goes into the
+    // scrollback, so it is still there when you scroll back up. Same source as
+    // mini's header (logo.ts), so the two cannot disagree about the letters.
+    try {
+      if (!process.env.FOX_AGENT_NO_RESUME_HINT) {
+        console.error("");
+        for (const line of foxMarkAnsi(2)) console.error(line);
+        console.error("");
+      }
     } catch {}
     // leave a resume hint on the shell — the session is one id away. the
     // numeric index is what `fox -c N` resolves against (same list length,

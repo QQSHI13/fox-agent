@@ -355,9 +355,18 @@ export async function run(parsed: Parsed): Promise<void> {
     // no row until the user submits something: starting and closing the TUI
     // must not litter the session list with empties
     sessionId = "";
-  } else {
+  } else if (printMode) {
+    // Headless (`-p`, piped stdin) is NOT deferred: runTurnCore writes to the
+    // row immediately, and there is no interactive loop to defer to. Deferring
+    // here would hand an empty id straight to the turn.
     sessionId = createSession(cwd, provider.model).id;
     note(`new session ${sessionId} (${provider.model})`);
+  } else {
+    // mini (`--no-tui` on a real terminal) gets the same treatment as the TUI:
+    // opening the REPL and closing it again must not leave an empty session
+    // behind. The row is created on the first prompt instead — see
+    // plainLoop's ensureSession.
+    sessionId = "";
   }
   if (sessionId) getSession(sessionId); // warm
 
@@ -392,20 +401,6 @@ export async function run(parsed: Parsed): Promise<void> {
 
       // lazy: headless/-p/--acp runs should not pay for the renderer's modules
       const { startTui } = await import("./tui/app.ts");
-      const { foxMarkAnsi } = await import("./tui/logo.ts");
-
-      // The mark goes on the NORMAL screen, before the alt screen goes up. That
-      // is deliberate: the TUI runs on ?1049h, so whatever is printed before it
-      // is restored verbatim when the alt screen comes down. One print, and it
-      // is there both before the TUI and after it exits — no second call to
-      // keep in sync, and no chance of the two drifting.
-      //
-      // Not printed when the session resumes into a picker, where the picker is
-      // the whole screen and a mark above it would be scrolled away instantly.
-      if (!state.pickSessionOnBoot) {
-        for (const line of foxMarkAnsi(2)) process.stdout.write(line + "\n");
-        process.stdout.write("\n");
-      }
 
       await startTui(state, () => {
         // called at boot, on /new and on /reload — always re-read the files
@@ -611,6 +606,16 @@ async function plainLoop(state: HarnessState) {
   const { config } = state;
   const color = cliColor();
   const st = sty(color);
+  // The mark, in the same shape the TUI prints before its alt screen. Colored
+  // through the mark's own hex fgs, but only when the CLI is coloring at all —
+  // a piped `fox mini` still gets the shape, never the escapes.
+  const { foxMarkAnsi, foxMarkText } = await import("./tui/logo.ts");
+  if (color) {
+    for (const line of foxMarkAnsi(2)) console.log(line);
+  } else {
+    for (const line of foxMarkText()) console.log("  " + line);
+  }
+  console.log();
   // mini runtime header: what/where/who at a glance, same sources the TUI
   // status line reads so the two can never disagree
   const home = process.env.HOME ?? "";
@@ -625,6 +630,25 @@ async function plainLoop(state: HarnessState) {
   // provider call instead of killing the whole process — non-null only while
   // a turn runs
   let currentAbort: AbortController | null = null;
+
+  /**
+   * Create the session row on demand.
+   *
+   * mini used to create one at startup, so opening the REPL and closing it again
+   * left an empty session in `fox ls`. The TUI already defers this to the first
+   * submitted prompt; mini now does the same, which is why every path that needs
+   * a session (a turn, a shell escape, a session-scoped slash command) calls this
+   * first rather than reading `state.sessionId` directly.
+   */
+  const ensureSession = (): string => {
+    if (state.sessionId) return state.sessionId;
+    const id = createSession(state.cwd, state.provider.model).id;
+    state.sessionId = id;
+    state.pendingSession = false;
+    attachMiniHost(id);
+    console.log(st.dim(`new session ${id} (${state.provider.model})`));
+    return id;
+  };
 
   /**
    * Render one turn to the terminal, yielding its events.
@@ -648,7 +672,7 @@ async function plainLoop(state: HarnessState) {
       // captured copy would keep calling the old model/endpoint/key forever.
       // @path mentions inline file text, as in the TUI.
       const text = expandMentions(raw, state.cwd).text;
-      for await (const ev of runTurnCore(state.sessionId, state.provider, text, signal, {
+      for await (const ev of runTurnCore(ensureSession(), state.provider, text, signal, {
         maxSteps: config?.maxSteps,
         retryLimit: config?.retryLimit,
         compactWarnAt: config?.compactWarnAt,
@@ -742,7 +766,7 @@ async function plainLoop(state: HarnessState) {
       const { execRun } = await import("./tools/exec.ts");
       const r = await execRun(
         { cmd: prompt.slice(1).trim() },
-        { sessionId: state.sessionId, cwd: state.cwd } as unknown as import("./core/tool.ts").ToolContext,
+        { sessionId: ensureSession(), cwd: state.cwd } as unknown as import("./core/tool.ts").ToolContext,
       );
       console.log(typeof r === "string" ? r : r.output);
       return false;
