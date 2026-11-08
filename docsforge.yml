@@ -188,32 +188,23 @@ extra:
   annotate:
     json: [.s2]
 
-markdown_extensions:
-  - toc:
-      permalink: true
-      title: On this page
-      toc_depth: 3
-  - attr_list
-  - md_in_html
-  - tables
-  - admonition
-  - footnotes
-  - def_list
-  - abbr
-  - pymdownx.details
-  - pymdownx.superfences
-  - pymdownx.highlight:
-      anchor_linenums: true
-  - pymdownx.inlinehilite
-  - pymdownx.snippets
-  - pymdownx.tabbed:
-      alternate_style: true
-  - pymdownx.tasklist:
-      custom_checkbox: true
-  - pymdownx.keys
-  - pymdownx.mark
-  - pymdownx.caret
-  - pymdownx.tilde
+# NO markdown_extensions key. Docsforge ships 36 extensions enabled by default
+# (pymdownx.emoji with the Material icon index, arithmatex, superfences, tabbed,
+# tasklist, admonition, footnotes, …) plus the 3 builtins, and a user list
+# REPLACES that default list rather than extending it — only the builtins are
+# unioned (config_options.py, MarkdownExtensions.run_validation). Naming a few
+# extensions here silently dropped the other thirty, which is why every
+# :material-*: icon on the landing page rendered as literal text.
+# Add a key here only if you need config for one extension, and then list every
+# extension the site uses.
+
+# Heading permalinks, set from a hook rather than a `markdown_extensions:` block.
+# A user-supplied extension list REPLACES docsforge's 36 defaults (only the 3
+# builtins are unioned), so declaring `toc: {permalink: true}` that way silently
+# unregistered pymdownx.emoji and every :material-*: icon rendered as literal
+# text. See docsforge_hooks.py.
+hooks:
+  - docsforge_hooks.py
 
 extra_css:
   - assets/stylesheets/extra.css
