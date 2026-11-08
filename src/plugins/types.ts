@@ -290,7 +290,40 @@ export interface GatewayContribution {
 export interface FoxPlugin {
   /** identifies the plugin in warnings; the only required field */
   name: string;
-  tools?: Tool[];
+  /**
+   * Tools this plugin contributes — a list, or a function of the registry as it
+   * stands when this plugin is merged.
+   *
+   * ## Why it can be a function
+   *
+   * A plain list can only ADD or REPLACE: `mergeTools` does `map.set(name, tool)`,
+   * so a plugin that declares `exec` makes the built-in unreachable. It cannot
+   * decorate it — every shadowing plugin would have to reimplement whatever it
+   * shadows, and then drift from it.
+   *
+   * The function form receives a COPY of the registry as it exists at merge time,
+   * which is the only moment the previously-registered tool is still reachable:
+   *
+   *     export const tools = (current: ReadonlyMap<string, Tool>) => {
+   *       const inner = current.get("exec");
+   *       if (!inner) return [];
+   *       return [{ def: inner.def, run: async (a, c) => {
+   *         const veto = guard(a, c);
+   *         return veto ?? inner.run(a, c);
+   *       }}];
+   *     };
+   *
+   * Same `def`, so the model sees no change and the prompt cache is untouched.
+   * Later plugins see earlier plugins' output, so middlewares chain.
+   *
+   * ## The one trap
+   *
+   * CAPTURE the previous tool from the argument. Looking it up later —
+   * `ctx.tools.get("exec")` inside `run` — returns YOUR tool, because the
+   * registry was already overwritten. That is silent infinite recursion ending
+   * in a stack overflow, not an error message.
+   */
+  tools?: Tool[] | ((current: ReadonlyMap<string, Tool>) => Tool[]);
   hooks?: PluginHooks;
   /** custom providers, keyed by the value a config's `provider` would name */
   providers?: Record<string, ChatFn>;

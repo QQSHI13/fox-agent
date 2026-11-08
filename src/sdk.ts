@@ -23,6 +23,8 @@ export type {
   BeforeLLMCallPatch,
   AfterToolContext,
   AfterToolPatch,
+  BeforeToolContext,
+  BeforeToolPatch,
 } from "./plugins/types.ts";
 export type { McpServerConfig, ExternalAgentConfig } from "./core/config.ts";
 export type { Tool, ToolContext, ToolResult } from "./core/tool.ts";

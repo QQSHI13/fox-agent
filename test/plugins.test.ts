@@ -112,7 +112,10 @@ describe("plugin loader", () => {
     expect(warnings).toEqual([]);
     expect(plugins).toHaveLength(1);
     expect(plugins[0].name).toBe("fixture");
-    expect(plugins[0].tools?.[0].def.name).toBe("ping");
+    // `tools` is now list-or-function; a fixture that supplies a list gets a list
+    const listed = plugins[0].tools;
+    expect(Array.isArray(listed)).toBe(true);
+    expect((listed as { def: { name: string } }[])[0].def.name).toBe("ping");
     expect(typeof plugins[0].hooks?.beforeLLMCall).toBe("function");
     expect(Object.keys(plugins[0].providers ?? {})).toEqual(["fixture-echo"]);
   });
@@ -212,9 +215,9 @@ describe("plugin loader", () => {
     const { plugins, warnings } = await loadPlugins([isolated]);
     expect(warnings).toEqual([]);
     expect(plugins).toHaveLength(1);
-    const tool = plugins[0].tools?.[0];
+    const tool = (plugins[0].tools as { def: { name: string }; run: (a: unknown, c: unknown) => Promise<unknown> }[])[0];
     expect(tool?.def.name).toBe("sdk_ping");
-    const res = await tool!.run({}, {} as never);
+    const res = (await tool!.run({}, {} as never)) as { ok: boolean; output: string } | string;
     // a tool may legally return a bare string; narrow so the assertion is about
     // the SDK's ok() shape rather than an unchecked cast
     if (typeof res === "string") throw new Error(`expected a ToolResult, got ${res}`);

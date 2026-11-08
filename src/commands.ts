@@ -1035,7 +1035,10 @@ export interface PluginInventoryEntry {
 /** One-line summary of what a loaded plugin contributes, for /plugin. */
 function describePlugin(p: FoxPlugin): string[] {
   const parts: string[] = [];
-  if (p.tools?.length) parts.push(`tools: ${p.tools.map((t) => t.def.name).join(", ")}`);
+  // A function-form contribution cannot be resolved without a registry, and
+  // /plugin is a static summary — name what it is rather than lying about it.
+  if (typeof p.tools === "function") parts.push("tools: dynamic (resolved at registry build)");
+  else if (p.tools?.length) parts.push(`tools: ${p.tools.map((t) => t.def.name).join(", ")}`);
   const hooks = Object.keys(p.hooks ?? {});
   if (hooks.length) parts.push(`hooks: ${hooks.join(", ")}`);
   if (p.providers && Object.keys(p.providers).length) parts.push(`providers: ${Object.keys(p.providers).join(", ")}`);

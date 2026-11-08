@@ -42,13 +42,26 @@ export function baseRegistry(): Map<string, Tool> {
 }
 
 /**
+ * Resolve one plugin's `tools` contribution against the registry as it stands.
+ *
+ * The single place the list-or-function union is unwrapped, so every caller
+ * agrees on the rule: a function receives a COPY of the current registry — the
+ * only moment the tool it is about to shadow is still reachable — and returns
+ * the tools to merge. A list is returned as-is.
+ */
+export function pluginTools(p: FoxPlugin, current: ReadonlyMap<string, Tool>): Tool[] {
+  if (typeof p.tools === "function") return p.tools(new Map(current));
+  return p.tools ?? [];
+}
+
+/**
  * base + bundled plugin tools — the full built-in set with no config in play.
  * Tests and embedders that want "everything fox-agent ships" without a config
  * file use this; `buildRegistry` is the real path.
  */
 export function defaultRegistry(): Map<string, Tool> {
   const map = baseRegistry();
-  for (const p of bundledPlugins()) for (const t of p.tools ?? []) map.set(t.def.name, t);
+  for (const p of bundledPlugins()) for (const t of pluginTools(p, map)) map.set(t.def.name, t);
   return map;
 }
 
@@ -177,7 +190,12 @@ export async function buildRegistry(
     }
   };
   // Precedence, least to most specific: MCP bridge, bundled plugins, user plugins.
-  for (const p of plugins) mergeTools(p.name, p.tools);
+  //
+  // `tools` may be a function of the registry as it stands here — that is the
+  // only moment a plugin can still SEE the tool it is about to shadow, which is
+  // what makes wrapping (rather than replacing) possible. The copy is deliberate:
+  // a plugin reads the registry, it does not mutate it mid-drain.
+  for (const p of plugins) mergeTools(p.name, pluginTools(p, map));
 
   // A plugin command colliding with a built-in never fires (the built-in wins
   // in runSlashCommand), so the collision is reported here rather than failing
