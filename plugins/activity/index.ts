@@ -98,6 +98,25 @@ const MAX_INFLIGHT = 64;
 /** Which session the current `events` belong to, so a switch re-seeds. */
 let seededFor: string | null = null;
 
+/**
+ * Palette used when the host does not hand one over.
+ *
+ * A plugin is a file on disk and the host is a compiled binary, so the two
+ * version independently: load this plugin into a binary built before
+ * `TuiRegionPlane.theme` existed and `p.theme` is `undefined`. These are the
+ * default theme's colours, so the panel still looks native on such a host
+ * instead of throwing and drawing nothing.
+ */
+const FALLBACK_THEME = {
+  fg: "#c0caf5",
+  hint: "#828ac0",
+  accent: "#bb9af7",
+  ok: "#9ece6a",
+  error: "#f7768e",
+  tool: "#e0af68",
+  inputBg: "#1f2335",
+} as const;
+
 const sig = (name: string, args: unknown): string => `${name}:${JSON.stringify(args ?? null)}`;
 
 /** `1_050_000` → `1.1M`, so a wide window fits in a narrow column. */
@@ -226,10 +245,15 @@ const plugin: FoxPlugin = {
 
         // Every one of these reads subscribes the region: a resize, a theme
         // switch, the scrollbar appearing, or the dock growing all repaint it.
+        // Older hosts: a plugin loaded from disk can run against a binary built
+        // before these fields existed, and the failure is an unhelpful
+        // "undefined is not an object". Fall back to what such a host does have
+        // rather than throwing — a panel that is slightly misplaced beats a
+        // panel that cannot paint at all.
         const screenW = p.w;
-        const contentW = p.contentW;
-        const dockTop = p.dockTop;
-        const t = p.theme;
+        const contentW = p.contentW ?? screenW;
+        const dockTop = p.dockTop ?? p.h - 2;
+        const t = p.theme ?? FALLBACK_THEME;
 
         // Right edge flush against the transcript's content width. `contentW` is
         // already `w - 2` while the scrollbar strip shows, so +1 lands the panel

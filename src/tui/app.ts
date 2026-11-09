@@ -3453,17 +3453,30 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       // transcript it floats over (it used to render as a bare info line,
       // blending into neighboring md rows); one style id for every line keeps
       // it uniform instead of inheriting whatever colors it wrapped.
-      const inner = Math.max(20, w - 4);
+      // WRAP, never clip. A plugin error names the region and then says why, and
+      // the why is at the END of the string: clipW threw it away, so the one
+      // message that explains a broken panel arrived truncated to
+      // "undefined is not an".
+      //
+      // `inner` is the width BETWEEN the border glyphs, so a content row is
+      // `│ ` + text + ` │` where the text budget is inner - 2. The old row
+      // was inner + 4 wide against a border of inner + 2 — the box was two
+      // columns wider than its own top and bottom edges, which is why the
+      // border looked decorative rather than containing anything.
+      const inner = Math.max(8, w - 4);
+      const textW = Math.max(1, inner - 2);
       // SOLID box: every row sets row.bg so the transcript region fillRows the
       // full width BEFORE stamping (segs-level bg only covers the glyph cells;
       // the margins around the box stayed default)
       const boxFill = (segs: Seg[]): { segs: Seg[]; bg: number } => ({ segs, bg: S.barBgRow });
       rows = [boxFill([{ t: `╭${"─".repeat(inner)}╮`, fg: C.info, bg: C.barBg }])];
-      const lines = it.text.split("\n");
-      for (const l of lines) {
-        const clipped = clipW(l, inner);
-        const pad = " ".repeat(Math.max(0, inner - Bun.stringWidth(clipped)));
-        rows.push(boxFill([{ t: `│ ${clipped}${pad} │`, fg: C.info, bg: C.barBg }]));
+      for (const src of it.text.split("\n")) {
+        // an empty source line still gets a row, so a multi-paragraph message
+        // keeps its shape instead of collapsing into one run
+        for (const part of src.trim() ? wrapText(src, textW) : [""]) {
+          const pad = " ".repeat(Math.max(0, textW - Bun.stringWidth(part)));
+          rows.push(boxFill([{ t: `│ ${part}${pad} │`, fg: C.info, bg: C.barBg }]));
+        }
       }
       rows.push(boxFill([{ t: `╰${"─".repeat(inner)}╯`, fg: C.info, bg: C.barBg }]));
     } else if (it.kind === "think") {
