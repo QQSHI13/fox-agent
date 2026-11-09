@@ -33,6 +33,27 @@ export interface PtyState {
   requestedCwd?: string;
 }
 
+/**
+ * Session-scoped persistent state for one tool, handed to it as `ctx.kv`.
+ *
+ * Every key is namespaced by the tool's own name, so a plugin tool cannot read
+ * or clobber the harness's own keys (`todos`, `children`, `live`) and two
+ * plugins cannot collide with each other — tool names are unique in the
+ * registry, which makes that namespace free.
+ *
+ * Synchronous by design: the backing store is local SQLite and every existing
+ * caller (`todo`, `task`) already reads it inline. A promise here would push an
+ * await into every tool that keeps state for no benefit.
+ */
+export interface ToolKv {
+  /** The stored value, or null when the key was never set. */
+  get<T = unknown>(key: string): T | null;
+  /** Store a JSON-serializable value. */
+  set(key: string, value: unknown): void;
+  /** Remove one key. Absent keys are a no-op. */
+  delete(key: string): void;
+}
+
 export interface ToolContext {
   sessionId: string;
   cwd: string;
@@ -77,6 +98,24 @@ export interface ToolContext {
    * job finishes. Optional so a bare ToolContext (tests, SDK) stays valid.
    */
   steer?: (text: string) => void;
+  /**
+   * Session-scoped persistent state, namespaced to THIS tool.
+   *
+   * A tool that needs to remember something across turns (a todo list, a
+   * connection id, a snapshot pointer) has nowhere to put it today: the store's
+   * `kv` table is real but only reachable from inside the harness, so a plugin
+   * tool either keeps state in module scope (wrong the moment two sessions run
+   * in one process) or re-derives it every call.
+   *
+   * Keys are automatically prefixed with the tool's own name, so a plugin can
+   * never read or clobber the harness's keys (`todos`, `children`, `live`) —
+   * and two plugins cannot collide either, because tool names are unique in the
+   * registry. Values are JSON; anything `JSON.stringify` accepts round-trips.
+   *
+   * Absent on a bare ToolContext (tests, an SDK caller with no session), so a
+   * tool must treat it as optional — same contract as `ui` and `steer`.
+   */
+  kv?: ToolKv;
   /**
    * Cap on one tool result's text in chars (config `toolOutputCap`, default
    * 30000). Tools read this to bound their own output — the tool's choice of

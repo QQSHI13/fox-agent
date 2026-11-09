@@ -19,6 +19,8 @@ export type {
   PluginCommand,
   PluginCommandContext,
   SessionStartContext,
+  BeforeContextContext,
+  BeforeContextPatch,
   BeforeLLMCallContext,
   BeforeLLMCallPatch,
   AfterToolContext,
@@ -31,6 +33,13 @@ export type { Tool, ToolContext, ToolResult } from "./core/tool.ts";
 export { ok, fail } from "./core/tool.ts";
 export type { UiBridge, UiStep } from "./core/ui.ts";
 export type { ChatFn, ChatMessage, ProviderConfig, StreamEvent, ToolDef } from "./providers/types.ts";
+/**
+ * The context-surgery primitives, exported so a plugin writes the same ops the
+ * `ctx` tool does. `beforeContext` hands these back to change what the model
+ * sees; because they are appended rather than applied destructively, the
+ * harness's undo, replay and `/prune` all keep working on a plugin's edit.
+ */
+export type { ViewOp, DeleteOp, ReplaceOp, RestoreOp } from "./store/db.ts";
 
 /**
  * State a plugin region can depend on.

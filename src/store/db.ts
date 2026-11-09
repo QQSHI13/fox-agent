@@ -782,6 +782,12 @@ export function kvGet<T>(sessionId: string, key: string): T | null {
   }
 }
 
+/** Remove one key. A missing key is a no-op, not an error — `ToolKv.delete`
+ *  is called defensively by tools that may run on a fresh session. */
+export function kvDelete(sessionId: string, key: string): void {
+  prep(sessionDb(sessionId), "DELETE FROM kv WHERE session_id = ? AND key = ?").run(sessionId, key);
+}
+
 // ---- usage ----
 
 /**

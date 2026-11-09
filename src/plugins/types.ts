@@ -34,6 +34,12 @@ import type { Tool } from "../core/tool.ts";
 import type { Style } from "../core/style.ts";
 import type { ChatFn, ChatMessage, ToolDef } from "../providers/types.ts";
 import type { ExternalAgentConfig, McpServerConfig } from "../core/config.ts";
+// Type-only: store/ sits below plugins/ in the layer order, and a type import
+// is erased at build time, so this adds a vocabulary dependency without a
+// runtime one. `ViewOp` is the context-surgery primitive `beforeContext` hands
+// back — reusing the store's own type is what keeps a plugin's compaction
+// indistinguishable from one the `ctx` tool wrote.
+import type { ViewOp } from "../store/db.ts";
 
 /** Context a plugin slash command runs with — the session it acts in, nothing else. */
 export interface PluginCommandContext {
@@ -87,6 +93,64 @@ export interface BeforeLLMCallPatch {
 }
 
 /**
+ * Before the step's context is assembled — the ONE hook that can change what
+ * the model sees on THIS step.
+ *
+ * `beforeLLMCall` runs after `renderContext`, so a plugin that hides or rewrites
+ * a message there is a step too late: the array it was handed is already built.
+ * This hook runs first, and its patch is a list of view ops the harness appends
+ * before projecting, so the effect is immediate.
+ *
+ * ## Why view ops and not a message array
+ *
+ * Same reason every other hook is a patch: a plugin that could return a message
+ * array would own the call/result pairing invariant, and a provider hard-400s
+ * on an orphan with nothing pointing at the plugin. A view op cannot break it —
+ * `projectView` recomputes orphans after applying ops, so hiding an assistant
+ * turn also hides its now-unpaired results, and a restored turn brings them
+ * back. Whatever a plugin does, the request stays well-formed.
+ *
+ * ## What this unlocks
+ *
+ * Auto-compaction and every custom compaction policy (summarize old turns, keep
+ * a recent tail), branch projection (re-root the transcript at an earlier
+ * point), and selective redaction — all with the harness's own undo and replay
+ * intact, because ops are appended rather than applied destructively.
+ */
+export interface BeforeContextContext {
+  sessionId: string;
+  /** 1-based step within the turn, so a hook can act only on the first */
+  step: number;
+  /**
+   * How full the window is, from the provider's own report — the same figure the
+   * runtime header shows. A compaction policy decides against this rather than
+   * re-estimating; `stage` is where the harness's own thresholds landed.
+   */
+  budget: {
+    reported: number;
+    limit: number;
+    ratio: number;
+    stage: "none" | "warn" | "ctxOnly";
+  };
+  /** the visible transcript, oldest first — read to decide what to compact */
+  nodes: readonly { seq: number; role: string; content: string; tokens: number }[];
+}
+
+export interface BeforeContextPatch {
+  /**
+   * View ops to append before this step is projected. Same primitives the `ctx`
+   * tool uses, so a compaction written here is undoable and replayable.
+   */
+  ops?: ViewOp[];
+  /**
+   * Set when the ops are a *derived* compaction rather than a deliberate edit:
+   * the harness records this policy version on its replace ops, so a replay can
+   * re-derive when the policy changes and the UI can reveal the stored original.
+   */
+  policyVersion?: number;
+}
+
+/**
  * After a tool ran, before its output is stored. `output` is post-cap, i.e. the
  * exact text that would otherwise be written to the transcript.
  */
@@ -105,6 +169,13 @@ export interface AfterToolPatch {
 
 export interface PluginHooks {
   onSessionStart?(c: SessionStartContext): void | Promise<void>;
+  /**
+   * Before the step's context is assembled — the only hook that changes what
+   * the model sees on THIS step. Runs before `beforeLLMCall`, and its view ops
+   * are appended before projection, so a compaction written here lands now
+   * rather than a step later.
+   */
+  beforeContext?(c: BeforeContextContext): BeforeContextPatch | void | Promise<BeforeContextPatch | void>;
   beforeLLMCall?(c: BeforeLLMCallContext): BeforeLLMCallPatch | void | Promise<BeforeLLMCallPatch | void>;
   afterTool?(c: AfterToolContext): AfterToolPatch | void | Promise<AfterToolPatch | void>;
   /** once per turn, after the user message is stored, before the first request */

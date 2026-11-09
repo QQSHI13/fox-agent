@@ -1,4 +1,4 @@
-import { appendMessage, appendOps, getSession, recordUsage, type MessageRow } from "../store/db.ts";
+import { appendMessage, appendOps, getSession, kvDelete, kvGet, kvSet, recordUsage, type MessageRow } from "../store/db.ts";
 import { estimateTokens } from "../providers/models.ts";
 import type { ProviderConfig, ChatMessage, ToolDef, ToolCall, ChatFn } from "../providers/types.ts";
 import { resolveChat } from "../providers/index.ts";
@@ -17,6 +17,7 @@ import { loadPlugins } from "../plugins/load.ts";
 import type { UiBridge } from "../core/ui.ts";
 import { buildSystemPrompt, buildRuntimeHeader } from "./prompt.ts";
 import { renderContext, stripEchoedMarkers } from "../context/render.ts";
+import { projectView, visibleNodes } from "../context/view.ts";
 import { truncateToolResult, resolvePresentationCap } from "../context/truncate.ts";
 import { checkBudget, sessionContextTokens, type BudgetThresholds } from "../context/budget.ts";
 import { cutHead, cutTail } from "../core/text.ts";
@@ -683,6 +684,44 @@ async function* turnBody(
       // same line added to nine call sites that already forward `config`.
       skills: effCfg.skillList,
     });
+    // `beforeContext`: the ONE hook that changes what the model sees on THIS
+    // step. It runs before `renderContext` and hands back view ops, which are
+    // appended before projection — so a compaction written here lands now
+    // instead of a step later, which is all `beforeLLMCall` could ever do.
+    //
+    // Why ops rather than a message array: `projectView` recomputes orphans
+    // after applying them, so hiding an assistant turn also hides its
+    // now-unpaired results and restoring brings them back. The request stays
+    // well-formed whatever a plugin does, and the effect is undoable because
+    // it is an appended op, not a destructive rewrite.
+    for (const p of hooked) {
+      if (!p.hooks?.beforeContext) continue;
+      const patch = await runHook(
+        p,
+        "beforeContext",
+        () =>
+          p.hooks!.beforeContext!({
+            sessionId,
+            step,
+            budget: { reported: budget.reported, limit: budget.limit, ratio: budget.ratio, stage: budget.stage },
+            nodes: visibleNodes(projectView(sessionId)).map((n) => ({
+              seq: n.msg.seq,
+              role: n.msg.role,
+              content: n.content,
+              tokens: n.msg.tokens,
+            })),
+          }),
+        hookWarn,
+      );
+      if (!patch?.ops?.length) continue;
+      // stamp a derived compaction so replay can tell it from a deliberate
+      // `ctx` edit (see ReplaceOp.version)
+      const ops = patch.policyVersion
+        ? patch.ops.map((o) => (o.kind === "replace" ? { ...o, version: patch.policyVersion } : o))
+        : patch.ops;
+      appendOps(sessionId, ops);
+    }
+
     const messages = renderContext(sessionId, sysPrompt, {
       markers: effCfg.contextMarkers !== false,
       // everything that moves — cwd, date, model, version, todos, and the
@@ -927,6 +966,15 @@ async function* turnBody(
           // so only it can populate these. Tools (repl) call them to notify the
           // agent when a detached job finishes; bare ToolContexts get undefined.
           steer: (text) => steer(sessionId, text),
+          // Session-scoped state for this tool, namespaced by the tool's own
+          // name so a plugin cannot read or clobber the harness's keys
+          // (`todos`, `children`, `live`) or another plugin's. Tool names are
+          // unique in the registry, which is what makes the namespace free.
+          kv: {
+            get: <T,>(key: string) => kvGet<T>(sessionId, `${call.name}:${key}`),
+            set: (key, value) => kvSet(sessionId, `${call.name}:${key}`, value),
+            delete: (key) => kvDelete(sessionId, `${call.name}:${key}`),
+          },
           get pty() {
             return ptyState;
           },

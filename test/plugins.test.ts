@@ -466,11 +466,166 @@ describe("lifecycle hooks in a real turn", () => {
     expect(end.output).toBe("wrapped(raw)");
   }, 30_000);
 
+  // `ctx.kv` is what lets a plugin tool keep state across turns. The namespace
+  // is the part worth testing: the store's `kv` table is shared with the
+  // harness's own keys (`todos`, `children`, `live`), so an unnamespaced API
+  // would let a plugin read or clobber them.
+  test("ctx.kv persists across turns and is namespaced away from harness keys", async () => {
+    const { createSession, kvSet, kvGet } = await import("../src/store/db.ts");
+    const sessionId = createSession(work, "test-model").id;
+    // a harness key the plugin must not be able to see or overwrite
+    kvSet(sessionId, "todos", [{ content: "harness owns this", status: "pending" }]);
+
+    const seen: unknown[] = [];
+    const kvTool = (name: string) => ({
+      def: { name, description: "", parameters: { type: "object" } },
+      run: async (_args: unknown, ctx: import("../src/core/tool.ts").ToolContext) => {
+        // read what an earlier turn wrote under the SAME key name
+        seen.push(ctx.kv?.get("counter") ?? "absent");
+        ctx.kv?.set("counter", 42);
+        // `todos` through the tool's own kv must not be the harness's todos
+        seen.push(ctx.kv?.get("todos") ?? "absent");
+        return { ok: true, output: "stored" };
+      },
+    });
+
+    const cfg = await cfgWith([]);
+    const run = () =>
+      runTurn("go", {
+        chat: scripted([{ tool: "mytool" }, { text: "done" }]).chat,
+        config: cfg,
+        sessionId,
+        registryOverride: new Map([["mytool", kvTool("mytool")]]),
+      });
+
+    await run();
+    await run();
+
+    // turn 1 found nothing, turn 2 found turn 1's write — that is the persistence
+    expect(seen[0]).toBe("absent");
+    expect(seen[2]).toBe(42);
+    // and the harness's own `todos` key was never visible through ctx.kv
+    expect(seen[1]).toBe("absent");
+    expect(seen[3]).toBe("absent");
+    // ...and still intact in the store, untouched by the tool's writes
+    expect(kvGet(sessionId, "todos")).toEqual([{ content: "harness owns this", status: "pending" }]);
+  }, 30_000);
+
   test("no plugins configured means no hook machinery in the way", async () => {
     const { chat } = scripted([{ text: "plain" }]);
     const events = await runTurn("go", { chat, config: await cfgWith([]) });
     expect(events.filter((e) => e.type === "warn")).toEqual([]);
     expect(lastMessages[0].content).not.toContain(APPENDED_SYSTEM);
+    expect(events.some((e) => e.type === "done" && e.reason === "stop")).toBe(true);
+  }, 30_000);
+
+  // `beforeContext` is the only hook that changes what the model sees on the
+  // step it fires on. `beforeLLMCall` runs *after* renderContext, so an op
+  // written there would land a step later — that difference is the whole
+  // reason this hook exists, so it is what these tests assert.
+  test("beforeContext's ops change the CURRENT step's request, not the next one", async () => {
+    const { createSession, appendMessage } = await import("../src/store/db.ts");
+    const sessionId = createSession(work, "test-model").id;
+    // a turn already in the log, older than this one, that the plugin hides
+    appendMessage(sessionId, { parent_id: null, role: "user", content: "SECRET_EARLIER_TURN", tokens: 5 });
+    appendMessage(sessionId, { parent_id: null, role: "assistant", content: "acknowledged", tokens: 2 });
+
+    let sawBudget: unknown = null;
+    const events = await runTurn("now", {
+      chat: scripted([{ text: "hi" }]).chat,
+      config: await cfgWith([]),
+      sessionId,
+      pluginsOverride: [
+        {
+          name: "compactor",
+          hooks: {
+            beforeContext(c) {
+              sawBudget = c.budget;
+              // hide the earlier exchange, exactly as a compaction would
+              const victims = c.nodes.filter((n) => n.content.includes("SECRET_EARLIER_TURN")).map((n) => n.seq);
+              return victims.length ? { ops: [{ kind: "delete" as const, ids: victims, summary: "older turn" }] } : undefined;
+            },
+          },
+        },
+      ],
+    });
+
+    // the assertion that separates this hook from beforeLLMCall: the hidden text
+    // is absent from the request the provider was handed on THIS step
+    expect(lastMessages.some((m) => m.content.includes("SECRET_EARLIER_TURN"))).toBe(false);
+    // ...and the budget the policy decides against was supplied
+    expect(sawBudget).toMatchObject({ stage: expect.any(String), limit: expect.any(Number) });
+    expect(events.some((e) => e.type === "done" && e.reason === "stop")).toBe(true);
+  }, 30_000);
+
+  test("beforeContext's ops are appended, so undo can bring the turn back", async () => {
+    const { createSession, appendMessage, allOps, undoLastOp } = await import("../src/store/db.ts");
+    const sessionId = createSession(work, "test-model").id;
+    const victim = appendMessage(sessionId, { parent_id: null, role: "user", content: "HIDE_ME", tokens: 3 });
+
+    await runTurn("now", {
+      chat: scripted([{ text: "hi" }]).chat,
+      config: await cfgWith([]),
+      sessionId,
+      pluginsOverride: [
+        {
+          name: "compactor",
+          hooks: { beforeContext: () => ({ ops: [{ kind: "delete" as const, ids: [victim.seq] }] }) },
+        },
+      ],
+    });
+
+    // stored as an op, not a destructive rewrite — this is what keeps a plugin's
+    // compaction indistinguishable from one the `ctx` tool wrote
+    expect(allOps(sessionId).some((o) => o.kind === "delete")).toBe(true);
+    undoLastOp(sessionId);
+    const { projectView } = await import("../src/context/view.ts");
+    expect(projectView(sessionId).find((n) => n.msg.seq === victim.seq)!.deleted).toBe(false);
+  }, 30_000);
+
+  test("hiding an assistant turn also hides its tool results, so the request stays well-formed", async () => {
+    const { createSession } = await import("../src/store/db.ts");
+    const sessionId = createSession(work, "test-model").id;
+
+    // step 1 calls a tool, which lands an assistant row + a tool row; step 2 then
+    // hides the assistant half only. A provider hard-400s on an orphaned tool
+    // result, so this is the invariant a plugin must not be able to break.
+    const events = await runTurn("go", {
+      chat: scripted([{ tool: "ping" }, { text: "done" }]).chat,
+      config: await cfgWith([]),
+      sessionId,
+      registryOverride: new Map([
+        ["ping", { def: { name: "ping", description: "", parameters: { type: "object" } }, run: async () => ({ ok: true, output: "PING_RESULT" }) }],
+      ]),
+      pluginsOverride: [
+        {
+          name: "hider",
+          hooks: {
+            beforeContext(c) {
+              if (c.step < 2) return;
+              const assistants = c.nodes.filter((n) => n.role === "assistant").map((n) => n.seq);
+              return assistants.length ? { ops: [{ kind: "delete" as const, ids: assistants }] } : undefined;
+            },
+          },
+        },
+      ],
+    });
+
+    // no tool result may survive without the assistant that called it
+    const toolMsgs = lastMessages.filter((m) => m.role === "tool");
+    expect(toolMsgs).toEqual([]);
+    expect(events.some((e) => e.type === "done" && e.reason === "stop")).toBe(true);
+  }, 30_000);
+
+  test("a throwing beforeContext costs one warn, not the turn", async () => {
+    const events = await runTurn("go", {
+      chat: scripted([{ text: "finished" }]).chat,
+      config: await cfgWith([]),
+      pluginsOverride: [{ name: "exploder", hooks: { beforeContext: () => { throw new Error("context exploded"); } } }],
+    });
+    const warns = events.filter((e) => e.type === "warn") as Extract<AgentEvent, { type: "warn" }>[];
+    expect(warns.some((w) => w.message.includes("context exploded"))).toBe(true);
+    for (const w of warns) expect(w.message).toContain("exploder");
     expect(events.some((e) => e.type === "done" && e.reason === "stop")).toBe(true);
   }, 30_000);
 });
