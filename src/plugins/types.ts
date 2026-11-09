@@ -372,6 +372,48 @@ export interface TuiRegionPlane {
   readonly w: number;
   readonly h: number;
   /**
+   * The transcript's usable width — `w`, minus the scrollbar strip when one is
+   * showing.
+   *
+   * Reading `w` and laying a panel out against it is how a panel ends up one
+   * column off, sitting on top of the scrollbar: the transcript drops to `w - 2`
+   * the moment content overflows, and nothing on this interface said so. Anchor
+   * to this instead and the panel lines up with the transcript at every scroll
+   * position.
+   *
+   * Reading it subscribes the region to transcript growth, because that is what
+   * makes the scrollbar appear.
+   */
+  readonly contentW: number;
+  /**
+   * The first row the input dock occupies. Everything at or below this belongs
+   * to the dock, the queue stack above it, or the status bar.
+   *
+   * This is the fix for a whole class of panel bugs. The dock's height is not a
+   * constant: it grows as the input wraps, and the queue stack above it grows
+   * with pending messages. A panel that anchors to `h - 1 - boxH` therefore
+   * overlaps the input box as soon as the user types a second line — which is
+   * exactly what a plugin cannot see and the host already knows. Anchor the
+   * bottom of a panel here and it is pushed up automatically.
+   */
+  readonly dockTop: number;
+  /**
+   * The live theme. Reading it subscribes the region to `/theme`.
+   *
+   * A region painted in hardcoded colours looks foreign the moment the user
+   * switches themes, and the built-in regions all follow this object. Optional
+   * because a test or an embedding host may have no theme at all.
+   */
+  readonly theme: import("../tui/themes.ts").Theme;
+  /**
+   * The session this frame is showing, or null before the first one exists.
+   *
+   * What makes history reachable from a region: `foxHost.sessions.messages(id)`
+   * returns the transcript, so a panel can seed itself from what already
+   * happened instead of starting blank every launch.
+   */
+  readonly sessionId: string | null;
+  /**
    * Wrap plain text to a column budget — the TUI's own wrapper, so a panel
    * breaks lines exactly where the transcript, the input box and the wizard do.
    *
@@ -380,7 +422,7 @@ export interface TuiRegionPlane {
    * the region's own width (usually `p.w`) and the padding you reserve.
    *
    * `opts` (all optional): `reserve` columns to leave free on the right,
-   * `keepLeadSpaces` to preserve indentation, `lossless` to never drop a space,
+   * `keepLeading` to preserve indentation, `lossless` to never drop a space,
    * `exactWidth` to use the final column instead of leaving it empty.
    */
   wrap(text: string, width: number, opts?: TuiWrapOptions): string[];

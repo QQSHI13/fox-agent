@@ -479,6 +479,26 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           // left a widened terminal with a panel stranded mid-screen.
           get w() { sizeV(); return tui.W; },
           get h() { sizeV(); return tui.H; },
+          // The transcript's usable width. `tui.painted.contentWidth` is already
+          // "W, or W-2 when the scrollbar strip shows" — computed by the same
+          // two-pass decision that decides whether the strip appears at all, so
+          // a plugin cannot disagree with it. Reading paintedV subscribes the
+          // region to transcript growth, which is what makes the strip appear.
+          get contentW() { paintedV(); sizeV(); return tui.painted?.contentWidth ?? tui.W; },
+          // Where the input dock starts. The dock's height is not a constant (it
+          // grows as the input wraps) and the queue stack above it grows with
+          // pending messages, so a panel anchored to `h - 1 - boxH` slides under
+          // the input box the moment the user types a second line. dockTopY()
+          // is the same function the mouse hit-tests use, so a panel anchored to
+          // it cannot disagree with the pixels.
+          get dockTop() { paintedV(); sizeV(); bufV(); return dockTopY(); },
+          // The live theme. `theme()` reads the same current palette the built-in
+          // regions paint with, so a panel follows /theme instead of looking
+          // foreign. themeV subscribes the region to the switch.
+          get theme() { themeV(); return theme(); },
+          // Which session this frame shows, so a region can seed itself from
+          // history (foxHost.sessions.messages) instead of starting blank.
+          get sessionId() { return state.sessionId || null; },
           wrap: (text: string, width: number, opts?: TuiWrapOptions) => wrapText(text, width, opts),
         };
         pluginRegionEffects.set(
