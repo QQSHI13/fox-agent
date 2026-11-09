@@ -357,6 +357,7 @@ async function startTurn(sessionId: string): Promise<void> {
       host.turn?.(text, ctl) ??
       runTurnCore(sessionId, host.provider(), text, ctl.signal, {
         maxSteps: cfg?.maxSteps,
+        source: "steer",
         retryLimit: cfg?.retryLimit,
         compactWarnAt: cfg?.compactWarnAt,
         compactCtxOnlyAt: cfg?.compactCtxOnlyAt,

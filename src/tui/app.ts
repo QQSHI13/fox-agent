@@ -13,7 +13,7 @@ import { computed, counter, effect, flushNow, setScheduler, signal, type Disposa
 import { computeFrame, dockRows, itemEdgeSpan, scrollbarScrollTop, viewportHeight, chipGutter, contentOrigin, contentOriginForChip, contentWidth, type Frame, type FrameInput, type Row } from "./layout.ts";
 import { activePlugins, setRepaintHandler } from "../plugins/load.ts";
 import type { TuiRegionPlane, TuiWrapOptions } from "../plugins/types.ts";
-import { createDecoder, type Key } from "./keys.ts";
+import { createDecoder, chordOf, normalizeChord, type Key } from "./keys.ts";
 import { graphemeBack, graphemeForward, type Ch } from "./edit.ts";
 import {
   extractSelection,
@@ -2370,6 +2370,32 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     if (overlayKey(k)) return;
     // an open question wizard owns the input dock next (see promptKey)
     if (wizard.key(k)) return;
+    // Plugin keybindings, consulted before the harness's own handling so a
+    // plugin can shadow a built-in chord. Only NAMED keys can be claimed: a bare
+    // character is typing, and letting a plugin swallow one would break the
+    // input dock in a way no error message could explain. `chordOf` returns null
+    // for paste/mouse, so those keep their own dispatch paths.
+    if (k.type === "named") {
+      const chord = chordOf(k);
+      if (chord) {
+        for (const p of activePlugins()) {
+          const hit = p.keybindings?.find((b) => normalizeChord(b.key) === chord);
+          if (!hit) continue;
+          void Promise.resolve()
+            .then(() =>
+              hit.run({
+                sessionId: state.sessionId || null,
+                cwd: state.cwd,
+                insertText: (text) => insertText(text),
+                runCommand: (line) => runSlash(line),
+                notify: (message) => flash(message),
+              }),
+            )
+            .catch((e: unknown) => flash(`plugin '${p.name}' key ${chord} failed: ${(e as Error).message.slice(0, 120)}`));
+          return;
+        }
+      }
+    }
     if (k.type === "paste") {
       // a drag-and-drop arrives as pasted path text — quote/file:// forms both.
       // When every token names a real file, insert mentions, not raw text.

@@ -76,6 +76,43 @@ export interface SessionStartContext {
 }
 
 /**
+ * Before the user's message is stored — the hook that can rewrite what was typed.
+ *
+ * This is the one place input preprocessing belongs. A frontend (TUI, `-p`, ACP,
+ * gateway, SDK) hands over the raw text and this hook may expand `@file`, apply
+ * prompt templates, strip a prefix, or reject the turn outright. It runs BEFORE
+ * the user node is appended, so a rewrite reaches storage, the transcript and
+ * the model as one text — there is no "the model saw something else" case.
+ *
+ * ## Chaining
+ *
+ * Plugins run in load order and each sees the previous one's text, so two
+ * plugins that both rewrite input compose instead of fighting. The last patch
+ * wins for `abort`, which makes a veto sticky: once a plugin refuses a turn, a
+ * later plugin cannot resurrect it.
+ */
+export interface BeforeInputContext {
+  sessionId: string;
+  cwd: string;
+  /** the text the frontend was given, before any plugin touched it */
+  text: string;
+  /** which surface submitted this turn ("tui", "print", "acp", "gateway", "sdk") */
+  source: string;
+  /** true when this is the session's first turn */
+  isFirstTurn: boolean;
+}
+
+export interface BeforeInputPatch {
+  /** replace the text. Omit to leave it alone. */
+  text?: string;
+  /**
+   * Refuse the turn. The message becomes the turn's answer and nothing is
+   * stored, so a guard plugin can say why without polluting the transcript.
+   */
+  abort?: string;
+}
+
+/**
  * Before each provider request. `messages` and `tools` are readonly — they are
  * there to *decide* with, not to edit; the return value is the only channel.
  */
@@ -151,6 +188,48 @@ export interface BeforeContextPatch {
 }
 
 /**
+ * A key a plugin claims, e.g. `"ctrl+g"`, `"f2"`, `"alt+shift+up"`.
+ *
+ * Modifiers are lowercase and joined with `+`; the base is either one character
+ * (`"g"`, `"?"`) or a named key the decoder emits (`"escape"`, `"up"`,
+ * `"pageup"`, `"f5"`, `"shifttab"`). The app's own chords are matched by the
+ * same normalization, so a plugin cannot claim a chord the harness handles by
+ * writing it differently.
+ */
+export type KeyChord = string;
+
+/** What a keybinding handler gets. Deliberately narrow: a key is a UI gesture. */
+export interface KeyBindingContext {
+  sessionId: string | null;
+  cwd: string;
+  /**
+   * Insert text into the input dock as if typed. The plugin's `beforeInput` hook
+   * still runs when the user submits, so an expansion done here is not
+   * privileged over one done there.
+   */
+  insertText(text: string): void;
+  /** Run a slash command through the host's own runner (`/model`, `/new`, …). */
+  runCommand(line: string): void;
+  /** Show a transient line in the TUI, the same channel `/help` output uses. */
+  notify(message: string): void;
+}
+
+/**
+ * One key a plugin claims.
+ *
+ * Claimed keys are consulted BEFORE the harness's own handling, so a plugin can
+ * shadow `ctrl+g` or `f2`. A chord the harness already uses is not protected:
+ * the plugin wins and the shadowing is reported at load, because silently
+ * losing a binding is the failure that is impossible to debug.
+ */
+export interface KeyBinding {
+  key: KeyChord;
+  /** one line, shown by `/keys` */
+  description: string;
+  run(ctx: KeyBindingContext): void | Promise<void>;
+}
+
+/**
  * After a tool ran, before its output is stored. `output` is post-cap, i.e. the
  * exact text that would otherwise be written to the transcript.
  */
@@ -169,6 +248,12 @@ export interface AfterToolPatch {
 
 export interface PluginHooks {
   onSessionStart?(c: SessionStartContext): void | Promise<void>;
+  /**
+   * Before the user's message is stored — the one hook that can rewrite input.
+   * Runs before the user node is appended, so a rewrite reaches storage, the
+   * transcript and the model as one text. Plugins chain in load order.
+   */
+  beforeInput?(c: BeforeInputContext): BeforeInputPatch | void | Promise<BeforeInputPatch | void>;
   /**
    * Before the step's context is assembled — the only hook that changes what
    * the model sees on THIS step. Runs before `beforeLLMCall`, and its view ops
@@ -439,6 +524,15 @@ export interface FoxPlugin {
    * once per name.
    */
   statusSegments?: Record<string, () => string | null>;
+  /**
+   * Keys this plugin claims, consulted BEFORE the harness's own handling.
+   *
+   * A claimed key that the harness already uses is reported at load: silently
+   * losing a binding is the failure that is impossible to debug. Handlers run
+   * on the TUI thread and a throw is contained to one `notify`, like every
+   * other plugin surface.
+   */
+  keybindings?: KeyBinding[];
   /**
    * TUI screen regions this plugin contributes, keyed by name — a panel, a
    * ticker, a custom status strip. Each gets its own compositing plane,

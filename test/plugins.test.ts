@@ -519,6 +519,111 @@ describe("lifecycle hooks in a real turn", () => {
     expect(events.some((e) => e.type === "done" && e.reason === "stop")).toBe(true);
   }, 30_000);
 
+  // `beforeInput` is the one hook that can rewrite what the user typed. The
+  // property that matters is WHERE it runs: before the user node is stored, so
+  // there is exactly one text — the stored one, the shown one, the one the
+  // model reads. A hook that ran after the append would leave the raw text in
+  // the transcript while the model saw the rewrite.
+  test("beforeInput's rewrite is what gets stored, shown, and sent", async () => {
+    const { createSession, allMessages } = await import("../src/store/db.ts");
+    const sessionId = createSession(work, "test-model").id;
+
+    const events = await runTurn("RAW_TEXT", {
+      chat: scripted([{ text: "ok" }]).chat,
+      config: await cfgWith([]),
+      sessionId,
+      pluginsOverride: [
+        {
+          name: "expander",
+          hooks: { beforeInput: (c) => ({ text: c.text.replace("RAW_TEXT", "EXPANDED") }) },
+        },
+      ],
+    });
+
+    // the store holds the rewrite, not the raw text
+    const userRow = allMessages(sessionId).find((m) => m.role === "user");
+    expect(userRow?.content).toBe("EXPANDED");
+    // the model was sent the rewrite
+    expect(lastMessages.some((m) => m.content.includes("EXPANDED"))).toBe(true);
+    expect(lastMessages.some((m) => m.content.includes("RAW_TEXT"))).toBe(false);
+    // and the `user` event a live UI stamps carries it too
+    const userEv = events.find((e) => e.type === "user") as Extract<AgentEvent, { type: "user" }>;
+    expect(userEv.text).toBe("EXPANDED");
+  }, 30_000);
+
+  test("beforeInput chains in load order, each seeing the previous rewrite", async () => {
+    const seen: string[] = [];
+    await runTurn("base", {
+      chat: scripted([{ text: "ok" }]).chat,
+      config: await cfgWith([]),
+      pluginsOverride: [
+        { name: "a", hooks: { beforeInput: (c) => { seen.push(`a:${c.text}`); return { text: `${c.text}+A` }; } } },
+        { name: "b", hooks: { beforeInput: (c) => { seen.push(`b:${c.text}`); return { text: `${c.text}+B` }; } } },
+      ],
+    });
+    // b saw a's output, so the two compose instead of both starting from "base"
+    expect(seen).toEqual(["a:base", "b:base+A"]);
+    expect(lastMessages.some((m) => m.content.includes("base+A+B"))).toBe(true);
+  }, 30_000);
+
+  test("beforeInput can veto a turn, and the veto is sticky", async () => {
+    const { createSession, allMessages } = await import("../src/store/db.ts");
+    const sessionId = createSession(work, "test-model").id;
+    let bRan = false;
+
+    const events = await runTurn("nope", {
+      chat: scripted([{ text: "should not run" }]).chat,
+      config: await cfgWith([]),
+      sessionId,
+      pluginsOverride: [
+        { name: "guard", hooks: { beforeInput: () => ({ abort: "refused by guard" }) } },
+        { name: "later", hooks: { beforeInput: () => { bRan = true; return { text: "resurrected" }; } } },
+      ],
+    });
+
+    // the turn ended with the plugin's reason and no model call
+    const done = events.find((e) => e.type === "done") as Extract<AgentEvent, { type: "done" }>;
+    expect(done.reason).toBe("refused by guard");
+    // nothing was stored: a vetoed turn must not pollute the transcript
+    expect(allMessages(sessionId)).toEqual([]);
+    // and a later plugin cannot resurrect it
+    expect(bRan).toBe(false);
+  }, 30_000);
+
+  test("beforeInput sees the source and whether it is the first turn", async () => {
+    const { createSession } = await import("../src/store/db.ts");
+    const sessionId = createSession(work, "test-model").id;
+    const seen: { source: string; first: boolean }[] = [];
+    const plugin = {
+      name: "probe",
+      hooks: { beforeInput: (c: { source: string; isFirstTurn: boolean }) => void seen.push({ source: c.source, first: c.isFirstTurn }) },
+    };
+
+    await runTurn("one", { chat: scripted([{ text: "a" }]).chat, config: await cfgWith([]), sessionId, pluginsOverride: [plugin], source: "acp" });
+    await runTurn("two", { chat: scripted([{ text: "b" }]).chat, config: await cfgWith([]), sessionId, pluginsOverride: [plugin], source: "print" });
+
+    // source lets one hook behave differently per frontend; isFirstTurn lets it
+    // greet or seed context without counting messages itself
+    expect(seen).toEqual([
+      { source: "acp", first: true },
+      { source: "print", first: false },
+    ]);
+  }, 30_000);
+
+  test("a throwing beforeInput costs one warn, not the turn", async () => {
+    const events = await runTurn("go", {
+      chat: scripted([{ text: "finished" }]).chat,
+      config: await cfgWith([]),
+      pluginsOverride: [{ name: "boom", hooks: { beforeInput: () => { throw new Error("input exploded"); } } }],
+    });
+    const warns = events.filter((e) => e.type === "warn") as Extract<AgentEvent, { type: "warn" }>[];
+    expect(warns.some((w) => w.message.includes("input exploded"))).toBe(true);
+    for (const w of warns) expect(w.message).toContain("boom");
+    // the turn ran on the ORIGINAL text — a broken hook must not eat the message
+    expect(events.some((e) => e.type === "done" && e.reason === "stop")).toBe(true);
+    expect(lastMessages.some((m) => m.content.includes("go"))).toBe(true);
+  }, 30_000);
+
   // `beforeContext` is the only hook that changes what the model sees on the
   // step it fires on. `beforeLLMCall` runs *after* renderContext, so an op
   // written there would land a step later — that difference is the whole

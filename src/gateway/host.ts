@@ -144,6 +144,7 @@ export function installHostApi(config: Config, provider: ProviderConfig): FoxHos
     turn: (sessionId, prompt, signal) =>
       runTurnCore(sessionId, provider, prompt, signal, {
         maxSteps: config.maxSteps,
+        source: "gateway",
         retryLimit: config.retryLimit,
         compactWarnAt: config.compactWarnAt,
         compactCtxOnlyAt: config.compactCtxOnlyAt,

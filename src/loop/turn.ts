@@ -1,4 +1,4 @@
-import { appendMessage, appendOps, getSession, kvDelete, kvGet, kvSet, recordUsage, type MessageRow } from "../store/db.ts";
+import { appendMessage, appendOps, getRef, getSession, kvDelete, kvGet, kvSet, recordUsage, type MessageRow } from "../store/db.ts";
 import { estimateTokens } from "../providers/models.ts";
 import type { ProviderConfig, ChatMessage, ToolDef, ToolCall, ChatFn } from "../providers/types.ts";
 import { resolveChat } from "../providers/index.ts";
@@ -62,6 +62,15 @@ export interface TurnOptions {
    * headless hosts — a tool must not expect it.
    */
   ui?: UiBridge;
+  /**
+   * Which surface submitted this turn ("tui", "print", "acp", "gateway", "sdk").
+   *
+   * Reaches `beforeInput` so an input hook can behave differently per frontend —
+   * a TUI-only `@file` expansion must not fire on an ACP client that already
+   * resolved its own attachments. Defaults to "tui" when absent, which is the
+   * only surface that never sets it explicitly.
+   */
+  source?: string;
 }
 
 interface StepOutcome {
@@ -458,7 +467,7 @@ export async function* runTurnCore(
 async function* turnBody(
   sessionId: string,
   cfg: ProviderConfig,
-  userText: string,
+  rawUserText: string,
   signal?: AbortSignal,
   opts: TurnOptions = {},
 ): AsyncGenerator<AgentEvent> {
@@ -519,6 +528,52 @@ async function* turnBody(
   const toolDefs = [...tools.values()].map((t) => t.def);
   const hooked = plugins.filter((p) => p.hooks);
 
+  // Declared before `beforeInput` because that hook warns through the same
+  // queue as every other hook — the drain below runs before the first yield.
+  const quiet = opts.quiet ?? false;
+  // Warnings a hook raises after the turn's first yield cannot be yielded from
+  // where they happen (`afterTool` runs inside a Promise.all), so they queue here
+  // and drain at the next point the loop is yielding anyway.
+  const pendingWarnings: string[] = [];
+  const hookWarn = (message: string) => {
+    if (!quiet) pendingWarnings.push(message);
+  };
+
+  // `beforeInput`: the one hook that can rewrite what the user typed. It runs
+  // BEFORE the user node is appended, so the rewritten text is what gets
+  // stored, what the transcript shows, and what the model reads — there is no
+  // "the model saw something else" case to explain later.
+  //
+  // Chained in load order: each plugin sees the previous one's text, so two
+  // plugins that both expand something compose instead of fighting. `abort` is
+  // sticky — once one plugin refuses the turn, a later one cannot resurrect it.
+  let userText = rawUserText;
+  if (hooked.some((p) => p.hooks?.beforeInput)) {
+    // getRef is the cheapest "has this session ever been written" probe: it is
+    // null until the first message, and the first-turn flag is what lets an
+    // input hook greet, seed context, or stay quiet on later turns.
+    const isFirstTurn = getRef(sessionId) === null;
+    for (const p of hooked) {
+      if (!p.hooks?.beforeInput) continue;
+      const patch = await runHook(
+        p,
+        "beforeInput",
+        () => p.hooks!.beforeInput!({ sessionId, cwd: session.cwd, text: userText, source: opts.source ?? "tui", isFirstTurn }),
+        hookWarn,
+      );
+      if (!patch) continue;
+      if (typeof patch.abort === "string") {
+        // a vetoed turn stores nothing and answers with the plugin's reason, so
+        // a guard can explain itself without polluting the transcript
+        if (!quiet) for (const w of pendingWarnings.splice(0)) yield { type: "warn", message: w };
+        yield { type: "done", reason: patch.abort };
+        return;
+      }
+      if (typeof patch.text === "string") userText = patch.text;
+    }
+    if (!quiet) for (const w of pendingWarnings.splice(0)) yield { type: "warn", message: w };
+  }
+
   const userNode = appendMessage(sessionId, {
     parent_id: null,
     role: "user",
@@ -534,7 +589,6 @@ async function* turnBody(
   // truncation op entirely; the stored row is whole either way, so this only
   // decides how much of it the model and transcript read by default.
   const presentationCap = resolvePresentationCap(effCfg);
-  const quiet = opts.quiet ?? false;
   // Compaction policy resolves config-first, option-second, so a host that
   // passes `config` (every host does) cannot silently lose a threshold by
   // forgetting to forward one field.
@@ -560,14 +614,6 @@ async function* turnBody(
       "http-referer": "https://github.com/QQSHI13/fox-agent",
       ...cfg.headers,
     },
-  };
-
-  // Warnings a hook raises after the turn's first yield cannot be yielded from
-  // where they happen (`afterTool` runs inside a Promise.all), so they queue here
-  // and drain at the next point the loop is yielding anyway.
-  const pendingWarnings: string[] = [];
-  const hookWarn = (message: string) => {
-    if (!quiet) pendingWarnings.push(message);
   };
 
   // surface MCP, plugin and config warnings once, at the top of the turn

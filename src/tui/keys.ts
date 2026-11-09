@@ -133,6 +133,41 @@ export function isWheel(name: string | undefined): boolean {
   return name === "wheelup" || name === "wheeldown" || name === "wheelleft" || name === "wheelright";
 }
 
+/**
+ * Normalize a decoded `Key` to the chord string a plugin claims, e.g. `"ctrl+g"`.
+ *
+ * One function, used by both the matcher and the shadow report, so a plugin
+ * cannot claim a chord the harness handles by spelling it differently. Returns
+ * null for events that are not chords (paste, mouse): those have their own
+ * dispatch paths and a plugin should not be able to swallow a drag.
+ */
+export function chordOf(k: Key): string | null {
+  if (k.type === "char") return k.ch.toLowerCase();
+  if (k.type !== "named") return null;
+  // modifiers in a fixed order, so "shift+ctrl+up" and "ctrl+shift+up" are the
+  // same claim rather than two entries that half-work
+  const mods = [k.ctrl ? "ctrl" : "", k.meta ? "alt" : "", k.shift ? "shift" : ""].filter(Boolean);
+  return [...mods, k.name].join("+");
+}
+
+/**
+ * Normalize a chord the way a plugin writes it, so `"Ctrl+G"` and `"ctrl+g"`
+ * both match. Splits on `+`, lowercases, and puts modifiers in the same fixed
+ * order `chordOf` uses.
+ */
+export function normalizeChord(claim: string): string {
+  const parts = claim
+    .toLowerCase()
+    .split("+")
+    .map((p) => p.trim())
+    .filter(Boolean);
+  if (!parts.length) return "";
+  const mods = new Set(parts.slice(0, -1));
+  const base = parts[parts.length - 1];
+  const ordered = [mods.has("ctrl") ? "ctrl" : "", mods.has("alt") || mods.has("meta") ? "alt" : "", mods.has("shift") ? "shift" : ""].filter(Boolean);
+  return [...ordered, base].join("+");
+}
+
 
 /**
  * xterm encodes modifiers as a second CSI parameter, 1 + a bitmask:

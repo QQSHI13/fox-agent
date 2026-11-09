@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { createDecoder, type Key } from "../src/tui/keys.ts";
+import { createDecoder, chordOf, normalizeChord, type Key } from "../src/tui/keys.ts";
 
 function feedKeys(input: string): Key[] {
   const out: Key[] = [];
@@ -412,5 +412,33 @@ describe("one glyph is one key, whatever its byte length", () => {
       { type: "char", ch: "日" },
       { type: "char", ch: "本" },
     ]);
+  });
+});
+
+describe("key chords", () => {
+  // chordOf and normalizeChord must agree, or a plugin claims "ctrl+g" and the
+  // decoder's "ctrl+g" never matches it — a binding that silently does nothing.
+  test("a decoded key and a plugin's claim normalize to the same string", () => {
+    const cases: [Key, string][] = [
+      [{ type: "named", name: "g", ctrl: true }, "ctrl+g"],
+      [{ type: "named", name: "up", ctrl: true, shift: true }, "ctrl+shift+up"],
+      [{ type: "named", name: "up", shift: true, ctrl: true }, "ctrl+shift+up"],
+      [{ type: "named", name: "f5" }, "f5"],
+      [{ type: "named", name: "escape" }, "escape"],
+    ];
+    for (const [k, claim] of cases) {
+      expect(chordOf(k)).toBe(normalizeChord(claim));
+    }
+  });
+
+  test("modifier order does not matter, and case is ignored", () => {
+    expect(normalizeChord("Ctrl+G")).toBe(normalizeChord("ctrl+g"));
+    expect(normalizeChord("shift+ctrl+up")).toBe(normalizeChord("ctrl+shift+up"));
+    expect(normalizeChord("Alt+Meta+x")).toBe("alt+x");
+  });
+
+  test("paste and mouse are not chords — a plugin must not swallow a drag", () => {
+    expect(chordOf({ type: "paste", text: "x" })).toBeNull();
+    expect(chordOf({ type: "mouse", action: "down", x: 0, y: 0, button: 0 })).toBeNull();
   });
 });

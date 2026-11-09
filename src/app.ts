@@ -399,6 +399,27 @@ export async function run(parsed: Parsed): Promise<void> {
         /* plugin load failed — the TUI still opens, plugins just contribute nothing */
       }
 
+      // Publish the host API for a LIVE session, not just for `fox <plugin-cmd>`.
+      //
+      // It used to be installed only on the plugin-subcommand path (below, and in
+      // the gateway), so a plugin's own code could reach the engine only when the
+      // plugin WAS the entry point. A plugin that contributes a TUI region, a
+      // status segment or a slash command runs inside a normal session and had no
+      // way to list sessions, start a turn or call the command runner — the
+      // things `foxHost` exists to expose.
+      //
+      // Installed after plugin loading so `plugins.active()` sees the real list,
+      // and before the first frame so a region can call it immediately.
+      if (config) {
+        try {
+          const { installHostApi } = await import("./gateway/host.ts");
+          installHostApi(config, provider);
+        } catch {
+          /* the API is a convenience; a failure must not stop the TUI opening */
+        }
+      }
+
+
       // lazy: headless/-p/--acp runs should not pay for the renderer's modules
       const { startTui } = await import("./tui/app.ts");
 
@@ -462,6 +483,7 @@ export async function run(parsed: Parsed): Promise<void> {
     for await (const ev of runTurnCore(sessionId, provider, trimmed, undefined, {
       // headless reached here only via the eager-load path, so config is set
       maxSteps: config!.maxSteps,
+      source: "print",
       retryLimit: config!.retryLimit,
       compactWarnAt: config!.compactWarnAt,
       compactCtxOnlyAt: config!.compactCtxOnlyAt,
@@ -674,6 +696,7 @@ async function plainLoop(state: HarnessState) {
       const text = expandMentions(raw, state.cwd).text;
       for await (const ev of runTurnCore(ensureSession(), state.provider, text, signal, {
         maxSteps: config?.maxSteps,
+        source: "mini",
         retryLimit: config?.retryLimit,
         compactWarnAt: config?.compactWarnAt,
         compactCtxOnlyAt: config?.compactCtxOnlyAt,

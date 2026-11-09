@@ -19,6 +19,10 @@ export async function* runTurn(
   yield* runTurnCore(sessionId, cfg, userText, signal, {
     maxSteps: config?.maxSteps,
     lockKind,
+    // the facade's only callers are the TUI and the CLI, and both name their
+    // surface through lockKind already — so the input hook gets the same answer
+    // without a second parameter to thread
+    source: lockKind ?? "tui",
     retryLimit: config?.retryLimit,
     compactWarnAt: config?.compactWarnAt,
     compactCtxOnlyAt: config?.compactCtxOnlyAt,

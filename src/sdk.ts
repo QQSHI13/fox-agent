@@ -19,6 +19,8 @@ export type {
   PluginCommand,
   PluginCommandContext,
   SessionStartContext,
+  BeforeInputContext,
+  BeforeInputPatch,
   BeforeContextContext,
   BeforeContextPatch,
   BeforeLLMCallContext,
@@ -127,6 +129,7 @@ export async function createAgent(opts: {
       try {
         for await (const ev of runTurnCore(sessionId, provider, prompt, runOpts.signal, {
           maxSteps: runOpts.turn?.maxSteps ?? config.maxSteps,
+          source: "sdk",
           retryLimit: runOpts.turn?.retryLimit ?? config.retryLimit,
           compactWarnAt: runOpts.turn?.compactWarnAt ?? config.compactWarnAt,
           compactCtxOnlyAt: runOpts.turn?.compactCtxOnlyAt ?? config.compactCtxOnlyAt,
