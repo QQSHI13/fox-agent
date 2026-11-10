@@ -48,7 +48,7 @@ function capTaskResult(text: string): string {
 export const taskDef: ToolDef = {
   name: "task",
   description:
-    "Delegate a self-contained subtask to a subagent: a separate agent with its own context window and session — a spawned child process spoken to over ACP. It has the same full tool access you do and cannot see this conversation, so give it complete standalone instructions. Returns its final report. For background subagents and polling, use the repl tool's `jobs` API.",
+    "Delegate a self-contained subtask to a subagent: a separate agent with its own context window and session — a spawned child process spoken to over ACP. It has the same full tool access you do and cannot see this conversation, so give it complete standalone instructions. Returns its final report and its session id; pass that id back as `session` to ask that same subagent a follow-up. For background subagents and polling, use the repl tool's `jobs` API.",
   parameters: {
     type: "object",
     properties: {
@@ -57,6 +57,10 @@ export const taskDef: ToolDef = {
       agent: {
         type: "string",
         description: 'Which agent to delegate to: "default" (another fox-agent) or a name configured in fox-agent.toml [agents.*] (an ACP command)',
+      },
+      session: {
+        type: "string",
+        description: "Session id from a previous `task` result, to continue that subagent instead of starting a fresh one",
       },
     },
     required: [],
@@ -80,7 +84,7 @@ function resolveAgent(name: string | undefined, agents: Record<string, ExternalA
 }
 
 export async function taskRun(
-  args: { description?: string; prompt?: string; agent?: string },
+  args: { description?: string; prompt?: string; agent?: string; session?: string },
   ctx: ToolContext,
 ): Promise<ToolResult> {
   if (!args.prompt?.trim()) return fail("error: task needs prompt");
@@ -90,7 +94,7 @@ export async function taskRun(
 }
 
 export async function executeTask(
-  args: { description?: string; prompt?: string; agent?: string },
+  args: { description?: string; prompt?: string; agent?: string; session?: string },
   ctx: ToolContext,
 ): Promise<ToolResult> {
 
@@ -102,6 +106,21 @@ export async function executeTask(
 
   const children = kvGet<string[]>(ctx.sessionId, "children") ?? [];
   const label = args.description!.trim();
+
+  // Resuming is capability-checked against the children THIS session spawned.
+  // Without the check `session` would be a model-chosen handle on any session
+  // in the agent home — including the user's own foreground conversations,
+  // which a subagent has no business reading or appending to. The ledger is
+  // written by the `kvSet` below, so the set of legitimate ids is exactly the
+  // set of children and nothing else.
+  const resumeId = args.session?.trim() || undefined;
+  if (resumeId && !children.includes(resumeId)) {
+    return fail(
+      `error: session "${resumeId}" was not spawned by this session — pass one of the ids this session's \`task\` calls reported ` +
+        (children.length ? `(${children.join(", ")})` : "(it has spawned none yet)"),
+    );
+  }
+
   try {
     // ACP: spawn a child process and stream its tool activity into the parent's
     // stream as it happens. Lazy-imported so the ACP SDK stays off TUI startup.
@@ -117,6 +136,7 @@ export async function executeTask(
       cwd: ctx.cwd,
       prompt: args.prompt!,
       signal: ctx.signal,
+      sessionId: resumeId,
       env: { ...spec.env, [DEPTH_ENV]: String(depth + 1) },
       // Forward the child's tool activity into the parent's stream so its work is
       // visible while it happens. Text is deliberately not forwarded: it is this
@@ -140,7 +160,9 @@ export async function executeTask(
         : undefined,
     });
 
-    kvSet(ctx.sessionId, "children", [...children, res.sessionId]);
+    // A resume re-uses the id, so appending again would grow the ledger once per
+    // follow-up; membership is the only thing it is read for.
+    if (!children.includes(res.sessionId)) kvSet(ctx.sessionId, "children", [...children, res.sessionId]);
 
     if (res.stopReason === "cancelled") return fail(`error: subagent cancelled${res.text ? `\n\n${res.text}` : ""}`);
     const text = res.text.trim();

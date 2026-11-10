@@ -1068,6 +1068,75 @@ describe("acp client: terminal host", () => {
   });
 });
 
+describe("acp client: resuming a subagent session", () => {
+  /** An agent whose reply counts itself, and which records every message list it was given. */
+  async function countingAgent() {
+    const { buildAgent } = await import("../src/acp/server.ts");
+    const seen: any[] = [];
+    const chat = async function* (_c: any, messages: any): AsyncGenerator<StreamEvent> {
+      seen.push(structuredClone(messages));
+      yield { type: "text", delta: `reply ${seen.length}` };
+      yield { type: "done", reason: "stop" };
+    };
+    const app = buildAgent({ config: cfg(), provider: provider(), chat: chat as never });
+    return { app, seen };
+  }
+
+  const turn = async (app: acp.AgentApp, prompt: string, sessionId?: string) => {
+    const { clientForTurn, runAcpTurn } = await import("../src/acp/client.ts");
+    const { app: client, queue } = clientForTurn(work, sessionId);
+    const updates: string[] = [];
+    const res = await client.connectWith(app, (agent) =>
+      runAcpTurn(agent, { cwd: work, prompt, sessionId, onUpdate: (u) => updates.push(u.sessionUpdate) }, queue),
+    );
+    return { ...res, updates };
+  };
+
+  test("a follow-up continues the same session and sees the earlier turns", async () => {
+    const { app, seen } = await countingAgent();
+
+    const first = await turn(app, "remember the word PINEAPPLE");
+    const second = await turn(app, "what word did I ask you to remember?", first.sessionId);
+
+    // same session, not a fresh one — the whole point of the `session` param
+    expect(second.sessionId).toBe(first.sessionId);
+    expect(second.text).toBe("reply 2");
+
+    // the child's own context carried over: the parent's second prompt is a
+    // follow-up, so "what word?" only means anything if the first turn is there
+    const send = JSON.stringify(seen[1]);
+    expect(send).toContain("PINEAPPLE");
+    expect(send).toContain("what word did I ask you to remember?");
+  });
+
+  // Regression: without the drain after `session/load`, the replayed history is
+  // still sitting in the queue, so the read returns an OLD chunk as this turn's
+  // answer and the report becomes the child's previous message.
+  test("the replayed transcript is not reported as this turn's answer", async () => {
+    const { app } = await countingAgent();
+    const first = await turn(app, "first prompt");
+    const second = await turn(app, "second prompt", first.sessionId);
+
+    expect(first.text).toBe("reply 1");
+    expect(second.text).toBe("reply 2");
+    expect(second.text).not.toContain("reply 1");
+  });
+
+  test("a resumed turn forwards only its own updates, not the replay", async () => {
+    const { app } = await countingAgent();
+    const first = await turn(app, "first prompt");
+    const second = await turn(app, "second prompt", first.sessionId);
+
+    expect(second.updates.length).toBeGreaterThan(0);
+    expect(second.updates.every((u) => u === "agent_message_chunk")).toBe(true);
+  });
+
+  test("an unknown session id fails instead of silently starting a new one", async () => {
+    const { app } = await countingAgent();
+    await expect(turn(app, "hello", "does-not-exist")).rejects.toThrow(/not found|resourceNotFound/i);
+  });
+});
+
 describe("acp: the guarantees the modes and overrides claim", () => {
   /** A chat mock that records what the turn was handed: provider cfg and tool names. */
   function spyChat() {

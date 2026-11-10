@@ -30,6 +30,14 @@ export interface RunAcpAgentOptions extends AcpAgentSpec {
   signal?: AbortSignal;
   /** every update the child sends, in order, before the turn stops */
   onUpdate?: (u: acp.SessionUpdate) => void;
+  /**
+   * Reopen this existing session instead of starting a new one.
+   *
+   * Without it every call is a fresh child with an empty context, which is why
+   * a subagent could never be asked a follow-up question. With it the child is
+   * still a new process — only the transcript is restored, via `session/load`.
+   */
+  sessionId?: string;
 }
 
 export interface AcpAgentResult {
@@ -231,11 +239,11 @@ export function closeAllTerminals(): void {
  * The client half fox-agent presents to a child agent. Exported so tests can pair it
  * against an in-process agent app with no subprocess.
  */
-export function buildClient(cwd: string): acp.ClientApp {
+export function buildClient(cwd: string, onSessionUpdate?: (n: acp.SessionNotification) => void): acp.ClientApp {
   const terminals = new TerminalHost(cwd);
   liveHosts.add(terminals);
 
-  return acp
+  const app = acp
     .client({ name: "fox-agent" })
     .onRequest(acp.methods.client.fs.readTextFile, async ({ params }) => {
       const full = resolvePath(cwd, params.path);
@@ -288,10 +296,19 @@ export function buildClient(cwd: string): acp.ClientApp {
       void params;
       return { action: "decline" as const };
     })
+    .onNotification(acp.methods.client.session.update, async ({ params }) => {
+      // Called for EVERY session update, including ones the SDK's own router
+      // already delivered to an ActiveSession (it returns `Handled.no`, so
+      // both see it). The caller filters by session id; a fresh session ignores
+      // them all and reads its ActiveSession queue instead.
+      onSessionUpdate?.(params);
+    })
     .onNotification(acp.methods.client.elicitation.complete, async () => {
       // A completion notice for an elicitation we already declined — nothing to
       // do, and throwing here would break the child's stream for no reason.
     });
+
+  return app;
 }
 
 /**
@@ -367,62 +384,182 @@ export async function runAcpAgent(opts: RunAcpAgentOptions): Promise<AcpAgentRes
     }
   };
 
+  // A resumed session has no `ActiveSession` to read from: `session/load`
+  // returns an empty response, and the SDK only routes `session/update` into
+  // helpers created by `session/new`. Its router declines the notification
+  // (`Handled.no`), so an ordinary `onNotification` handler still sees every
+  // update — that is the queue a resumed turn reads from.
+  const { app, queue } = clientForTurn(opts.cwd, opts.sessionId);
+
   try {
-    return await buildClient(opts.cwd).connectWith(childStream(proc), async (agent) => {
-      await agent.request(acp.methods.agent.initialize, {
-        protocolVersion: acp.PROTOCOL_VERSION,
-        clientCapabilities: {
-          fs: { readTextFile: true, writeTextFile: true },
-          // advertised because `buildClient` implements all five terminal
-          // methods — a false here would make a conforming child run its own
-          // commands, which is the behaviour this host exists to avoid
-          terminal: true,
-          // no form host: `elicitation/create` is declined, so advertising it
-          // would promise an interaction that never comes
-          elicitation: { form: false, url: false },
-        },
-      });
-
-      return await agent.buildSession(opts.cwd).withSession(async (session) => {
-        if (opts.signal?.aborted) return { text: "", stopReason: "cancelled" as const, sessionId: session.sessionId };
-        const onAbort = () => {
-          void agent.notify(acp.methods.agent.session.cancel, { sessionId: session.sessionId }).catch(() => {});
-        };
-        opts.signal?.addEventListener("abort", onAbort, { once: true });
-
-        let text = "";
-        try {
-          void session.prompt(opts.prompt).catch(() => {
-            // The rejection is also delivered as the `stop` message read below;
-            // swallowing it here only prevents an unhandled rejection.
-          });
-          for (;;) {
-            // Race the next protocol message against the abort signal: a child
-            // that ignores session/cancel would otherwise leave nextUpdate()
-            // pending forever, the loop never reaches the finally, and the
-            // process is never killed. On abort, break out so the outer finally
-            // runs kill().
-            const msg = await Promise.race([
-              session.nextUpdate(),
-              new Promise<never>((_, rej) => {
-                if (opts.signal?.aborted) return rej(new Error("aborted"));
-                opts.signal?.addEventListener("abort", () => rej(new Error("aborted")), { once: true });
-              }),
-            ]);
-            if (msg.kind === "stop") return { text: text.trim(), stopReason: msg.stopReason, sessionId: session.sessionId };
-            opts.onUpdate?.(msg.update);
-            if (msg.update.sessionUpdate === "agent_message_chunk" && msg.update.content.type === "text") {
-              text += msg.update.content.text;
-            }
-          }
-        } finally {
-          opts.signal?.removeEventListener("abort", onAbort);
-        }
-      });
-    });
+    return await app.connectWith(childStream(proc), (agent) => runAcpTurn(agent, opts, queue));
   } finally {
     // the child is gone, so anything it asked this host to run dies with it
     closeAllTerminals();
     kill();
   }
+}
+
+/** Updates waiting to be read by a resumed turn, fed by the client's notification hook. */
+export interface ResumeQueue {
+  /** An update the child sent for the resumed session. */
+  push: (n: acp.SessionNotification) => void;
+  /** Resolve with the next update, waiting for one if the queue is empty. */
+  next: () => Promise<acp.ActiveSessionMessage>;
+  /** End the turn: the `session/prompt` response, which is its `stop` message. */
+  stop: (r: acp.PromptResponse) => void;
+  /** Discard everything queued so far. */
+  drain: () => void;
+}
+
+/**
+ * The client app for one delegation, plus the queue its updates land in.
+ *
+ * Exported as a pair because the hook has to be registered when the app is
+ * built — before `connectWith` — while the queue is read later inside the turn.
+ * Tests use this to drive `runAcpTurn` against an in-process agent app, which is
+ * the only way to exercise the resume path without a subprocess.
+ */
+export function clientForTurn(cwd: string, sessionId?: string): { app: acp.ClientApp; queue: ResumeQueue } {
+  const pending: acp.ActiveSessionMessage[] = [];
+  let wake: (() => void) | null = null;
+  const enqueue = (m: acp.ActiveSessionMessage) => {
+    pending.push(m);
+    wake?.();
+  };
+  const queue: ResumeQueue = {
+    push(n) {
+      // a fresh turn reads its ActiveSession queue instead; the hook still sees
+      // those updates (the SDK router cannot consume them) and must ignore them
+      if (!sessionId || n.sessionId !== sessionId) return;
+      enqueue({ kind: "session_update", notification: n, update: n.update });
+    },
+    async next() {
+      while (!pending.length) {
+        await new Promise<void>((r) => {
+          wake = () => {
+            wake = null;
+            r();
+          };
+        });
+      }
+      return pending.shift()!;
+    },
+    stop(r) {
+      enqueue({ kind: "stop", response: r, stopReason: r.stopReason });
+    },
+    drain() {
+      pending.length = 0;
+    },
+  };
+  return { app: buildClient(cwd, (n) => queue.push(n)), queue };
+}
+
+/**
+ * Initialize the child and run one prompt turn, returning its final text.
+ *
+ * The child's own text is accumulated from `agent_message_chunk` updates; thought
+ * chunks are excluded, since a delegating parent wants the report, not the
+ * child's reasoning. `signal` maps to `session/cancel` and then to killing the
+ * process, because an agent that ignores cancel must not outlive the turn.
+ *
+ * A fresh session and a resumed one differ only in how the next message is read:
+ * `session/new` hands back an `ActiveSession` whose queue the SDK fills, while
+ * `session/load` hands back nothing and the updates come from `queue` instead.
+ */
+export async function runAcpTurn(
+  agent: acp.ClientContext,
+  opts: Pick<RunAcpAgentOptions, "cwd" | "prompt" | "signal" | "onUpdate" | "sessionId">,
+  queue: ResumeQueue,
+): Promise<AcpAgentResult> {
+  await agent.request(acp.methods.agent.initialize, {
+    protocolVersion: acp.PROTOCOL_VERSION,
+    clientCapabilities: {
+      fs: { readTextFile: true, writeTextFile: true },
+      // advertised because `buildClient` implements all five terminal
+      // methods — a false here would make a conforming child run its own
+      // commands, which is the behaviour this host exists to avoid
+      terminal: true,
+      // no form host: `elicitation/create` is declined, so advertising it
+      // would promise an interaction that never comes
+      elicitation: { form: false, url: false },
+    },
+  });
+
+  // Prompt one session id to completion, accumulating the child's text.
+  const promptSession = async (
+    sid: string,
+    nextMsg: () => Promise<acp.ActiveSessionMessage>,
+    send: (text: string) => Promise<unknown>,
+  ): Promise<AcpAgentResult> => {
+    if (opts.signal?.aborted) return { text: "", stopReason: "cancelled" as const, sessionId: sid };
+    const onAbort = () => {
+      void agent.notify(acp.methods.agent.session.cancel, { sessionId: sid }).catch(() => {});
+    };
+    opts.signal?.addEventListener("abort", onAbort, { once: true });
+
+    let text = "";
+    try {
+      void send(opts.prompt).catch(() => {
+        // The rejection is also delivered as the `stop` message read below;
+        // swallowing it here only prevents an unhandled rejection.
+      });
+      for (;;) {
+        // Race the next protocol message against the abort signal: a child
+        // that ignores session/cancel would otherwise leave the read pending
+        // forever, the loop never reaches the finally, and the process is
+        // never killed. On abort, break out so the caller's finally runs kill().
+        const msg = await Promise.race([
+          nextMsg(),
+          new Promise<never>((_, rej) => {
+            if (opts.signal?.aborted) return rej(new Error("aborted"));
+            opts.signal?.addEventListener("abort", () => rej(new Error("aborted")), { once: true });
+          }),
+        ]);
+        if (msg.kind === "stop") return { text: text.trim(), stopReason: msg.stopReason, sessionId: sid };
+        opts.onUpdate?.(msg.update);
+        if (msg.update.sessionUpdate === "agent_message_chunk" && msg.update.content.type === "text") {
+          text += msg.update.content.text;
+        }
+      }
+    } finally {
+      opts.signal?.removeEventListener("abort", onAbort);
+    }
+  };
+
+  const resumeId = opts.sessionId;
+  if (!resumeId) {
+    return await agent.buildSession(opts.cwd).withSession((session) =>
+      promptSession(session.sessionId, () => session.nextUpdate(), (t) => session.prompt(t)),
+    );
+  }
+
+  // Resuming: the transcript comes back as a replay of `session/update`
+  // notifications, so the queue has to exist BEFORE `session/load` is sent or
+  // the history a follow-up depends on is dropped on the floor. The reloaded
+  // turns are then discarded — they are the child's memory, not this turn's
+  // output, and `onUpdate` is documented as the live turn only.
+  // Resuming: the transcript comes back as a replay of `session/update`
+  // notifications, so the queue has to exist BEFORE `session/load` is sent or
+  // the history a follow-up depends on is dropped on the floor. The reloaded
+  // turns are then discarded — they are the child's memory, not this turn's
+  // output, and `onUpdate` is documented as the live turn only.
+  await agent.request(acp.methods.agent.session.load, { sessionId: resumeId, cwd: opts.cwd, mcpServers: [] });
+  queue.drain();
+  return await promptSession(
+    resumeId,
+    queue.next,
+    // The prompt RESPONSE is this turn's `stop` message. `ActiveSession.prompt`
+    // does that conversion for a fresh session; a bare request does not, so
+    // without this the read waits on a notification that never comes and the
+    // delegation hangs until the turn is cancelled.
+    async (t) => {
+      const res = await agent.request(acp.methods.agent.session.prompt, {
+        sessionId: resumeId,
+        prompt: [{ type: "text" as const, text: t }],
+      });
+      queue.stop(res);
+      return res;
+    },
+  );
 }
