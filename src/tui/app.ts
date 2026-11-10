@@ -886,10 +886,23 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     tui.inSelAnchor = r.anchor;
     return true;
   }
+  /**
+   * Move the caret a visual row up or down, repainting the dock.
+   *
+   * The bump belongs HERE, in the one function every caller shares, not at each
+   * call site. It used to be at neither: `up`/`down` (line ~2777), the wheel's
+   * vertical-caret path and ctrl+pageup/pagedown all called this and returned,
+   * so the caret moved through the buffer while the screen kept the old
+   * position — the arrow keys looked dead on a wrapped multi-line draft.
+   * `deleteInSel`/`moveCaret*` below return a value their callers act on, but
+   * these three do not, which is exactly how the missing bump stayed invisible.
+   */
   function moveCaretVertical(dir: -1 | 1, extend: boolean) {
     const r = tui.inputMod.moveCaretVertical(dir, extend, tui.cur, tui.inSelAnchor);
+    if (r.cur === tui.cur && r.anchor === tui.inSelAnchor) return; // no movement, no repaint
     tui.cur = r.cur;
     tui.inSelAnchor = r.anchor;
+    bumpBuf();
   }
 
   // ---- mouse / selection state ----
