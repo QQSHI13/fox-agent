@@ -115,6 +115,7 @@ const FALLBACK_THEME = {
   error: "#f7768e",
   tool: "#e0af68",
   inputBg: "#1f2335",
+  toolBg: "#2a2530",
 } as const;
 
 const sig = (name: string, args: unknown): string => `${name}:${JSON.stringify(args ?? null)}`;
@@ -300,7 +301,11 @@ const plugin: FoxPlugin = {
         // count asked for, which showed up as a stray blank line above the tally.
         const y0 = bottom - boxH + 1;
         const inner = boxW - 2; // one column of padding each side
-        const bg = t.panelBg ?? t.inputBg;
+        // `toolBg`, not `inputBg`. The input dock's own colour is the one thing
+        // this panel must NOT be: they sit adjacent, so sharing a background made
+        // the two read as one surface with no edge between them. `toolBg` is
+        // defined by every preset and is already "subtly different from inputBg".
+        const bg = t.panelBg ?? t.toolBg;
 
         const row = (y: number) => p.fillRow(y, x0, right, { bg });
         const at = (x: number, y: number, s: string, style: { fg?: string; bold?: boolean }) =>

@@ -57,10 +57,14 @@ export interface Theme {
   /** thinking/reasoning blocks — a distinct cool tone, not the tool amber */
   think: string;
   /**
-   * Floating command-output panels (/todo, /usage, /help boxes) — optional,
-   * falls back to inputBg so every theme gets a visible panel without edits.
-   * Unfilled, those boxes sat on the terminal's own background, which reads
-   * as a plain black slab unrelated to the theme.
+   * Floating panels: command output (/todo, /usage, /help) and plugin regions.
+   *
+   * Optional, and it falls back to `toolBg` — NOT `inputBg`. The old fallback
+   * was `inputBg`, which is the input dock's own colour, so a panel and the
+   * box you type in were the same surface: a plugin region sitting above the
+   * dock read as one continuous block with no edge between them. `toolBg` is
+   * defined by every preset and is already documented as "subtly different
+   * from inputBg", so the fallback needs no per-theme value to be correct.
    */
   panelBg?: string;
   /**

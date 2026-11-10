@@ -498,7 +498,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           get theme() { themeV(); return theme(); },
           // Which session this frame shows, so a region can seed itself from
           // history (foxHost.sessions.messages) instead of starting blank.
-          get sessionId() { return state.sessionId || null; },
+          // Reads `sessionV` so a session switch repaints the region: reading
+          // `state.sessionId` directly subscribed to nothing.
+          get sessionId() { sessionV(); return state.sessionId || null; },
           wrap: (text: string, width: number, opts?: TuiWrapOptions) => wrapText(text, width, opts),
         };
         pluginRegionEffects.set(
@@ -666,6 +668,16 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   const sizeV = signal({ w: 0, h: 0 }, { label: "size", equals: (a, b) => a.w === b.w && a.h === b.h });
   const scrollbarV = signal(true, { label: "scrollbar" });
   const themeV = signal("", { label: "theme" });
+  /**
+   * The current session id, as a SIGNAL.
+   *
+   * `state.sessionId` is a plain variable, so a getter that read it subscribed
+   * to nothing: a plugin region rendering per-session data never repainted when
+   * the user switched sessions, and kept showing the previous session's state
+   * until some unrelated signal happened to fire. Anything that must react to a
+   * session switch reads this instead.
+   */
+  const sessionV = signal<string | null>(null, { label: "session" });
   const highlightV = signal(0, { label: "highlight" });
   const statsV = counter("stats");
   const busyV = signal(false, { label: "busy" });
@@ -1476,6 +1488,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     state.pendingSession = false;
     state.readOnly = false;
     state.sessionId = id;
+    sessionV(id);
     pinSession(id);
     attachTuiHost(id);
     expandedRefs.clear(); // refs are per-session seqs; carrying them over expands unrelated nodes
@@ -1641,6 +1654,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     if (!state.sessionId) {
       const s = createSession(state.cwd, state.provider.model);
       state.sessionId = s.id;
+      sessionV(s.id);
       state.pendingSession = false;
       pinSession(s.id);
       attachTuiHost(s.id);
@@ -3949,7 +3963,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     S.inputBgRow = screen.sgr({ fg: C.fg, bg: C.inputBg });
     S.barBgRow = screen.sgr({ fg: C.fg, bg: C.barBg });
     S.toolBgRow = screen.sgr({ fg: C.fg, bg: C.toolBg });
-    S.panelBgRow = screen.sgr({ fg: C.fg, bg: C.panelBg ?? C.inputBg }); // floating cmd-output panels
+    S.panelBgRow = screen.sgr({ fg: C.fg, bg: C.panelBg ?? C.toolBg }); // floating cmd-output panels
     S.hintOnBase = screen.sgr({ fg: C.hint }); // floats over the transcript's own background
     S.think = screen.sgr({ fg: C.think }); // thinking blocks: distinct from tool/toolbody
     S.sbThumb = screen.sgr({ bg: C.hint }); // theme's muted tone: visible on both bar and transcript
@@ -4435,7 +4449,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       // glyphs and dimmed-done styling as a list in the transcript. Markdown is
       // NOT made global — a plain notice (/usage, /reload) has no markdown syntax,
       // so it round-trips to the same single plain segment as before.
-      const panelBg = C.panelBg ?? C.inputBg;
+      const panelBg = C.panelBg ?? C.toolBg;
       const mdRows = renderMarkdown(tui.cmdOut.join("\n")).flatMap((r) => wrapCodeAware(r, tui.W - 2));
       const shown = mdRows.slice(0, avail);
       cmdRowsH = shown.length + (mdRows.length > avail ? 1 : 0);
