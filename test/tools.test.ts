@@ -25,6 +25,12 @@ beforeEach(() => {
     cwd: dir,
     toolOutputCap: 30_000,
     readCap: 50_000,
+    // A ctx without this cold-starts a REAL typescript-language-server against
+    // the tmpdir on the first write/edit (afterWrite -> diagnose). Cold
+    // diagnostics take ~4.8s, so "edit > replaces a unique string" raced the
+    // 5s test timeout and failed whenever the machine was busy. These tests
+    // cover write/edit semantics, not diagnostics; lsp.test.ts owns that path.
+    diagnostics: false,
     get pty() {
       return pty;
     },
