@@ -264,7 +264,10 @@ const plugin: FoxPlugin = {
         // pushed up when the input wraps instead of sliding under it.
         const bottom = dockTop - 1;
         const maxH = bottom - 1;
-        if (maxH < 6 || boxW < 26) return; // too small to be legible: stay out of the way
+        // Too little room to be legible: stay out of the way entirely. 5 is the
+        // floor a complete panel needs (see minRows below); anything less and it
+        // would cover transcript without being readable.
+        if (maxH < 5 || boxW < 26) return;
 
         // Height follows CONTENT, not a fixed 14. A panel padded out with ten
         // blank rows reads as broken, and it covers transcript for no reason.
@@ -280,8 +283,16 @@ const plugin: FoxPlugin = {
         const barRows = b0 ? (showFigures ? 2 : 1) : 1; // the bar, plus its figures row
         const chromeRows = 1 + barRows + 1 + 1; // header + bar block + separator + tally
         const wantList = Math.max(1, Math.min(MAX_SHOWN, list0.length));
+        // The smallest panel that still says something: every chrome row plus one
+        // list row. It is 5, not 6 — and the old `boxH < 6` guard therefore
+        // rejected a FRESH session, where there is no budget reading yet (one
+        // bar row instead of two) and no tool call yet (one list row). The panel
+        // drew nothing at all until a turn had run, which reads as "ctrl+g does
+        // nothing". Derived from the parts so adding a chrome row cannot silently
+        // reintroduce the same off-by-one.
+        const minRows = chromeRows + 1;
         const boxH = Math.min(maxH, chromeRows + wantList);
-        if (boxH < 6) return;
+        if (boxH < minRows) return;
 
         const x0 = right - boxW;
         // `boxH` is a COUNT, and the box spans y0..bottom inclusive, so y0 is
