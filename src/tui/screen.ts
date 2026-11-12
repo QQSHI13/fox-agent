@@ -269,7 +269,20 @@ export class Screen {
     const base = y * this.w;
     for (let x = 0; x < this.w; x++) {
       const ch = this.chars[base + x];
-      h = (h ^ (ch ? ch.codePointAt(0)! : 32)) >>> 0;
+      // Three cell states are visually DIFFERENT and must not hash alike:
+      //   undefined → transparent, so a lower plane shows through
+      //   ""        → the second half of a wide glyph: nothing painted, but opaque
+      //   " "       → a real space
+      //
+      // All three folded to 32 here (`ch ? codePointAt : 32` — "" is falsy, and
+      // " " IS 32), so a row changing between them hashed identically and
+      // flush() skipped it, leaving the previous glyphs on the terminal. Wide
+      // characters are the only source of the "" state, which is why this
+      // showed up as stale text around CJK and not around ASCII. Sentinel
+      // values are above the Unicode ceiling (0x10FFFF) so no real character
+      // can collide with them.
+      const code = ch === undefined ? 0xffffffff : ch === "" ? 0xfffffffe : ch.codePointAt(0)!;
+      h = (h ^ code) >>> 0;
       h = (h * 16777619) >>> 0;
       h = (h ^ this.sty[base + x]) >>> 0;
       h = (h * 16777619) >>> 0;
@@ -282,6 +295,27 @@ export class Screen {
     const want = this.styles[st] ?? {};
     let cx = x;
     let wrote = false;
+    /**
+     * Per-call memo for the background-merge path.
+     *
+     * `sgr()` builds a template-string key and does a Map lookup. Calling it per
+     * CELL — which this did — made painting text over a FILLED row ten times the
+     * cost of the same text on an empty one: measured 1.50 ms vs 0.15 ms for one
+     * full 120x40 repaint. Every panel and every tool row fills first and writes
+     * text second, so that was the common path, not an edge case. On a small
+     * window the whole frame budget is 16 ms, and a busy screen repaints several
+     * such rows per frame.
+     *
+     * The merged style depends only on (this call's style, the cell's existing
+     * background). A filled row has ONE background, so the first character
+     * resolves it and the rest reuse it. Two slots, because text over a filled
+     * row can run onto an unfilled one and back — alternating backgrounds would
+     * thrash a single slot on exactly that boundary.
+     */
+    let m1bg: string | undefined;
+    let m1st = -1;
+    let m2bg: string | undefined;
+    let m2st = -1;
     for (const ch of str) {
       const cw = charWidth(ch.codePointAt(0)!);
       if (cw === 0) continue;
@@ -292,7 +326,17 @@ export class Screen {
       let finalSt = st;
       if (!want.bg) {
         const curBg = (this.styles[this.sty[i]] ?? {}).bg;
-        if (curBg) finalSt = this.sgr({ ...want, bg: curBg });
+        if (curBg) {
+          if (curBg === m1bg) finalSt = m1st;
+          else if (curBg === m2bg) finalSt = m2st;
+          else {
+            finalSt = this.sgr({ ...want, bg: curBg });
+            m2bg = m1bg;
+            m2st = m1st;
+            m1bg = curBg;
+            m1st = finalSt;
+          }
+        }
       }
       this.chars[i] = ch;
       this.sty[i] = finalSt;

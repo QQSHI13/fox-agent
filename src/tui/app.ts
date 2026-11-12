@@ -2563,6 +2563,12 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         tui.buf = [];
         tui.cur = 0;
         tui.inputMod.bumpRev();
+        // The dock repaints on `bufV`, not on the input module's own revision —
+        // bumping only the latter left the cleared text on screen until the next
+        // keystroke dirtied something the dock actually reads. `flash` does not
+        // help either: it bumps the status region, and the stale draft is in the
+        // dock.
+        bumpBuf();
         flash("cleared");
         return;
       }
@@ -2787,7 +2793,24 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         bumpHintSel();
         return;
       }
-      moveCaretVertical(name === "up" ? -1 : 1, !!k.shift);
+      // Move the caret only if it CAN move, then fall through to scrolling.
+      //
+      // These two lines used to be `moveCaretVertical(...); return;` — an
+      // unconditional return, so an arrow at the first or last visual row was
+      // swallowed: the caret clamped to the index it already held and the
+      // transcript never moved. With a one-line draft (the normal case) every
+      // arrow press did nothing at all, so a reply taller than the window could
+      // not be scrolled back with the keys the status bar advertises. The wheel
+      // already had this fall-through; the arrows did not.
+      const up = name === "up";
+      const before = tui.cur;
+      moveCaretVertical(up ? -1 : 1, !!k.shift);
+      if (tui.cur !== before) return;
+      const dir = up ? -SCROLL_STEP : SCROLL_STEP; // tuiScrollStep rows per press
+      if (tui.stick && dir < 0) tui.stick = false;
+      tui.scrollTop += dir;
+      clampScroll();
+      bumpScroll();
       return;
     }
     if (name === "tab") {
