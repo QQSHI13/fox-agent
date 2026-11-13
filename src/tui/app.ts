@@ -4020,18 +4020,23 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   function dockGeom() {
     const layout = tui.inputMod.inputLayout();
     const caret = tui.inputMod.caretPos(layout, tui.cur);
-    // dock geometry from the PAINTED frame when one is up (hit-tests must not
-    // disagree with the pixels); before the first paint, compute directly
-    const fr = tui.painted;
-    if (fr) return { layout, caret, shownCount: fr.shownCount, firstShown: fr.firstShown, inputTop: fr.inputTop };
     const totalVis = layout.rows.length;
-    const shownCount = dockRows(tui.H, totalVis, INPUT_MAX_ROWS); // matches computeFrame
+    const shownCount = tui.painted ? tui.painted.shownCount : dockRows(tui.H, totalVis, INPUT_MAX_ROWS);
+    const inputTop = tui.H - 1 - shownCount;
+
+    // The window (firstShown) follows the LIVE caret, not the painted frame's
+    // stored value. The frame only rebuilds on the transcript's async push, so
+    // between caret moves it holds a stale firstShown — which is why a tall
+    // draft's window stayed put until the caret hit the bottom row and a fresh
+    // frame finally landed. Deriving the window from the live caret here means
+    // every caret move (arrows, click, home/end) follows immediately, not just
+    // vertical moves. When the draft fits in the box there is no window.
     let firstShown = 0;
     if (totalVis > shownCount) {
       firstShown = Math.max(0, Math.min(caret.visRow - (shownCount - 1), totalVis - shownCount));
       if (caret.visRow < firstShown) firstShown = caret.visRow;
     }
-    return { layout, caret, shownCount, firstShown, inputTop: tui.H - 1 - shownCount };
+    return { layout, caret, shownCount, firstShown, inputTop };
   }
 
   /**
