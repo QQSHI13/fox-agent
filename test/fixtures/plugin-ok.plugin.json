@@ -1,0 +1,11 @@
+{
+  "id": "fixture",
+  "version": "1.0.0",
+  "entry": "plugin-ok.ts",
+  "permissions": ["provider"],
+  "contributes": {
+    "tools": ["ping"],
+    "providers": ["fixture-echo"],
+    "hooks": ["onSessionStart", "beforeLLMCall", "afterTool"]
+  }
+}

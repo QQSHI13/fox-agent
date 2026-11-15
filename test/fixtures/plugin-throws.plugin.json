@@ -1,0 +1,7 @@
+{
+  "id": "thrower",
+  "version": "1.0.0",
+  "entry": "plugin-throws.ts",
+  "permissions": [],
+  "contributes": {}
+}

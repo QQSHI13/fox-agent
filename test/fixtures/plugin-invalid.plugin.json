@@ -1,0 +1,7 @@
+{
+  "id": "invalid",
+  "version": "1.0.0",
+  "entry": "plugin-invalid.ts",
+  "permissions": [],
+  "contributes": {}
+}

@@ -1,0 +1,7 @@
+{
+  "id": "sdk-importer",
+  "version": "1.0.0",
+  "entry": "plugin-sdk-import.ts",
+  "permissions": [],
+  "contributes": { "tools": ["sdk_ping"] }
+}

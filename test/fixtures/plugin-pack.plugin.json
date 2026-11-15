@@ -1,0 +1,11 @@
+{
+  "id": "pack",
+  "version": "1.0.0",
+  "entry": "plugin-pack.ts",
+  "permissions": ["network", "shell"],
+  "contributes": {
+    "commands": ["/packed"],
+    "mcpServers": ["packed"],
+    "agents": ["packedreviewer"]
+  }
+}

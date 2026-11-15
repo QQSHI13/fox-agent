@@ -9,7 +9,7 @@
 //     stream, because the whole point of running it before `appendMessage` is that
 //     the stored copy is the patched one
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -155,6 +155,7 @@ describe("plugin loader", () => {
     const { plugins, warnings } = await loadPlugins([missing]);
     expect(plugins).toEqual([]);
     expect(warnings[0]).toContain(missing);
+    expect(warnings[0]).toContain("missing manifest");
   });
 
   test("the same path list is cached, so module state survives across turns", async () => {
@@ -168,13 +169,62 @@ describe("plugin loader", () => {
     expect(b.plugins[0]).toBe(a.plugins[0]);
   });
 
-  test("two entries resolving to the same plugin name load once, with a warning", async () => {
+  test("two spellings of the same plugin fail composition closed", async () => {
     const { loadPlugins } = await import("../src/plugins/load.ts");
-    // same file by two spellings — a relative path and an absolute one
+    // same file by two spellings — a relative path and an absolute one. Both
+    // resolve to the same static manifest id, so composition must reject the
+    // graph rather than load the plugin once and hope.
     const rel = `./${join("test", "fixtures", "plugin-ok.ts")}`;
     const { plugins, warnings } = await loadPlugins([FIX_OK, rel], join(import.meta.dir, ".."));
-    expect(plugins).toHaveLength(1);
-    expect(warnings[0]).toContain("already loaded");
+    expect(plugins).toEqual([]);
+    expect(warnings.join("\n")).toContain("duplicate plugin id 'fixture'");
+  });
+
+  test("a plugin without a manifest is skipped before its code is imported", async () => {
+    const { loadPlugins } = await import("../src/plugins/load.ts");
+    const entry = join(home, "no-manifest.ts");
+    const marker = join(home, "imported.marker");
+    writeFileSync(entry, `import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(marker)}, "yes"); export default { name: "no-manifest" };\n`);
+
+    const { plugins, warnings } = await loadPlugins([entry]);
+    expect(plugins).toEqual([]);
+    expect(existsSync(marker)).toBe(false);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("missing manifest");
+    expect(warnings[0]).toContain("no-manifest.plugin.json");
+  });
+
+  test("invalid manifest JSON is skipped before plugin code is imported", async () => {
+    const { loadPlugins } = await import("../src/plugins/load.ts");
+    const entry = join(home, "bad-json.ts");
+    const marker = join(home, "bad-json.marker");
+    writeFileSync(entry, `import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(marker)}, "yes"); export default { name: "bad-json" };\n`);
+    writeFileSync(join(home, "bad-json.plugin.json"), "{ not json");
+
+    const { plugins, warnings } = await loadPlugins([entry]);
+    expect(plugins).toEqual([]);
+    expect(existsSync(marker)).toBe(false);
+    expect(warnings[0]).toContain("invalid manifest JSON");
+  });
+
+  test("a runtime plugin name must match its manifest id", async () => {
+    const { loadPlugins } = await import("../src/plugins/load.ts");
+    const entry = join(home, "mismatch.ts");
+    writeFileSync(entry, `export default { name: "actual-name" };\n`);
+    writeFileSync(
+      join(home, "mismatch.plugin.json"),
+      JSON.stringify({
+        id: "declared-id",
+        version: "1.0.0",
+        entry: "mismatch.ts",
+        permissions: [],
+        contributes: {},
+      }),
+    );
+
+    const { plugins, warnings } = await loadPlugins([entry]);
+    expect(plugins).toEqual([]);
+    expect(warnings[0]).toContain("manifest id 'declared-id' does not match plugin name 'actual-name'");
   });
 
   test("~ in a path expands to the home directory", async () => {
@@ -208,6 +258,16 @@ describe("plugin loader", () => {
     );
     const isolated = join(home, "isolated-plugin.ts");
     writeFileSync(isolated, source);
+    writeFileSync(
+      join(home, "isolated-plugin.plugin.json"),
+      JSON.stringify({
+        id: "sdk-importer",
+        version: "1.0.0",
+        entry: "isolated-plugin.ts",
+        permissions: [],
+        contributes: { tools: ["sdk_ping"] },
+      }),
+    );
     // prove the arrangement really is unresolvable first — otherwise the test
     // silently reverts to passing through the self-reference path
     await expect(import(pathToFileURL(isolated).href)).rejects.toThrow(/fox-agent/);
@@ -315,6 +375,16 @@ describe("plugin tools in the registry", () => {
       shadow,
       `export default { name: "shadow", tools: [{ def: { name: "read", description: "shadowed", parameters: { type: "object" } }, run: async () => ({ ok: true, output: "shadowed read" }) }] };\n`,
     );
+    writeFileSync(
+      join(home, "shadow.plugin.json"),
+      JSON.stringify({
+        id: "shadow",
+        version: "1.0.0",
+        entry: "shadow.ts",
+        permissions: [],
+        contributes: { tools: ["read"] },
+      }),
+    );
 
     const { tools, warnings } = await buildRegistry(await cfgWith([shadow]));
     const res = await tools.get("read")!.run({}, {} as never);
@@ -409,6 +479,16 @@ describe("lifecycle hooks in a real turn", () => {
     writeFileSync(
       bad,
       `export default { name: "badhook", hooks: { beforeLLMCall() { throw new Error("hook exploded"); }, afterTool() { throw new Error("after exploded"); } } };\n`,
+    );
+    writeFileSync(
+      join(home, "bad-hook.plugin.json"),
+      JSON.stringify({
+        id: "badhook",
+        version: "1.0.0",
+        entry: "bad-hook.ts",
+        permissions: [],
+        contributes: { hooks: ["beforeLLMCall", "afterTool"] },
+      }),
     );
 
     const { chat } = scripted([{ tool: "read", args: { path: "nope.txt" } }, { text: "finished anyway" }]);
@@ -1021,6 +1101,16 @@ describe("plugin slash commands", () => {
     writeFileSync(
       shadow,
       `export default { name: "shadowcmd", commands: [{ name: "/todo", description: "shadowed", run: () => ({ handled: true, output: "shadowed todo" }) }] };\n`,
+    );
+    writeFileSync(
+      join(home, "shadow-cmd.plugin.json"),
+      JSON.stringify({
+        id: "shadowcmd",
+        version: "1.0.0",
+        entry: "shadow-cmd.ts",
+        permissions: [],
+        contributes: { commands: ["/todo"] },
+      }),
     );
     try {
       const { warnings } = await buildRegistry(await cfgWith([shadow]));
