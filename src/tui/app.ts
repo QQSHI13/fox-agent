@@ -3135,6 +3135,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           options: [
             { value: "fork", label: "fork — cut the session here (new session from [N])" },
             { value: "copy", label: "copy — message body to clipboard" },
+            { value: "delete", label: "delete — hide only [N] from context" },
             { value: "revert", label: "revert — hide [N] and everything after from context" },
           ],
         },
@@ -3148,6 +3149,14 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         flash(fork ? `forked -> ${fork.id}` : "fork failed");
       } else if (op === "copy") {
         await copyText(msg.content ?? "");
+      } else if (op === "delete") {
+        // hide ONLY this message — unlike revert, which hides [N] and everything
+        // after it. Same view op (a delete), same /undo restore, same seq.
+        appendOps(state.sessionId, [{ kind: "delete", ids: [seq] }]);
+        void import("../context/view.ts").then((m) => m.dropViewCache(state.sessionId!)).catch(() => {});
+        touchSeq(seq);
+        refresh();
+        flash(`deleted — hid [${seq}] from context (/undo restores)`);
       } else if (op === "revert") {
         // hide this message + all later ones: a single delete op over the seq
         // range. The view projection (not the transcript) drops them, so the
