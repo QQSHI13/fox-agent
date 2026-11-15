@@ -524,3 +524,7 @@ This design does not include:
 - Built-in behavior migrates to bundled plugins first.
 - External plugin support uses the same contracts.
 - Security remains trusted-workspace by default, with explicit permission declarations added before enforcement.
+- Phase 0 evidence is the existing suite plus the full gate run; no separate characterization-test layer was added in phase 0-1.
+- Phase 1 contribution uniqueness is global per contribution kind. Lifecycle hook names are shared points, not owned IDs, so duplicate `hooks` declarations compose.
+- Phase 1 validates and records manifest permissions before import; enforcement waits for the permission work in a later phase.
+- Phase 1 supports file-entry sidecar manifests. Directory-form plugin entries and `manifest.entry` resolution are follow-up work.
