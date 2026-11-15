@@ -106,7 +106,7 @@ by default; press `a` there to widen to all directories.
 
 ## Features
 
-- **Tools**: read/write/edit (whitespace-tolerant patch engine)/glob/grep (ripgrep when present)/exec (process-group kill)/pty (tmux, resize-proof)/repl (in-process JS scratchpad)/ctx (search/stats/hide/rewrite your own context)/todo/task (delegation over ACP)/fetch/MCP client. `read` attaches images, audio and video as media when the active model accepts them.
+- **Tools**: read/write/edit (whitespace-tolerant patch engine)/glob/grep (ripgrep when present)/exec (process-group kill)/pty (tmux, resize-proof)/repl (in-process JS scratchpad)/ctx (search/hide/rewrite your own context)/todo/task (delegation over ACP)/fetch/MCP client. `read` attaches images, audio and video as media when the active model accepts them.
 - **ACP both ways**: `fox --acp` serves the protocol to Zed/acpx; fox also drives other ACP agents as a client (what `task` is built on).
 - **Plugins**: one module adds tools, lifecycle hooks and custom providers. Global config only.
 - **200+ providers** via the models.dev catalog -- `/login` presets prefill endpoint, env var and model lists. Any OpenAI-compatible/Responses, Anthropic or Gemini endpoint works too.

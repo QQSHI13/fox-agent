@@ -122,8 +122,8 @@ vendored tree. `toolOutputCap` bounds what a tool may *produce*, and
 `toolPresentationCap` bounds what the *view* shows (the stored row stays whole).
 `ctx` then hides or rewrites what is already there.
 
-To find out what is actually big: `/usage` for totals, `/view` for the visible
-nodes, and `ctx {op:"stats"}` in-session for the largest ones.
+To find out what is actually big: `/usage` for totals and `/view` for the visible
+nodes with their sizes.
 
 ### Frames feel slow
 

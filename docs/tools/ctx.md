@@ -20,7 +20,6 @@ fear.
 | Op | Arguments | Effect |
 |---|---|---|
 | `search` | `pattern` (regex), `role`, `limit` | Find nodes by pattern; returns **snippets**, not whole bodies. When `limit` cuts the listing, the result says how many were withheld |
-| `stats` | `top` | Sizes and the biggest nodes — where the window is going |
 | `delete` | `ids`, `summary` | Hide nodes from the view; a `summary` leaves a one-line note in their place |
 | `delete_by_query` | `pattern`, `role`, `all` | Hide every node matching a pattern. Matches **all** visible nodes (never a truncated first-N), and requires `all: true` when the pattern matches everything visible |
 | `replace` | `id`, `content` | Rewrite one node's text |
@@ -42,8 +41,9 @@ Multiple ops batch into one call:
 reading the whole window to decide what to cut — which is the cost it was meant
 to remove. Search returns snippets; the model queries rather than re-reads.
 
-`stats` answers the other half: *where did it go?* A single runaway `exec` or a
-file dump dominates the window, and it is worth knowing before hiding anything.
+A model with the marker column in front of it already sees which nodes are
+large; a separate `stats` op that re-listed sizes bought nothing a decent model
+couldn't see, so it was removed.
 
 ## Why there is no automatic compaction
 
