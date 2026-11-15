@@ -154,6 +154,19 @@ describe("plugin manifest composition", () => {
     expect(result.errors.some((e) => e.includes("duplicate contribution 'tools:ping'"))).toBe(true);
   });
 
+  test("allows two plugins to contribute the same lifecycle hook", () => {
+    // `beforeLLMCall` is a shared lifecycle point, not an owned resource. Before
+    // this rule, a normal two-plugin install could fail composition closed and
+    // disable every external plugin.
+    const result = composePluginManifests([
+      node("one", { contributes: { hooks: ["beforeLLMCall"], tools: ["one_tool"] } }),
+      node("two", { contributes: { hooks: ["beforeLLMCall"], tools: ["two_tool"] } }),
+    ]);
+
+    expect(result.errors).toEqual([]);
+    expect(result.order.map((n) => n.manifest.id)).toEqual(["one", "two"]);
+  });
+
   test("rejects missing dependencies and self dependencies", () => {
     const missing = composePluginManifests([node("a", { dependencies: ["ghost"] })]);
     expect(missing.errors.some((e) => e.includes("unknown dependency 'ghost'"))).toBe(true);

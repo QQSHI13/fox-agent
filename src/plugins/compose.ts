@@ -19,6 +19,10 @@ function contributionPairs(manifest: PluginManifest): string[] {
   const out: string[] = [];
   const contributions = manifest.contributes as Partial<Record<PluginContributionKind, string[]>>;
   for (const [kind, ids] of Object.entries(contributions)) {
+    // Hook names are shared lifecycle points (`beforeLLMCall`, `afterTool`),
+    // not resources one plugin owns. Two plugins implementing the same hook is
+    // the normal case and must compose.
+    if (kind === "hooks") continue;
     for (const id of ids ?? []) out.push(`${kind}:${id}`);
   }
   return out;
