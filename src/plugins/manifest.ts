@@ -1,4 +1,4 @@
-import { join } from "node:path";
+import { basename, dirname, extname, join } from "node:path";
 
 /**
  * Static plugin manifest: the metadata fox-agent reads BEFORE importing plugin code.
@@ -186,13 +186,13 @@ export function parsePluginManifest(raw: unknown): ManifestParseResult {
   };
 }
 
+const PLUGIN_MODULE_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".mts", ".cjs"]);
+
 /** Resolve the static manifest path for a configured plugin file or directory. */
 export function manifestPathFor(entryPath: string): string {
-  const ext = entryPath.split("/").pop()?.includes(".") ? entryPath.slice(entryPath.lastIndexOf(".")) : "";
-  if (!ext) return join(entryPath, "plugin.json");
-  const dir = entryPath.slice(0, entryPath.length - entryPath.split("/").pop()!.length);
-  const base = entryPath.split("/").pop()!;
-  return `${dir}${base.slice(0, base.length - ext.length)}.plugin.json`;
+  const ext = extname(entryPath);
+  if (!PLUGIN_MODULE_EXTENSIONS.has(ext.toLowerCase())) return join(entryPath, "plugin.json");
+  return join(dirname(entryPath), `${basename(entryPath, ext)}.plugin.json`);
 }
 
 /** Typed helper for in-repo manifests. External manifests remain plain JSON. */

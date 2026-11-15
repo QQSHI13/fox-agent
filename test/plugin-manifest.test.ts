@@ -91,6 +91,16 @@ describe("plugin manifest schema", () => {
     expect(manifestPathFor("/tmp/mytools")).toBe(join("/tmp", "mytools", "plugin.json"));
   });
 
+  test("treats a dotted path without a module extension as a directory", () => {
+    expect(manifestPathFor("/tmp/my.tools")).toBe(join("/tmp/my.tools", "plugin.json"));
+  });
+
+  test("recognizes module extensions as file entries", () => {
+    for (const ext of [".ts", ".tsx", ".js", ".jsx", ".mjs", ".mts", ".cjs"]) {
+      expect(manifestPathFor(`/tmp/mytools${ext}`)).toBe(join("/tmp", "mytools.plugin.json"));
+    }
+  });
+
   test("definePlugin returns a typed manifest unchanged", () => {
     const manifest = definePlugin({
       id: "fixture",
