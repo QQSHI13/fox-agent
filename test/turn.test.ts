@@ -1193,7 +1193,7 @@ describe("the ctx-only rail is enforced, not just advertised", () => {
       "ctx",
       {
         def: { name: "ctx", description: "context surgery", parameters: { type: "object", properties: {} } },
-        run: async () => "ctx ok: 3 hidden",
+        run: async () => "hidden: [3], [5]",
       },
     ];
   }
@@ -1243,7 +1243,7 @@ describe("the ctx-only rail is enforced, not just advertised", () => {
     );
     const end = events.find((e) => e.type === "tool_end") as any;
     expect(end.ok).toBe(true);
-    expect(end.output).toContain("ctx ok");
+    expect(end.output).toContain("hidden: [3]");
   });
 
   test("below the thresholds tools run normally", async () => {

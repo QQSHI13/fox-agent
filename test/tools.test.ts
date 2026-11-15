@@ -399,17 +399,19 @@ describe("ctx is the one context tool", () => {
   });
 });
 
-describe("ctx search, stats and query ops", () => {
+describe("ctx search and query ops", () => {
   async function seeded() {
     const { createSession, appendMessage } = await import("../src/store/db.ts");
     const { ctxRun } = await import("../src/tools/ctx.ts");
+    const { projectView } = await import("../src/context/view.ts");
     const s = createSession(dir, "m1");
     const mine = { ...ctx, sessionId: s.id };
     const run = (ops: any[]) => ctxRun({ ops }, mine);
+    const visible = () => projectView(s.id).filter((x) => !x.deleted).length;
     const a = appendMessage(s.id, { parent_id: null, role: "user", content: "how do I paginate?", tokens: 5 });
     const b = appendMessage(s.id, { parent_id: null, role: "assistant", content: "use cursor pagination", tokens: 5 });
     const c = appendMessage(s.id, { parent_id: null, role: "tool", content: "Error: timeout after 30s\nat fetch (x:1)", tokens: 10 });
-    return { s, mine, run, a, b, c };
+    return { s, mine, run, visible, a, b, c };
   }
 
   test("search returns snippets, never bodies", async () => {
@@ -447,6 +449,7 @@ describe("ctx search, stats and query ops", () => {
     // and skipped the confirmation entirely.
     const { createSession, appendMessage } = await import("../src/store/db.ts");
     const { ctxRun } = await import("../src/tools/ctx.ts");
+    const { projectView } = await import("../src/context/view.ts");
     const s = createSession(dir, "m1");
     const mine = { ...ctx, sessionId: s.id };
     for (let i = 0; i < 150; i++) {
@@ -456,30 +459,19 @@ describe("ctx search, stats and query ops", () => {
     expect(unconfirmed.ok).toBe(false);
     expect(unconfirmed.output).toContain("all:true");
     // and nothing was hidden by the refusal
-    const stats = await ctxRun({ ops: [{ op: "stats" }] }, mine);
-    expect(stats.output).toContain("150 visible of 150 stored (0 hidden)");
+    expect(projectView(s.id).filter((x) => !x.deleted)).toHaveLength(150);
     // with confirmation, ALL 150 go — not the first 100
     const confirmed = await ctxRun({ ops: [{ op: "delete_by_query", pattern: "alpha", all: true }] }, mine);
     expect(confirmed.ok).toBe(true);
-    const after = await ctxRun({ ops: [{ op: "stats" }] }, mine);
-    expect(after.output).toContain("0 visible of 150 stored (150 hidden)");
-  });
-
-  test("stats reports visible/stored and the biggest nodes", async () => {
-    const { run, c } = await seeded();
-    const r = await run([{ op: "stats" }]);
-    expect(r.ok).toBe(true);
-    expect(r.output).toContain("3 visible of 3 stored (0 hidden)");
-    expect(r.output).toContain(`[${c.seq}] tool`);
+    expect(projectView(s.id).filter((x) => !x.deleted)).toHaveLength(0);
   });
 
   test("delete_by_query hides matches; matching everything needs all:true", async () => {
-    const { run, c } = await seeded();
+    const { run, visible, c } = await seeded();
     const r = await run([{ op: "delete_by_query", pattern: "timeout" }]);
     expect(r.ok).toBe(true);
     expect(r.output).toContain(`${c.seq}`);
-    const after = await run([{ op: "stats" }]);
-    expect(after.output).toContain("2 visible of 3 stored (1 hidden)");
+    expect(visible()).toBe(2);
     const all = await run([{ op: "delete_by_query", pattern: "." }]);
     expect(all.ok).toBe(false);
     expect(all.output).toContain("all:true");
@@ -488,20 +480,19 @@ describe("ctx search, stats and query ops", () => {
   });
 
   test("restore un-hides nodes", async () => {
-    const { run, a } = await seeded();
+    const { run, visible, a } = await seeded();
     await run([{ op: "delete", ids: [a.seq] }]);
     const r = await run([{ op: "restore", ids: [a.seq] }]);
     expect(r.ok).toBe(true);
-    const after = await run([{ op: "stats" }]);
-    expect(after.output).toContain("3 visible of 3 stored (0 hidden)");
+    expect(visible()).toBe(3);
   });
 
   test("query and mutation batch in one call", async () => {
     const { run, c } = await seeded();
-    const r = await run([{ op: "search", pattern: "timeout" }, { op: "delete", ids: [c.seq], reason: "done" }]);
+    const r = await run([{ op: "search", pattern: "timeout" }, { op: "delete", ids: [c.seq], summary: "done" }]);
     expect(r.ok).toBe(true);
     expect(r.output).toContain("match");
-    expect(r.output).toContain("ctx ok: 1 hidden");
+    expect(r.output).toContain(`hidden: [${c.seq}]`);
   });
 });
 

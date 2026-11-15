@@ -1,18 +1,15 @@
-import { allMessages, appendOps, getMessage, type ViewOp } from "../store/db.ts";
+import { appendOps, getMessage, type ViewOp } from "../store/db.ts";
 import { projectView } from "../context/view.ts";
 import type { ToolDef } from "../providers/types.ts";
 import type { ToolContext, ToolResult } from "../core/tool.ts";
 import { fail, ok } from "../core/tool.ts";
 
 const SEARCH_DEFAULT_LIMIT = 30;
-const SEARCH_MAX_LIMIT = 100;
-const STATS_DEFAULT_TOP = 5;
-const STATS_MAX_TOP = 20;
 
 export const ctxDef: ToolDef = {
   name: "ctx",
   description:
-    "Your own context window: view, search and surgically edit what you see (view only — storage is never touched). Messages appear as [N] markers. search finds nodes by pattern and shows snippets instead of whole bodies — query instead of reading; stats shows sizes and the biggest nodes; delete hides nodes (optional summary keeps a tiny note); delete_by_query hides by pattern; replace rewrites text; restore un-hides. Batch multiple ops in one call.",
+    "Your own context window: search and surgically edit what you see (view only — storage is never touched). Messages appear as [N] markers. search finds nodes by pattern and shows snippets instead of whole bodies — query instead of reading; delete hides nodes (optional summary keeps a tiny note); delete_by_query hides by pattern; replace rewrites text; restore un-hides. Batch multiple ops in one call.",
   parameters: {
     type: "object",
     properties: {
@@ -21,21 +18,19 @@ export const ctxDef: ToolDef = {
         items: {
           type: "object",
           properties: {
-            op: { type: "string", enum: ["delete", "replace", "restore", "search", "delete_by_query", "stats"] },
+            op: { type: "string", enum: ["delete", "replace", "restore", "search", "delete_by_query"] },
             ids: { type: "array", items: { type: "number" }, description: "delete/restore: message seqs ([N] -> N)" },
             summary: { type: "string", description: "delete: optional one-line summary kept in place of content" },
             id: { type: "number", description: "replace: message seq" },
             content: { type: "string", description: "replace: new content" },
             pattern: { type: "string", description: "search/delete_by_query: regex matched against one-line node text" },
             role: { type: "string", description: "search/delete_by_query: only this role (user, assistant, tool, think)" },
-            limit: { type: "number", description: "search: max hits (default 30)" },
-            top: { type: "number", description: "stats: how many biggest nodes to list (default 5)" },
+            limit: { type: "number", description: "search: max hits (default 30, no max)" },
             all: { type: "boolean", description: "delete_by_query: required when the pattern matches everything visible" },
           },
           required: ["op"],
         },
       },
-      reason: { type: "string" },
     },
     required: ["ops"],
   },
@@ -73,9 +68,10 @@ function searchNodes(
   const compiled = compilePattern(pattern);
   if ("error" in compiled) return compiled;
   // Infinity is a deliberate "no cap" (delete_by_query must see every match to
-  // decide whether all:true is needed); anything else is bounded so a stray
-  // huge limit cannot build an unbounded result
-  const cap = limit === Number.POSITIVE_INFINITY ? Number.POSITIVE_INFINITY : Math.max(1, Math.min(SEARCH_MAX_LIMIT, limit || SEARCH_DEFAULT_LIMIT));
+  // decide whether all:true is needed); a caller limit otherwise applies as-is
+  // (default 30) — search only ever returns snippets, so a huge limit can't
+  // produce an unbounded result
+  const cap = limit === Number.POSITIVE_INFINITY ? Number.POSITIVE_INFINITY : Math.max(1, limit || SEARCH_DEFAULT_LIMIT);
   const hits: Hit[] = [];
   let total = 0; // every match, not just the ones returned — callers must know
   for (const n of projectView(ctx.sessionId).filter((x) => !x.deleted)) {
@@ -92,14 +88,11 @@ function searchNodes(
   return { hits, total };
 }
 
-export async function ctxRun(args: { ops?: any[]; reason?: string }, ctx: ToolContext): Promise<ToolResult> {
+export async function ctxRun(args: { ops?: any[] }, ctx: ToolContext): Promise<ToolResult> {
   const ops = args.ops ?? [];
   if (!Array.isArray(ops) || !ops.length) return fail("error: empty ops");
   const viewOps: ViewOp[] = [];
   const out: string[] = [];
-  let hidden = 0;
-  let replaced = 0;
-  let restored = 0;
   for (const o of ops) {
     if (o.op === "delete") {
       const ids: number[] = o.ids ?? [];
@@ -109,14 +102,12 @@ export async function ctxRun(args: { ops?: any[]; reason?: string }, ctx: ToolCo
         if (bad) return fail(bad);
       }
       viewOps.push({ kind: "delete", ids, summary: o.summary });
-      hidden += ids.length;
       out.push(`hidden: ${ids.map((s) => `[${s}]`).join(", ")}`);
     } else if (o.op === "replace") {
       const bad = validateSeq(ctx, o.id);
       if (bad) return fail(bad);
       if (typeof o.content !== "string") return fail("error: replace needs content");
       viewOps.push({ kind: "replace", id: o.id, content: o.content });
-      replaced++;
       out.push(`replaced: [${o.id}]`);
     } else if (o.op === "restore") {
       const ids: number[] = o.ids ?? [];
@@ -126,7 +117,6 @@ export async function ctxRun(args: { ops?: any[]; reason?: string }, ctx: ToolCo
         if (bad) return fail(bad);
       }
       viewOps.push({ kind: "restore", ids });
-      restored += ids.length;
       out.push(`restored: ${ids.map((s) => `[${s}]`).join(", ")}`);
     } else if (o.op === "search") {
       if (o.role !== undefined && typeof o.role !== "string") return fail("error: role must be a string");
@@ -154,26 +144,11 @@ export async function ctxRun(args: { ops?: any[]; reason?: string }, ctx: ToolCo
       }
       const ids = found.hits.map((h) => h.seq);
       viewOps.push({ kind: "delete", ids, summary: o.summary });
-      hidden += ids.length;
       out.push(`hidden by query ${JSON.stringify(o.pattern)}: ${ids.map((s) => `[${s}]`).join(", ")}`);
-    } else if (o.op === "stats") {
-      const nodes = projectView(ctx.sessionId).filter((x) => !x.deleted);
-      const stored = allMessages(ctx.sessionId).length;
-      const top = Math.max(1, Math.min(STATS_MAX_TOP, o.top || STATS_DEFAULT_TOP));
-      const biggest = [...nodes]
-        .map((n) => ({ seq: n.msg.seq, role: n.msg.role, chars: n.content.length, preview: n.content.replace(/\s+/g, " ").trim().slice(0, 80) }))
-        .sort((a, b) => b.chars - a.chars)
-        .slice(0, top);
-      out.push(
-        `context: ${nodes.length} visible of ${stored} stored (${stored - nodes.length} hidden)\n` +
-          biggest.map((b) => `[${b.seq}] ${b.role} ${b.chars} chars: ${b.preview}`).join("\n"),
-      );
     } else {
       return fail(`error: unknown op ${o.op}`);
     }
   }
   if (viewOps.length) appendOps(ctx.sessionId, viewOps);
-  const total = allMessages(ctx.sessionId).length;
-  out.push(`ctx ok: ${hidden} hidden, ${replaced} replaced, ${restored} restored (view only; log untouched, ${total} nodes stored).${args.reason ? ` reason: ${args.reason}` : ""}`);
   return ok(out.join("\n"));
 }
