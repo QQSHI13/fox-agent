@@ -86,6 +86,17 @@ function sweepHex(x: number, y: number, w: number, h: number): string {
   return `#${mix(FROM.r, TO.r)}${mix(FROM.g, TO.g)}${mix(FROM.b, TO.b)}`;
 }
 
+/**
+ * The glyph grid, for callers that colour it themselves.
+ *
+ * Exported so the version demo can render the SAME letterforms with a different
+ * ramp without duplicating the glyph tables — a second copy would drift the
+ * moment anyone touched a stroke.
+ */
+export function markGrid(): string[] {
+  return grid();
+}
+
 /** Grid dimensions, for callers that need to reserve space. */
 export const MARK_COLS = (() => {
   const g = grid();
