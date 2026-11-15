@@ -284,6 +284,63 @@ describe("plugin loader", () => {
     expect(res.ok).toBe(true);
     expect(res.output).toBe("pong via sdk");
   });
+
+  /**
+   * A plugin file plus the static manifest beside it, both named after `id`.
+   * Returns the entry path, which is what a config would list.
+   */
+  function writeTmpPlugin(id: string, dependencies: string[] = [], tools: string[] = []): string {
+    const entry = join(home, `${id}.ts`);
+    writeFileSync(entry, `export default { name: ${JSON.stringify(id)} };\n`);
+    writeFileSync(
+      join(home, `${id}.plugin.json`),
+      JSON.stringify({
+        id,
+        version: "1.0.0",
+        entry: `${id}.ts`,
+        permissions: [],
+        contributes: { tools },
+        ...(dependencies.length ? { dependencies } : {}),
+      }),
+    );
+    return entry;
+  }
+
+  test("dependency order controls import order", async () => {
+    const { loadPlugins } = await import("../src/plugins/load.ts");
+    // dep-a depends on dep-b, and is also FIRST in config order and in
+    // alphabetical order: only dependency order puts dep-b ahead of it
+    const consumer = writeTmpPlugin("dep-a", ["dep-b"]);
+    const core = writeTmpPlugin("dep-b");
+
+    const { plugins, warnings, files } = await loadPlugins([consumer, core]);
+    expect(warnings).toEqual([]);
+    // plugins are pushed as they are imported, so this is the import order
+    expect(plugins.map((p) => p.name)).toEqual(["dep-b", "dep-a"]);
+    expect(files.map((f) => f.manifest?.id).sort()).toEqual(["dep-a", "dep-b"]);
+  });
+
+  test("duplicate contribution IDs fail closed for the whole configured set", async () => {
+    const { loadPlugins } = await import("../src/plugins/load.ts");
+    const one = writeTmpPlugin("dup-one", [], ["same-tool"]);
+    const two = writeTmpPlugin("dup-two", [], ["same-tool"]);
+
+    const { plugins, warnings } = await loadPlugins([one, two]);
+    // nothing loads: guessing which half of a bad graph was safe is worse than
+    // starting with neither plugin
+    expect(plugins).toEqual([]);
+    expect(warnings.some((w) => w.includes("duplicate contribution 'tools:same-tool'"))).toBe(true);
+  });
+
+  test("dependency cycles fail closed with a clear warning", async () => {
+    const { loadPlugins } = await import("../src/plugins/load.ts");
+    const a = writeTmpPlugin("cycle-a", ["cycle-b"]);
+    const b = writeTmpPlugin("cycle-b", ["cycle-a"]);
+
+    const { plugins, warnings } = await loadPlugins([a, b]);
+    expect(plugins).toEqual([]);
+    expect(warnings.some((w) => w.includes("dependency cycle"))).toBe(true);
+  });
 });
 
 describe("global-only plugin config", () => {
