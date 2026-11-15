@@ -155,7 +155,7 @@ export function buildSystemPrompt(
         `- once used, hide: {"op":"delete","ids":[3,5],"summary":"ran build; fixed 2 errors"}`,
         `- rewrite stale nodes: {"op":"replace","id":7,"content":"…"}`,
         `Batch ops into one call. Every node is editable, including this turn's; edits apply from your next step, and storage is permanent, so nothing is lost and /undo reverts any op.`,
-        `Delete junk the moment you see it — gibberish, a runaway stack trace, binary noise, a 400-file listing, anything you will never need. Every node left behind is re-read and re-billed on every later step.`,
+        `Delete junk the moment you see it — gibberish, a runaway stack trace, binary noise, a 400-file listing, anything you will never need. Every node left behind is re-read and re-billed on every later step. A node whose content you still need is never deleted — summarize it with replace instead; a huge node deleted instead of summarized just gets re-derived, usually wrong.`,
         `A large result you DID need gets the same treatment: replace it with the answer you took from it, {"op":"replace","id":12,"content":"src/auth.ts:88 renews at 80% of ttl"}, instead of 3000 lines re-read each step. Never re-fetch to re-check — search the node.`,
       ),
     );
