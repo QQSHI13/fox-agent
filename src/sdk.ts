@@ -31,6 +31,8 @@ export type {
   BeforeToolPatch,
 } from "./plugins/types.ts";
 export type { McpServerConfig, ExternalAgentConfig } from "./core/config.ts";
+export { definePlugin } from "./plugins/manifest.ts";
+export type { PluginContributions, PluginManifest, PluginPermission } from "./plugins/manifest.ts";
 export type { Tool, ToolContext, ToolResult } from "./core/tool.ts";
 export { ok, fail } from "./core/tool.ts";
 export type { UiBridge, UiStep } from "./core/ui.ts";
