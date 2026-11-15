@@ -190,7 +190,7 @@
       },
       "idle_pss_mb": 141.611328125,
       "idle_pss_root_mb": null,
-      "procs": 1,
+      "procs": 2,
       "launches": 5,
       "failures": []
     },
@@ -422,10 +422,10 @@
     {
       "agent": "kimi code",
       "installed": true,
-      "bin": "/home/runner/.kimi-code/bin/kimi",
-      "version": "2.5.3",
-      "bundle_mb": 185.339072,
-      "bundle_kind": "bin",
+      "bin": "/home/runner/.npm-global/bin/kimi",
+      "version": "2.6.2",
+      "bundle_mb": 56.393345,
+      "bundle_kind": "pkg",
       "startup": {
         "min": 471.7336649999879,
         "p50": 490.0949539999715,
