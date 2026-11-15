@@ -1,6 +1,6 @@
 ![fox-agent bench](bench/fox.svg)
 
-fox-agent headless vs scripted local provider: time to first token **47 ms**, peak RSS **61 MB**.
+fox-agent headless vs scripted local provider: time to first token **70 ms**, peak RSS **61 MB**.
 
 <details><summary>the full field · every tool, every metric</summary>
 
