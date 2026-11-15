@@ -1,14 +1,28 @@
 # fox-agent plugins
 
-A plugin is one TypeScript module that default-exports a `FoxPlugin`. It runs inside fox-agent's own process with the user's credentials, which is why plugins load from the **GLOBAL config only** — a project `fox-agent.toml` cannot introduce one. A project `plugins` array is ignored with a warning; that rule is a security boundary, not a taste choice.
+A plugin is one TypeScript module that default-exports a `FoxPlugin`, plus a static manifest that fox-agent reads BEFORE importing that module. It runs inside fox-agent's own process with the user's credentials, which is why plugins load from the **GLOBAL config only**. A project `fox-agent.toml` cannot introduce one. A project `plugins` array is ignored with a warning; that rule is a security boundary, not a taste choice.
 
 ```toml
 # ~/.config/fox-agent/config.toml
-plugins = ["/abs/path/mytools.ts"]    # ARRAY of paths; ~ expands, relative resolves against cwd
+plugins = ["/abs/path/mytools.ts"]    # ARRAY of paths; ~ expands, relative resolves against this config's directory
 disabledPlugins = ["pty"]             # names switched off entirely
 ```
 
-There is no `[plugins]` table form — `plugins` is a plain array of file paths. A broken plugin (throws on import, bad shape) costs a warning, never the run. Editing a plugin file takes effect after `/reload` (plugins re-import on the next turn's registry build).
+For a configured file entry `/abs/path/mytools.ts`, the manifest is the sidecar `/abs/path/mytools.plugin.json`. Phase 1 imports the configured file path directly and does not resolve `manifest.entry`; directory-form plugin entries (`plugin.json` inside a plugin directory) are a follow-up, not yet supported.
+
+```json
+{
+  "id": "mytools",
+  "version": "1.0.0",
+  "entry": "mytools.ts",
+  "permissions": ["fs.read", "fs.write", "shell"],
+  "contributes": { "tools": ["deploy", "logs"] }
+}
+```
+
+The manifest names the plugin, its entry point, its declared permissions, and the contribution IDs it provides. Phase 1 validates the manifest and records the declared permissions before import; permission enforcement is later work. A plugin without a manifest is skipped with a warning; plugin code must never run before its manifest is read.
+
+There is no `[plugins]` table form: `plugins` is a plain array of file paths. A broken plugin (missing manifest, invalid manifest, throws on import, bad shape) costs a warning, never the run. Editing a plugin file takes effect after `/reload` (plugins re-import on the next turn's registry build).
 
 ## The FoxPlugin interface
 

@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { composePluginManifests, type ManifestNode } from "../src/plugins/compose.ts";
 import { definePlugin, manifestPathFor, parsePluginManifest, type PluginManifest } from "../src/plugins/manifest.ts";
+import { definePlugin as definePluginFromSdk } from "../src/sdk.ts";
 
 describe("plugin manifest schema", () => {
   test("parses a valid manifest and warns on unknown fields", () => {
@@ -190,4 +191,15 @@ describe("plugin manifest composition", () => {
     expect(result.errors).toEqual([]);
     expect(result.order.map((n) => n.manifest.id)).toEqual(["z", "a", "m"]);
   });
+});
+
+test("sdk exports the manifest helper and types for plugin authors", () => {
+  const manifest = definePluginFromSdk({
+    id: "sdk-fixture",
+    version: "1.0.0",
+    entry: "./index.ts",
+    permissions: [],
+    contributes: { tools: ["ping"] },
+  });
+  expect(manifest.id).toBe("sdk-fixture");
 });
