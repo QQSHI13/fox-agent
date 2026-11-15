@@ -227,6 +227,29 @@ describe("plugin loader", () => {
     expect(warnings[0]).toContain("manifest id 'declared-id' does not match plugin name 'actual-name'");
   });
 
+  test("manifest parse warnings name the plugin", async () => {
+    const { loadPlugins } = await import("../src/plugins/load.ts");
+    const entry = join(home, "warn-plugin.ts");
+    writeFileSync(entry, `export default { name: "warn-plugin" };\n`);
+    writeFileSync(
+      join(home, "warn-plugin.plugin.json"),
+      JSON.stringify({
+        id: "warn-plugin",
+        version: "1.0.0",
+        entry: "warn-plugin.ts",
+        futureField: true,
+        permissions: [],
+        contributes: {},
+      }),
+    );
+
+    const { plugins, warnings } = await loadPlugins([entry]);
+    expect(plugins.map((p) => p.name)).toEqual(["warn-plugin"]);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain(`plugin '${entry}'`);
+    expect(warnings[0]).toContain("unknown manifest field 'futureField'");
+  });
+
   test("~ in a path expands to the home directory", async () => {
     const { loadPlugins } = await import("../src/plugins/load.ts");
     // it must not resolve to a literal directory named "~", which is what a bare

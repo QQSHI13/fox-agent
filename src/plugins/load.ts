@@ -293,7 +293,7 @@ export async function loadPlugins(
       files.push({ path: raw, name: null, disabled: false, skipReason: manifest.error });
       continue;
     }
-    warnings.push(...manifest.warnings);
+    warnings.push(...manifest.warnings.map((w) => `plugin '${raw}': ${w}`));
     pending.push(manifest.pending);
     files.push({ path: raw, name: null, disabled: false, manifest: manifest.pending.manifest });
   }
