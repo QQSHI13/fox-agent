@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
+import { composePluginManifests, type ManifestNode } from "../src/plugins/compose.ts";
 import { definePlugin, manifestPathFor, parsePluginManifest, type PluginManifest } from "../src/plugins/manifest.ts";
 
 describe("plugin manifest schema", () => {
@@ -109,5 +110,71 @@ describe("plugin manifest schema", () => {
       contributes: { tools: ["ping"] },
     });
     expect(manifest.contributes.tools).toEqual(["ping"]);
+  });
+});
+
+function node(id: string, extra: Partial<PluginManifest> = {}, bundled = false): ManifestNode {
+  const parsed = parsePluginManifest({
+    id,
+    version: "1.0.0",
+    entry: `./${id}.ts`,
+    permissions: [],
+    contributes: {},
+    ...extra,
+  });
+  if (!parsed.ok) throw new Error(parsed.error);
+  return { manifest: parsed.manifest, source: `./${id}.ts`, bundled };
+}
+
+describe("plugin manifest composition", () => {
+  test("orders dependencies before dependents and keeps bundled plugins first", () => {
+    const result = composePluginManifests([
+      node("external-b", { dependencies: ["external-a"] }),
+      node("bundled-a", {}, true),
+      node("external-a"),
+    ]);
+
+    expect(result.errors).toEqual([]);
+    expect(result.order.map((n) => n.manifest.id)).toEqual(["bundled-a", "external-a", "external-b"]);
+  });
+
+  test("rejects duplicate plugin IDs", () => {
+    const result = composePluginManifests([node("same"), node("same")]);
+    expect(result.order).toEqual([]);
+    expect(result.errors.some((e) => e.includes("duplicate plugin id 'same'"))).toBe(true);
+  });
+
+  test("rejects duplicate contribution IDs", () => {
+    const result = composePluginManifests([
+      node("one", { contributes: { tools: ["ping"] } }),
+      node("two", { contributes: { tools: ["ping"] } }),
+    ]);
+
+    expect(result.order).toEqual([]);
+    expect(result.errors.some((e) => e.includes("duplicate contribution 'tools:ping'"))).toBe(true);
+  });
+
+  test("rejects missing dependencies and self dependencies", () => {
+    const missing = composePluginManifests([node("a", { dependencies: ["ghost"] })]);
+    expect(missing.errors.some((e) => e.includes("unknown dependency 'ghost'"))).toBe(true);
+
+    const self = composePluginManifests([node("a", { dependencies: ["a"] })]);
+    expect(self.errors.some((e) => e.includes("plugin 'a' cannot depend on itself"))).toBe(true);
+  });
+
+  test("rejects dependency cycles and emits no load order", () => {
+    const result = composePluginManifests([
+      node("a", { dependencies: ["b"] }),
+      node("b", { dependencies: ["a"] }),
+    ]);
+
+    expect(result.order).toEqual([]);
+    expect(result.errors.some((e) => e.includes("dependency cycle"))).toBe(true);
+  });
+
+  test("stable order preserves config order among unrelated external plugins", () => {
+    const result = composePluginManifests([node("z"), node("a"), node("m")]);
+    expect(result.errors).toEqual([]);
+    expect(result.order.map((n) => n.manifest.id)).toEqual(["z", "a", "m"]);
   });
 });
