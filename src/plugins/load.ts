@@ -12,10 +12,12 @@
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { ok, fail } from "../core/tool.ts";
 import { signal } from "../tui/reactive.ts";
+import { composePluginManifests, type ManifestNode } from "./compose.ts";
+import { manifestPathFor, parsePluginManifest, type PluginManifest } from "./manifest.ts";
 import type { FoxPlugin } from "./types.ts";
 
 export type { FoxPlugin } from "./types.ts";
@@ -146,7 +148,15 @@ async function importPlugin(href: string, fresh: boolean, raw: string): Promise<
   }
 }
 
-let cache: { key: string; plugins: FoxPlugin[]; warnings: string[]; files: { path: string; name: string | null; disabled: boolean }[] } | null = null;
+export interface LoadedPluginFile {
+  path: string;
+  name: string | null;
+  disabled: boolean;
+  manifest?: PluginManifest;
+  skipReason?: string;
+}
+
+let cache: { key: string; plugins: FoxPlugin[]; warnings: string[]; files: LoadedPluginFile[] } | null = null;
 
 /**
  * `~/plugin.ts` in a config file should mean what it means in a shell. Node's
@@ -225,6 +235,31 @@ export function isPluginPathDisabled(raw: string, disabled: string[]): boolean {
   return disabled.some((d) => d === raw || d === base || d === stem);
 }
 
+interface PendingExternalPlugin {
+  raw: string;
+  path: string;
+  manifest: PluginManifest;
+}
+
+function readManifestForEntry(raw: string, path: string): { pending: PendingExternalPlugin; warnings: string[] } | { error: string } {
+  const manifestPath = manifestPathFor(path);
+  let text: string;
+  try {
+    text = readFileSync(manifestPath, "utf8");
+  } catch {
+    return { error: `missing manifest '${manifestPath}'` };
+  }
+  let json: unknown;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    return { error: `invalid manifest JSON in '${manifestPath}'` };
+  }
+  const parsed = parsePluginManifest(json);
+  if (!parsed.ok) return { error: `invalid manifest '${manifestPath}': ${parsed.error}` };
+  return { pending: { raw, path, manifest: parsed.manifest }, warnings: parsed.warnings };
+}
+
 export async function loadPlugins(
   paths: string[],
   // Relative plugin paths resolve against the GLOBAL config dir, never the
@@ -232,7 +267,7 @@ export async function loadPlugins(
   // "cd repo && fox" load that repo's code despite the global-only rule.
   cwd = join(homedir(), ".config", "fox-agent"),
   disabled: string[] = [],
-): Promise<{ plugins: FoxPlugin[]; warnings: string[]; files: { path: string; name: string | null; disabled: boolean }[] }> {
+): Promise<{ plugins: FoxPlugin[]; warnings: string[]; files: LoadedPluginFile[] }> {
   const fresh = forceFresh;
   forceFresh = false;
   const key = JSON.stringify([paths, cwd, disabled]);
@@ -240,8 +275,8 @@ export async function loadPlugins(
 
   const plugins: FoxPlugin[] = [];
   const warnings: string[] = [];
-  const files: { path: string; name: string | null; disabled: boolean }[] = [];
-  const seen = new Set<string>();
+  const files: LoadedPluginFile[] = [];
+  const pending: PendingExternalPlugin[] = [];
   const isDisabled = (raw: string) => isPluginPathDisabled(raw, disabled);
 
   for (const raw of paths) {
@@ -250,40 +285,78 @@ export async function loadPlugins(
       continue;
     }
     const path = expand(raw, cwd);
+    const manifest = readManifestForEntry(raw, path);
+    if ("error" in manifest) {
+      const w = `plugin '${raw}' skipped: ${manifest.error}`;
+      warnings.push(w);
+      console.error(`fox-agent: ${w}`);
+      files.push({ path: raw, name: null, disabled: false, skipReason: manifest.error });
+      continue;
+    }
+    warnings.push(...manifest.warnings);
+    pending.push(manifest.pending);
+    files.push({ path: raw, name: null, disabled: false, manifest: manifest.pending.manifest });
+  }
+
+  const composed = composePluginManifests(
+    pending.map((p): ManifestNode => ({ manifest: p.manifest, source: p.raw, bundled: false })),
+  );
+  warnings.push(...composed.warnings);
+
+  if (composed.errors.length) {
+    for (const error of composed.errors) {
+      const w = `plugin composition failed: ${error}`;
+      warnings.push(w);
+      console.error(`fox-agent: ${w}`);
+    }
+    const pendingByPath = new Map(pending.map((p) => [p.raw, p]));
+    for (const file of files) {
+      if (pendingByPath.has(file.path)) file.skipReason = "composition failed";
+    }
+    cache = { key, plugins, warnings, files };
+    return { plugins, warnings, files };
+  }
+
+  const fileByPath = new Map(files.map((f) => [f.path, f]));
+  for (const node of composed.order) {
+    const p = pending.find((candidate) => candidate.raw === node.source);
+    if (!p) continue;
+    const file = fileByPath.get(p.raw)!;
+    if (p.manifest.manifestOnly) {
+      file.name = p.manifest.id;
+      continue;
+    }
     let mod: unknown;
     try {
       // a file URL, not a bare path: an absolute POSIX path happens to work as a
       // specifier but a Windows one does not, and the URL form is correct on both.
       // A /reload import gets a cache-busting query so edited plugin code lands.
-      const href = pathToFileURL(path).href;
-      mod = await importPlugin(href, fresh, raw);
+      const href = pathToFileURL(p.path).href;
+      mod = await importPlugin(href, fresh, p.raw);
     } catch (e) {
-      const w = `plugin '${raw}' failed to load: ${(e as Error).message.slice(0, 200)}`;
+      const w = `plugin '${p.raw}' failed to load: ${(e as Error).message.slice(0, 200)}`;
       warnings.push(w);
       console.error(`fox-agent: ${w}`);
-      files.push({ path: raw, name: null, disabled: false });
+      file.skipReason = w;
       continue;
     }
-    const res = validate(mod, path);
+    const res = validate(mod, p.path);
     if ("error" in res) {
-      const w = `plugin '${raw}' invalid: ${res.error}`;
+      const w = `plugin '${p.raw}' invalid: ${res.error}`;
       warnings.push(w);
       console.error(`fox-agent: ${w}`);
-      files.push({ path: raw, name: null, disabled: false });
+      file.skipReason = w;
       continue;
     }
-    // two config entries resolving to the same plugin name would register its
-    // tools twice and fire its hooks twice per point, which reads as a fox-agent bug
-    if (seen.has(res.plugin.name)) {
-      const w = `plugin '${raw}' skipped: name '${res.plugin.name}' is already loaded`;
+    if (res.plugin.name !== p.manifest.id) {
+      const w = `plugin '${p.raw}' skipped: manifest id '${p.manifest.id}' does not match plugin name '${res.plugin.name}'`;
       warnings.push(w);
       console.error(`fox-agent: ${w}`);
-      files.push({ path: raw, name: res.plugin.name, disabled: false });
+      file.skipReason = w;
       continue;
     }
-    seen.add(res.plugin.name);
     plugins.push(res.plugin);
-    files.push({ path: raw, name: res.plugin.name, disabled: false });
+    file.name = res.plugin.name;
   }
 
   cache = { key, plugins, warnings, files };
