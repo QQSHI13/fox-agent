@@ -10,14 +10,22 @@
  * take out the process.
  */
 import { homedir } from "node:os";
-import { isAbsolute, join, resolve } from "node:path";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { ok, fail } from "../core/tool.ts";
 import { signal } from "../tui/reactive.ts";
 import { composePluginManifests, type ManifestNode } from "./compose.ts";
-import { manifestPathFor, parsePluginManifest, type PluginManifest } from "./manifest.ts";
+import {
+  PLUGIN_CONTRIBUTION_KEYS,
+  PLUGIN_MODULE_EXTENSIONS,
+  manifestPathFor,
+  parsePluginManifest,
+  pluginModuleExtension,
+  type PluginContributionKind,
+  type PluginManifest,
+} from "./manifest.ts";
 import type { FoxPlugin } from "./types.ts";
 
 export type { FoxPlugin } from "./types.ts";
@@ -181,7 +189,9 @@ function validate(mod: unknown, path: string): { plugin: FoxPlugin } | { error: 
   if (!candidate || typeof candidate !== "object") return { error: "module has no default export object" };
   const p = candidate as Partial<FoxPlugin>;
   if (typeof p.name !== "string" || !p.name.trim()) return { error: "default export has no string `name`" };
-  if (p.tools !== undefined && !Array.isArray(p.tools)) return { error: "`tools` must be an array" };
+  if (p.tools !== undefined && !Array.isArray(p.tools) && typeof p.tools !== "function") {
+    return { error: "`tools` must be an array or a function" };
+  }
   if (p.hooks !== undefined && (typeof p.hooks !== "object" || p.hooks === null)) return { error: "`hooks` must be an object" };
   if (p.providers !== undefined && (typeof p.providers !== "object" || p.providers === null)) return { error: "`providers` must be an object" };
   if (p.themes !== undefined && (typeof p.themes !== "object" || p.themes === null)) return { error: "`themes` must be an object" };
@@ -190,9 +200,11 @@ function validate(mod: unknown, path: string): { plugin: FoxPlugin } | { error: 
   if (p.commands !== undefined && !Array.isArray(p.commands)) return { error: "`commands` must be an array" };
   // a tool that is not shaped like a Tool would fail deep inside the turn loop
   // with no mention of the plugin, so it is rejected here where the path is known
-  for (const t of p.tools ?? []) {
-    if (typeof (t as { def?: { name?: unknown } })?.def?.name !== "string" || typeof (t as { run?: unknown })?.run !== "function") {
-      return { error: "a tool is not { def: { name, ... }, run }" };
+  if (Array.isArray(p.tools)) {
+    for (const t of p.tools) {
+      if (typeof (t as { def?: { name?: unknown } })?.def?.name !== "string" || typeof (t as { run?: unknown })?.run !== "function") {
+        return { error: "a tool is not { def: { name, ... }, run }" };
+      }
     }
   }
   // same for commands: a nameless or unrunnable command would only fail when typed
@@ -231,13 +243,16 @@ export function reloadPlugins(): void {
  */
 export function isPluginPathDisabled(raw: string, disabled: string[]): boolean {
   const base = raw.split("/").pop() ?? raw;
-  const stem = base.replace(/\.(ts|js|mjs|mts)$/, "");
+  const ext = pluginModuleExtension(base);
+  const stem = ext ? base.slice(0, -ext.length) : base;
   return disabled.some((d) => d === raw || d === base || d === stem);
 }
 
 interface PendingExternalPlugin {
   raw: string;
   path: string;
+  /** the module to import; absent for a manifestOnly plugin */
+  importPath?: string;
   manifest: PluginManifest;
 }
 
@@ -257,7 +272,91 @@ function readManifestForEntry(raw: string, path: string): { pending: PendingExte
   }
   const parsed = parsePluginManifest(json);
   if (!parsed.ok) return { error: `invalid manifest '${manifestPath}': ${parsed.error}` };
-  return { pending: { raw, path, manifest: parsed.manifest }, warnings: parsed.warnings };
+  const manifest = parsed.manifest;
+  if (manifest.manifestOnly) return { pending: { raw, path, manifest }, warnings: parsed.warnings };
+
+  // A configured module file imports exactly the path the user wrote. A
+  // directory imports the entry its manifest names, and that entry may not
+  // leave the directory: the static manifest is the contract for what code
+  // runs, so it cannot point at someone else's file.
+  if (pluginModuleExtension(path)) {
+    return { pending: { raw, path, importPath: path, manifest }, warnings: parsed.warnings };
+  }
+
+  const entry = manifest.entry!;
+  if (isAbsolute(entry)) {
+    return { error: `manifest entry '${entry}' must be relative to the plugin directory` };
+  }
+  const importPath = resolve(path, entry);
+  const inside = relative(path, importPath);
+  if (!inside || inside.startsWith("..") || isAbsolute(inside)) {
+    return { error: `manifest entry '${entry}' escapes the plugin directory '${path}'` };
+  }
+  if (!pluginModuleExtension(importPath)) {
+    return {
+      error: `manifest entry '${entry}' does not name a plugin module (${PLUGIN_MODULE_EXTENSIONS.join(", ")})`,
+    };
+  }
+  return { pending: { raw, path, importPath, manifest }, warnings: parsed.warnings };
+}
+
+/**
+ * The static IDs a loaded plugin actually implements, per contribution kind.
+ * `null` means the kind cannot be compared statically (function-form tools are
+ * resolved against a registry the loader does not have; gateway contributions
+ * have no matching runtime map on `FoxPlugin`).
+ */
+function runtimeContributionIds(plugin: FoxPlugin, kind: PluginContributionKind): string[] | null {
+  switch (kind) {
+    case "tools":
+      if (plugin.tools === undefined) return [];
+      return Array.isArray(plugin.tools) ? plugin.tools.map((tool) => tool.def.name) : null;
+    case "commands":
+      return (plugin.commands ?? []).map((command) => command.name);
+    case "providers":
+    case "themes":
+    case "mcpServers":
+    case "agents":
+    case "statusSegments":
+    case "regions":
+      return Object.keys(plugin[kind] ?? {});
+    case "hooks":
+      return Object.keys(plugin.hooks ?? {});
+    case "keybindings":
+      return (plugin.keybindings ?? []).map((binding) => binding.key);
+    default:
+      return null;
+  }
+}
+
+/**
+ * Compare what the manifest SAYS a plugin contributes with what the module
+ * actually exposes. Both directions are warnings: the manifest is metadata, and
+ * a mismatch is an authoring mistake, not a reason to refuse to start.
+ */
+function checkDeclaredContributions(
+  plugin: FoxPlugin,
+  raw: string,
+  manifest: PluginManifest,
+  warnings: string[],
+): void {
+  for (const kind of PLUGIN_CONTRIBUTION_KEYS) {
+    const implemented = runtimeContributionIds(plugin, kind);
+    if (implemented === null) continue;
+    const declared = manifest.contributes[kind] ?? [];
+    const declaredSet = new Set(declared);
+    const implementedSet = new Set(implemented);
+    for (const id of declaredSet) {
+      if (!implementedSet.has(id)) {
+        warnings.push(`plugin '${raw}': manifest declares ${kind} '${id}' but the plugin does not implement it`);
+      }
+    }
+    for (const id of implementedSet) {
+      if (!declaredSet.has(id)) {
+        warnings.push(`plugin '${raw}': plugin implements ${kind} '${id}' but the manifest does not declare it`);
+      }
+    }
+  }
 }
 
 export async function loadPlugins(
@@ -290,7 +389,7 @@ export async function loadPlugins(
       const w = `plugin '${raw}' skipped: ${manifest.error}`;
       warnings.push(w);
       console.error(`fox-agent: ${w}`);
-      files.push({ path: raw, name: null, disabled: false, skipReason: manifest.error });
+      files.push({ path: raw, name: null, disabled: false, skipReason: w });
       continue;
     }
     warnings.push(...manifest.warnings.map((w) => `plugin '${raw}': ${w}`));
@@ -304,14 +403,16 @@ export async function loadPlugins(
   warnings.push(...composed.warnings);
 
   if (composed.errors.length) {
+    let reason = "";
     for (const error of composed.errors) {
       const w = `plugin composition failed: ${error}`;
       warnings.push(w);
       console.error(`fox-agent: ${w}`);
+      reason = reason ? `${reason}; ${w}` : w;
     }
     const pendingByPath = new Map(pending.map((p) => [p.raw, p]));
     for (const file of files) {
-      if (pendingByPath.has(file.path)) file.skipReason = "composition failed";
+      if (pendingByPath.has(file.path)) file.skipReason = reason;
     }
     cache = { key, plugins, warnings, files };
     return { plugins, warnings, files };
@@ -331,7 +432,7 @@ export async function loadPlugins(
       // a file URL, not a bare path: an absolute POSIX path happens to work as a
       // specifier but a Windows one does not, and the URL form is correct on both.
       // A /reload import gets a cache-busting query so edited plugin code lands.
-      const href = pathToFileURL(p.path).href;
+      const href = pathToFileURL(p.importPath!).href;
       mod = await importPlugin(href, fresh, p.raw);
     } catch (e) {
       const w = `plugin '${p.raw}' failed to load: ${(e as Error).message.slice(0, 200)}`;
@@ -355,6 +456,7 @@ export async function loadPlugins(
       file.skipReason = w;
       continue;
     }
+    checkDeclaredContributions(res.plugin, p.raw, p.manifest, warnings);
     plugins.push(res.plugin);
     file.name = res.plugin.name;
   }

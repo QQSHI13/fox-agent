@@ -1,4 +1,4 @@
-import type { PluginContributionKind, PluginManifest } from "./manifest.ts";
+import { PLUGIN_CONTRIBUTION_KEYS, type PluginManifest } from "./manifest.ts";
 
 export interface ManifestNode {
   manifest: PluginManifest;
@@ -13,17 +13,18 @@ export interface ComposeResult {
   order: ManifestNode[];
   warnings: string[];
   errors: string[];
+  /** `${kind}:${id}` to the plugin id that owns it */
+  contributions: ReadonlyMap<string, string>;
 }
 
 function contributionPairs(manifest: PluginManifest): string[] {
   const out: string[] = [];
-  const contributions = manifest.contributes as Partial<Record<PluginContributionKind, string[]>>;
-  for (const [kind, ids] of Object.entries(contributions)) {
+  for (const kind of PLUGIN_CONTRIBUTION_KEYS) {
     // Hook names are shared lifecycle points (`beforeLLMCall`, `afterTool`),
     // not resources one plugin owns. Two plugins implementing the same hook is
     // the normal case and must compose.
     if (kind === "hooks") continue;
-    for (const id of ids ?? []) out.push(`${kind}:${id}`);
+    for (const id of manifest.contributes[kind] ?? []) out.push(`${kind}:${id}`);
   }
   return out;
 }
@@ -48,8 +49,13 @@ export function composePluginManifests(nodes: ManifestNode[]): ComposeResult {
     byId.set(id, node);
     for (const contribution of contributionPairs(node.manifest)) {
       const owner = contributionOwner.get(contribution);
-      if (owner) errors.push(`duplicate contribution '${contribution}' from '${owner}' and '${id}'`);
-      else contributionOwner.set(contribution, id);
+      if (owner === id) {
+        errors.push(`duplicate contribution '${contribution}' declared twice by plugin '${id}'`);
+      } else if (owner) {
+        errors.push(`duplicate contribution '${contribution}' from '${owner}' and '${id}'`);
+      } else {
+        contributionOwner.set(contribution, id);
+      }
     }
   }
 
@@ -101,5 +107,5 @@ export function composePluginManifests(nodes: ManifestNode[]): ComposeResult {
     errors.push(`dependency cycle among plugins: ${unresolved.join(", ")}`);
   }
 
-  return { order: errors.length ? [] : order, warnings, errors };
+  return { order: errors.length ? [] : order, warnings, errors, contributions: contributionOwner };
 }

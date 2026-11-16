@@ -17,11 +17,15 @@ export const PLUGIN_PERMISSIONS = [
   "fs.write",
   "sessions",
   "provider",
+  "mcp",
+  "lsp",
+  "acp",
+  "pty",
 ] as const;
 
 export type PluginPermission = (typeof PLUGIN_PERMISSIONS)[number];
 
-const CONTRIBUTION_KEYS = [
+export const PLUGIN_CONTRIBUTION_KEYS = [
   "tools",
   "commands",
   "providers",
@@ -37,23 +41,9 @@ const CONTRIBUTION_KEYS = [
   "gatewayPanels",
 ] as const;
 
-export type PluginContributionKind = (typeof CONTRIBUTION_KEYS)[number];
+export type PluginContributionKind = (typeof PLUGIN_CONTRIBUTION_KEYS)[number];
 
-export interface PluginContributions {
-  tools?: string[];
-  commands?: string[];
-  providers?: string[];
-  hooks?: string[];
-  themes?: string[];
-  mcpServers?: string[];
-  agents?: string[];
-  regions?: string[];
-  statusSegments?: string[];
-  keybindings?: string[];
-  gatewayMethods?: string[];
-  gatewayRoutes?: string[];
-  gatewayPanels?: string[];
-}
+export type PluginContributions = Partial<Record<PluginContributionKind, string[]>>;
 
 export interface PluginManifest {
   id: string;
@@ -85,7 +75,7 @@ const KNOWN_KEYS = new Set([
   "configSchema",
 ]);
 
-const KNOWN_CONTRIBUTION_KEYS = new Set<string>(CONTRIBUTION_KEYS);
+const KNOWN_CONTRIBUTION_KEYS = new Set<string>(PLUGIN_CONTRIBUTION_KEYS);
 const KNOWN_PERMISSIONS = new Set<string>(PLUGIN_PERMISSIONS);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -117,7 +107,7 @@ export function parsePluginManifest(raw: unknown): ManifestParseResult {
   if (typeof raw.id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9:_-]*$/.test(raw.id)) {
     return fail("id must be a non-empty string using letters, numbers, ':', '_' or '-'");
   }
-  if (typeof raw.version !== "string" || !/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(raw.version)) {
+  if (typeof raw.version !== "string" || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(raw.version)) {
     return fail("version must be a semantic version string");
   }
 
@@ -186,13 +176,25 @@ export function parsePluginManifest(raw: unknown): ManifestParseResult {
   };
 }
 
-const PLUGIN_MODULE_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".mts", ".cjs"]);
+export const PLUGIN_MODULE_EXTENSIONS = [".ts", ".tsx", ".js", ".jsx", ".mjs", ".mts", ".cjs"] as const;
+
+const PLUGIN_MODULE_EXTENSION_SET = new Set<string>(PLUGIN_MODULE_EXTENSIONS);
+
+/**
+ * The module extension `p` carries, lowercased, or undefined when `p` is not a
+ * plugin module path. One helper so `manifestPathFor` and disabled-plugin
+ * matching cannot disagree about which suffixes count.
+ */
+export function pluginModuleExtension(p: string): string | undefined {
+  const ext = extname(p).toLowerCase();
+  return PLUGIN_MODULE_EXTENSION_SET.has(ext) ? ext : undefined;
+}
 
 /** Resolve the static manifest path for a configured plugin file or directory. */
 export function manifestPathFor(entryPath: string): string {
-  const ext = extname(entryPath);
-  if (!PLUGIN_MODULE_EXTENSIONS.has(ext.toLowerCase())) return join(entryPath, "plugin.json");
-  return join(dirname(entryPath), `${basename(entryPath, ext)}.plugin.json`);
+  const ext = pluginModuleExtension(entryPath);
+  if (!ext) return join(entryPath, "plugin.json");
+  return join(dirname(entryPath), `${basename(entryPath, extname(entryPath))}.plugin.json`);
 }
 
 /** Typed helper for in-repo manifests. External manifests remain plain JSON. */
