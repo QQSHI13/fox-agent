@@ -63,7 +63,7 @@ describe("relocated config plugin paths", () => {
     );
     writeFileSync(
       join(configDir, "relocated-plugin.plugin.json"),
-      JSON.stringify({ id: "relocated", version: "1.0.0", entry: "relocated-plugin.ts", permissions: [], contributes: {} }),
+      JSON.stringify({ id: "relocated", version: "1.0.0", entry: "relocated-plugin.ts", permissions: [], contributes: { hooks: ["onSessionStart"] } }),
     );
     writeFileSync(configPath, `plugins = ["./relocated-plugin.ts"]\n`);
 
