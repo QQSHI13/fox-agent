@@ -25,8 +25,14 @@ ignored, with a warning saying so.
 
 ### Manifest first
 
-For `~/my-fox-plugin.ts`, write a sidecar manifest at
-`~/my-fox-plugin.plugin.json`:
+Every configured entry is validated against a static manifest before its code is
+imported. There are two entry forms.
+
+**File entry** — configure the module file and put its manifest in a sidecar:
+
+```toml
+plugins = ["~/my-fox-plugin.ts"]     # manifest: ~/my-fox-plugin.plugin.json
+```
 
 ```json
 {
@@ -38,10 +44,54 @@ For `~/my-fox-plugin.ts`, write a sidecar manifest at
 }
 ```
 
+For a file entry the loader imports the configured file itself; `entry` is
+metadata only.
+
+**Directory entry** — configure the directory and put `plugin.json` inside it:
+
+```toml
+plugins = ["~/my-fox-plugin"]        # manifest: ~/my-fox-plugin/plugin.json
+```
+
+```json
+{
+  "id": "my-fox-plugin",
+  "version": "1.0.0",
+  "entry": "index.ts",
+  "permissions": ["fs.read"],
+  "contributes": { "tools": ["ping"] }
+}
+```
+
+For a directory entry `manifest.entry` is required, must be relative, must
+resolve inside the configured directory (a `../` escape is rejected before
+import), and must have a module extension (`.ts`, `.tsx`, `.js`, `.jsx`,
+`.mjs`, `.mts`, `.cjs`). The loader imports exactly that resolved path.
+
 The manifest `id` must match the plugin module's `name`. A missing or invalid
 manifest skips the plugin with a warning; plugin code never runs before its
-manifest is read. Permissions are declared and validated now; enforcement is
-planned for a later phase.
+manifest is read. Relative configured paths resolve against the directory of the
+global config file, so a relative entry means the same location regardless of
+where you started `fox`.
+
+### Permissions are declarations only
+
+`permissions` accepts `env`, `network`, `shell`, `fs.read`, `fs.write`,
+`sessions`, `provider`, `mcp`, `lsp`, `acp`, and `pty`.
+
+These values are declarations, not a security boundary. fox-agent has **no
+default sandbox, no permission prompts, and no permission enforcement**: a
+loaded plugin is imported into fox-agent's process and can do anything the
+process can. Permissions are validated against that vocabulary and recorded in
+the plugin's manifest data, which is useful when auditing a plugin before you
+install it; the current `/plugin` listing does not print them. If you want runtime
+isolation, that has to come from the plugin's own design or from how you run
+fox-agent, not from the kernel.
+
+A plugin whose runtime contributions disagree with its manifest's `contributes`
+gets a warning naming the mismatched IDs (declared but not implemented, or
+implemented but not declared). A mismatch never fails the load. Function-form
+`tools` are not statically cross-checked.
 
 **Duplicate entries.** If two configured spellings resolve to the same manifest
 `id`, composition fails closed: none of the configured external plugins load.
@@ -256,8 +306,9 @@ else the default) with a `.bak` beside it.
 ## Writing one: the short version
 
 1. Write `~/my-fox-plugin.ts` with a default export that has a `name`.
-2. Write `~/my-fox-plugin.plugin.json` with the same `id`.
-3. Add the `.ts` path to `plugins` in `~/.config/fox-agent/config.toml`.
+2. Write `~/my-fox-plugin.plugin.json` with the same `id` (or use a
+   `~/my-fox-plugin/` directory with `plugin.json` and a relative `entry`).
+3. Add the path to `plugins` in `~/.config/fox-agent/config.toml`.
 4. `/reload`.
 5. `/plugin info my-fox-plugin` to confirm what it contributed.
 
