@@ -8,7 +8,9 @@ plugins = ["/abs/path/mytools.ts"]    # ARRAY of paths; ~ expands, relative reso
 disabledPlugins = ["pty"]             # names switched off entirely
 ```
 
-For a configured file entry `/abs/path/mytools.ts`, the manifest is the sidecar `/abs/path/mytools.plugin.json`. Phase 1 imports the configured file path directly and does not resolve `manifest.entry`; directory-form plugin entries (`plugin.json` inside a plugin directory) are a follow-up, not yet supported.
+A manifest is required. For a configured **file entry** `/abs/path/mytools.ts`, the manifest is the sidecar `/abs/path/mytools.plugin.json` and the loader imports the configured file directly (`entry` is metadata only). For a configured **directory entry** `/abs/path/mytools`, the manifest is `/abs/path/mytools/plugin.json` and the loader imports `resolve(configuredDirectory, manifest.entry)`. A directory entry's `entry` must be relative, must resolve inside the configured directory (a `../` escape or another directory is rejected before import), and must use a module extension (`.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, `.mts`, `.cjs`).
+
+Relative configured plugin paths resolve against the global config file's directory, never the cwd and never a project directory.
 
 ```json
 {
@@ -20,9 +22,11 @@ For a configured file entry `/abs/path/mytools.ts`, the manifest is the sidecar 
 }
 ```
 
-The manifest names the plugin, its entry point, its declared permissions, and the contribution IDs it provides. Phase 1 validates the manifest and records the declared permissions before import; permission enforcement is later work. A plugin without a manifest is skipped with a warning; plugin code must never run before its manifest is read.
+The manifest names the plugin, its entry point, its declared permissions, and the contribution IDs it provides. Permissions are **declarations only**: the accepted vocabulary is `env`, `network`, `shell`, `fs.read`, `fs.write`, `sessions`, `provider`, `mcp`, `lsp`, `acp`, and `pty`, validated before import and shown by `/plugin info`. fox-agent has no default sandbox, no permission prompts, and no permission enforcement: a loaded plugin runs in-process with the user's credentials, so any real security control must be plugin-provided or come from the way fox-agent is run, not from the kernel.
 
-There is no `[plugins]` table form: `plugins` is a plain array of file paths. A broken plugin (missing manifest, invalid manifest, throws on import, bad shape) costs a warning, never the run. Editing a plugin file takes effect after `/reload` (plugins re-import on the next turn's registry build).
+A plugin whose implemented contributions disagree with its manifest gets a warning naming the mismatched IDs (declared but not implemented, or implemented but not declared). A mismatch never fails the load. Function-form `tools` are not statically cross-checked. A plugin without a manifest is skipped with a warning; plugin code must never run before its manifest is read.
+
+There is no `[plugins]` table form: `plugins` is a plain array of module-file or plugin-directory paths. A broken plugin (missing manifest, invalid manifest, throws on import, bad shape) costs a warning, never the run. Editing a plugin file takes effect after `/reload` (plugins re-import on the next turn's registry build).
 
 ## The FoxPlugin interface
 
@@ -138,6 +142,6 @@ A region that owns no signals still works: it paints once and stays put.
 
 ## Rules worth remembering
 
-- Tests and sandboxes: plugins still load from the path `FOX_AGENT_CONFIG`'s config names — point `FOX_AGENT_CONFIG` at a temp config to isolate.
+- Test isolation: plugins still load from the path `FOX_AGENT_CONFIG`'s config names — point `FOX_AGENT_CONFIG` at a temp config to isolate.
 - Never read project `fox-agent.toml` for plugins — even if a user asks for it, explain the boundary instead.
 - Types are re-exported from `fox-agent/sdk`: `FoxPlugin`, `PluginHooks`, `PluginCommand`, every hook context/patch type, `McpServerConfig`, `ExternalAgentConfig`, `Tool`, `ToolContext`, `ok`/`fail`, `ChatFn`, `UiBridge`/`UiStep`.

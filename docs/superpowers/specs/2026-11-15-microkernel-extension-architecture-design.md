@@ -292,13 +292,13 @@ Security rules:
 - project config cannot add plugins
 - permissions are declared before load
 - the first milestone audits and warns
-- later milestones can enforce permissions without changing the manifest format
+- permission enforcement, sandboxing, and permission prompts are out of scope by user decision; `permissions` are declarations for auditing, never a kernel-enforced capability
 - plugins cannot alter the event vocabulary
 - plugins cannot mutate stored context rows
 - gateway routes remain local-only by default
 - MCP, LSP, ACP, pty, and shell permissions are listed separately
 
-This design does not add a sandbox yet. It creates the contract where sandbox policy can be added without redesigning the plugin system.
+This design adds no sandbox and schedules none. A plugin that wants a security control must implement it itself; the kernel neither prompts nor enforces. The manifest permission vocabulary remains the place to declare intent so users and tooling can audit a plugin before install.
 
 ## Public API and compatibility
 
@@ -511,8 +511,8 @@ This design does not include:
 
 - a plugin marketplace
 - remote plugin installation
-- plugin sandbox enforcement
-- permission prompts by default
+- plugin sandbox enforcement (out of scope by user decision)
+- permission prompts (out of scope by user decision)
 - replacing the event vocabulary
 - arbitrary replacement of the frame loop
 - mutable stored context rows
@@ -523,8 +523,13 @@ This design does not include:
 - The kernel remains small and invariant-owning.
 - Built-in behavior migrates to bundled plugins first.
 - External plugin support uses the same contracts.
-- Security remains trusted-workspace by default, with explicit permission declarations added before enforcement.
+- Security remains trusted-workspace by default, with explicit permission declarations for auditing; enforcement and sandboxing are out of scope by user decision.
 - Phase 0 evidence is the existing suite plus the full gate run; no separate characterization-test layer was added in phase 0-1.
 - Phase 1 contribution uniqueness is global per contribution kind. Lifecycle hook names are shared points, not owned IDs, so duplicate `hooks` declarations compose.
-- Phase 1 validates and records manifest permissions before import; enforcement waits for the permission work in a later phase.
-- Phase 1 supports file-entry sidecar manifests. Directory-form plugin entries and `manifest.entry` resolution are follow-up work.
+- Phase 1 validates and records manifest permissions before import. By explicit user decision, permission enforcement, sandboxing, and permission prompts are out of scope: permissions are declarations only, and security controls are plugin-provided if desired.
+- Phase 1 supported file-entry sidecar manifests. That entry form still imports the configured file directly and treats `entry` as metadata.
+- Directory-form plugin entries are now supported: a configured directory uses `<dir>/plugin.json`, and `manifest.entry` must be relative, must resolve inside that directory, and must name a module file. A `../` escape or an entry resolving to another directory is rejected before import.
+- The permission vocabulary is expanded to `env`, `network`, `shell`, `fs.read`, `fs.write`, `sessions`, `provider`, `mcp`, `lsp`, `acp`, and `pty`. This is a vocabulary change only; nothing enforces these values.
+- Phase 1 contribution uniqueness remains global per contribution kind (`kind:id`), not per plugin and not per frontend. Lifecycle hooks remain shared extension points, so several plugins may contribute the same hook name.
+- Composition returns a queryable contribution ownership map from `kind:id` to the owning plugin ID, so frontends and tooling can resolve ownership without re-deriving it.
+- Runtime contributions are cross-checked against `manifest.contributes`; a mismatch warns with the affected IDs and never fails the load. Function-form `tools` are excluded because they cannot be inspected statically.
