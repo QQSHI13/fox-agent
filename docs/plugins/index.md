@@ -5,7 +5,8 @@ tags:
 
 # Plugins
 
-A plugin is one TypeScript module with a default export. It can add tools, hook
+A plugin is one TypeScript module with a default export, plus a static manifest
+that fox-agent reads before importing that module. It can add tools, hook
 the turn loop, register providers and themes, pack MCP servers and delegation
 targets, and add slash commands.
 
@@ -16,11 +17,35 @@ fact explains the rule that follows.
 
 ```toml
 # ~/.config/fox-agent/config.toml
-plugins = ["~/my-fox-plugin.ts"]     # ~ expands; relative paths resolve against cwd
+plugins = ["~/my-fox-plugin.ts"]     # ~ expands; relative paths resolve against this config's directory
 ```
 
 **Global config only.** A `plugins` entry in a project `fox-agent.toml` is
 ignored, with a warning saying so.
+
+### Manifest first
+
+For `~/my-fox-plugin.ts`, write a sidecar manifest at
+`~/my-fox-plugin.plugin.json`:
+
+```json
+{
+  "id": "my-fox-plugin",
+  "version": "1.0.0",
+  "entry": "my-fox-plugin.ts",
+  "permissions": [],
+  "contributes": { "tools": ["ping"] }
+}
+```
+
+The manifest `id` must match the plugin module's `name`. A missing or invalid
+manifest skips the plugin with a warning; plugin code never runs before its
+manifest is read. Permissions are declared and validated now; enforcement is
+planned for a later phase.
+
+**Duplicate entries.** If two configured spellings resolve to the same manifest
+`id`, composition fails closed: none of the configured external plugins load.
+Remove the duplicate entry. The warning names both paths.
 
 ### Why global-only
 
@@ -231,8 +256,9 @@ else the default) with a `.bak` beside it.
 ## Writing one: the short version
 
 1. Write `~/my-fox-plugin.ts` with a default export that has a `name`.
-2. Add it to `plugins` in `~/.config/fox-agent/config.toml`.
-3. `/reload`.
-4. `/plugin info my-fox-plugin` to confirm what it contributed.
+2. Write `~/my-fox-plugin.plugin.json` with the same `id`.
+3. Add the `.ts` path to `plugins` in `~/.config/fox-agent/config.toml`.
+4. `/reload`.
+5. `/plugin info my-fox-plugin` to confirm what it contributed.
 
 If something is wrong, the warning at the top of the turn will name the plugin.
