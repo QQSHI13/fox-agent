@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { chipGutter, contentOrigin, contentOriginForChip, contentWidth } from "../src/tui/layout.ts";
+import { chipGutter, contentOrigin, contentOriginForChip, contentWidth, scrollPositionLabel } from "../src/tui/layout.ts";
 
 // The [N] marker's gutter used to be re-derived in five places (the wrap width
 // in itemRows, the wrap width in streamRows, the paint loop's content offset,
@@ -259,6 +259,29 @@ describe("computeFrame", () => {
     // the reason this test exists: the bottom of the transcript is the last
     // content row, not `message 75` of 100
     expect(at(max, true).at(-1)).toContain("message 99");
+  });
+});
+
+describe("scrollPositionLabel", () => {
+  test("a transcript that fits has no position label", () => {
+    expect(scrollPositionLabel(30, 0, 30)).toBeNull();
+    expect(scrollPositionLabel(10, 0, 30)).toBeNull();
+  });
+
+  test("the live bottom has no position label", () => {
+    expect(scrollPositionLabel(200, 150, 50)).toBeNull();
+    expect(scrollPositionLabel(200, 999, 50)).toBeNull();
+  });
+
+  test("the first row of a scrollable transcript reads as top", () => {
+    expect(scrollPositionLabel(200, 0, 50)).toBe("top");
+    expect(scrollPositionLabel(200, -20, 50)).toBe("top");
+  });
+
+  test("the midpoint rounds to a percentage", () => {
+    expect(scrollPositionLabel(200, 75, 50)).toBe("scrolled 50%");
+    expect(scrollPositionLabel(200, 37, 50)).toBe("scrolled 25%");
+    expect(scrollPositionLabel(200, 149, 50)).toBe("scrolled 99%");
   });
 });
 

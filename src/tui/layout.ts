@@ -398,6 +398,21 @@ export function scrollbarGeom(rows: number, vh: number, scrollTop: number): Scro
 }
 
 /**
+ * Left-status text for a transcript scrolled away from the live bottom.
+ * Returns null when the position would be noise: the transcript fits, or the
+ * frame is already at the newest row. The bottom test is `>=`, not `==`, so a
+ * near-bottom frame does not flicker between a percentage and no label.
+ */
+export function scrollPositionLabel(total: number, scrollTop: number, vh: number): string | null {
+  if (vh < 1 || total <= vh) return null;
+  const max = total - vh;
+  if (scrollTop >= max) return null;
+  if (scrollTop <= 0) return "top";
+  const pct = Math.max(0, Math.min(100, Math.round((scrollTop / max) * 100)));
+  return `scrolled ${pct}%`;
+}
+
+/**
  * Dock height the window can actually afford: the editor's wrapped rows capped
  * by INPUT_MAX_ROWS, then capped again so the status bar keeps its row and the
  * viewport keeps its floor of 3. Every consumer (computeFrame, viewportHeight,

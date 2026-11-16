@@ -91,7 +91,9 @@ Commands that mutate (`/new`, `/login`, `/settings`, `/upgrade`, …) say so in
 A space-separated segment template — default `cwd provider model ctx cost`.
 Segment names come from the built-ins plus plugin `statusSegments`. On a narrow
 terminal, whole segments drop left-to-right; the input dock never truncates
-mid-text.
+mid-text. When the transcript is scrolled away from the live bottom, the left
+state also reads `ready · top` or `ready · scrolled N%` so a long session keeps
+its position visible.
 
 ## Themes
 
