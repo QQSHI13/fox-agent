@@ -3448,13 +3448,11 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
 
   /**
    * Tag an item's rows with the leading [N] gutter marker. The marker is a
-   * fixed-width chip `[N] ` stamped by the paint loop in COLUMN 0 — outside the
-   * content margin — so it hugs the very-left edge. The first row carries the
-   * chip; continuation rows carry `true` (same-width indent) so wrapped text
-   * stays aligned under the content, not under the marker.
-   *
-   * The chip's width is still reserved here: callers shrink the wrap width by
-   * MARKER_W so content never collides with the gutter column.
+   * fixed-width chip `[N]` stamped by the paint loop in COLUMN 0 — outside the
+   * content margin — so it hugs the very-left edge. Only the FIRST row carries
+   * the chip; continuation rows carry `{ indent: 0 }` and start at the usual
+   * left margin, so they may use the full width (the wrap hangs under the chip
+   * via `firstReserve` in itemRows).
    */
   const MARKER_W = (seq: number) => `[${seq}]`.length;
   /**
@@ -3491,21 +3489,34 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       perWidth!.set(w, cached);
       return cached;
     }
-    // The marker rides a fixed left gutter; content wraps inside the remainder.
-    // wrap width and paint offset must reserve the SAME gutter — both read
-    // contentWidth/contentOrigin from layout.ts, so they cannot disagree (this
-    // is the off-by-one that made a selected marked row look displaced).
+    // ONLY the item's first visual row carries the [N] chip; continuation rows
+    // start at the usual left margin (see withMarker / stampTranscript). So only
+    // the first wrap gives up the chip's gutter — everything after it wraps at
+    // the full width. Wrapping the whole item at the narrow width left every
+    // continuation row short by the marker's width.
     //
     // A tool BODY is markerCont: it shares the head's seq but never paints a
-    // chip, so it must reserve NO gutter. Keying the geometry off `it.seq` gave
-    // the body a gutter it does not have, and its selection landed a chip-width
-    // right of the text.
-    const cw = contentWidth(w, rowSeq(it));
+    // chip, so it must reserve NO gutter.
+    const seq = rowSeq(it);
+    const firstW = contentWidth(w, seq);
+    let firstLine = seq !== undefined;
+    /** options for the next wrap call: the chip's gutter when that call opens
+     *  the item, nothing for continuation content */
+    const firstOpts = (): { firstReserve: number } | undefined => {
+      if (!firstLine) return undefined;
+      firstLine = false;
+      return { firstReserve: w - firstW };
+    };
     let rows: Row[];
     if (it.kind === "md") {
       // no trailing blank: spacing between items is buildRows' job
       rows = [];
-      for (const mline of renderMarkdown(it.text, undefined, cw)) rows.push(...wrapCodeAware(mline, cw).map((segs) => ({ segs })));
+      let mlines = renderMarkdown(it.text, undefined, w);
+      // a table is composed as one unit at the given width; when the message
+      // OPENS with one, its frame is the chip row and only fits the narrow
+      // budget — compose the message at that width instead of shredding it
+      if (firstLine && mlines.length && /^[┌├│└]/.test(mlines[0][0]?.t ?? "")) mlines = renderMarkdown(it.text, undefined, firstW);
+      for (const mline of mlines) rows.push(...wrapCodeAware(mline, w, firstOpts()).map((segs) => ({ segs })));
     } else if (it.ephemeral) {
       // Ephemeral notice: a boxed, uniformly-colored block that dies on the
       // next keypress/click. The box keeps it physically separate from the
@@ -3540,7 +3551,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       rows.push(boxFill([{ t: `╰${"─".repeat(inner)}╯`, fg: C.info, bg: C.barBg }]));
     } else if (it.kind === "think") {
       if (it.expanded) {
-        const body = thinkRows(it, cw);
+        // the "▾ thinking" header IS the first row (and the chip row), so the
+        // body behind it is all continuation content: full width
+        const body = thinkRows(it, w);
         rows = [{ segs: [{ t: "▾ thinking", fg: C.think }] }, ...body];
         if (!rows[rows.length - 1].segs.length) rows.pop(); // empty body: wrap emits one [[]] caret row
       } else {
@@ -3558,8 +3571,8 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       // stopping at 60 chars
       if (it.expanded) {
         fillDetail(it);
-        rows = wrapSegs([{ t: `▾ ${it.text}`, fg: C.tool }], cw).map((segs) => ({ segs }));
-        rows.push(...wrapSegs([{ t: `  ${it.detail ?? ""}`, fg: C.chrome }], cw).map((segs) => ({ segs })));
+        rows = wrapSegs([{ t: `▾ ${it.text}`, fg: C.tool }], w, undefined, firstOpts()).map((segs) => ({ segs }));
+        rows.push(...wrapSegs([{ t: `  ${it.detail ?? ""}`, fg: C.chrome }], w).map((segs) => ({ segs })));
       } else {
         rows = [
           {
@@ -3576,7 +3589,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     } else if (it.kind === "toolbody") {
       if (!it.toolResult) {
         // info lines that borrow the muted style (welcome, hints) — no arrow, no ↳
-        rows = wrapSegs([{ t: it.text, ...itemStyle(it.kind) }], cw).map((segs) => ({ segs }));
+        rows = wrapSegs([{ t: it.text, ...itemStyle(it.kind) }], w).map((segs) => ({ segs }));
       } else if (it.expanded) {
         // full output: real lines, no ⏎ one-lining, no ↳ prefix. Rich mode
         // paints unified-diff/git markers in their own colors.
@@ -3584,7 +3597,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         if (it.mdBody) {
           // markdown body (todo task lists): through the md parser so
           // task-list syntax renders as status marks, not punctuation
-          for (const mline of renderMarkdown(it.text, undefined, cw)) rows.push(...wrapCodeAware(mline, cw).map((segs) => ({ segs })));
+          for (const mline of renderMarkdown(it.text, undefined, w)) rows.push(...wrapCodeAware(mline, w).map((segs) => ({ segs })));
         } else {
           const lines = it.text.split("\n");
           // Pair each -/+ run so rich mode can word-diff INSIDE changed lines:
@@ -3635,7 +3648,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         ];
       }
     } else {
-      rows = wrapSegs([{ t: it.text, ...itemStyle(it.kind) }], cw).map((segs) => ({ segs }));
+      rows = wrapSegs([{ t: it.text, ...itemStyle(it.kind) }], w, undefined, firstOpts()).map((segs) => ({ segs }));
     }
     if (rowSeq(it) !== undefined) rows = withMarker(rows, rowSeq(it)!, it.markerCont);
     // Hidden (reverted) nodes are filtered out of `loadItems`, so they never reach
@@ -3721,16 +3734,17 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   }
 
   function streamRows(text: string, w: number): Row[] {
-    // when the tail carries a [N] marker it must wrap inside the gutter, so the
-    // chip can ride column 0 without the content overflowing the full width.
-    // Same reservation as itemRows: the chip PLUS its one gap column.
-    const innerW = contentWidth(w, tui.streamSeq > 0 ? tui.streamSeq : undefined);
-    let entry = streamKernels.get(innerW);
+    // Only the tail's FIRST row wears the predicted [N] chip; the kernel hangs
+    // that one line under the chip's gutter and wraps every continuation line
+    // at the full width. Key by the chip-row width (as before), so a seq change
+    // that moves the chip still forces a re-render.
+    const firstW = contentWidth(w, tui.streamSeq > 0 ? tui.streamSeq : undefined);
+    let entry = streamKernels.get(firstW);
     // a SHRINK or mid-prefix change means a rewind — the kernel's accumulated
     // state is invalid, start fresh
     if (!entry || entry.len > text.length || (entry.len > 0 && !text.startsWith(text.slice(0, entry.len)))) {
-      entry = { len: 0, k: createStreamRows(innerW) };
-      streamKernels.set(innerW, entry);
+      entry = { len: 0, k: createStreamRows(w, { firstReserve: w - firstW }) };
+      streamKernels.set(firstW, entry);
       if (streamKernels.size > 4) streamKernels.clear(); // widths are W and W-2; bound anyway
     }
     if (text.length > entry.len) {

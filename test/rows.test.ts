@@ -5,6 +5,33 @@ function rowsText(rows: Row[]): string {
   return rows.map((r) => r.segs.map((s) => s.t).join("")).join("\n");
 }
 
+describe("rows kernel: first-line reserve (the [N] chip hangs over line 1)", () => {
+  const widthOf = (r: Row) => r.segs.reduce((n, s) => n + s.t.length, 0);
+
+  test("only the first row gives up the reserve; continuations reach the full width", () => {
+    // The chip rides the first visual row only. Wrapping the whole item at the
+    // narrow width left every continuation line short by the marker's width.
+    const W = 40;
+    const k = createStreamRows(W, { firstReserve: 5 });
+    k.feed("word ".repeat(100).trim());
+    const rows = k.rows as Row[];
+    expect(widthOf(rows[0])).toBeLessThanOrEqual(W - 5);
+    expect(Math.max(...rows.slice(1).map(widthOf))).toBeGreaterThanOrEqual(W - 1);
+    expect(Math.max(...rows.slice(1).map(widthOf))).toBeLessThanOrEqual(W);
+  });
+
+  test("the reserve survives settling the first row and does not leak into the tail", () => {
+    const W = 40;
+    const k = createStreamRows(W, { firstReserve: 5 });
+    k.feed("first line of prose that wraps\nsecond ");
+    const rows = k.rows as Row[];
+    // the settled line keeps its narrow first row...
+    expect(widthOf(rows[0])).toBeLessThanOrEqual(W - 5);
+    // ...and the unterminated tail after the newline wraps at the full width
+    expect(Math.max(...rows.slice(1).map(widthOf))).toBeLessThanOrEqual(W);
+  });
+});
+
 /**
  * Golden equivalence: the kernel must produce byte-identical rows to the
  * previous streaming renderer (legacyStreamRows) at every feed point —
@@ -12,6 +39,7 @@ function rowsText(rows: Row[]): string {
  * contract for the streaming path.
  */
 describe("rows kernel: golden equivalence with the legacy stream renderer", () => {
+
   const DOCS = [
     "plain words only, one giant paragraph with no newline at all, just more and more words arriving in tiny pieces",
     "# Head\n\npara one **bold**\ncontinues\n\n```js\nlet x = 1;\nlet y = 2;\n```\n\n- a\n- b\n\ntail **para**",

@@ -16,12 +16,34 @@ describe("marker gutter: one geometry, three consumers", () => {
       const gutter = chipGutter(seq);
       // the gutter is the chip plus one uncolored column
       expect(gutter).toBe(`[${seq}]`.length + 1);
-      // content starts after the gutter, and the width is what remains
+      // content starts after the gutter; the chip row's wrap budget is the rest
+      // PLUS one, because wrapSegs already spends a column on its ragged edge
+      // (a row starting at column 1 gets `W`, not `W - 1`)
       expect(contentOrigin(seq)).toBe(gutter);
-      expect(contentWidth(W, seq)).toBe(W - gutter);
-      // the invariant that was violated: origin + width must never exceed the row
-      expect(contentOrigin(seq) + contentWidth(W, seq)).toBeLessThanOrEqual(W);
+      expect(contentWidth(W, seq)).toBe(W - gutter + 1);
+      // the invariant that was violated: the last painted column stays inside
+      expect(contentOrigin(seq) + contentWidth(W, seq) - 1).toBeLessThanOrEqual(W);
     }
+  });
+
+  test("a marked item's continuation rows use the FULL width (chip only borrows line 1)", () => {
+    // Every wrapped line after the first starts at the plain left margin, so it
+    // must wrap at `W`, not `W - gutter`. Wrapping the whole item at the chip
+    // row's budget left each continuation line short by the marker's width —
+    // the reported "text wraps too early" bug.
+    const W = 80;
+    const seq = 12;
+    const firstW = contentWidth(W, seq);
+    const lines = wrapSegs([{ t: "word ".repeat(200).trim() }], W, undefined, { firstReserve: W - firstW });
+    const lineWidth = (segs: { t: string }[]) => segs.reduce((n, s) => n + s.t.length, 0);
+    const widths = lines.map(lineWidth);
+    // the chip row lives inside its narrow budget...
+    expect(widths[0]).toBeLessThanOrEqual(firstW);
+    // ...while continuation rows are as wide as an unmarked wrap gets (a run of
+    // spaces may land exactly on the wrap column)
+    expect(Math.max(...widths.slice(1))).toBeGreaterThanOrEqual(W - 1);
+    expect(Math.max(...widths.slice(1))).toBeLessThanOrEqual(W);
+    expect(lines.length).toBeGreaterThan(2);
   });
 
   test("an unmarked row is untouched — no gutter, full width", () => {
@@ -46,9 +68,7 @@ describe("marker gutter: one geometry, three consumers", () => {
     // the floor: no negative or zero width, however big the chip
     expect(contentWidth(4, 1000)).toBeGreaterThanOrEqual(8);
     expect(contentWidth(0, 1)).toBeGreaterThanOrEqual(8);
-  });
-
-  // A tool BODY carries its head's seq (they are one message) but paints no
+  });  // A tool BODY carries its head's seq (they are one message) but paints no
   // chip, so it must reserve no gutter. The app decides this with a rowSeq()
   // predicate rather than reading seq directly — these tests pin the geometry
   // the predicate implies, so 'the line after the marker is also clickable' and
@@ -56,8 +76,8 @@ describe("marker gutter: one geometry, three consumers", () => {
   test("a marker continuation reserves NO gutter (a tool body paints no chip)", () => {
     const W = 80;
     const HEAD_SEQ = 12;
-    // the head: chip, so gutter applies
-    expect(contentWidth(W, HEAD_SEQ)).toBe(W - chipGutter(HEAD_SEQ));
+    // the head: chip, so gutter applies to its first row
+    expect(contentWidth(W, HEAD_SEQ)).toBe(W - chipGutter(HEAD_SEQ) + 1);
     // the body: same message, no chip — identical to an unmarked row
     expect(contentWidth(W, undefined)).toBe(W);
     expect(contentOrigin(undefined)).toBe(1);

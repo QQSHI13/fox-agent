@@ -259,6 +259,17 @@ describe("code fence wrapping", () => {
     }
   });
 
+  test("a continuation row plus its re-stamped gutter stays within the width", () => {
+    // wrapCodeAware wraps the code row and THEN prepends `│ ` to continuation
+    // rows, so the wrap must reserve those two columns or the longest
+    // continuations run a couple of cells past the right edge.
+    const longCode = "x".repeat(60);
+    const rows = renderMarkdown("```\n" + longCode + "\n```");
+    const codeRow = rows.find((r) => codeGutterRow(r))!;
+    const widthOf = (segs: { t: string }[]) => segs.reduce((n, s) => n + s.t.length, 0);
+    for (const r of wrapCodeAware(codeRow, 20)) expect(widthOf(r)).toBeLessThanOrEqual(20);
+  });
+
   test("a non-code row passes through wrapCodeAware unchanged", () => {
     const rows = renderMarkdown("just some prose text here");
     const wrapped = wrapCodeAware(rows[0], 10);

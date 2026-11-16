@@ -2,7 +2,7 @@
 import type { Seg } from "./wrap.ts";
 import { liveTheme } from "./themes.ts";
 import { charWidth } from "./screen.ts";
-import { wrapSegs } from "./wrap.ts";
+import { wrapSegs, type WrapOpts } from "./wrap.ts";
 import { highlightBlockRich, diffFenceLine, jsonSegs } from "./highlight.ts";
 
 // live theme lookups: a /theme switch recolors markdown on the next frame
@@ -451,9 +451,13 @@ export function codeContRow(segs: { t: string; fg?: string }[]): boolean {
  * code still aligns under the first row's content) on each continuation. Non-code
  * rows pass through unchanged.
  */
-export function wrapCodeAware(row: Seg[], width: number): Seg[][] {
-  const wrapped = wrapSegs(row, width);
-  if (!codeGutterRow(row) || wrapped.length <= 1) return wrapped;
+export function wrapCodeAware(row: Seg[], width: number, opts?: WrapOpts): Seg[][] {
+  const code = codeGutterRow(row);
+  // a code row's continuation lines get the `│ ` gutter re-stamped below, so
+  // those lines must leave the two columns it will occupy; wrapping them at the
+  // full width ran the longest ones past the right edge
+  const wrapped = wrapSegs(row, width, undefined, code ? { ...opts, contReserve: 2 } : opts);
+  if (!code || wrapped.length <= 1) return wrapped;
   const contGutter: Seg = { t: "│ ", fg: MD.CODE_FG };
   return wrapped.map((r, i) => (i === 0 ? r : [contGutter, ...r]));
 }

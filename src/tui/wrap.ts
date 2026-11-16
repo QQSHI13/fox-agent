@@ -61,6 +61,20 @@ export interface WrapOpts {
    * wants the whole width and sets this.
    */
   exactWidth?: boolean;
+  /**
+   * Extra columns the FIRST output line gives up, on top of `reserve`. The
+   * transcript's `[N]` chip only borrows line 1: that line starts after the
+   * chip's gutter while every later line starts at the usual margin and may use
+   * the full width. Passing the gutter here makes the wrap hang under the chip
+   * instead of wrapping every continuation line short by the chip's width.
+   */
+  firstReserve?: number;
+  /**
+   * Extra columns each line after the first gives up. A fenced code row is
+   * wrapped once but its continuation rows get a `│ ` gutter re-stamped on
+   * them, so those rows must leave the two columns it will occupy.
+   */
+  contReserve?: number;
 }
 
 const strWidth = (t: string): number => {
@@ -90,9 +104,18 @@ export function wrapSegs(segs: Seg[], width: number, rawEnds?: number[], opts?: 
   // a wrap column below 4 is unusable; the floor also keeps the "lone oversized
   // word" branch from looping without progress on a 0- or 1-column budget
   const cols = Math.max(4, width - reserve);
-  // fit limit for a line that already has content: one column short unless the
-  // caller wants the full width (see exactWidth)
-  const fit = opts?.exactWidth ? cols : cols - 1;
+  // per-line budget: a caller may paint a gutter into the first row only (the
+  // [N] chip) or into every continuation row (a code fence's `│ `)
+  const firstReserve = Math.max(0, opts?.firstReserve ?? 0);
+  const contReserve = Math.max(0, opts?.contReserve ?? 0);
+  const colsNow = (): number => {
+    const extra = out.length === 0 ? firstReserve : contReserve;
+    return extra ? Math.max(4, width - reserve - extra) : cols;
+  };
+  const fitNow = (): number => {
+    const c = colsNow();
+    return opts?.exactWidth ? c : c - 1;
+  };
   const leadKept = !!opts?.keepLeadSpaces;
   const lossless = !!opts?.lossless;
   const out: Seg[][] = [];
@@ -117,7 +140,7 @@ export function wrapSegs(segs: Seg[], width: number, rawEnds?: number[], opts?: 
   // caret at the end of such a row maps to the next row's column 0 instead of a
   // column past the box — see inputwrap.ts's caret rule.
   const breakIfFull = (): boolean => {
-    if (lineW >= cols) {
+    if (lineW >= colsNow()) {
       newline();
       return true;
     }
@@ -142,14 +165,14 @@ export function wrapSegs(segs: Seg[], width: number, rawEnds?: number[], opts?: 
           let rest = part;
           while (rest) {
             if (breakIfFull()) continue; // an empty row always has room
-            const room = cols - lineW;
+            const room = colsNow() - lineW;
             const chunk = rest.slice(0, room);
             addSpaces(raw, chunk);
             rest = rest.slice(chunk.length);
             if (rest) newline();
           }
         } else {
-          const room = cols - lineW;
+          const room = colsNow() - lineW;
           const sp = Math.min(part.length, Math.max(0, room));
           if (sp > 0 && (leadKept || line.length > 0 || out.length > 0)) addSpaces(raw, " ".repeat(sp));
         }
@@ -158,7 +181,7 @@ export function wrapSegs(segs: Seg[], width: number, rawEnds?: number[], opts?: 
       let word = part;
       for (;;) {
         const ww = strWidth(word);
-        if (lineW + ww <= fit) {
+        if (lineW + ww <= fitNow()) {
           push({ ...raw, t: word });
           break;
         }
@@ -168,7 +191,7 @@ export function wrapSegs(segs: Seg[], width: number, rawEnds?: number[], opts?: 
           let tw = 0;
           for (const ch of word) {
             const cw = charWidth(ch.codePointAt(0)!);
-            if (tw + cw > fit) break;
+            if (tw + cw > fitNow()) break;
             take += ch;
             tw += cw;
           }

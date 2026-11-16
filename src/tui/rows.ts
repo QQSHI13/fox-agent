@@ -82,8 +82,15 @@ export interface StreamRows {
   resize(w: number): void;
 }
 
-export function createStreamRows(w: number): StreamRows {
+export function createStreamRows(w: number, opts?: { firstReserve?: number }): StreamRows {
   let width = w;
+  /** columns the FIRST visual row gives up for a caller-painted gutter (the
+   *  [N] chip). Only the item's very first row has the chip; once that row is
+   *  settled every tail line starts at the usual margin and uses full width. */
+  const firstReserve = Math.max(0, opts?.firstReserve ?? 0);
+  /** the chip row's wrap width — also the width a table is composed at while
+   *  it opens the stream, since a table is laid out as one unit */
+  const firstWidth = Math.max(4, w - firstReserve);
   let text = "";
   let settledRows: Row[] = [];
   let settledCut = 0;
@@ -116,8 +123,13 @@ export function createStreamRows(w: number): StreamRows {
       scan = nl + 1;
     }
     if (newCut === settledCut) return false;
-    for (const mline of renderMarkdown(text.slice(settledCut, newCut - 1), md, width)) {
-      for (const segs of wrapSegs(mline, width)) settledRows.push({ segs });
+    // a chip row that has not settled yet is the one this slice opens with;
+    // its first line gives up the gutter, everything after it is full width
+    const chipRow = settledRows.length === 0 && firstReserve > 0;
+    let firstLine = chipRow;
+    for (const mline of renderMarkdown(text.slice(settledCut, newCut - 1), md, chipRow ? firstWidth : width)) {
+      for (const segs of wrapSegs(mline, width, undefined, firstLine ? { firstReserve } : undefined)) settledRows.push({ segs });
+      firstLine = false;
     }
     settledCut = newCut;
     md = md2;
@@ -128,8 +140,11 @@ export function createStreamRows(w: number): StreamRows {
     // NO empty-tail shortcut: inside an open fence renderMarkdown("") still
     // emits a gutter row ("│ "), and that row is on screen today (golden).
     const tailText = text.slice(settledCut);
+    // the tail opens the item only while nothing has settled, and then its
+    // first row is the chip row (a table at that position is composed narrow)
+    const opensItem = settledRows.length === 0 && firstReserve > 0;
     const fresh: Seg[] = [];
-    for (const mline of renderMarkdown(tailText, { ...md }, width)) fresh.push(...mline);
+    for (const mline of renderMarkdown(tailText, { ...md }, opensItem ? firstWidth : width)) fresh.push(...mline);
     if (!fresh.length) {
       // legacy: zero markdown lines (e.g. the tail is only a fence opener)
       // produce ZERO rows; the [[]] caret row comes from the EMPTY tail only.
@@ -248,7 +263,7 @@ export function createStreamRows(w: number): StreamRows {
     } else {
       sliced = fresh;
     }
-    tailLines = reuse > 0 ? [...tailLines.slice(0, reuse), ...wrapSegs(sliced, width)] : wrapSegs(sliced, width);
+    tailLines = reuse > 0 ? [...tailLines.slice(0, reuse), ...wrapSegs(sliced, width)] : wrapSegs(sliced, width, undefined, opensItem ? { firstReserve } : undefined);
     // record new char ends by walking the final lines' text
     tailCharEnds = [];
     let pos = 0;

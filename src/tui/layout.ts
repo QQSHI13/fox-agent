@@ -63,16 +63,18 @@ export function contentOriginForChip(chipW: number): number {
  * shows), and text paints from `contentOrigin`. wrapSegs keeps a ragged right
  * edge (`fit = cols - 1`), so `cols` must span from the origin THROUGH the last
  * writable column — that is exactly `total` for an unmarked row (origin 1) and
- * `total - gutter` for a marked one (origin gutter + 1). The `-1` inside
- * wrapSegs is then the one column left empty at the end, the same for both.
- * Subtracting the gutter AND a column here would wrap marked rows one column
- * earlier than unmarked ones.
+ * `total - gutter + 1` for a marked one (origin gutter). Subtracting the gutter
+ * alone left marked rows a column short of the right edge.
+ *
+ * ONLY the first visual row of an item carries the chip; continuation rows
+ * start at the usual margin and wrap at the full `total`. This width is the
+ * chip row's budget, passed to the wrap as a first-line reserve.
  *
  * The 8 is a floor so a very narrow terminal still leaves a usable wrap column
  * instead of a negative one.
  */
 export function contentWidth(total: number, seq: number | undefined): number {
-  return seq === undefined ? total : Math.max(8, total - chipGutter(seq));
+  return seq === undefined ? total : Math.max(8, total - chipGutter(seq) + 1);
 }
 
 /** Everything computeFrame needs to lay out one frame. Rendering callbacks are
