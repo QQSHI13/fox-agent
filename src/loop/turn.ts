@@ -11,9 +11,10 @@ import { acquireTurnLock, releaseTurnLock, foreignLock } from "../store/lock.ts"
 import { adoptBackground, settleBackground } from "./background.ts";
 import { VERSION } from "../core/version.ts";
 import type { Config } from "../core/config.ts";
-import { defaultConfig } from "../core/config.ts";
+import { defaultConfig, effectiveConfigPath } from "../core/config.ts";
 import type { FoxPlugin } from "../plugins/types.ts";
 import { loadPlugins } from "../plugins/load.ts";
+import { dirname } from "node:path";
 import type { UiBridge } from "../core/ui.ts";
 import { buildSystemPrompt, buildRuntimeHeader } from "./prompt.ts";
 import { renderContext, stripEchoedMarkers } from "../context/render.ts";
@@ -485,7 +486,7 @@ async function* turnBody(
     // an override skips buildRegistry, so config-named plugins are loaded here —
     // otherwise a test that injects a registry would silently lose every hook
     if (!opts.pluginsOverride && effCfg.plugins?.length) {
-      const res = await loadPlugins(effCfg.plugins);
+      const res = await loadPlugins(effCfg.plugins, dirname(effectiveConfigPath()));
       plugins = res.plugins;
       setupWarnings = [...(effCfg.warnings ?? []), ...res.warnings];
       // buildRegistry registers plugin providers; the override path must too,
