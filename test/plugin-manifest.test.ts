@@ -184,6 +184,53 @@ describe("plugin manifest schema", () => {
     expect(invalid.manifest.contributes).not.toHaveProperty("gadgets");
     expect(invalid.warnings).toContain("unknown contribution kind 'gadgets' - ignored");
   });
+
+  test("rejects malformed fields and warns on unknown contribution kinds", () => {
+    // One row per rejected shape: each differs from the valid base by a single
+    // field, so a failure names the validation rule that stopped enforcing.
+    const valid = { id: "fixture", version: "1.0.0", entry: "./x.ts", permissions: [], contributes: {} };
+    const cases: (
+      | { patch: Record<string, unknown>; error: string }
+      | { patch: Record<string, unknown>; warning: string }
+    )[] = [
+      { patch: { id: "bad id!" }, error: "id must be a non-empty string" },
+      { patch: { version: "1.0" }, error: "version must be a semantic version string" },
+      { patch: { permissions: {} }, error: "permissions must be an array" },
+      { patch: { contributes: [] }, error: "contributes must be an object" },
+      { patch: { contributes: { gadgets: ["x"] } }, warning: "unknown contribution kind 'gadgets' - ignored" },
+      { patch: { dependencies: "ghost" }, error: "dependencies must be an array of strings" },
+      { patch: { dependencies: ["ok", 4] }, error: "dependencies must be an array of strings" },
+      { patch: { activation: "sometimes" }, error: "activation must be startup" },
+      { patch: { api: "  " }, error: "api must be a non-empty string" },
+      { patch: { configSchema: [] }, error: "configSchema must be an object" },
+    ];
+
+    for (const c of cases) {
+      const parsed = parsePluginManifest({ ...valid, ...c.patch });
+      if ("error" in c) {
+        expect(parsed.ok).toBe(false);
+        if (parsed.ok) continue;
+        expect(parsed.error).toContain(c.error);
+      } else {
+        expect(parsed.ok).toBe(true);
+        if (!parsed.ok) continue;
+        expect(parsed.warnings).toContain(c.warning);
+      }
+    }
+
+    // Only the boolean true marks a manifest as metadata-only; a truthy string
+    // leaves the entry requirement in force.
+    const nonBoolean = parsePluginManifest({
+      id: "fixture",
+      version: "1.0.0",
+      manifestOnly: "yes",
+      permissions: [],
+      contributes: {},
+    });
+    expect(nonBoolean.ok).toBe(false);
+    if (nonBoolean.ok) return;
+    expect(nonBoolean.error).toContain("entry is required");
+  });
 });
 
 function node(id: string, extra: Partial<PluginManifest> = {}, bundled = false): ManifestNode {
@@ -300,5 +347,8 @@ test("sdk exports the manifest helper and types for plugin authors", () => {
     permissions: [],
     contributes: { tools: ["ping"] },
   });
-  expect(manifest.id).toBe("sdk-fixture");
+  // the annotation is the assertion: the SDK's params and return type are the
+  // same PluginManifest the loader parses, so an author gets the same shape
+  const typed: PluginManifest = manifest;
+  expect(typed.id).toBe("sdk-fixture");
 });
