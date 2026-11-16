@@ -18,6 +18,7 @@
  * registry and the error type — all of which are a few hundred bytes of code.
  */
 import { parseArgv, type Parsed } from "./cli/argv.ts";
+import { dirname } from "node:path";
 import { VERSION } from "./core/version.ts";
 import { commandHelp, usage, findCommand } from "./cli/registry.ts";
 import { registerBuiltins } from "./cli/builtins.ts";
@@ -49,12 +50,13 @@ async function printHelp(parsed: Parsed): Promise<void> {
     const { effectiveConfigPath, loadConfig } = await import("./core/config.ts");
     const { bundledPlugins, bundledDisabled } = await import("./plugins/bundled.ts");
     const { loadPlugins, setActivePlugins } = await import("./plugins/load.ts");
+    const configPath = effectiveConfigPath((parsed.flags.get("config") as string) || undefined);
     const pcfg = loadConfig({
       cwd: process.cwd(),
-      configPath: effectiveConfigPath((parsed.flags.get("config") as string) || undefined),
+      configPath,
     });
     const disabled = pcfg.disabledPlugins ?? [];
-    const loaded = await loadPlugins(pcfg.plugins ?? [], undefined, disabled);
+    const loaded = await loadPlugins(pcfg.plugins ?? [], dirname(configPath), disabled);
     const all = [...bundledPlugins().filter((p) => !bundledDisabled(p.name, disabled)), ...loaded.plugins];
     setActivePlugins(all);
     pluginCmds = all

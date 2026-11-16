@@ -8,8 +8,8 @@
  * paying for them to print a version string was most of `fox --version`'s cost.
  */
 import { createSession, getSession, latestSessionFor, setSessionModel } from "./store/db.ts";
-import { join } from "node:path";
-import { loadConfig, resolveProfile, type Config } from "./core/config.ts";
+import { dirname, join } from "node:path";
+import { effectiveConfigPath, loadConfig, resolveProfile, type Config } from "./core/config.ts";
 import type { ProviderConfig } from "./providers/types.ts";
 import { ConfigError, errMsg } from "./core/errors.ts";
 import { assertNever } from "./core/events.ts";
@@ -64,9 +64,10 @@ export async function run(parsed: Parsed): Promise<void> {
     // the name and then fails.
     let pcfg: Config | undefined;
     let configError: unknown;
+    let cfgPath: string | undefined;
     try {
-      const { effectiveConfigPath, loadConfig: loadCfg } = await import("./core/config.ts");
-      const cfgPath = effectiveConfigPath((parsed.flags.get("config") as string) || undefined);
+      const { loadConfig: loadCfg } = await import("./core/config.ts");
+      cfgPath = effectiveConfigPath((parsed.flags.get("config") as string) || undefined);
       pcfg = loadCfg({ cwd: process.cwd(), configPath: cfgPath });
     } catch (e) {
       configError = e;
@@ -75,7 +76,9 @@ export async function run(parsed: Parsed): Promise<void> {
       const { loadPlugins: loadPlugs, setActivePlugins } = await import("./plugins/load.ts");
       const { bundledPlugins, bundledDisabled } = await import("./plugins/bundled.ts");
       const disabled = pcfg?.disabledPlugins ?? [];
-      const loaded = pcfg ? await loadPlugs(pcfg.plugins ?? [], undefined, disabled) : { plugins: [], warnings: [], files: [] };
+      const loaded = pcfg
+        ? await loadPlugs(pcfg.plugins ?? [], dirname(cfgPath ?? effectiveConfigPath()), disabled)
+        : { plugins: [], warnings: [], files: [] };
       // bundled plugins are enabled unless explicitly disabled; config plugins are
       // enabled only when listed in config (the loader already honors disabledPlugins).
       const allPlugins = [...bundledPlugins().filter((p) => !bundledDisabled(p.name, disabled)), ...loaded.plugins];
@@ -161,12 +164,13 @@ export async function run(parsed: Parsed): Promise<void> {
     // Load plugins (bundled unless disabled + config) — bare `--help` hasn't loaded them yet.
     let pluginCmds: { name: string; description?: string }[] = [];
     try {
-      const { effectiveConfigPath, loadConfig: loadCfg } = await import("./core/config.ts");
+      const { loadConfig: loadCfg } = await import("./core/config.ts");
       const { bundledPlugins, bundledDisabled } = await import("./plugins/bundled.ts");
       const { loadPlugins: loadPlugs, setActivePlugins, activePlugins } = await import("./plugins/load.ts");
-      const pcfg = loadCfg({ cwd: process.cwd(), configPath: effectiveConfigPath((parsed.flags.get("config") as string) || undefined) });
+      const cfgPath = effectiveConfigPath((parsed.flags.get("config") as string) || undefined);
+      const pcfg = loadCfg({ cwd: process.cwd(), configPath: cfgPath });
       const disabled = pcfg.disabledPlugins ?? [];
-      const loaded = await loadPlugs(pcfg.plugins ?? [], undefined, disabled);
+      const loaded = await loadPlugs(pcfg.plugins ?? [], dirname(cfgPath), disabled);
       const all = [...bundledPlugins().filter((p) => !bundledDisabled(p.name, disabled)), ...loaded.plugins];
       setActivePlugins(all);
       pluginCmds = all
@@ -393,7 +397,7 @@ export async function run(parsed: Parsed): Promise<void> {
         const { bundledPlugins, bundledDisabled } = await import("./plugins/bundled.ts");
         const cfg = config ?? loadConfig(configOverrides);
         const disabled = cfg.disabledPlugins ?? [];
-        const loaded = await loadPlugins(cfg.plugins ?? [], undefined, disabled);
+        const loaded = await loadPlugins(cfg.plugins ?? [], dirname(effectiveConfigPath(configOverrides.configPath)), disabled);
         setActivePlugins([...bundledPlugins().filter((p) => !bundledDisabled(p.name, disabled)), ...loaded.plugins]);
       } catch {
         /* plugin load failed — the TUI still opens, plugins just contribute nothing */
