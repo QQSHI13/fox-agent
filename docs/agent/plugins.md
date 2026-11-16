@@ -22,7 +22,7 @@ Relative configured plugin paths resolve against the global config file's direct
 }
 ```
 
-The manifest names the plugin, its entry point, its declared permissions, and the contribution IDs it provides. Permissions are **declarations only**: the accepted vocabulary is `env`, `network`, `shell`, `fs.read`, `fs.write`, `sessions`, `provider`, `mcp`, `lsp`, `acp`, and `pty`, validated before import and shown by `/plugin info`. fox-agent has no default sandbox, no permission prompts, and no permission enforcement: a loaded plugin runs in-process with the user's credentials, so any real security control must be plugin-provided or come from the way fox-agent is run, not from the kernel.
+The manifest names the plugin, its entry point, its declared permissions, and the contribution IDs it provides. Permissions are **declarations only**: the accepted vocabulary is `env`, `network`, `shell`, `fs.read`, `fs.write`, `sessions`, `provider`, `mcp`, `lsp`, `acp`, and `pty`, validated and recorded in the manifest data before import; the current `/plugin` listing does not print them. fox-agent has no default sandbox, no permission prompts, and no permission enforcement: a loaded plugin runs in-process with the user's credentials, so any real security control must be plugin-provided or come from the way fox-agent is run, not from the kernel.
 
 A plugin whose implemented contributions disagree with its manifest gets a warning naming the mismatched IDs (declared but not implemented, or implemented but not declared). A mismatch never fails the load. Function-form `tools` are not statically cross-checked. A plugin without a manifest is skipped with a warning; plugin code must never run before its manifest is read.
 

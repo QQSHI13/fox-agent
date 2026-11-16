@@ -82,8 +82,9 @@ where you started `fox`.
 These values are declarations, not a security boundary. fox-agent has **no
 default sandbox, no permission prompts, and no permission enforcement**: a
 loaded plugin is imported into fox-agent's process and can do anything the
-process can. Permissions are validated and listed by `/plugin info`, which is
-useful for auditing a plugin before you install it. If you want runtime
+process can. Permissions are validated against that vocabulary and recorded in
+the plugin's manifest data, which is useful when auditing a plugin before you
+install it; the current `/plugin` listing does not print them. If you want runtime
 isolation, that has to come from the plugin's own design or from how you run
 fox-agent, not from the kernel.
 
