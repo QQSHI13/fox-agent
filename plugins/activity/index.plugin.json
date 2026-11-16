@@ -1,0 +1,11 @@
+{
+  "id": "activity",
+  "version": "0.1.0",
+  "entry": "index.ts",
+  "permissions": ["sessions"],
+  "contributes": {
+    "hooks": ["beforeContext", "beforeTool", "afterTool"],
+    "keybindings": ["ctrl+g"],
+    "regions": ["activity"]
+  }
+}

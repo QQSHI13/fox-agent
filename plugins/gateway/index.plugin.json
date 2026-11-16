@@ -1,0 +1,7 @@
+{
+  "id": "gateway",
+  "version": "0.1.0",
+  "entry": "index.ts",
+  "permissions": ["network", "fs.read", "sessions"],
+  "contributes": {}
+}
