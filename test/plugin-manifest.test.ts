@@ -112,6 +112,78 @@ describe("plugin manifest schema", () => {
     });
     expect(manifest.contributes.tools).toEqual(["ping"]);
   });
+
+  test("accepts a semver with a prerelease and build metadata", () => {
+    const parsed = parsePluginManifest({
+      id: "fixture",
+      version: "1.0.0-beta.1+build.5",
+      entry: "./x.ts",
+      permissions: [],
+      contributes: {},
+    });
+
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(parsed.manifest.version).toBe("1.0.0-beta.1+build.5");
+  });
+
+  test("accepts the mcp, lsp, acp, and pty permissions", () => {
+    const parsed = parsePluginManifest({
+      id: "fixture",
+      version: "1.0.0",
+      entry: "./x.ts",
+      permissions: ["mcp", "lsp", "acp", "pty"],
+      contributes: {},
+    });
+
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(parsed.manifest.permissions).toEqual(["mcp", "lsp", "acp", "pty"]);
+  });
+
+  test("accepts every contribution kind and drops an unknown kind at parse time", () => {
+    // Every key the manifest schema knows about. The type is derived from this
+    // list, so a kind that exists in the type but is missed here is caught by
+    // the equality check below rather than silently dropped.
+    const all = {
+      tools: ["t"],
+      commands: ["/c"],
+      providers: ["p"],
+      hooks: ["afterTool"],
+      themes: ["th"],
+      mcpServers: ["m"],
+      agents: ["a"],
+      regions: ["r"],
+      statusSegments: ["s"],
+      keybindings: ["ctrl+g"],
+      gatewayMethods: ["gm"],
+      gatewayRoutes: ["gr"],
+      gatewayPanels: ["gp"],
+    };
+
+    const parsed = parsePluginManifest({
+      id: "fixture",
+      version: "1.0.0",
+      entry: "./x.ts",
+      permissions: [],
+      contributes: all,
+    });
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(Object.keys(parsed.manifest.contributes).sort()).toEqual(Object.keys(all).sort());
+
+    const invalid = parsePluginManifest({
+      id: "fixture",
+      version: "1.0.0",
+      entry: "./x.ts",
+      permissions: [],
+      contributes: { ...all, gadgets: ["x"] },
+    });
+    expect(invalid.ok).toBe(true);
+    if (!invalid.ok) return;
+    expect(invalid.manifest.contributes).not.toHaveProperty("gadgets");
+    expect(invalid.warnings).toContain("unknown contribution kind 'gadgets' - ignored");
+  });
 });
 
 function node(id: string, extra: Partial<PluginManifest> = {}, bundled = false): ManifestNode {
@@ -190,6 +262,33 @@ describe("plugin manifest composition", () => {
     const result = composePluginManifests([node("z"), node("a"), node("m")]);
     expect(result.errors).toEqual([]);
     expect(result.order.map((n) => n.manifest.id)).toEqual(["z", "a", "m"]);
+  });
+
+  test("exposes a queryable contribution ownership map", () => {
+    const result = composePluginManifests([node("owner-id", { contributes: { tools: ["ping"] } })]);
+
+    expect(result.errors).toEqual([]);
+    expect(result.contributions.get("tools:ping")).toBe("owner-id");
+  });
+
+  test("rejects a contribution declared twice by one manifest, naming one owner", () => {
+    const result = composePluginManifests([node("one", { contributes: { tools: ["ping", "ping"] } })]);
+
+    expect(result.order).toEqual([]);
+    const error = result.errors.find((e) => e.includes("tools:ping")) ?? "";
+    expect(error).toContain("declared twice by plugin 'one'");
+    expect(error).not.toContain("from 'one' and 'one'");
+  });
+
+  test("treats the same ID under different contribution kinds as distinct", () => {
+    const result = composePluginManifests([
+      node("one", { contributes: { tools: ["ping"] } }),
+      node("two", { contributes: { commands: ["ping"] } }),
+    ]);
+
+    expect(result.errors).toEqual([]);
+    expect(result.contributions.get("tools:ping")).toBe("one");
+    expect(result.contributions.get("commands:ping")).toBe("two");
   });
 });
 

@@ -364,6 +364,197 @@ describe("plugin loader", () => {
     expect(plugins).toEqual([]);
     expect(warnings.some((w) => w.includes("dependency cycle"))).toBe(true);
   });
+
+  test("an unknown dependency fails composition and loads no external plugins", async () => {
+    const { loadPlugins } = await import("../src/plugins/load.ts");
+    const needsGhost = writeTmpPlugin("needs-ghost", ["ghost"]);
+    const standalone = writeTmpPlugin("standalone");
+
+    const { plugins, warnings, files } = await loadPlugins([needsGhost, standalone]);
+    expect(plugins).toEqual([]);
+    expect(warnings.some((w) => w.includes("plugin composition failed") && w.includes("unknown dependency 'ghost'"))).toBe(true);
+    // every configured file carries the reason the user saw, not a shorthand
+    expect(files.every((f) => f.skipReason?.startsWith("plugin composition failed"))).toBe(true);
+  });
+
+  /** A directory-form plugin: `plugin.json` plus the module its entry names. */
+  function writeDirPlugin(dir: string, manifest: Record<string, unknown>, files: Record<string, string> = {}): string {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "plugin.json"), JSON.stringify(manifest));
+    for (const [name, body] of Object.entries(files)) writeFileSync(join(dir, name), body);
+    return dir;
+  }
+
+  test("a directory entry imports the path named by manifest.entry", async () => {
+    const { loadPlugins } = await import("../src/plugins/load.ts");
+    const dir = writeDirPlugin(
+      join(home, "plugin-dir"),
+      { id: "dir-plugin", version: "1.0.0", entry: "index.ts", permissions: [], contributes: {} },
+      { "index.ts": `export default { name: "dir-plugin" };\n` },
+    );
+
+    const { plugins, warnings } = await loadPlugins([dir]);
+    expect(warnings).toEqual([]);
+    expect(plugins.map((p) => p.name)).toEqual(["dir-plugin"]);
+  });
+
+  test("a directory manifest entry escaping the plugin directory is rejected before import", async () => {
+    const { loadPlugins } = await import("../src/plugins/load.ts");
+    const marker = join(home, "outside.marker");
+    writeFileSync(
+      join(home, "outside.ts"),
+      `import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(marker)}, "yes"); export default { name: "outside" };\n`,
+    );
+    const dir = writeDirPlugin(join(home, "escape-dir"), {
+      id: "escape",
+      version: "1.0.0",
+      entry: "../outside.ts",
+      permissions: [],
+      contributes: {},
+    });
+
+    const { plugins, warnings, files } = await loadPlugins([dir]);
+    expect(plugins).toEqual([]);
+    expect(existsSync(marker)).toBe(false);
+    expect(warnings[0]).toContain("../outside.ts");
+    expect(files[0].skipReason).toBe(warnings[0]);
+  });
+
+  test("a directory manifest entry resolving to a directory is rejected before import", async () => {
+    const { loadPlugins } = await import("../src/plugins/load.ts");
+    const dir = writeDirPlugin(join(home, "nested-dir"), {
+      id: "nested",
+      version: "1.0.0",
+      entry: "subdir",
+      permissions: [],
+      contributes: {},
+    });
+    mkdirSync(join(dir, "subdir"));
+
+    const { plugins, warnings } = await loadPlugins([dir]);
+    expect(plugins).toEqual([]);
+    expect(warnings[0]).toContain("subdir");
+    expect(warnings[0]).toContain("does not name a plugin module");
+  });
+
+  test("a directory without plugin.json reports the missing-manifest warning", async () => {
+    const { loadPlugins } = await import("../src/plugins/load.ts");
+    const dir = join(home, "no-manifest-dir");
+    mkdirSync(dir, { recursive: true });
+
+    const { warnings, files } = await loadPlugins([dir]);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toBe(`plugin '${dir}' skipped: missing manifest '${join(dir, "plugin.json")}'`);
+    // the inventory shows the reason the user saw, not just "missing manifest"
+    expect(files[0].skipReason).toBe(warnings[0]);
+  });
+
+  test("a file entry imports the configured file path, not manifest.entry", async () => {
+    const { loadPlugins } = await import("../src/plugins/load.ts");
+    const entry = join(home, "file-entry.ts");
+    writeFileSync(entry, `export default { name: "file-entry" };\n`);
+    writeFileSync(
+      join(home, "file-entry.plugin.json"),
+      JSON.stringify({ id: "file-entry", version: "1.0.0", entry: "elsewhere.ts", permissions: [], contributes: {} }),
+    );
+
+    const { plugins, warnings } = await loadPlugins([entry]);
+    expect(warnings).toEqual([]);
+    expect(plugins.map((p) => p.name)).toEqual(["file-entry"]);
+  });
+
+  test("skipReason is the full warning for an import failure", async () => {
+    const { loadPlugins } = await import("../src/plugins/load.ts");
+    const { warnings, files } = await loadPlugins([FIX_THROWS]);
+    expect(files[0].skipReason).toBe(warnings[0]);
+  });
+
+  test("a manifestOnly plugin is inventory metadata, not a failed load", async () => {
+    const dir = writeDirPlugin(join(home, "meta-dir"), {
+      id: "meta-only",
+      version: "0.1.0",
+      manifestOnly: true,
+      permissions: [],
+      contributes: {},
+    });
+
+    const { pluginInventory } = await import("../src/commands.ts");
+    const cfg = await cfgWith([dir]);
+    const { entries } = await pluginInventory({
+      config: cfg,
+      configPath: join(home, "config.toml"),
+    });
+    const entry = entries.find((e) => e.source === dir);
+    expect(entry?.enabled).toBe(true);
+    expect(entry?.contributes.join("; ")).toContain("metadata only");
+    expect(entry?.contributes.join("; ")).not.toContain("not loaded");
+  });
+
+  test("a declared but unimplemented contribution warns without failing the load", async () => {
+    const { loadPlugins } = await import("../src/plugins/load.ts");
+    const entry = join(home, "declared-only.ts");
+    writeFileSync(entry, `export default { name: "declared-only" };\n`);
+    writeFileSync(
+      join(home, "declared-only.plugin.json"),
+      JSON.stringify({
+        id: "declared-only",
+        version: "1.0.0",
+        entry: "declared-only.ts",
+        permissions: [],
+        contributes: { tools: ["declared"] },
+      }),
+    );
+
+    const { plugins, warnings } = await loadPlugins([entry]);
+    expect(plugins.map((p) => p.name)).toEqual(["declared-only"]);
+    expect(warnings.some((w) => w.includes("manifest declares tools 'declared'") && w.includes("does not implement"))).toBe(true);
+  });
+
+  test("an implemented but undeclared contribution warns without failing the load", async () => {
+    const { loadPlugins } = await import("../src/plugins/load.ts");
+    const entry = join(home, "undeclared.ts");
+    writeFileSync(
+      entry,
+      `export default { name: "undeclared", tools: [{ def: { name: "extra", description: "x", parameters: { type: "object" } }, async run() { return "ok"; } }] };\n`,
+    );
+    writeFileSync(
+      join(home, "undeclared.plugin.json"),
+      JSON.stringify({ id: "undeclared", version: "1.0.0", entry: "undeclared.ts", permissions: [], contributes: {} }),
+    );
+
+    const { plugins, warnings } = await loadPlugins([entry]);
+    expect(plugins.map((p) => p.name)).toEqual(["undeclared"]);
+    expect(warnings.some((w) => w.includes("plugin implements tools 'extra'") && w.includes("does not declare"))).toBe(true);
+  });
+
+  test("function-form tools are not statically cross-checked", async () => {
+    const { loadPlugins } = await import("../src/plugins/load.ts");
+    const entry = join(home, "dynamic-tools.ts");
+    writeFileSync(entry, `export default { name: "dynamic-tools", tools: () => [] };\n`);
+    writeFileSync(
+      join(home, "dynamic-tools.plugin.json"),
+      JSON.stringify({
+        id: "dynamic-tools",
+        version: "1.0.0",
+        entry: "dynamic-tools.ts",
+        permissions: [],
+        contributes: { tools: ["resolved-later"] },
+      }),
+    );
+
+    const { plugins, warnings } = await loadPlugins([entry]);
+    expect(plugins.map((p) => p.name)).toEqual(["dynamic-tools"]);
+    expect(warnings.filter((w) => w.includes("tools '"))).toEqual([]);
+  });
+
+  test("disabled entries match every module extension", async () => {
+    const { loadPlugins } = await import("../src/plugins/load.ts");
+    for (const ext of [".tsx", ".cjs"]) {
+      const { plugins, files } = await loadPlugins([join(home, `x${ext}`)], home, ["x"]);
+      expect(plugins).toEqual([]);
+      expect(files[0]?.disabled).toBe(true);
+    }
+  });
 });
 
 describe("global-only plugin config", () => {

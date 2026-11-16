@@ -1079,13 +1079,19 @@ export async function pluginInventory(opts: { config?: Config; configPath?: stri
   }
   for (const f of files) {
     const p = f.name ? byName.get(f.name) : undefined;
+    let contributes: string[];
+    if (f.disabled) contributes = ["(disabled — enable to inspect)"];
+    // A manifestOnly plugin is installed metadata by definition: there is no
+    // runtime plugin to describe, and that is not a failure to report.
+    else if (f.manifest?.manifestOnly) contributes = ["(metadata only)"];
+    else contributes = p ? describePlugin(p) : ["(not loaded — see warnings)"];
     entries.push({
       id: f.path,
       name: f.name ?? f.path,
       source: f.path,
       storeId: f.path,
       enabled: !f.disabled,
-      contributes: f.disabled ? ["(disabled — enable to inspect)"] : p ? describePlugin(p) : ["(not loaded — see warnings)"],
+      contributes,
     });
   }
   return { entries, warnings };
