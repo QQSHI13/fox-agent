@@ -223,8 +223,8 @@ export interface CountSnapshot extends CountGeometry {
   total: number;
 }
 
-/** One width's memoized pass-1 result. `counts` excludes the streaming tail, so
- *  a streaming token can reuse it. */
+/** One width's memoized pass-1 result. The geometry excludes the streaming
+ *  tail, so a streaming token can reuse it. */
 export interface CountEntry extends CountGeometry {
   version: number;
 }
