@@ -197,6 +197,28 @@ describe("computeFrame", () => {
     expect(fr.rowCount - fr.winOffset).toBe(fr.vh);
   });
 
+  test("an item ending at the window start is not rendered", () => {
+    // Window arithmetic used to treat bodyEnd == from as an intersection and
+    // call renderItem for a wholly-above-window item, only to slice away every
+    // row it returned. The separator blank at the window's first row belongs to
+    // the NEXT item; the finished item must not pay for a render.
+    const items = Array.from({ length: 10 }, (_, k) => ({ kind: "md", k }));
+    const body = Array.from({ length: 10 }, () => ({ segs: [{ t: "x" }] }));
+    const rendered: number[] = [];
+    const fr = computeFrame({
+      ...base,
+      items,
+      scrollTop: 38, // with base's vh=28, the window starts at absolute row 10
+      stick: false,
+      renderItem: (it: any) => { rendered.push(it.k); return body; },
+      countItem: () => 10,
+    });
+
+    expect(fr.scrollTop).toBe(38);
+    expect(rendered).not.toContain(0);
+    expect(rendered).toContain(1);
+  });
+
   test("itemEdgeSpan trims an item's own edge blanks, keeps interior ones", () => {
     const row = (t: string): Row => ({ segs: t === "" ? [] : [{ t }] });
     expect(itemEdgeSpan([row("a"), row(""), row("b")])).toEqual([0, 3]); // interior blank stays

@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { PushCompositor, Plane, charWidth, type Style } from "./screen.ts";
 import { computed, counter, effect, flushNow, setScheduler, signal, type Disposable } from "./reactive.ts";
-import { computeFrame, dockRows, itemEdgeSpan, scrollbarScrollTop, viewportHeight, chipGutter, contentOrigin, contentOriginForChip, contentWidth, scrollPositionLabel, type Frame, type FrameInput, type Row } from "./layout.ts";
+import { computeFrame, dockRows, itemEdgeSpan, scrollbarScrollTop, viewportHeight, chipGutter, contentOrigin, contentOriginForChip, contentWidth, scrollPositionLabel, type CountEntry, type Frame, type FrameInput, type Row } from "./layout.ts";
 import { activePlugins, setRepaintHandler } from "../plugins/load.ts";
 import type { TuiRegionPlane, TuiWrapOptions } from "../plugins/types.ts";
 import { createDecoder, chordOf, normalizeChord, type Key } from "./keys.ts";
@@ -645,7 +645,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
    */
   
   /** per-width pass-1 memo; see FrameInput.countCache */
-  const countCache = new Map<number, { version: number; counts: number[]; itemTotal: number }>();
+  const countCache = new Map<number, CountEntry>();
   const touch = (k: number) => {
     revs.set(k, (revs.get(k) ?? 0) + 1);
     tui.countRev++;
