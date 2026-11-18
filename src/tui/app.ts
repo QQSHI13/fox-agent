@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { PushCompositor, Plane, charWidth, type Style } from "./screen.ts";
 import { computed, counter, effect, flushNow, setScheduler, signal, type Disposable } from "./reactive.ts";
-import { computeFrame, dockRows, itemEdgeSpan, scrollbarScrollTop, viewportHeight, chipGutter, contentOrigin, contentOriginForChip, contentWidth, type Frame, type FrameInput, type Row } from "./layout.ts";
+import { computeFrame, dockRows, itemEdgeSpan, scrollbarScrollTop, viewportHeight, chipGutter, contentOrigin, contentOriginForChip, contentWidth, scrollPositionLabel, type CountEntry, type Frame, type FrameInput, type Row } from "./layout.ts";
 import { activePlugins, setRepaintHandler } from "../plugins/load.ts";
 import type { TuiRegionPlane, TuiWrapOptions } from "../plugins/types.ts";
 import { createDecoder, chordOf, normalizeChord, type Key } from "./keys.ts";
@@ -645,7 +645,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
    */
   
   /** per-width pass-1 memo; see FrameInput.countCache */
-  const countCache = new Map<number, { version: number; counts: number[]; itemTotal: number }>();
+  const countCache = new Map<number, CountEntry>();
   const touch = (k: number) => {
     revs.set(k, (revs.get(k) ?? 0) + 1);
     tui.countRev++;
@@ -4181,6 +4181,16 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     return `${fr.inputTop}:${fr.shownCount}:${fr.firstShown}:${fr.queueH}:${fr.vh}`;
   }, { label: "split" });
 
+  // The left status line's "top"/"scrolled N%" label. Value equality matters:
+  // a streamed token changes total/scrollTop constantly, but the rounded label
+  // usually does not, so this computed keeps those tokens from repainting the
+  // status region.
+  const scrollPosV = computed(() => {
+    paintedV();
+    const fr = tui.painted;
+    return fr ? scrollPositionLabel(fr.total, fr.scrollTop, fr.vh) : null;
+  }, { label: "scrollPos" });
+
   /**
    * Regions, as reactive effects.
    *
@@ -4281,6 +4291,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       busyV();
       remoteBusyV();
       flashV();
+      scrollPosV();
       sizeV();
       themeV();
     },
@@ -4564,7 +4575,10 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       const frames = spinFrames();
       lx = P.status.text(lx, barY, clipW(`${frames[tui.frameIdx % frames.length]} ${tui.streamText !== null ? "responding" : "thinking"}${tui.busyMsg ? ` — ${tui.busyMsg}` : ""} ${elapsed()}`, tui.W - 2), S.spin);
     } else {
-      lx = P.status.text(lx, barY, `ready`, S.ok);
+      const pos = scrollPosV();
+      const suffix = pos ? ` · ${pos}` : "";
+      const budget = Math.max(1, tui.W - 2 - Bun.stringWidth(suffix));
+      lx = P.status.text(lx, barY, `${clipW("ready", budget)}${suffix}`, S.ok);
     }
     // right side: config `statusBar` names segments left-to-right (built-ins
     // cwd provider model ctx readOnly, plus plugin `statusSegments`); a null

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { chipGutter, contentOrigin, contentOriginForChip, contentWidth } from "../src/tui/layout.ts";
+import { chipGutter, contentOrigin, contentOriginForChip, contentWidth, scrollPositionLabel } from "../src/tui/layout.ts";
 
 // The [N] marker's gutter used to be re-derived in five places (the wrap width
 // in itemRows, the wrap width in streamRows, the paint loop's content offset,
@@ -197,6 +197,28 @@ describe("computeFrame", () => {
     expect(fr.rowCount - fr.winOffset).toBe(fr.vh);
   });
 
+  test("an item ending at the window start is not rendered", () => {
+    // Window arithmetic used to treat bodyEnd == from as an intersection and
+    // call renderItem for a wholly-above-window item, only to slice away every
+    // row it returned. The separator blank at the window's first row belongs to
+    // the NEXT item; the finished item must not pay for a render.
+    const items = Array.from({ length: 10 }, (_, k) => ({ kind: "md", k }));
+    const body = Array.from({ length: 10 }, () => ({ segs: [{ t: "x" }] }));
+    const rendered: number[] = [];
+    const fr = computeFrame({
+      ...base,
+      items,
+      scrollTop: 38, // with base's vh=28, the window starts at absolute row 10
+      stick: false,
+      renderItem: (it: any) => { rendered.push(it.k); return body; },
+      countItem: () => 10,
+    });
+
+    expect(fr.scrollTop).toBe(38);
+    expect(rendered).not.toContain(0);
+    expect(rendered).toContain(1);
+  });
+
   test("itemEdgeSpan trims an item's own edge blanks, keeps interior ones", () => {
     const row = (t: string): Row => ({ segs: t === "" ? [] : [{ t }] });
     expect(itemEdgeSpan([row("a"), row(""), row("b")])).toEqual([0, 3]); // interior blank stays
@@ -259,6 +281,29 @@ describe("computeFrame", () => {
     // the reason this test exists: the bottom of the transcript is the last
     // content row, not `message 75` of 100
     expect(at(max, true).at(-1)).toContain("message 99");
+  });
+});
+
+describe("scrollPositionLabel", () => {
+  test("a transcript that fits has no position label", () => {
+    expect(scrollPositionLabel(30, 0, 30)).toBeNull();
+    expect(scrollPositionLabel(10, 0, 30)).toBeNull();
+  });
+
+  test("the live bottom has no position label", () => {
+    expect(scrollPositionLabel(200, 150, 50)).toBeNull();
+    expect(scrollPositionLabel(200, 999, 50)).toBeNull();
+  });
+
+  test("the first row of a scrollable transcript reads as top", () => {
+    expect(scrollPositionLabel(200, 0, 50)).toBe("top");
+    expect(scrollPositionLabel(200, -20, 50)).toBe("top");
+  });
+
+  test("the midpoint rounds to a percentage", () => {
+    expect(scrollPositionLabel(200, 75, 50)).toBe("scrolled 50%");
+    expect(scrollPositionLabel(200, 37, 50)).toBe("scrolled 25%");
+    expect(scrollPositionLabel(200, 149, 50)).toBe("scrolled 99%");
   });
 });
 

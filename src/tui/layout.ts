@@ -203,18 +203,30 @@ export function computeFrame(inp: FrameInput): Frame {
   const stick = scrollTop >= Math.max(0, grand - vh) ? true : inp.stick;
   if (stick) scrollTop = Math.max(0, grand - vh);
 
-  const { rows, owner, winOffset } = assemble(inp, w, counted.counts, grand, vh, scrollTop);
+  const { rows, owner, winOffset } = assemble(inp, w, counted, grand, vh, scrollTop);
   const sb = scrollbarGeom(grand, vh, scrollTop);
   return { contentWidth: w, sbShowing, sb, scrollTop, stick, winOffset, vh, rows, owner, rowCount: rows.length, total: grand, inputTop, shownCount, firstShown, queueH };
 }
 
-/** One width's memoized pass-1 result. `counts` excludes the streaming tail, so
- *  a streaming token can reuse it. */
-export interface CountEntry {
-  version: number;
-  counts: number[];
+/** Absolute row geometry for one counted width, excluding the streaming tail. */
+export interface CountGeometry {
+  /** interleaved absolute rows `[blockStart, bodyEnd]` per item */
+  windowIndex: Uint32Array;
+  /** whether the item carries a separator blank before its body */
+  hasBlank: Uint8Array;
   /** row total of the ITEMS only — the tail is added per call */
   itemTotal: number;
+}
+
+export interface CountSnapshot extends CountGeometry {
+  /** item total plus the streaming tail counted for this frame */
+  total: number;
+}
+
+/** One width's memoized pass-1 result. `counts` excludes the streaming tail, so
+ *  a streaming token can reuse it. */
+export interface CountEntry extends CountGeometry {
+  version: number;
 }
 
 /**
@@ -234,7 +246,7 @@ export interface CountCache {
  *  The per-item counts ride along because pass 2 needs the same offsets, and
  *  `countItem` is cached app-side — calling it twice per item costs a lookup,
  *  so counts are computed once and shared. */
-function countRows(inp: FrameInput, w: number): { counts: number[]; total: number } {
+function countRows(inp: FrameInput, w: number): CountSnapshot {
   const cache = inp.countCache;
   const version = cache ? cache.version() : 0;
   const hit = cache?.at.get(w);
@@ -243,30 +255,47 @@ function countRows(inp: FrameInput, w: number): { counts: number[]; total: numbe
   // tail grows.
   if (hit && hit.version === version) {
     const tail = inp.streamText !== null ? inp.countStream(inp.streamText, w) : 0;
-    return { counts: hit.counts, total: hit.itemTotal + tail };
+    return {
+      windowIndex: hit.windowIndex,
+      hasBlank: hit.hasBlank,
+      itemTotal: hit.itemTotal,
+      total: hit.itemTotal + tail,
+    };
   }
 
-  const counts: number[] = [];
+  const length = inp.items.length;
+  // A version bump means the values are stale, not necessarily the shape: when
+  // the item count is unchanged, refill the same typed arrays instead of
+  // allocating a new geometry set for every expand/collapse or ctx op.
+  const prior = cache?.at.get(w);
+  const reusable = prior !== undefined && prior.windowIndex.length === length * 2 && prior.hasBlank.length === length;
+  const windowIndex = prior && reusable ? prior.windowIndex : new Uint32Array(length * 2);
+  const hasBlank = prior && reusable ? prior.hasBlank : new Uint8Array(length);
   let total = 0;
   let prevKind: string | null = null;
-  for (let i = 0; i < inp.items.length; i++) {
+  for (let i = 0; i < length; i++) {
     const it = inp.items[i];
-    let n = inp.countItem(it, w);
+    const rows = inp.countItem(it, w);
     // interior blanks kept: countItem reports the POST-strip count, so the
-    // item's own edge blanks are already excluded from `n`
-    if (i > 0 && n > 0 && !glued(prevKind, it.kind)) n += 1; // blank between
-    counts.push(n);
-    if (n > 0) prevKind = it.kind;
-    total += n;
+    // item's own edge blanks are already excluded from `rows`
+    const blank = i > 0 && rows > 0 && !glued(prevKind, it.kind) ? 1 : 0;
+    const start = total;
+    const body = start + blank;
+    const end = body + rows;
+    windowIndex[i * 2] = start;
+    windowIndex[i * 2 + 1] = end;
+    hasBlank[i] = blank;
+    if (rows > 0) prevKind = it.kind;
+    total = end;
   }
   if (cache) {
     // Bound the memo to the widths actually in play (W and W-2); anything else
     // is a resize and its entry is dead the moment the width moves again.
     if (cache.at.size > 4 && !cache.at.has(w)) cache.at.clear();
-    cache.at.set(w, { version, counts, itemTotal: total });
+    cache.at.set(w, { version, windowIndex, hasBlank, itemTotal: total });
   }
   const tail = inp.streamText !== null ? inp.countStream(inp.streamText, w) : 0;
-  return { counts, total: total + tail };
+  return { windowIndex, hasBlank, itemTotal: total, total: total + tail };
 }
 
 /** Build the transcript row array at one width, with the spacing rules.
@@ -276,7 +305,7 @@ function countRows(inp: FrameInput, w: number): { counts: number[]; total: numbe
 function assemble(
   inp: FrameInput,
   w: number,
-  counts: number[],
+  geo: CountGeometry,
   grand: number,
   vh: number,
   scrollTop: number,
@@ -294,45 +323,41 @@ function assemble(
   const winOffset = scrollTop - from;
   const owner: number[] = [];
   const rows: Row[] = [];
-  const skipAbove = from; // rows before the window: represented but not built
 
-  let idx = 0; // absolute row counter
-  let prevKind2: string | null = null;
-  for (let i = 0; i < inp.items.length; i++) {
+  // Pass 1 already recorded each item's absolute block/body rows. Binary-search
+  // the intersecting item range instead of walking the whole history: a
+  // cache-hit frame is O(log items + window items), not O(items). The end test
+  // uses blockStart (the separator blank when there is one) so a blank exactly
+  // at the window edge is still materialized even when the body is below it.
+  const first = firstBodyEndAfter(geo, from);
+  const last = firstBlockStartAtOrAfter(geo, to);
+  for (let i = first; i < last; i++) {
     const it = inp.items[i];
-    const n = counts[i];
-    if (n === 0) continue;
-    const hasBlank = idx > 0 && !glued(prevKind2, it.kind);
-    const blankAt = hasBlank ? idx : -1;
-    // `n` already contains this item's separator blank, so idx + n IS the next
-    // item's absolute start. Deriving it from bodyStart would add the blank a
-    // second time and push `idx` one row past the item's real end.
-    const bodyEnd = idx + n;
-    prevKind2 = it.kind;
-    // WHOLE-ITEM skip: the [blank..body] block ends before the window starts —
-    // renderItem (which allocates) is never called for it. This is what keeps
-    // frame cost O(window), not O(session).
-    if (bodyEnd < from || (blankAt >= 0 && blankAt >= to)) {
-      idx = bodyEnd;
-      continue;
+    const blockStart = blockStartAt(geo, i);
+    const bodyStart = bodyStartAt(geo, i);
+    const bodyEnd = bodyEndAt(geo, i);
+    if (bodyEnd === bodyStart) continue;
+
+    const blankAt = geo.hasBlank[i] ? blockStart : -1;
+    if (blankAt >= from && blankAt < to) {
+      rows.push({ segs: [] });
+      owner.push(-1);
     }
-    if (hasBlank) {
-      if (blankAt >= from && blankAt < to) {
-        rows.push({ segs: [] });
-        owner.push(-1);
-      }
-      idx++;
-    }
-    // only materialize rows that can land in the window
+    // The body itself may still miss the window: its separator blank can be
+    // the only row inside. Rendering that item would allocate rows only to
+    // slice every one away.
+    if (bodyStart >= to || bodyEnd <= from) continue;
+
     const itemRows = inp.renderItem(it, w);
-    const sliceFrom = Math.max(0, from - idx);
-    const sliceTo = Math.min(itemRows.length, to - idx);
+    const sliceFrom = Math.max(0, from - bodyStart);
+    const sliceTo = Math.min(itemRows.length, to - bodyStart);
     for (let r = sliceFrom; r < sliceTo; r++) {
       rows.push(itemRows[r]);
       owner.push(it.k);
     }
-    idx += itemRows.length;
   }
+
+  let idx = geo.itemTotal;
   if (inp.streamText !== null) {
     const streamRows = inp.renderStream(inp.streamText, w);
     const sFrom = Math.max(0, from - idx);
@@ -343,8 +368,43 @@ function assemble(
     }
     idx += streamRows.length;
   }
-  void skipAbove;
   return { rows, owner, winOffset };
+}
+
+function blockStartAt(geo: CountGeometry, i: number): number {
+  return geo.windowIndex[i * 2];
+}
+
+function bodyEndAt(geo: CountGeometry, i: number): number {
+  return geo.windowIndex[i * 2 + 1];
+}
+
+function bodyStartAt(geo: CountGeometry, i: number): number {
+  return blockStartAt(geo, i) + (geo.hasBlank[i] ? 1 : 0);
+}
+
+/** First item whose body ends strictly after `value`. */
+function firstBodyEndAfter(geo: CountGeometry, value: number): number {
+  let lo = 0;
+  let hi = geo.hasBlank.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (bodyEndAt(geo, mid) <= value) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+/** First item whose [blank..body] block starts at or after `value`. */
+function firstBlockStartAtOrAfter(geo: CountGeometry, value: number): number {
+  let lo = 0;
+  let hi = geo.hasBlank.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (blockStartAt(geo, mid) < value) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
 }
 
 /** toolhead->toolbody and think/toolbody->think and think->toolhead stay glued */
@@ -395,6 +455,21 @@ export function scrollbarGeom(rows: number, vh: number, scrollTop: number): Scro
   const maxScroll = rows - vh;
   const ty = maxScroll > 0 ? Math.floor((Math.max(0, Math.min(scrollTop, maxScroll)) / maxScroll) * (vh - th)) : 0;
   return { showing: true, ty, th };
+}
+
+/**
+ * Left-status text for a transcript scrolled away from the live bottom.
+ * Returns null when the position would be noise: the transcript fits, or the
+ * frame is already at the newest row. The bottom test is `>=`, not `==`, so a
+ * near-bottom frame does not flicker between a percentage and no label.
+ */
+export function scrollPositionLabel(total: number, scrollTop: number, vh: number): string | null {
+  if (vh < 1 || total <= vh) return null;
+  const max = total - vh;
+  if (scrollTop >= max) return null;
+  if (scrollTop <= 0) return "top";
+  const pct = Math.max(0, Math.min(100, Math.round((scrollTop / max) * 100)));
+  return `scrolled ${pct}%`;
 }
 
 /**
