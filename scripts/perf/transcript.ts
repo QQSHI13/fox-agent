@@ -66,7 +66,7 @@ for (let i = 0; i < 3; i++) {
 }
 const frameColdMs = cold / 3;
 const t2 = performance.now();
-layout.computeFrame({ ...base, items, countCache: { version: () => 99, at: cache } });
+layout.computeFrame({ ...base, items, countCache: { version: () => 2, at: cache } });
 const frameWarmMs = performance.now() - t2;
 
 console.log(JSON.stringify({ hydrateMs, itemBuildMs, projectViewBytes: bytes, frameColdMs, frameWarmMs, rssMB: process.memoryUsage().rss / 1024 / 1024 }));
