@@ -506,3 +506,147 @@ describe("PushCompositor.pushFrame: the landing callback contract", () => {
     expect(derives).toBeGreaterThan(1);
   });
 });
+
+describe("plane touched-row clearing", () => {
+  class Rec {
+    buf = "";
+    write(s: string) {
+      this.buf += s;
+    }
+    flush() {}
+  }
+
+  /** Record which grid rows a clear asks composite() to rebuild. */
+  function markSpy(scr: { markRowDirty: (y: number) => void }) {
+    const marked: number[] = [];
+    const original = scr.markRowDirty.bind(scr);
+    scr.markRowDirty = (y: number) => {
+      marked.push(y);
+      original(y);
+    };
+    return marked;
+  }
+
+  test("clearRows after text clears only the written row", async () => {
+    const { Screen } = await import("../src/tui/screen.ts");
+    const scr = new Screen({ write: () => {} } as any);
+    scr.resize(10, 4);
+    const st = scr.sgr({});
+    const p = scr.createPlane("p", 0);
+    p.text(0, 2, "hello", st);
+    scr.composite();
+
+    const marked = markSpy(scr);
+    p.clearRows(0, 4);
+    expect(marked).toEqual([2]); // rows 0,1,3 were never written
+    scr.composite();
+    expect((p.chars as (string | undefined)[]).every((c) => c === undefined)).toBe(true);
+    expect(((scr as any).chars as (string | undefined)[]).every((c) => c === undefined)).toBe(true);
+  });
+
+  test("clearRows after fillRow clears only the written row", async () => {
+    const { Screen } = await import("../src/tui/screen.ts");
+    const scr = new Screen({ write: () => {} } as any);
+    scr.resize(8, 5);
+    const st = scr.sgr({ bg: "#1f2335" });
+    const p = scr.createPlane("p", 0);
+    p.fillRow(1, 0, 8, st);
+    p.fillRow(3, 0, 8, st);
+    scr.composite();
+
+    const marked = markSpy(scr);
+    p.clearRows(0, 5);
+    expect(marked).toEqual([1, 3]);
+    // styles are reset too: a later write cannot inherit the old fill
+    expect(Array.from(p.sty)).toEqual(Array(40).fill(scr.defaultStyle()));
+  });
+
+  test("clearRows after restyle clears the highlight and its fill cells", async () => {
+    const { Screen } = await import("../src/tui/screen.ts");
+    const term = new Rec();
+    const scr = new Screen(term as any);
+    scr.resize(10, 3);
+    const p = scr.createPlane("p", 0);
+    p.text(0, 1, "ab", scr.sgr({ fg: "#ffffff" }));
+    p.restyle(1, 0, 6, "#364a82");
+
+    const marked = markSpy(scr);
+    p.clearRows(0, 3);
+    expect(marked).toEqual([1]);
+    scr.composite();
+    scr.flush();
+    expect(scr.dumpGrid().split("\n")[1]).toBe("\x01".repeat(10));
+    expect(term.buf).not.toContain("48;2;54;74;130"); // highlight is gone
+  });
+
+  test("clear() clears only touched rows", async () => {
+    const { Screen } = await import("../src/tui/screen.ts");
+    const scr = new Screen({ write: () => {} } as any);
+    scr.resize(10, 6);
+    const st = scr.sgr({});
+    const p = scr.createPlane("p", 0);
+    p.text(0, 4, "x", st);
+    scr.composite();
+
+    const marked = markSpy(scr);
+    p.clear();
+    expect(marked).toEqual([4]);
+  });
+
+  test("plane resize resets touched bits because the buffer starts blank", async () => {
+    const { Screen } = await import("../src/tui/screen.ts");
+    const scr = new Screen({ write: () => {} } as any);
+    scr.resize(10, 4);
+    const st = scr.sgr({});
+    const p = scr.createPlane("p", 0);
+    p.text(0, 0, "hello", st);
+
+    scr.resize(10, 4); // same dims, still reallocates plane buffers
+    const marked = markSpy(scr);
+    p.clearRows(0, 4);
+    expect(marked).toEqual([]); // nothing survives the realloc to clear
+    expect((p.chars as (string | undefined)[]).every((c) => c === undefined)).toBe(true);
+
+    // and a write after the resize still re-arms the damage map
+    p.fillRow(2, 0, 10, st);
+    expect(marked).toEqual([2]);
+  });
+});
+
+describe("restyle memoization", () => {
+  test("repeated same-style restyles emit one stable SGR run", async () => {
+    const { Screen } = await import("../src/tui/screen.ts");
+    const term = new FakeTerm();
+    const scr = new Screen(term as any);
+    scr.resize(20, 1);
+    scr.text(0, 0, "hello", scr.sgr({ fg: "#ffffff" }));
+
+    scr.restyle(0, 0, 8, "#364a82");
+    const first = Array.from((scr as any).sty as Uint16Array);
+    scr.restyle(0, 0, 8, "#364a82");
+    scr.restyle(0, 0, 8, "#364a82");
+    expect(Array.from((scr as any).sty as Uint16Array)).toEqual(first);
+
+    scr.flush();
+    // two distinct current styles in the range ("hello" has a fg, the empty
+    // cells do not), not one per cell and not one more per repeated restyle
+    expect(term.buf.match(/\x1b\[48;2;54;74;130m/g)).toHaveLength(2);
+    expect(scr.dumpGrid()).toBe("hello" + "␣".repeat(3) + "\x01".repeat(12));
+  });
+
+  test("distinct current styles still produce distinct highlighted ids", async () => {
+    const { Screen } = await import("../src/tui/screen.ts");
+    const term = new FakeTerm();
+    const scr = new Screen(term as any);
+    scr.resize(10, 1);
+    scr.text(0, 0, "red", scr.sgr({ fg: "#ff0000" }));
+    scr.text(3, 0, "blue", scr.sgr({ fg: "#0000ff" }));
+    scr.restyle(0, 0, 8, "#364a82");
+    scr.restyle(0, 0, 8, "#364a82"); // both transitions are now memoised
+    scr.flush();
+    const sty = (scr as any).sty as Uint16Array;
+    expect(sty[0]).not.toBe(sty[3]);
+    // red, blue, and the empty cells after them: three highlighted styles
+    expect(term.buf.match(/\x1b\[48;2;54;74;130m/g)).toHaveLength(3);
+  });
+});

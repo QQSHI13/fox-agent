@@ -79,6 +79,19 @@ export class Screen {
   private styleIdx = new Map<string, number>();
   /** interned id of the empty style, so cleared cells never inherit a stale one */
   private defSty = -1;
+  /**
+   * Memo for `(current style, background) -> restyled id`.
+   *
+   * Selection dragging restyles the same handful of style transitions across
+   * hundreds of cells, and the transition only depends on the cell's current
+   * style id plus the highlight background. Interning makes the result stable
+   * for the life of the screen, so four slots cover the drag path without
+   * allocating a map per restyle call.
+   */
+  private rsCur = new Int32Array(4).fill(-1);
+  private rsBg: (string | undefined)[] = [undefined, undefined, undefined, undefined];
+  private rsOut = new Int32Array(4).fill(-1);
+  private rsNext = 0;
   private _lastDirty = false;
   /** href of the currently open OSC 8 hyperlink ("" = none) */
   private lastHref = "";
@@ -101,6 +114,27 @@ export class Screen {
       this.styleIdx.set(key, i);
     }
     return i;
+  }
+
+  /**
+   * Interned id of `styles[cur]` with its background replaced by `bg`.
+   *
+   * `restyle` calls this per cell; the repeated `{ ...cur, bg }` allocation and
+   * template-string key lookup dominated a selection drag. Same `(cur, bg)`
+   * always maps to the same interned style, so a small ring of recent
+   * transitions is exact, not a heuristic.
+   */
+  restyleId(cur: number, bg: string): number {
+    for (let i = 0; i < 4; i++) {
+      if (this.rsOut[i] >= 0 && this.rsCur[i] === cur && this.rsBg[i] === bg) return this.rsOut[i];
+    }
+    const out = this.sgr({ ...(this.styles[cur] ?? {}), bg });
+    const slot = this.rsNext;
+    this.rsNext = (slot + 1) & 3;
+    this.rsCur[slot] = cur;
+    this.rsBg[slot] = bg;
+    this.rsOut[slot] = out;
+    return out;
   }
 
   resize(w: number, h: number) {
@@ -386,8 +420,7 @@ export class Screen {
       if (ch === undefined) this.chars[i] = " ";
       // the continuation cell of a wide char carries "" and must stay that way,
       // but it still needs the highlight or the block gets holes in it
-      const cur = this.styles[this.sty[i]] ?? {};
-      this.sty[i] = this.sgr({ ...cur, bg });
+      this.sty[i] = this.restyleId(this.sty[i], bg);
     }
     this.dirtyRows[y] = 1;
   }
@@ -633,6 +666,15 @@ export class Plane {
   chars: (string | undefined)[];
   sty: Uint16Array;
   /**
+   * Rows written since the last clear — the per-plane damage map.
+   *
+   * `clearRows(0, H)` is how every region restamps, and the old version walked
+   * all W cells of all H rows to discover that 39 of 40 rows were already
+   * empty. A written row is the only row a clear can do anything for, so the
+   * clear becomes proportional to the content, not the plane area.
+   */
+  private touched: Uint8Array;
+  /**
    * Write clip rect [x0,y0,x1,y1) — writes outside are dropped. Defaults to
    * the full screen (built-in regions own their layout); plugin regions get
    * the rect they registered so a plane can never paint outside its region,
@@ -645,6 +687,7 @@ export class Plane {
   constructor(public readonly name: string, public z: number, private scr: Screen) {
     this.chars = new Array(scr.w * scr.h).fill(undefined);
     this.sty = new Uint16Array(scr.w * scr.h).fill(scr.defaultStyle());
+    this.touched = new Uint8Array(scr.h);
   }
 
   private cx0(): number {
@@ -664,56 +707,47 @@ export class Plane {
   realloc(): void {
     this.chars = new Array(this.scr.w * this.scr.h).fill(undefined);
     this.sty = new Uint16Array(this.scr.w * this.scr.h).fill(this.scr.defaultStyle());
+    // The reallocated buffer is blank, so nothing is left to clear.
+    this.touched = new Uint8Array(this.scr.h);
   }
 
   clear(): void {
-    this.chars.fill(undefined);
-    this.sty.fill(this.scr.defaultStyle());
-    this.markRows(0, this.scr.h);
+    const w = this.scr.w;
+    const def = this.scr.defaultStyle();
+    for (let y = 0; y < this.scr.h; y++) {
+      if (!this.touched[y]) continue;
+      this.touched[y] = 0;
+      const base = y * w;
+      this.chars.fill(undefined, base, base + w);
+      this.sty.fill(def, base, base + w);
+      // Only a row that actually held content needs the grid to recomposite.
+      this.scr.markRowDirty(y);
+    }
+    this.touched.fill(0);
   }
 
   clearRows(y0: number, y1: number): void {
     const lo = Math.max(this.cy0(), y0);
     const hi = Math.min(this.cy1(), y1);
     const w = this.scr.w;
+    const def = this.scr.defaultStyle();
     for (let y = lo; y < hi; y++) {
+      // Nothing written since the last clear: the row is already blank, and
+      // the grid already shows it blank. Skipping is both cheaper and keeps
+      // the dirty set from going full-frame on every region push.
+      if (!this.touched[y]) continue;
+      this.touched[y] = 0;
       const base = y * w;
-      // Mark a row dirty only because it is ABOUT to lose content it actually
-      // has. Rows that were already empty lose nothing by being cleared, and
-      // marking them was the reason every region push made composite() take its
-      // full-repaint branch: the built-in regions clear `(0, H)` each restamp, so
-      // `markRows(0, H)` marked every row on every push, and the per-row damage
-      // path (screen.ts composite) was unreachable in practice. Rows the region
-      // writes afterwards mark themselves through text()/fillRow().
-      let hadContent = false;
-      for (let x = 0; x < w; x++) {
-        const i = base + x;
-        if (this.chars[i] !== undefined) hadContent = true;
-        this.chars[i] = undefined;
-        this.sty[i] = this.scr.defaultStyle();
-      }
-      if (hadContent) this.scr.markRowDirty(y);
+      this.chars.fill(undefined, base, base + w);
+      this.sty.fill(def, base, base + w);
+      // A touched row held content, so losing it is a visible change.
+      this.scr.markRowDirty(y);
     }
     // Rows OUTSIDE the clip still have to reach the grid when the region WROTE
     // there last frame: the clip only bounds writes, and a plane keeps a
-    // full-screen buffer. Those rows are marked by the check above, which runs
-    // over the whole buffer only inside the clip — so for a clipped plane the
-    // out-of-clip rows are handled by its own writes having marked them last
-    // time and by dropPlane()'s full invalidation when the region goes away.
-  }
-
-  /**
-   * Report written rows to the shared grid.
-   *
-   * A plane owns its own buffer, but what composite() needs to know is which
-   * rows of the GRID changed overall. Every write goes through here. Without
-   * it, "clear the plane, redraw it" would mark every row dirty every frame
-   * and the dirty-row optimisation would be worthless.
-   */
-  private markRows(y0: number, y1: number): void {
-    const lo = Math.max(0, y0);
-    const hi = Math.min(this.scr.h, y1);
-    for (let y = lo; y < hi; y++) this.scr.markRowDirty(y);
+    // full-screen buffer. Those rows are marked by their own writes having set
+    // the touched bit and the grid damage at write time, and by dropPlane()'s
+    // full invalidation when the region goes away.
   }
 
 
@@ -757,7 +791,7 @@ export class Plane {
         cx += cw;
       }
     }
-    if (wrote) this.markRows(y, y + 1);
+    if (wrote) this.touch(y);
     return cx;
   }
 
@@ -772,7 +806,7 @@ export class Plane {
       this.chars[i] = " ";
       this.sty[i] = st;
     }
-    this.markRows(y, y + 1);
+    this.touch(y);
   }
 
   restyle(y: number, x0: number, x1: number, bg: string): void {
@@ -784,14 +818,19 @@ export class Plane {
     for (let x = lo; x < hi; x++) {
       const i = y * w + x;
       if (this.chars[i] === undefined) this.chars[i] = " ";
-      const cur = this.scr.styles[this.sty[i]] ?? {};
-      this.sty[i] = this.scr.sgr({ ...cur, bg });
+      this.sty[i] = this.scr.restyleId(this.sty[i], bg);
     }
     // Selection highlight is a WRITE and has to reach the grid like one. This
     // was masked while clearRows() marked every row dirty unconditionally;
     // without it a selection painted onto a row that was empty last frame would
     // sit in the plane and never composite.
-    this.markRows(y, y + 1);
+    this.touch(y);
+  }
+
+  /** Record a write: the row is now non-blank and must reach the grid. */
+  private touch(y: number): void {
+    this.touched[y] = 1;
+    this.scr.markRowDirty(y);
   }
 
   /** first/last row containing any defined cell — hit tests and debug */
