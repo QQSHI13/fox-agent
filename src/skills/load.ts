@@ -21,7 +21,7 @@
  * own folder reads as naturally as one pointing at a folder of them, and
  * guessing wrong would silently find nothing.
  */
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { readFileSync, readdirSync, type Dirent } from "node:fs";
 import { join } from "node:path";
 import { isDir } from "../core/fs.ts";
 
@@ -85,12 +85,19 @@ function firstProseLine(body: string): string {
   return "";
 }
 
-/** Read one SKILL.md into a SkillInfo, or say why it could not. */
-function readSkill(file: string, dirName: string): { skill: SkillInfo } | { error: string } {
+/**
+ * Read one SKILL.md into a SkillInfo, or say why it could not.
+ *
+ * `missing` is separate from `error` so discovery can probe the standard
+ * `<dir>/<name>/SKILL.md` path with a read instead of a stat-then-read pair:
+ * a directory that simply has no SKILL.md is not a skill and must stay silent.
+ */
+function readSkill(file: string, dirName: string): { skill: SkillInfo } | { error: string } | { missing: true } {
   let text: string;
   try {
     text = readFileSync(file, "utf8");
   } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return { missing: true };
     return { error: `cannot read ${file}: ${(e as Error).message.slice(0, 200)}` };
   }
   const { data, body } = splitFrontmatter(text);
@@ -127,6 +134,7 @@ export function loadSkills(dirs: string[]): { skills: SkillInfo[]; warnings: str
 
   const add = (file: string, dirName: string) => {
     const res = readSkill(file, dirName);
+    if ("missing" in res) return;
     if ("error" in res) {
       warnings.push(`skill ${res.error}`);
       return;
@@ -145,34 +153,35 @@ export function loadSkills(dirs: string[]): { skills: SkillInfo[]; warnings: str
   for (const raw of dirs) {
     const dir = raw.trim();
     if (!dir) continue;
-    if (!existsSync(dir)) {
-      warnings.push(`skills directory '${dir}' does not exist`);
-      continue;
-    }
-    if (!isDir(dir)) {
-      warnings.push(`skills entry '${dir}' is not a directory`);
-      continue;
-    }
-    const own = join(dir, "SKILL.md");
-    if (existsSync(own)) {
-      add(own, dir.split("/").filter(Boolean).pop() ?? "");
-      continue;
-    }
-    let entries: string[];
+    // One readdir with dirents answers "does it exist", "is it a directory",
+    // and "which children are directories" at once. The previous existsSync +
+    // statSync pair was two syscalls per configured directory, and another stat
+    // per child just to learn its type.
+    let entries: Dirent[];
     try {
-      entries = readdirSync(dir).sort();
+      entries = readdirSync(dir, { withFileTypes: true });
     } catch (e) {
-      warnings.push(`skills directory '${dir}' unreadable: ${(e as Error).message.slice(0, 200)}`);
+      const code = (e as NodeJS.ErrnoException).code;
+      if (code === "ENOENT") warnings.push(`skills directory '${dir}' does not exist`);
+      else if (code === "ENOTDIR") warnings.push(`skills entry '${dir}' is not a directory`);
+      else warnings.push(`skills directory '${dir}' unreadable: ${(e as Error).message.slice(0, 200)}`);
       continue;
     }
+    // A directory that IS one skill takes precedence over its children, and a
+    // directory literally named SKILL.md still gets its read error reported.
+    if (entries.some((entry) => entry.name === "SKILL.md")) {
+      add(join(dir, "SKILL.md"), dir.split("/").filter(Boolean).pop() ?? "");
+      continue;
+    }
+    entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
     // dot-dirs are skipped by name rather than by trying to read them: `.git` in
     // a skills checkout would otherwise contribute a stat() per entry per load
     for (const entry of entries) {
-      if (entry.startsWith(".")) continue;
-      const sub = join(dir, entry);
-      if (!isDir(sub)) continue;
-      const file = join(sub, "SKILL.md");
-      if (existsSync(file)) add(file, entry);
+      if (entry.name.startsWith(".")) continue;
+      // dirent types do not follow symlinks; a symlinked skill directory is
+      // still a directory, so only those pay for a stat
+      if (!entry.isDirectory() && !(entry.isSymbolicLink() && isDir(join(dir, entry.name)))) continue;
+      add(join(dir, entry.name, "SKILL.md"), entry.name);
     }
   }
 

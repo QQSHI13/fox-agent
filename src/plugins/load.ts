@@ -11,8 +11,9 @@
  */
 import { homedir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
+import { readFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { ok, fail } from "../core/tool.ts";
 import { signal } from "../tui/reactive.ts";
@@ -256,11 +257,11 @@ interface PendingExternalPlugin {
   manifest: PluginManifest;
 }
 
-function readManifestForEntry(raw: string, path: string): { pending: PendingExternalPlugin; warnings: string[] } | { error: string } {
+async function readManifestForEntry(raw: string, path: string): Promise<{ pending: PendingExternalPlugin; warnings: string[] } | { error: string }> {
   const manifestPath = manifestPathFor(path);
   let text: string;
   try {
-    text = readFileSync(manifestPath, "utf8");
+    text = await readFile(manifestPath, "utf8");
   } catch {
     return { error: `missing manifest '${manifestPath}'` };
   }
@@ -378,13 +379,22 @@ export async function loadPlugins(
   const pending: PendingExternalPlugin[] = [];
   const isDisabled = (raw: string) => isPluginPathDisabled(raw, disabled);
 
-  for (const raw of paths) {
-    if (isDisabled(raw)) {
+  // Manifest reads touch the filesystem once per entry and are the expensive
+  // part of a cold load, so they all start together. Everything downstream
+  // still walks these results in config order, which is what keeps warning
+  // order, `files` order, composition order and module import order stable.
+  const resolved = paths.map((raw) => ({ raw, disabled: isDisabled(raw), path: expand(raw, cwd) }));
+  const manifests = await Promise.all(
+    resolved.map((entry) => (entry.disabled ? null : readManifestForEntry(entry.raw, entry.path))),
+  );
+
+  for (let i = 0; i < resolved.length; i++) {
+    const { raw, disabled: isOff } = resolved[i]!;
+    if (isOff) {
       files.push({ path: raw, name: null, disabled: true });
       continue;
     }
-    const path = expand(raw, cwd);
-    const manifest = readManifestForEntry(raw, path);
+    const manifest = manifests[i]!;
     if ("error" in manifest) {
       const w = `plugin '${raw}' skipped: ${manifest.error}`;
       warnings.push(w);

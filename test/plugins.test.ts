@@ -343,6 +343,30 @@ describe("plugin loader", () => {
     expect(files.map((f) => f.manifest?.id).sort()).toEqual(["dep-a", "dep-b"]);
   });
 
+  // Manifest reads start together (Promise.all), so this pins the observable
+  // consequences of that: files, warnings and loaded plugins still follow
+  // config order even when an early read finishes after a later one.
+  test("concurrent manifest reads keep file, warning and load order stable", async () => {
+    const { loadPlugins } = await import("../src/plugins/load.ts");
+    const first = writeTmpPlugin("order-a");
+    const missingManifest = join(home, "order-missing.ts");
+    writeFileSync(missingManifest, `export default { name: "order-missing" };\n`);
+    const badManifest = join(home, "order-bad.ts");
+    writeFileSync(badManifest, `export default { name: "order-bad" };\n`);
+    writeFileSync(join(home, "order-bad.plugin.json"), "{ not json");
+    const last = writeTmpPlugin("order-b");
+
+    const { plugins, warnings, files } = await loadPlugins([first, missingManifest, badManifest, last]);
+
+    expect(files.map((f) => f.path)).toEqual([first, missingManifest, badManifest, last]);
+    expect(warnings).toEqual([
+      `plugin '${missingManifest}' skipped: missing manifest '${join(home, "order-missing.plugin.json")}'`,
+      `plugin '${badManifest}' skipped: invalid manifest JSON in '${join(home, "order-bad.plugin.json")}'`,
+    ]);
+    // only the two valid manifests load, in config order
+    expect(plugins.map((p) => p.name)).toEqual(["order-a", "order-b"]);
+  });
+
   test("duplicate contribution IDs fail closed for the whole configured set", async () => {
     const { loadPlugins } = await import("../src/plugins/load.ts");
     const one = writeTmpPlugin("dup-one", [], ["same-tool"]);
