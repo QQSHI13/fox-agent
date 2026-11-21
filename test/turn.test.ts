@@ -1283,3 +1283,173 @@ describe("the ctx-only rail is enforced, not just advertised", () => {
     expect(declared).toEqual(["ctx"]);
   });
 });
+
+describe("auto-background delivery: the landed result gets a turn (steering wake)", () => {
+  // The bug: the auto-backgrounded call's result was appended as a durable
+  // user message but nothing notified the steering layer, so after the turn
+  // ended the result sat unread until the user happened to type something.
+  // The fix appends the row and then wakes the steering layer (notifyTurn):
+  // mid-turn the wake is drained at the next step boundary, after the turn it
+  // starts a continuation turn with no duplicate user node.
+  const gatedTool = () => {
+    let release!: (v: string) => void;
+    const gate = new Promise<string>((r) => (release = r));
+    const failInstead = { v: false };
+    const registry = new Map([
+      [
+        "slowtool",
+        {
+          def: { name: "slowtool", description: "", parameters: { type: "object" } },
+          run: async () => {
+            const out = await gate;
+            if (failInstead.v) throw new Error(out);
+            return out;
+          },
+        },
+      ],
+    ]) as any;
+    return { registry, release: (v: string) => release(v), failInstead };
+  };
+  const bgCfg = async () => {
+    const { defaultConfig } = await import("../src/core/config.ts");
+    return defaultConfig({ model: "test-model", baseUrl: "http://localhost:9", apiKey: "test", autoBackgroundMs: 20 });
+  };
+  /** Host whose turns run the real loop, capturing the continuation marker. */
+  const realHost = (t: any, s: any, c: any, mock: any, registry: any) => {
+    const extras: ({ continuationParentId?: string } | undefined)[] = [];
+    return {
+      extras,
+      host: {
+        provider: () => cfg(),
+        config: () => c,
+        chat: mock.fn as any,
+        turn: (text: string, ctl: AbortController, extra?: { continuationParentId?: string }) => {
+          extras.push(extra);
+          return t.runTurnCore(s.id, cfg(), text, ctl.signal, {
+            chat: mock.fn as any,
+            registryOverride: registry,
+            quiet: true,
+            config: c,
+            ...(extra?.continuationParentId ? { continuationParentId: extra.continuationParentId } : {}),
+          });
+        },
+      },
+    };
+  };
+
+  test("a result landing after the turn ended starts a continuation turn that reads it", async () => {
+    const t = await setup();
+    const s = t.createSession("/w", "m1");
+    const { registry, release } = gatedTool();
+    const c = await bgCfg();
+    const mock = mockChat([
+      [{ type: "tool_call", call: { id: "a", name: "slowtool", arguments: "{}" } }, { type: "done", reason: "tool_calls" }],
+      textDone("moved on"),
+      textDone("read it"),
+    ]);
+    const steerMod = await import("../src/loop/steer.ts");
+    const { extras, host } = realHost(t, s, c, mock, registry);
+    steerMod.attachHost(s.id, host);
+    try {
+      const events = await collect(
+        t.runTurnCore(s.id, cfg(), "go", undefined, { chat: mock.fn as any, registryOverride: registry, quiet: true, config: c }),
+      );
+      expect(events.some((e) => e.type === "done")).toBe(true);
+
+      // the turn is over; now the detached work lands
+      release("slow finished");
+      await steerMod.waitQuiescent(s.id); // resolves only once the continuation turn ended
+
+      const msgs = t.allMessages(s.id);
+      expect(msgs.map((m: any) => m.role)).toEqual(["user", "assistant", "tool", "assistant", "user", "assistant"]);
+      // the continuation is the host's FIRST turn: it appends no user node of
+      // its own, and its chain parent is the landed result row
+      expect(extras[0]?.continuationParentId).toBe(msgs[4].id);
+      expect(extras).toHaveLength(1); // exactly one continuation, no extras
+      // and the continuation's request contained the result text
+      const lastCall: any = mock.calls[2].messages;
+      expect(lastCall.some((m: any) => m.role === "user" && m.content.includes("slow finished"))).toBe(true);
+    } finally {
+      steerMod.releaseSteer(s.id);
+    }
+  });
+
+  test("a result landing mid-turn is read at the next step boundary of the same turn", async () => {
+    const t = await setup();
+    const s = t.createSession("/w", "m1");
+    // No gate: the tool resolves on its own ~30ms after detaching, while the
+    // second step's provider call is still sleeping — the result lands
+    // mid-turn by construction.
+    const registry = new Map([
+      [
+        "slowtool",
+        {
+          def: { name: "slowtool", description: "", parameters: { type: "object" } },
+          run: async () => {
+            await Bun.sleep(30);
+            return "slow finished";
+          },
+        },
+      ],
+    ]) as any;
+    const c = await bgCfg();
+    // Bespoke chat (not mockChat): step 2's call must stay in flight ~150ms
+    // while the detached tool resolves at ~30ms — that window is what lands
+    // the result mid-turn.
+    const calls: any[] = [];
+    const chat = async function* (_c: any, messages: any, tools: any): AsyncGenerator<any> {
+      calls.push(structuredClone(messages));
+      const n = calls.length - 1;
+      if (n === 0) {
+        yield { type: "tool_call", call: { id: "a", name: "slowtool", arguments: "{}" } };
+        yield { type: "done", reason: "tool_calls" };
+      } else if (n === 1) {
+        await new Promise((r) => setTimeout(r, 150)); // outlive the detached tool
+        yield { type: "text", delta: "moved on" };
+        yield { type: "done", reason: "stop" };
+      } else {
+        yield { type: "text", delta: "read it" };
+        yield { type: "done", reason: "stop" };
+      }
+    };
+    const events = await collect(
+      t.runTurnCore(s.id, cfg(), "go", undefined, { chat: chat as any, registryOverride: registry, quiet: true, config: c }),
+    );
+    // the end-of-turn peek sees the pending wake and takes another step
+    expect(calls).toHaveLength(3);
+    const thirdCall: any = calls[2];
+    expect(thirdCall.some((m: any) => m.role === "user" && m.content.includes("slow finished"))).toBe(true);
+    const roles = t.allMessages(s.id).map((m: any) => m.role);
+    expect(roles).toEqual(["user", "assistant", "tool", "user", "assistant", "assistant"]);
+    expect(events.filter((e) => e.type === "done")).toHaveLength(1);
+    const { drainWakes } = await import("../src/loop/steer.ts");
+    drainWakes(s.id);
+  });
+
+  test("a failed backgrounded call that lands after the turn still gets answered", async () => {
+    const t = await setup();
+    const s = t.createSession("/w", "m1");
+    const { registry, release, failInstead } = gatedTool();
+    failInstead.v = true;
+    const c = await bgCfg();
+    const mock = mockChat([
+      [{ type: "tool_call", call: { id: "a", name: "slowtool", arguments: "{}" } }, { type: "done", reason: "tool_calls" }],
+      textDone("moved on"),
+      textDone("noted"),
+    ]);
+    const steerMod = await import("../src/loop/steer.ts");
+    const { host } = realHost(t, s, c, mock, registry);
+    steerMod.attachHost(s.id, host);
+    try {
+      await collect(
+        t.runTurnCore(s.id, cfg(), "go", undefined, { chat: mock.fn as any, registryOverride: registry, quiet: true, config: c }),
+      );
+      release("disk exploded");
+      await steerMod.waitQuiescent(s.id);
+      const lastCall: any = mock.calls[2].messages;
+      expect(lastCall.some((m: any) => m.role === "user" && m.content.includes("failed") && m.content.includes("disk exploded"))).toBe(true);
+    } finally {
+      steerMod.releaseSteer(s.id);
+    }
+  });
+});

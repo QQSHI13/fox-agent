@@ -15,6 +15,7 @@ export async function* runTurn(
   config?: Config,
   ui?: UiBridge,
   lockKind?: string,
+  continuationParentId?: string,
 ): AsyncGenerator<AgentEvent> {
   yield* runTurnCore(sessionId, cfg, userText, signal, {
     maxSteps: config?.maxSteps,
@@ -30,5 +31,8 @@ export async function* runTurn(
     ui,
     // pass the whole config so MCP servers merge into the registry
     config,
+    // set when core's steering layer starts this turn to answer a backgrounded
+    // tool result that already landed (see loop/steer.ts notifyTurn)
+    ...(continuationParentId ? { continuationParentId } : {}),
   });
 }

@@ -162,9 +162,10 @@ export interface Config {
    * The call keeps running and still appends its result row when it finishes —
    * `tool_end` fires then, so the transcript shows the real output. What changes
    * is that the turn stops blocking on it: the next step begins without it, and
-   * the result is simply in the context for the following turn. Nothing steers,
-   * nothing notifies, and the agent is never told a call was detached, so a slow
-   * build does not cost a turn's worth of waiting.
+   * when the result lands the steering layer schedules the turn that reads it
+   * (a step boundary if the turn still runs, a continuation turn if it ended),
+   * so the placeholder's promise — "the real output will arrive as a separate
+   * message" — is kept without the agent polling.
    *
    * This is deliberately NOT the `repl` background feature: that one is explicit,
    * returns a job id, and can be polled. This is just "stop waiting".

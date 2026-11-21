@@ -351,6 +351,7 @@ export function buildAgent(opts: AcpServerOptions): acp.AgentApp {
     text: string,
     signal: AbortSignal,
     client: { notify: (method: string, params: unknown) => Promise<unknown> },
+    continuationParentId?: string,
   ): AsyncGenerator<import("../core/events.ts").AgentEvent> {
     const turnProvider = providerFor(sessionId);
     const turnContextWindow = lookupModel(turnProvider.model).contextWindow;
@@ -374,6 +375,9 @@ export function buildAgent(opts: AcpServerOptions): acp.AgentApp {
         // a read-only session withholds the mutating tools instead of asking
         // about each call — see MODES
         excludeTools: modeOf(sessionId) === "read-only" ? READ_ONLY_EXCLUDED : undefined,
+        // set when core's steering layer starts this turn to answer a
+        // backgrounded tool result that already landed (loop/steer.ts)
+        ...(continuationParentId ? { continuationParentId } : {}),
       })) {
         const update = ev.type === "done" ? null : toSessionUpdate(ev, { contextWindow: turnContextWindow, notices: clientNotices });
         if (update) await client.notify(acp.methods.client.session.update, { sessionId, update });
@@ -407,7 +411,7 @@ export function buildAgent(opts: AcpServerOptions): acp.AgentApp {
       provider: () => providerFor(sessionId),
       config: () => configFor(sessionId),
       chat,
-      turn: (text, ctl) => turnEvents(sessionId, text, ctl.signal, sessionClients.get(sessionId) ?? client),
+      turn: (text, ctl, extra) => turnEvents(sessionId, text, ctl.signal, sessionClients.get(sessionId) ?? client, extra?.continuationParentId),
     });
   }
 

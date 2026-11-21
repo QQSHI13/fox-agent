@@ -31,6 +31,16 @@
  * 3. A session is QUIESCENT only when no turn runs, no steer is queued and no
  *    background job is live. One-shot clients (ACP prompt, --print) and
  *    `--print` wait for that before finishing — see `waitQuiescent`.
+ *
+ * Wakes
+ * -----
+ * A wake is not text: it is the notification that a durable message landed
+ * outside any turn (an auto-backgrounded tool result, today). The message is
+ * already persisted, so a wake only schedules the turn that will make the
+ * agent read it — mid-turn it is consumed at the next step boundary, after
+ * the turn it starts a continuation turn. It rides the same queue, pump and
+ * dispatch machinery as a steer so the delivery guarantees above apply
+ * unchanged.
  */
 import type { AgentEvent } from "../core/events.ts";
 import type { Config } from "../core/config.ts";
@@ -98,6 +108,52 @@ export function requeueSteer(sessionId: string, texts: string[]): void {
   pending.set(sessionId, [...texts, ...q]);
 }
 
+// ---- wakes: a durable message needs a turn, not a user message -----------
+
+const wakes = new Map<string, string[]>();
+
+/**
+ * Notify the steering layer that a durable message just landed outside any
+ * turn — today, the result of an auto-backgrounded tool call. The message
+ * itself is NOT queued (it is already in the transcript); what is queued is
+ * the obligation to run a turn that reads it.
+ *
+ * `parentId` is the landed message's id: the continuation turn starts its
+ * step chain from it, so lineage reflects that the reply answers the result.
+ */
+export function notifyTurn(sessionId: string, parentId: string): void {
+  const q = wakes.get(sessionId);
+  if (q) q.push(parentId);
+  else wakes.set(sessionId, [parentId]);
+  // asking again is the right retry signal after a failed dispatch
+  blocked.delete(sessionId);
+  pump(sessionId);
+}
+
+/** Atomically take every wake queued since the last claim. */
+export function drainWakes(sessionId: string): string[] {
+  const q = wakes.get(sessionId);
+  if (!q?.length) return [];
+  wakes.delete(sessionId);
+  return q;
+}
+
+/** Put wakes back (a failed delivery), preserving their order. */
+export function requeueWakes(sessionId: string, parentIds: string[]): void {
+  if (!parentIds.length) return;
+  const q = wakes.get(sessionId) ?? [];
+  wakes.set(sessionId, [...parentIds, ...q]);
+}
+
+function hasWakes(sessionId: string): boolean {
+  return (wakes.get(sessionId)?.length ?? 0) > 0;
+}
+
+/** True when anything is waiting for a turn: steered text or a landed result. */
+export function hasPending(sessionId: string): boolean {
+  return hasSteer(sessionId) || hasWakes(sessionId);
+}
+
 // ---- session hosts: how to talk to the model, and where output goes -------
 
 /**
@@ -122,8 +178,12 @@ export interface SessionHost {
    *
    * Whatever it returns MUST be the same `runTurnCore` event stream: core relies
    * on `done`/`steered` semantics and on the turn registry inside runTurnCore.
+   *
+   * `extra.continuationParentId` marks the turn as answering a message that
+   * already landed (a backgrounded tool result): runTurnCore must NOT append
+   * another user node, and the step chain starts from that message's id.
    */
-  turn?: (text: string, ctl: AbortController) => AsyncIterable<AgentEvent>;
+  turn?: (text: string, ctl: AbortController, extra?: { continuationParentId?: string }) => AsyncIterable<AgentEvent>;
   /** Render one turn event (used only when `turn` is omitted). */
   sink?: (ev: AgentEvent) => void;
   /** A turn is about to start (the client paints its own busy state). */
@@ -144,6 +204,11 @@ export function detachHost(sessionId: string): void {
   hosts.delete(sessionId);
   blocked.delete(sessionId);
   dispatching.delete(sessionId);
+}
+
+/** Drop every pending wake for a session (tests, teardown). */
+export function resetWakes(sessionId: string): void {
+  wakes.delete(sessionId);
 }
 
 // ---- turn registry -------------------------------------------------------
@@ -233,7 +298,7 @@ export function backgroundCount(sessionId: string): number {
  * predicate, so it cannot drift between them.
  */
 export function isQuiescent(sessionId: string): boolean {
-  return !turnRunning(sessionId) && !hasSteer(sessionId) && backgroundCount(sessionId) === 0 && !dispatching.has(sessionId);
+  return !turnRunning(sessionId) && !hasPending(sessionId) && backgroundCount(sessionId) === 0 && !dispatching.has(sessionId);
 }
 
 const quiesceWaiters = new Map<string, Array<() => void>>();
@@ -275,6 +340,7 @@ export function releaseSteer(sessionId: string): string[] {
   controllers.delete(sessionId);
   dispatching.delete(sessionId);
   blocked.delete(sessionId);
+  wakes.delete(sessionId);
   // session teardown aborts whatever is still running: a detached call whose
   // session is gone has nowhere to write its result.
   killSessionBackground(sessionId);
@@ -311,13 +377,13 @@ function pump(sessionId: string): void {
   if (turnRunning(sessionId)) return; // a turn owns the queue
   if (dispatching.has(sessionId)) return;
   if (blocked.has(sessionId)) return;
-  if (!hasSteer(sessionId)) return;
+  if (!hasPending(sessionId)) return;
   if (!hosts.has(sessionId)) return; // nobody to render it yet: stay queued
   dispatching.add(sessionId);
   setTimeout(() => {
     dispatching.delete(sessionId);
     // re-check: the world moved during the macrotask
-    if (turnRunning(sessionId) || blocked.has(sessionId) || !hasSteer(sessionId)) {
+    if (turnRunning(sessionId) || blocked.has(sessionId) || !hasPending(sessionId)) {
       checkQuiescent(sessionId);
       return;
     }
@@ -332,17 +398,23 @@ function pump(sessionId: string): void {
  * is why core — not the client — owns the decision. Steered text is a normal
  * user message: `runTurnCore` persists it as a user node and (with `quiet`
  * unset) emits the `user` event, so every client renders it the same way it
- * renders a typed message.
+ * renders a typed message. A wake contributes no text — its message is
+ * already durable — it only makes the turn a continuation (see
+ * `TurnOptions.continuationParentId`).
  */
 async function startTurn(sessionId: string): Promise<void> {
   const host = hosts.get(sessionId);
   if (!host || turnRunning(sessionId)) return;
   const texts = drainSteer(sessionId);
-  if (!texts.length) {
+  const drainedWakes = drainWakes(sessionId);
+  if (!texts.length && !drainedWakes.length) {
     checkQuiescent(sessionId);
     return;
   }
   const text = texts.join("\n");
+  // several results can land in one window; the newest names the parent of the
+  // replying step. The older ones are still in the view — the model reads them.
+  const continuationParentId = drainedWakes[drainedWakes.length - 1];
   const ctl = new AbortController();
   controllers.set(sessionId, ctl);
   const cfg = host.config?.();
@@ -354,7 +426,7 @@ async function startTurn(sessionId: string): Promise<void> {
   turnStarted(sessionId);
   try {
     const stream =
-      host.turn?.(text, ctl) ??
+      host.turn?.(text, ctl, continuationParentId ? { continuationParentId } : undefined) ??
       runTurnCore(sessionId, host.provider(), text, ctl.signal, {
         maxSteps: cfg?.maxSteps,
         source: "steer",
@@ -365,6 +437,7 @@ async function startTurn(sessionId: string): Promise<void> {
         config: cfg,
         chat: host.chat,
         ui: host.ui,
+        ...(continuationParentId ? { continuationParentId } : {}),
       });
     for await (const ev of stream) {
       if (ev.type === "done") reason = ev.reason;
@@ -376,9 +449,10 @@ async function startTurn(sessionId: string): Promise<void> {
       }
     }
   } catch (e) {
-    // Delivery failed: put the text back so it is answered later, and stop
+    // Delivery failed: put everything back so it is answered later, and stop
     // retrying until something changes (a new steer, or a new host).
     requeueSteer(sessionId, texts);
+    requeueWakes(sessionId, drainedWakes);
     blocked.add(sessionId);
     host.onTurnEnd?.("error", e);
     checkQuiescent(sessionId);

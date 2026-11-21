@@ -1653,7 +1653,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
    * message IS a normal user message. This is a generator because core consumes
    * it: it yields the raw stream and does the painting as a side effect.
    */
-  async function* turnStream(raw: string, signal: AbortSignal, ctl: AbortController): AsyncGenerator<AgentEvent> {
+  async function* turnStream(raw: string, signal: AbortSignal, ctl: AbortController, extra?: { continuationParentId?: string }): AsyncGenerator<AgentEvent> {
     // the pending session becomes real exactly here — first message, not before
     if (!state.sessionId) {
       const s = createSession(state.cwd, state.provider.model);
@@ -1674,7 +1674,10 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     // session/prompt (loop/steer.ts adoptTurnController).
     adoptTurnController(state.sessionId, ctl);
     setBusy(true);
-    const userItem = push("user", `❯ ${raw}`);
+    // A continuation turn (answering a backgrounded tool result that already
+    // landed) has no user line to paint — the result row is in the settled
+    // transcript — so only a real user message gets the `❯` item.
+    const userItem = raw ? push("user", `❯ ${raw}`) : null;
     let md = "";
     liveTools.clear();
     // id → one-line label ("exec echo hi"), so in-flight and settled heads both
@@ -1695,16 +1698,19 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       // (~52ms) but is only needed when a turn actually runs, not to paint or
       // accept input. VERSION comes from core/version.ts (light), not here.
       const { runTurn } = await import("../loop/agent.ts");
-      for await (const ev of runTurn(state.sessionId, state.provider, raw, signal, state.config, uiBridge, "tui")) {
+      for await (const ev of runTurn(state.sessionId, state.provider, raw, signal, state.config, uiBridge, "tui", extra?.continuationParentId)) {
         if (ev.type === "user") {
           // the turn persisted the user message — stamp its seq on the in-flight
           // line so the [N] marker appears now, not after the turn settles
-          userItem.seq = ev.seq;
+          // (continuation turns emit no user event; there is no line to stamp)
+          if (userItem) {
+            userItem.seq = ev.seq;
+            touch(userItem.k);
+          }
           // the reply streaming in now will be the NEXT persisted seq — predict it
           // so the streaming tail shows its marker live too (refined when the
           // assistant node actually lands, in case thinking took a slot first)
           tui.streamSeq = ev.seq + 1;
-          touch(userItem.k);
           bumpItems();
         } else if (ev.type === "assistant") {
           // the assistant node landed with its REAL seq — correct the streaming
@@ -2023,10 +2029,10 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       config: () => state.config,
       chat: undefined, // let runTurnCore resolve it
       ui: uiBridge,
-      turn: (text, ctl) => {
+      turn: (text, ctl, extra) => {
         tui.ac = ctl; // esc interrupts a steered turn exactly like a typed one
         bumpCmdOut(); // the steering float disappears as the text is claimed
-        return turnStream(text, ctl.signal, ctl);
+        return turnStream(text, ctl.signal, ctl, extra);
       },
     });
   }

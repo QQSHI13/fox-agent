@@ -1,4 +1,5 @@
 import { appendMessage, appendOps, getRef, getSession, kvDelete, kvGet, kvSet, recordUsage, type MessageRow } from "../store/db.ts";
+import { externalizeMedia, hydrateMessagesMedia } from "../store/media.ts";
 import { estimateTokens } from "../providers/models.ts";
 import type { ProviderConfig, ChatMessage, ToolDef, ToolCall, ChatFn } from "../providers/types.ts";
 import { resolveChat } from "../providers/index.ts";
@@ -6,7 +7,7 @@ import { classifyProviderError, diagnoseProviderError, FoxError, isTimeout, isTr
 import type { AgentEvent } from "../core/events.ts";
 import type { Tool, ToolContext, ToolResult, PtyState } from "../core/tool.ts";
 import { validateArgs } from "../core/tool.ts";
-import { drainSteer, peekSteer, turnEnded, turnStarted, steer } from "./steer.ts";
+import { drainSteer, drainWakes, hasPending, notifyTurn, requeueWakes, turnEnded, turnStarted, steer } from "./steer.ts";
 import { acquireTurnLock, releaseTurnLock, foreignLock } from "../store/lock.ts";
 import { adoptBackground, settleBackground } from "./background.ts";
 import { VERSION } from "../core/version.ts";
@@ -72,6 +73,13 @@ export interface TurnOptions {
    * only surface that never sets it explicitly.
    */
   source?: string;
+  /**
+   * Set when this turn answers a message that already landed outside any turn
+   * (a backgrounded tool result; see loop/steer.ts `notifyTurn`). The user
+   * message is NOT appended again — it is in the view — and the step chain
+   * starts from this message id so lineage shows the reply answering it.
+   */
+  continuationParentId?: string;
 }
 
 interface StepOutcome {
@@ -555,11 +563,14 @@ async function* turnBody(
   // stored, what the transcript shows, and what the model reads — there is no
   // "the model saw something else" case to explain later.
   //
+  // Continuation turns skip it: there is no user input to rewrite — the turn
+  // answers a message that already landed (a backgrounded tool result).
+  //
   // Chained in load order: each plugin sees the previous one's text, so two
   // plugins that both expand something compose instead of fighting. `abort` is
   // sticky — once one plugin refuses the turn, a later one cannot resurrect it.
   let userText = rawUserText;
-  if (hooked.some((p) => p.hooks?.beforeInput)) {
+  if (opts.continuationParentId === undefined && hooked.some((p) => p.hooks?.beforeInput)) {
     // getRef is the cheapest "has this session ever been written" probe: it is
     // null until the first message, and the first-turn flag is what lets an
     // input hook greet, seed context, or stay quiet on later turns.
@@ -585,12 +596,24 @@ async function* turnBody(
     if (!quiet) for (const w of pendingWarnings.splice(0)) yield { type: "warn", message: w };
   }
 
-  const userNode = appendMessage(sessionId, {
-    parent_id: null,
-    role: "user",
-    content: userText,
-    tokens: estTok(userText),
-  });
+  // A continuation turn answers a message that landed outside any turn (an
+  // auto-backgrounded tool result): that message is already in the view, so
+  // appending a user node would duplicate it. The step chain starts from the
+  // landed message instead, so the lineage shows what the reply answers.
+  let userNodeSeq = 0;
+  let stepParentId: string;
+  if (opts.continuationParentId !== undefined) {
+    stepParentId = opts.continuationParentId;
+  } else {
+    const userNode = appendMessage(sessionId, {
+      parent_id: null,
+      role: "user",
+      content: userText,
+      tokens: estTok(userText),
+    });
+    userNodeSeq = userNode.seq;
+    stepParentId = userNode.id;
+  }
 
   let ptyState: PtyState | undefined;
   // 0 means no cap — a turn ends when the model stops calling tools, not when
@@ -630,8 +653,9 @@ async function* turnBody(
   // surface MCP, plugin and config warnings once, at the top of the turn
   if (!quiet) for (const w of setupWarnings) yield { type: "warn", message: w };
   // the user message now has a seq — emit it so a live UI stamps the [N] marker
-  // on the in-flight user line instead of waiting for the turn to settle
-  if (!quiet) yield { type: "user", seq: userNode.seq, text: userText };
+  // on the in-flight user line instead of waiting for the turn to settle.
+  // Continuation turns appended no user message, so there is nothing to stamp.
+  if (userNodeSeq > 0 && !quiet) yield { type: "user", seq: userNodeSeq, text: userText };
 
   /** Fire onTurnEnd everywhere the loop ends; the done event goes out after. */
   const endTurn = async (reason: string, steps: number) => {
@@ -655,6 +679,14 @@ async function* turnBody(
       drained = true;
       appendMessage(sessionId, { parent_id: parentId, role: "user", content: text, tokens: estTok(text) });
     }
+    // Wakes are not persisted — their messages already landed, that is the
+    // point — but an ending turn must not swallow them either: put them back
+    // so `turnEnded`'s pump starts the continuation turn that reads them.
+    const parked = drainWakes(sessionId);
+    if (parked.length) {
+      drained = true;
+      requeueWakes(sessionId, parked);
+    }
     return drained;
   };
 
@@ -667,7 +699,7 @@ async function* turnBody(
   // `onSessionStart` fires when this turn's user message is the session's first,
   // which is exactly `seq === 1` — no extra state to keep, and it stays correct
   // for a session resumed in a new process.
-  if (userNode.seq === 1) {
+  if (userNodeSeq === 1) {
     for (const p of hooked) {
       if (!p.hooks?.onSessionStart) continue;
       await runHook(p, "onSessionStart", () => p.hooks!.onSessionStart!({ sessionId, cwd: session.cwd, model: cfg.model }), hookWarn);
@@ -675,9 +707,9 @@ async function* turnBody(
     if (!quiet) for (const w of pendingWarnings.splice(0)) yield { type: "warn", message: w };
   }
 
-  // the parent of each step's assistant node: the user turn for step 1, then
-  // the previous step's tool results, so the chain reflects actual lineage
-  let stepParentId: string = userNode.id;
+  // the parent of each step's assistant node was set where the turn's first
+  // message landed: the user node for a normal turn, the already-landed result
+  // message for a continuation
 
   for (let step = 1; ; step++) {
     if (signal?.aborted) {
@@ -705,12 +737,15 @@ async function* turnBody(
 
     // Mid-turn steering (ctrl+s in the TUI): parked user text becomes a real
     // user message here, at a step boundary — never mid-tool-call, where it
-    // would split a call/result pair.
+    // would split a call/result pair. A wake (a backgrounded result that just
+    // landed) needs no new message — it only moves the chain parent to the
+    // landed result, which the next call's request will then contain.
     for (const text of drainSteer(sessionId)) {
       const node = appendMessage(sessionId, { parent_id: stepParentId, role: "user", content: text, tokens: estTok(text) });
       stepParentId = node.id;
       if (!quiet) yield { type: "steered", text };
     }
+    for (const parentId of drainWakes(sessionId)) stepParentId = parentId;
 
     // Measure context size ONCE this step and share it with the header —
     // re-walking the view here would compute the same number twice.
@@ -795,6 +830,14 @@ async function* turnBody(
       }),
     });
 
+    // Media hydration is REQUEST-SCOPED: renderContext (and its caches) retain
+    // only blob refs, so the base64 for every attachment in history would
+    // otherwise be rebuilt and pinned for the whole session. Here, once per
+    // step, refs become bytes just before the request is built — and the
+    // hydrated copies die with the step. `beforeLLMCall` hooks see the same
+    // hydrated request they did when media was stored inline.
+    const hydratedMessages = hydrateMessagesMedia(sessionId, messages);
+
     // `beforeLLMCall`: additive only. The patch appends to the system message
     // rather than replacing the array, so `renderContext`'s invariant — every
     // assistant tool_call followed by its tool_result — cannot be broken by a
@@ -804,21 +847,21 @@ async function* turnBody(
       const patch = await runHook(
         p,
         "beforeLLMCall",
-        () => p.hooks!.beforeLLMCall!({ sessionId, step, messages, tools: callableTools }),
+        () => p.hooks!.beforeLLMCall!({ sessionId, step, messages: hydratedMessages, tools: callableTools }),
         hookWarn,
       );
       const extra = patch?.appendSystem;
       if (typeof extra !== "string" || !extra.trim()) continue;
       // the system message is index 0 by construction in renderContext; appending
       // there keeps the prompt deterministic per step, so caching still works
-      if (messages[0]?.role === "system") messages[0].content += `\n\n${extra.trim()}`;
-      else messages.unshift({ role: "system", content: extra.trim() });
+      if (hydratedMessages[0]?.role === "system") hydratedMessages[0].content += `\n\n${extra.trim()}`;
+      else hydratedMessages.unshift({ role: "system", content: extra.trim() });
     }
     if (!quiet) for (const w of pendingWarnings.splice(0)) yield { type: "warn", message: w };
 
     let outcome: StepOutcome;
     try {
-      outcome = yield* drainStep(chat, reqCfg, messages, callableTools, signal, opts.retryLimit ?? 3);
+      outcome = yield* drainStep(chat, reqCfg, hydratedMessages, callableTools, signal, opts.retryLimit ?? 3);
     } catch (e) {
       const pe = classifyProviderError(e);
       // the transcript gets the short line PLUS the diagnosis (what went wrong
@@ -918,32 +961,35 @@ async function* turnBody(
     if (outcome.usage && !quiet) yield { type: "usage", ...outcome.usage };
 
     if (!prepared.length) {
-      // A steer parked during this call (ctrl+s, a background task finishing)
+      // Input parked during this call (ctrl+s, a background task finishing)
       // deserves an ANSWER, not just a save. `continue` re-enters the loop: the
-      // top-of-loop drain persists the steer and emits `steered`, and the next
-      // call answers it. This is the "steer at end of turn" fix — keep taking
-      // steps while a steer is waiting, instead of peeking once and stranding a
-      // steer that arrives after the final reply resolved. The cap still bounds
-      // it: an over-cap turn ends without consuming the steer.
-      if (peekSteer(sessionId).length > 0 && (maxSteps <= 0 || step + 1 <= maxSteps)) continue;
-      // A steer can arrive in the window between the peek above and the turn's
+      // top-of-loop drain consumes it (steered text becomes a user node, a wake
+      // moves the chain parent to the landed result) and the next call answers
+      // it. This is the "steer at end of turn" fix — keep taking steps while
+      // something is waiting, instead of peeking once and stranding input that
+      // arrives after the final reply resolved. The cap still bounds it: an
+      // over-cap turn ends without consuming it.
+      if (hasPending(sessionId) && (maxSteps <= 0 || step + 1 <= maxSteps)) continue;
+      // Input can arrive in the window between the peek above and the turn's
       // return. Re-peek rather than persist-and-continue: `persistParkedSteers`
       // DRAINS the queue, so a `continue` after it finds nothing at the top of
-      // the loop — the steer was persisted as an orphan user node and answered
-      // only by a later turn (the "my steer was ignored" bug). Re-peeking lets
-      // `continue` reach the top-of-loop drain, which injects it as a real
-      // step-boundary user message AND emits `steered`, so the next call
-      // answers it in this turn.
-      if (peekSteer(sessionId).length > 0 && (maxSteps <= 0 || step + 1 <= maxSteps)) continue;
+      // the loop — the input was persisted as an orphan user node (or a wake
+      // was requeued) and answered only by a later turn (the "my steer was
+      // ignored" bug). Re-peeking lets `continue` reach the top-of-loop drain,
+      // which injects it as a real step-boundary user message AND emits
+      // `steered`, so the next call answers it in this turn.
+      if (hasPending(sessionId) && (maxSteps <= 0 || step + 1 <= maxSteps)) continue;
       // A background job can finish on the macrotask right AFTER the reply
-      // resolved — its completion steer queues a tick later than the synchronous
-      // peeks above, so they miss it and the turn ends with the notification
-      // stranded (the "steering isn't sent" report). Yield one macrotask before
-      // giving up so a just-finished job's steer lands, then re-check once.
+      // resolved — its completion steer or wake queues a tick later than the
+      // synchronous peeks above, so they miss it and the turn ends with the
+      // notification stranded (the "steering isn't sent" report). Yield one
+      // macrotask before giving up so a just-finished job's input lands, then
+      // re-check once.
       await new Promise((r) => setTimeout(r, 0));
-      if (peekSteer(sessionId).length > 0 && (maxSteps <= 0 || step + 1 <= maxSteps)) continue;
-      // Actually ending (no steer, or the cap refuses the extra step): persist
-      // whatever is parked so it survives to be answered next turn.
+      if (hasPending(sessionId) && (maxSteps <= 0 || step + 1 <= maxSteps)) continue;
+      // Actually ending (nothing waiting, or the cap refuses the extra step):
+      // persist whatever steered text is parked so it survives to be answered
+      // next turn, and requeue any wakes so the pump below starts one.
       persistParkedSteers(asstNode.id);
       yield await endTurn(outcome.finish.startsWith("error") ? outcome.finish : outcome.finish || "stop", step);
       return;
@@ -960,13 +1006,14 @@ async function* turnBody(
     /**
      * Calls whose result we stopped WAITING for (see `autoBackgroundMs`).
      *
-     * The promise keeps running: it appends its row and pushes its `tool_end`
-     * exactly as a waited-on call does, so the transcript shows the real output
-     * whenever it lands. The only difference is that this turn does not block on
-     * it, and the model does not read it until the next turn — which is the
-     * whole point (a slow build should not cost a turn of wall-clock), and also
-     * why nothing steers or notifies: the agent is never told, and never has to
-     * poll.
+     * The promise keeps running: when it settles it appends its row exactly as
+     * a waited-on call does, so the transcript shows the real output whenever
+     * it lands. This turn does not block on it — that is the whole point (a
+     * slow build should not cost a turn of wall-clock) — but landing the row
+     * is not the end of the story: without a notification the agent never read
+     * it ("the result arrived but nobody answered"). `notifyTurn` hands the
+     * landed row to the steering layer, which drains it at this turn's next
+     * step boundary or starts a continuation turn after this one ends.
      */
     const autoBgMs = effCfg.autoBackgroundMs ?? 0;
 
@@ -1074,7 +1121,11 @@ async function* turnBody(
           role: "tool",
           content: res.output,
           tool_call_id: call.id,
-          media: res.media?.length ? JSON.stringify(res.media) : undefined,
+          // the row stores REFS, not base64: the bytes were moved into
+          // media_blobs by externalizeMedia (evaluated before this append), so
+          // the row — and every cache built from it — stays a few dozen bytes
+          // no matter how large the attachment is
+          media: res.media?.length ? JSON.stringify(externalizeMedia(sessionId, res.media)) : undefined,
           // media is billed at a flat estimate: chars/4 of base64 would report
           // ~3/4 of the raw file size as "tokens", drowning the real figure
           tokens: estTok(res.output) + (res.media?.length ?? 0) * 1500,
@@ -1184,27 +1235,40 @@ async function* turnBody(
             output: placeholder.content,
             ok: true,
           });
+          // APPEND the outcome, never rewrite the placeholder: a rewrite
+          // would invalidate the cached prefix behind it. Then tell the
+          // steering layer a durable message landed (see `notifyTurn`) —
+          // appending alone left the result unread forever. The job deregisters
+          // LAST: quiescence is only checked on settle, and by then the wake
+          // must already be queued or a one-shot client could observe "idle"
+          // and exit before the continuation turn is scheduled.
           void work
             .then((r) => {
-              settleBackground(placeholder.seq);
-              // APPEND the outcome, never rewrite the placeholder: a rewrite
-              // would invalidate the cached prefix behind it.
+              // a tool that THREW is a failed ToolResult, not a rejected promise
+              // (execToolCall converts), so the ok flag — not the branch — decides
+              // the wording: the agent must be able to tell a dead job from output.
               const body = truncateToolResult(call.name, r.res.output, presentationCap)?.text ?? r.res.output;
-              appendMessage(sessionId, {
+              const content = r.res.ok
+                ? `Result of the backgrounded ${call.name} call (node ${placeholder.seq}):\n\n${body}`
+                : `The backgrounded ${call.name} call (node ${placeholder.seq}) failed: ${body}`;
+              const node = appendMessage(sessionId, {
                 parent_id: placeholder.id,
                 role: "user",
-                content: `Result of the backgrounded ${call.name} call (node ${placeholder.seq}):\n\n${body}`,
+                content,
                 tokens: estTok(body),
               });
+              notifyTurn(sessionId, node.id);
+              settleBackground(placeholder.seq);
             })
             .catch((e) => {
-              settleBackground(placeholder.seq);
-              appendMessage(sessionId, {
+              const node = appendMessage(sessionId, {
                 parent_id: placeholder.id,
                 role: "user",
                 content: `The backgrounded ${call.name} call (node ${placeholder.seq}) failed: ${(e as Error)?.message ?? e}`,
                 tokens: 20,
               });
+              notifyTurn(sessionId, node.id);
+              settleBackground(placeholder.seq);
             });
           return null;
         } finally {

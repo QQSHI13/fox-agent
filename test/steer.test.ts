@@ -7,6 +7,7 @@ import {
   drainSteer,
   hasSteer,
   isQuiescent,
+  notifyTurn,
   peekSteer,
   releaseSteer,
   requeueSteer,
@@ -36,13 +37,16 @@ function hostThat(opts: {
   hold?: () => Promise<void>;
 }) {
   const started: string[] = [];
+  const extras: ({ continuationParentId?: string } | undefined)[] = [];
   return {
     started,
+    extras,
     host: {
       provider: () => ({ model: "m", provider: "openai-compatible", apiKey: "k" }) as never,
       config: () => undefined,
-      turn: (text: string) => {
+      turn: (text: string, _ctl: AbortController, extra?: { continuationParentId?: string }) => {
         started.push(text);
+        extras.push(extra);
         return (async function* (): AsyncGenerator<AgentEvent> {
           if (opts.fail) throw new Error("provider down");
           opts.onText?.(text);
@@ -218,5 +222,65 @@ describe("steer: queue primitives", () => {
     steer(SID, "unsent");
     expect(releaseSteer(SID)).toEqual(["unsent"]);
     expect(peekSteer(SID)).toEqual([]);
+  });
+});
+
+describe("steer: wakes (a landed result needs a turn)", () => {
+  // The auto-background completion bug: the result row landed in the
+  // transcript and nothing ever scheduled the turn that reads it. The fix is
+  // the wake — a queue entry carrying no text, only the landed message's id,
+  // riding the same pump/dispatch machinery as a steer.
+  test("a wake with nothing running starts a continuation turn with empty text", async () => {
+    const { host, started, extras } = hostThat({});
+    attachHost(SID, host);
+    notifyTurn(SID, "msg-1");
+    expect(isQuiescent(SID)).toBe(false); // a pending wake is not idle
+    await settle();
+    expect(started).toEqual([""]); // no user text to deliver
+    expect(extras[0]?.continuationParentId).toBe("msg-1"); // the turn answers it
+    expect(isQuiescent(SID)).toBe(true);
+  });
+
+  test("a wake arriving while a turn runs waits for it to end, then dispatches", async () => {
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    const { host, started } = hostThat({ hold: () => held });
+    attachHost(SID, host);
+    steer(SID, "first");
+    await settle();
+    expect(started).toEqual(["first"]);
+    notifyTurn(SID, "msg-2");
+    await settle();
+    expect(started).toEqual(["first"]); // no second turn while one is running
+    release();
+    await settle();
+    expect(started).toEqual(["first", ""]); // then the continuation runs
+  });
+
+  test("a failed wake turn requeues the wake and does not spin", async () => {
+    const { host, started, extras } = hostThat({ fail: true });
+    attachHost(SID, host);
+    notifyTurn(SID, "msg-3");
+    await settle();
+    expect(started).toEqual([""]);
+    expect(isQuiescent(SID)).toBe(false); // put back, not dropped
+    await settle();
+    expect(started).toEqual([""]); // blocked: no spin
+    // a new steer clears the block; the wake rides the retry turn
+    steer(SID, "retry");
+    await settle();
+    expect(started).toEqual(["", "retry"]);
+    expect(extras[1]?.continuationParentId).toBe("msg-3");
+  });
+
+  test("a wake with no host attached stays queued until one attaches", async () => {
+    notifyTurn(SID, "msg-4");
+    await settle();
+    expect(isQuiescent(SID)).toBe(false); // kept, not dropped
+    const { host, started, extras } = hostThat({});
+    attachHost(SID, host);
+    await settle();
+    expect(started).toEqual([""]);
+    expect(extras[0]?.continuationParentId).toBe("msg-4");
   });
 });

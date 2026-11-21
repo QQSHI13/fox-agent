@@ -683,7 +683,7 @@ async function plainLoop(state: HarnessState) {
    * message and a steered one (core starts that turn — src/loop/steer.ts) look
    * and behave identically. A generator because core consumes it.
    */
-  async function* miniTurnStream(raw: string, signal: AbortSignal): AsyncGenerator<import("./core/events.ts").AgentEvent> {
+  async function* miniTurnStream(raw: string, signal: AbortSignal, extra?: { continuationParentId?: string }): AsyncGenerator<import("./core/events.ts").AgentEvent> {
     busy = true;
     const spinChars = color ? ["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"] : ["-","\\","|","/"];
     let spinIdx = 0;
@@ -707,6 +707,9 @@ async function plainLoop(state: HarnessState) {
         projectInstructions: config?.projectInstructions,
         config,
         chat: resolveChat,
+        // set when this turn answers a backgrounded tool result that already
+        // landed: runTurnCore appends no duplicate user message
+        ...(extra?.continuationParentId ? { continuationParentId: extra.continuationParentId } : {}),
       })) {
         if (ev.type === "text" && !gotOutput) {
           gotOutput = true;
@@ -749,9 +752,9 @@ async function plainLoop(state: HarnessState) {
       provider: () => state.provider,
       config: () => config,
       chat: resolveChat,
-      turn: (text, ctl) => {
+      turn: (text, ctl, extra) => {
         currentAbort = ctl;
-        return miniTurnStream(text, ctl.signal);
+        return miniTurnStream(text, ctl.signal, extra);
       },
     });
 
