@@ -3399,7 +3399,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   // (evicting W): 60ms+ of pure re-render per scroll tick on a long session.
   // Nested by width keeps both warm; the prune sweep walks the outer (item)
   // keys and stays correct, and the clear()s are whole-map as before.
-  const lineCache = new Map<number, Map<number, { rev: number; rows: Row[]; hl: number; span: [number, number] }>>();
+  const lineCache = new Map<number, Map<number, { rev: number; rows: Row[]; hl: number; span: [number, number]; visible: Row[] }>>();
 
   function itemStyle(kind: ItemKind): Partial<Seg> {
     switch (kind) {
@@ -3479,7 +3479,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     return rows.map((r, i) => ({ ...r, marker: i === 0 ? chip : cont }));
   }
 
-  function itemRows(it: Item, w: number): { rows: Row[]; span: [number, number] } {
+  function itemRows(it: Item, w: number): { rows: Row[]; span: [number, number]; visible: Row[] } {
     const perWidth = lineCache.get(it.k);
     const cached = perWidth?.get(w);
     if (cached && cached.rev === revs.get(it.k) && cached.hl === highlightVersion()) {
@@ -3651,9 +3651,21 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       rows = wrapSegs([{ t: it.text, ...itemStyle(it.kind) }], w, undefined, firstOpts()).map((segs) => ({ segs }));
     }
     if (rowSeq(it) !== undefined) rows = withMarker(rows, rowSeq(it)!, it.markerCont);
+    // Bake the tool-block background into the cached rows ONCE, at build time.
+    // frameInput().renderItem used to clone EVERY visible row on EVERY frame
+    // just to stamp this; the rows are read-only once handed to layout, so the
+    // cache can carry the background and renderItem returns a plain slice.
+    // lineCache is cleared by initStyles' callers on every theme and resize
+    // (rethemeIfNeeded / doResize), so a stale style id cannot survive a switch.
+    if (it.kind === "toolhead" || it.toolResult) {
+      for (const r of rows) r.bg = S.toolBgRow;
+    }
     // Hidden (reverted) nodes are filtered out of `loadItems`, so they never reach
     // here — no dimming needed; they disappear entirely like the ctx tool hides them.
-    const entry = { rev: revs.get(it.k) ?? 0, rows, hl: highlightVersion(), span: itemEdgeSpan(rows) };
+    const span = itemEdgeSpan(rows);
+    // The exact slice renderItem hands layout, memoized alongside the whole
+    // item: a cache-hit frame returns this array (and its Row objects) as-is.
+    const entry = { rev: revs.get(it.k) ?? 0, rows, hl: highlightVersion(), span, visible: rows.slice(span[0], span[1]) };
     let pw = lineCache.get(it.k);
     if (!pw) {
       pw = new Map();
@@ -3800,18 +3812,13 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       renderItem: (it, w) => {
         // edge-stripped, the very same span `countItem` reports — layout's
         // spacing contract is "count and paint agree", and they cannot drift
-        // apart while both read this one span
-        const cached = itemRows(it, w);
-        const [a, b] = cached.span;
-        const tool = it.kind === "toolhead" || it.toolResult;
-        const out: Row[] = [];
-        const src = cached.rows;
-        for (let i = a; i < b; i++) out.push({ ...src[i], bg: tool ? S.toolBgRow : src[i].bg });
-        return out;
+        // apart while both read this one span. The tool background is already
+        // baked in at build time, so this returns the memoized slice itself:
+        // no per-frame Row cloning (layout treats rows as read-only).
+        return itemRows(it, w).visible;
       },
       countItem: (it, w) => {
-        const cached = itemRows(it, w);
-        const [a, b] = cached.span;
+        const [a, b] = itemRows(it, w).span;
         return b - a;
       },
       renderStream: (text, w) => streamRows(text, w),
