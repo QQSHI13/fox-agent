@@ -45,7 +45,7 @@ function mediaFilePart(p: MediaPart) {
 
 /** The tool message keeps its text; media moves out when routing demands. */
 function toolOutput(m: ChatMessage, routing: MediaRouting): ToolResultPart["output"] {
-  const media = routing === "user-fallback" ? undefined : withData(m.media);
+  const media = routing === "user-fallback" ? [] : withData(m.media);
   return media.length
     ? {
         type: "content",
