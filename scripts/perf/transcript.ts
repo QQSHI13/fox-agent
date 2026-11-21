@@ -59,7 +59,11 @@ const base = {
   pendingCount: 0,
 };
 let cold = 0;
-for (let i = 0; i < 3; i++) cold += layout.computeFrame({ ...base, items, countCache: { version: () => i, at: cache } }).total;
+for (let i = 0; i < 3; i++) {
+  const t = performance.now();
+  layout.computeFrame({ ...base, items, countCache: { version: () => i, at: cache } });
+  cold += performance.now() - t;
+}
 const frameColdMs = cold / 3;
 const t2 = performance.now();
 layout.computeFrame({ ...base, items, countCache: { version: () => 99, at: cache } });
