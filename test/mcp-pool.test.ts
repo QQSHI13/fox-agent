@@ -91,6 +91,26 @@ describe.skipIf(!CAN_RUN)("the shared MCP pool", () => {
     expect(fixtureProcs()).toBe(1);
   }, 60_000);
 
+  test("progress deltas from a pooled call reach the caller live", async () => {
+    // the daemon owns the client, so progress must ride the socket back as
+    // unsolicited tagged messages — a long pooled call must not sit silent
+    const { poolSocketPath, poolTools } = await import("../src/mcp/pool.ts");
+    await startDaemon(poolSocketPath());
+    const a = await poolTools(fixtureCfg());
+    expect(a).not.toBeNull();
+    const events: { type: string; delta?: string }[] = [];
+    const res = await a!.tools.get("mcp")!.run({ server: "fix", tool: "progress" }, {
+      sessionId: "s",
+      cwd: process.cwd(),
+      callId: "call-1",
+      emit: (ev: unknown) => events.push(ev as { type: string; delta?: string }),
+    } as never);
+    expect(res).toMatchObject({ ok: true, output: "progress: done" });
+    const deltas = events.filter((e) => e.type === "tool_output").map((e) => e.delta ?? "");
+    expect(deltas.join("")).toContain("step one");
+    expect(deltas.join("")).toContain("step two");
+  }, 60_000);
+
   test("there is ONE daemon: the socket path does not depend on the config", async () => {
     // This used to be the opposite assertion — the path carried
     // sha256(config).slice(0,16), so two configs got two daemons and a server

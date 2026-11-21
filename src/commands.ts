@@ -223,7 +223,7 @@ export interface HarnessState {
  * /new and /fork are allowed: both target a NEW session (which this process
  * then owns via switchSession -> attachLock); they never write the locked one.
  */
-export const READONLY_COMMANDS = new Set(["/help", "/?", "/todo", "/todos", "/sessions", "/usage", "/exit", "/quit", "/new", "/fork"]);
+export const READONLY_COMMANDS = new Set(["/help", "/?", "/todo", "/todos", "/sessions", "/usage", "/mcp", "/exit", "/quit", "/new", "/fork"]);
 
 /** A front end that set `interactive` is asked to open one of these. */
 export type PickerRequest = { kind: "sessions"; cwd?: string };
@@ -357,6 +357,13 @@ export const COMMANDS: CommandSpec[] = [
   { name: "/view", desc: "preview visible nodes ([N] role preview)" },
   { name: "/todo", aliases: ["/todos"], desc: "show agent todo list" },
   { name: "/usage", desc: "token totals + budget" },
+  {
+    name: "/mcp",
+    desc: "MCP server health — connected?, tools, last error",
+    usage: "[server]",
+    arg: true,
+    help: "bare: one line per configured server (state, tool count, transport, last error, retry backoff); with a name, that server's tools with descriptions",
+  },
   { name: "/model", desc: "show or switch model — picker lists every configured profile and catalog model", usage: "[profile/][name]", arg: true, mutates: true },
   { name: "/theme", desc: "show or switch the color theme", usage: "[name]", arg: true, mutates: true, help: "bare: searchable chooser in the TUI; with a name, switches and saves to the global config" },
   { name: "/thinking", desc: "reasoning effort for reasoning models", usage: "[off|minimal|low|medium|high|xhigh|default]", arg: true, mutates: true, help: "bare: chooser in the TUI; sets provider reasoning options (OpenAI reasoningEffort, Anthropic thinking budget, Google thinkingConfig) and saves to the global config. `off` asks for no reasoning at all on a reasoning model (not the same as clearing the setting, which lets the provider default — usually ON — rule)" },
@@ -1905,6 +1912,77 @@ Verify what you write: run the commands you document (at least the build/test en
           `cache: ${hit}\n` +
           `context: ${b.reported ? `${b.reported}/${b.limit} tok (${pct}%)` : "no provider report yet"}${b.stage === "ctxOnly" ? " — CONTEXT-ONLY: every tool but ctx is disabled" : b.stage === "warn" ? " — over the warn threshold, compact now" : ""}\n` +
           `thresholds: warn at ${warnTok} tok (${Math.round(b.thresholds.warnAt * 100)}%), ctx-only at ${stopTok} tok (${Math.round(b.thresholds.ctxOnlyAt * 100)}%)`,
+      };
+    }
+
+    case "/mcp": {
+      const entries = Object.entries(state.config?.mcpServers ?? {});
+      if (!entries.length) {
+        return {
+          handled: true,
+          output:
+            "no MCP servers configured — add [mcpServers.<name>] to fox-agent.toml: " +
+            "command+args for a local (stdio) server, url (+headers) for a remote one",
+        };
+      }
+      const detail = arg.trim();
+      if (detail && !entries.some(([n]) => n === detail)) {
+        return { handled: true, output: `no MCP server '${detail}' configured (${entries.map(([n]) => n).join(", ")})` };
+      }
+      // the live view is async (a socket round trip when the shared pool owns
+      // the clients), so it rides the command layer's task seam
+      return {
+        handled: true,
+        task: async () => {
+          type Slot = { connected: boolean; transport: string; tools: { name: string; description: string }[]; lastError: string | null; nextAttemptInMs: number };
+          let live: Record<string, Slot> | null = null;
+          let via = "local";
+          try {
+            const { existsSync } = await import("node:fs");
+            const { poolSocketPath, poolMcpStatus } = await import("./mcp/pool.ts");
+            // only ask the daemon when its socket exists — a status print must
+            // never SPAWN one (that first dial can take 30-45 s)
+            if (existsSync(poolSocketPath())) {
+              live = (await poolMcpStatus(state.config?.mcpServers ?? {})) as Record<string, Slot> | null;
+              if (live) via = "pool";
+            }
+          } catch {}
+          if (!live) {
+            try {
+              const { mcpStatus } = await import("./mcp/client.ts");
+              live = mcpStatus() as Record<string, Slot>;
+            } catch {
+              live = null;
+            }
+          }
+          const lines: string[] = [`MCP servers (view: ${via}):`];
+          for (const [name, cfg] of entries) {
+            if (detail && name !== detail) continue;
+            const st = live?.[name];
+            const where = cfg.url
+              ? `remote: ${cfg.url}`
+              : `stdio: ${[cfg.command, ...(cfg.args ?? [])].filter((x): x is string => typeof x === "string").join(" ")}`;
+            if (st) {
+              lines.push(`${st.connected ? "✓" : "✗"} ${name} — ${st.connected ? `connected, ${st.tools.length} tools` : "down"}`);
+              lines.push(`    ${where}`);
+              if (st.connected) {
+                for (const t of st.tools) {
+                  const d = t.description && t.description !== t.name ? ` — ${t.description.slice(0, 90)}` : "";
+                  lines.push(`    - ${t.name}${d}`);
+                }
+              } else if (st.lastError) {
+                lines.push(
+                  `    last error: ${st.lastError}` +
+                    (st.nextAttemptInMs > 0 ? ` · retry in ${Math.ceil(st.nextAttemptInMs / 1000)}s` : ""),
+                );
+              }
+            } else {
+              lines.push(`? ${name} — no live view (not dialed yet; the first mcp call dials it)`);
+              lines.push(`    ${where}`);
+            }
+          }
+          return lines.join("\n");
+        },
       };
     }
 

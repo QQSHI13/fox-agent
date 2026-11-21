@@ -118,6 +118,41 @@ args = ["-y", "@modelcontextprotocol/server-fs"]
     expect(withoutEnv.mcpServers.fs.args).toEqual(["-y", "@modelcontextprotocol/server-fs"]);
   });
 
+  test("[mcpServers.*] accepts a remote url (+headers) as well as a local command", async () => {
+    writeFileSync(
+      join(projectDir, "fox-agent.toml"),
+      `[mcpServers.remote]
+url = "https://mcp.example.com/v1"
+headers = { Authorization = "Bearer t" }
+
+[mcpServers.local]
+command = "some-mcp-server"
+`,
+    );
+    const { loadConfig } = await import("../src/core/config.ts");
+    const cfg = loadConfig({ cwd: projectDir }, { FOX_AGENT_API_KEY: "k" });
+    // one entry is one transport: url means remote, command means stdio
+    expect(cfg.mcpServers.remote).toEqual({ url: "https://mcp.example.com/v1", headers: { Authorization: "Bearer t" } });
+    expect(cfg.mcpServers.remote.command).toBeUndefined();
+    expect(cfg.mcpServers.local).toEqual({ command: "some-mcp-server", args: undefined, env: undefined });
+    expect(cfg.warnings).toHaveLength(0);
+  });
+
+  test("[mcpServers.*] with neither command nor url warns instead of vanishing", async () => {
+    // regression: the old parser silently dropped such tables, so a typo'd
+    // entry looked configured while never dialing
+    writeFileSync(
+      join(projectDir, "fox-agent.toml"),
+      `[mcpServers.broken]
+args = ["--oops"]
+`,
+    );
+    const { loadConfig } = await import("../src/core/config.ts");
+    const cfg = loadConfig({ cwd: projectDir }, { FOX_AGENT_API_KEY: "k" });
+    expect(cfg.mcpServers.broken).toBeUndefined();
+    expect(cfg.warnings.some((w) => w.includes("mcpServers.broken") && w.includes("command"))).toBe(true);
+  });
+
   test("[agents.*] tables become delegation targets; 'default' cannot be rebound", async () => {
     writeFileSync(
       join(projectDir, "fox-agent.toml"),

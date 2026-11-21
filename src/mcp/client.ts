@@ -6,12 +6,33 @@
 // runs (without MCP) if it isn't installed.
 import type { McpServerConfig } from "../core/config.ts";
 import type { MediaPart, ToolDef } from "../providers/types.ts";
-import type { Tool, ToolResult } from "../core/tool.ts";
+import type { Tool, ToolContext, ToolResult } from "../core/tool.ts";
 import { fail, ok } from "../core/tool.ts";
 import { childEnv } from "../core/childenv.ts";
 import { VERSION } from "../core/version.ts";
 
 const OUT_CAP_MCP = 30_000;
+
+/** One advertised tool as the catalog carries it across the wire. */
+export interface McpToolInfo {
+  name: string;
+  description: string;
+}
+
+/**
+ * The `mcp` tool's description rides in EVERY system prompt, so the catalog
+ * face is budgeted: a per-tool description excerpt and a total cap, beyond
+ * which the list truncates with a count. An unbounded face would tax every
+ * turn of every session for the sake of a tool roster most prompts never use.
+ */
+const FACE_DESC_PER_TOOL = 140;
+const FACE_DESC_BUDGET = 2_400;
+
+/** Accept both catalog shapes: rich entries, or legacy bare name strings
+ *  (a pool daemon from before the rich catalog upgrade still speaks those). */
+export function toolInfos(list: readonly (McpToolInfo | string)[]): McpToolInfo[] {
+  return list.map((t) => (typeof t === "string" ? { name: t, description: t } : t));
+}
 
 /** Live clients + the per-server tool table, so the single `mcp` tool routes. */
 interface LiveClient {
@@ -26,7 +47,7 @@ interface ServerTool {
   name: string;
   description: string;
   schema: Record<string, unknown>;
-  call: (args: unknown) => Promise<ToolResult>;
+  call: (args: unknown, onProgress?: (delta: string) => void) => Promise<ToolResult>;
 }
 
 /**
@@ -183,40 +204,77 @@ async function dialSlot(pool: McpPool, slot: ServerSlot): Promise<boolean> {
   if (slot.dialing) return slot.dialing;
   const attempt = (async () => {
     try {
-      const sdk = await import("@modelcontextprotocol/sdk/client/index.js");
-      const stdio = await import("@modelcontextprotocol/sdk/client/stdio.js");
-      const client = new sdk.Client({ name: "fox-agent", version: VERSION });
-      const transport = new stdio.StdioClientTransport({
-        command: slot.cfg.command,
-        args: slot.cfg.args ?? [],
-        env: childEnv(slot.cfg.env),
-        // SDK default is stderr inherit, which points at the parent's stderr —
-        // the TUI's own surface. A chatty server (npm exec wrappers print
-        // notices/warnings by the line) then smears garbage across the screen;
-        // its diagnostics are not worth the pixels, matching lsp/client.ts.
-        stderr: "ignore",
+      const sdk = await import("@modelcontextprotocol/sdk/client/index.js").catch((e) => {
+        // The SDK is an optional dependency: fox-agent runs without it, but an
+        // MCP config without the SDK used to fail with a raw "Cannot find
+        // module" and no way forward.
+        throw new Error(
+          `the @modelcontextprotocol/sdk package is not installed (${(e as Error).message?.split("\n")[0] ?? e}) — ` +
+            `run 'bun add @modelcontextprotocol/sdk' in the fox-agent directory`,
+        );
       });
+      const client = new sdk.Client({ name: "fox-agent", version: VERSION });
 
-      const live: LiveClient = { close: () => client.close(), pid: transport.pid ?? undefined, alive: true };
+      // one entry is one transport: remote (streamable HTTP) or local (stdio child)
+      let transport: { connect: (t: unknown) => Promise<void>; close?: () => Promise<void> } & Record<string, unknown>;
+      if (slot.cfg.url) {
+        const http = await import("@modelcontextprotocol/sdk/client/streamableHttp.js");
+        transport = new http.StreamableHTTPClientTransport(new URL(slot.cfg.url), {
+          requestInit: slot.cfg.headers ? { headers: slot.cfg.headers } : undefined,
+        }) as never;
+      } else {
+        if (!slot.cfg.command?.trim()) throw new Error("needs a 'command' (stdio) or 'url' (remote)");
+        const stdio = await import("@modelcontextprotocol/sdk/client/stdio.js");
+        transport = new stdio.StdioClientTransport({
+          command: slot.cfg.command,
+          args: slot.cfg.args ?? [],
+          env: childEnv(slot.cfg.env),
+          // SDK default is stderr inherit, which points at the parent's stderr —
+          // the TUI's own surface. A chatty server (npm exec wrappers print
+          // notices/warnings by the line) then smears garbage across the screen;
+          // its diagnostics are not worth the pixels, matching lsp/client.ts.
+          stderr: "ignore",
+        }) as never;
+      }
+
+      // created after connect so the pid is real: the pre-connect value is
+      // always undefined (stdio spawns in start()), which used to quietly
+      // disable closeClients' SIGKILL fallback for wedged children
+      const live: LiveClient = { close: () => client.close(), pid: undefined, alive: true };
       const markDead = () => {
         live.alive = false;
         if (slot.client === live) slot.client = null;
       };
-      const t = transport as { onclose?: () => void; onerror?: () => void };
-      t.onclose = markDead;
-      t.onerror = markDead;
+      transport.onclose = markDead;
+      transport.onerror = markDead;
 
-      await withTimeout(client.connect(transport), MCP_DIAL_TIMEOUT_MS, `mcp '${slot.name}' connect`);
+      await withTimeout(client.connect(transport as never), MCP_DIAL_TIMEOUT_MS, `mcp '${slot.name}' connect`);
+      live.pid = (transport as { pid?: number | null }).pid ?? undefined;
       const res = await withTimeout(client.listTools(), MCP_DIAL_TIMEOUT_MS, `mcp '${slot.name}' listTools`);
 
       slot.tools = res.tools.map((tool) => ({
         name: tool.name,
         description: tool.description ?? tool.name,
         schema: (tool.inputSchema as Record<string, unknown>) ?? { type: "object" },
-        call: async (args: unknown): Promise<ToolResult> => {
+        call: async (args: unknown, onProgress?: (delta: string) => void): Promise<ToolResult> => {
           try {
             const r = await withTimeout(
-              client.callTool({ name: tool.name, arguments: args as Record<string, unknown> }),
+              client.callTool(
+                { name: tool.name, arguments: args as Record<string, unknown> },
+                undefined,
+                // forward the server's progress notifications as live output —
+                // a browser navigation or long build shows its heartbeat in the
+                // TUI instead of a silent multi-minute wait
+                {
+                  onprogress: onProgress
+                    ? (p: { progress?: number; total?: number; message?: string }) => {
+                        const frac = typeof p.progress === "number" ? `${p.progress}/${p.total ?? "?"}` : "";
+                        const msg = [frac, p.message].filter(Boolean).join(" ");
+                        if (msg) onProgress(`mcp ${slot.name}/${tool.name}: ${msg}\n`);
+                      }
+                    : undefined,
+                },
+              ),
               MCP_CALL_TIMEOUT_MS,
               `mcp '${slot.name}/${tool.name}'`,
             );
@@ -271,11 +329,43 @@ function rebuildToolFace(pool: McpPool): void {
   pool.tools = buildMcpToolMap(pool);
 }
 
-/** Server name -> its tool names: the face every instance shows the model. */
-export function mcpCatalog(): Record<string, string[]> {
-  const out: Record<string, string[]> = {};
-  for (const [srv, list] of cache?.servers ?? []) out[srv] = list.map((t) => t.name);
+/** Server name -> its advertised tools, descriptions included. */
+export function mcpCatalog(): Record<string, McpToolInfo[]> {
+  const out: Record<string, McpToolInfo[]> = {};
+  for (const [srv, list] of cache?.servers ?? []) out[srv] = list.map((t) => ({ name: t.name, description: t.description }));
   return out;
+}
+
+/**
+ * `mcp {server}` status for `/mcp`: connectivity, tools, last error, backoff.
+ * Works on the local pool; the socket pool answers the same shape from the
+ * daemon (which owns the clients in shared mode).
+ */
+export interface McpSlotStatus {
+  connected: boolean;
+  transport: "stdio" | "remote";
+  tools: McpToolInfo[];
+  lastError: string | null;
+  nextAttemptInMs: number;
+}
+export function mcpStatus(only?: readonly string[]): Record<string, McpSlotStatus> {
+  const out: Record<string, McpSlotStatus> = {};
+  for (const [name, slot] of cache?.slots ?? []) {
+    if (only && !only.includes(name)) continue;
+    out[name] = {
+      connected: !!slot.client?.alive,
+      transport: slot.cfg.url ? "remote" : "stdio",
+      tools: slot.tools.map((t) => ({ name: t.name, description: t.description })),
+      lastError: slot.lastError,
+      nextAttemptInMs: Math.max(0, slot.nextAttemptAt - Date.now()),
+    };
+  }
+  return out;
+}
+
+/** `name — one-line description` lines for error messages; bounded. */
+function toolListing(tools: ServerTool[]): string {
+  return tools.map((t) => `- ${t.name}${t.description && t.description !== t.name ? ` — ${t.description.slice(0, 120)}` : ""}`).join("\n");
 }
 
 /**
@@ -340,7 +430,13 @@ export async function mcpAddServers(incoming: Record<string, McpServerConfig>): 
  * instance declared, so without it a caller could invoke a server it never
  * configured (and never sees in its catalog).
  */
-export async function mcpRunTool(server: string, tool: string, args: unknown, allowed?: readonly string[]): Promise<ToolResult> {
+export async function mcpRunTool(
+  server: string,
+  tool: string,
+  args: unknown,
+  allowed?: readonly string[],
+  onProgress?: (delta: string) => void,
+): Promise<ToolResult> {
   const pool = cache;
   if (!pool) return fail("error: the MCP pool is not initialized");
   if (allowed && !allowed.includes(server)) {
@@ -369,11 +465,11 @@ export async function mcpRunTool(server: string, tool: string, args: unknown, al
     const have = slot.tools.map((t) => t.name);
     return fail(
       have.length
-        ? `error: server '${server}' has no tool '${tool}' (available: ${have.join(", ")})`
+        ? `error: server '${server}' has no tool '${tool}' (available:\n${toolListing(slot.tools)})`
         : `error: server '${server}' connected but advertises no tools`,
     );
   }
-  return st.call(args ?? {});
+  return st.call(args ?? {}, onProgress);
 }
 
 /**
@@ -381,17 +477,35 @@ export async function mcpRunTool(server: string, tool: string, args: unknown, al
  *
  * Shared with `mcp/pool.ts`: the daemon publishes the catalog, each instance
  * rebuilds the identical tool face from it, so a pooled `mcp` tool and a local
- * one are indistinguishable to the model (and to the prompt roster).
+ * one are indistinguishable to the model (and to the prompt roster). Each tool
+ * rides with a one-line description excerpt — names alone made the model guess
+ * what a tool does and what arguments it takes.
  */
-export function mcpToolDef(catalog: Record<string, string[]>): ToolDef {
+export function mcpToolDef(catalog: Record<string, readonly (McpToolInfo | string)[]>): ToolDef {
   const servers = Object.keys(catalog);
-  const lines = servers.map((s) => `- ${s}: ${catalog[s]!.join(", ")}`);
+  const lines: string[] = [];
+  let budget = FACE_DESC_BUDGET;
+  let omitted = 0;
+  for (const s of servers) {
+    for (const raw of catalog[s] ?? []) {
+      const t = typeof raw === "string" ? { name: raw, description: "" } : raw;
+      const desc = t.description && t.description !== t.name ? ` — ${t.description.slice(0, FACE_DESC_PER_TOOL)}` : "";
+      const line = `- ${s}/${t.name}${desc}`;
+      if (budget - line.length < 0) {
+        omitted++;
+        continue;
+      }
+      budget -= line.length;
+      lines.push(line);
+    }
+  }
+  const roster = lines.join("\n") + (omitted ? `\n… and ${omitted} more (see the server's own docs)` : "");
   return {
     name: "mcp",
     description:
       `Call a tool on a connected MCP (Model Context Protocol) server. Use this for ` +
       `any capability an MCP server provides (browser automation, fetching, external APIs). ` +
-      `Reachable servers and their tools:\n${lines.join("\n")}`,
+      `Reachable servers and their tools:\n${roster}`,
     parameters: {
       type: "object",
       properties: {
@@ -412,14 +526,13 @@ function buildMcpToolMap(pool: McpPool): Map<string, Tool> {
   // enumerate reachable server/tool pairs in the description so the model can
   // pick among them without guessing names; the `server`/`tool` params are
   // also typed as enums for the same reason
-  const serverEnum = [...pool.servers.keys()];
-  const catalog: Record<string, string[]> = {};
-  for (const [srv, list] of pool.servers) catalog[srv] = list.map((t) => t.name);
+  const catalog: Record<string, McpToolInfo[]> = {};
+  for (const [srv, list] of pool.servers) catalog[srv] = list.map((t) => ({ name: t.name, description: t.description }));
   const def: ToolDef = mcpToolDef(catalog);
 
   tools.set(def.name, {
     def,
-    run: async (args: { server?: string; tool?: string; arguments?: unknown }): Promise<ToolResult> => {
+    run: async (args: { server?: string; tool?: string; arguments?: unknown }, ctx?: ToolContext): Promise<ToolResult> => {
       const srv = args?.server;
       const toolName = args?.tool;
       if (typeof srv !== "string" || typeof toolName !== "string") {
@@ -455,11 +568,14 @@ function buildMcpToolMap(pool: McpPool): Map<string, Tool> {
         const have = slot.tools.map((t) => t.name);
         return fail(
           have.length
-            ? `error: server '${srv}' has no tool '${toolName}' (available: ${have.join(", ")})`
+            ? `error: server '${srv}' has no tool '${toolName}' (available:\n${toolListing(slot.tools)})`
             : `error: server '${srv}' connected but advertises no tools`,
         );
       }
-      return st.call(args.arguments ?? {});
+      // MCP progress notifications stream to the UI as tool_output deltas, so a
+      // long call (browser navigation) shows its heartbeat instead of silence.
+      const emit = ctx?.emit && ctx.callId ? (delta: string) => ctx.emit!({ type: "tool_output", id: ctx.callId!, delta }) : undefined;
+      return st.call(args.arguments ?? {}, emit);
     },
   });
   return tools;

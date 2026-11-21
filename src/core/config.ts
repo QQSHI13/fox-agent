@@ -10,9 +10,15 @@ import { loadSkills } from "../skills/load.ts";
 import { findUp, loadProjectInstructions, readTextFile } from "./discovery.ts";
 
 export interface McpServerConfig {
-  command: string;
+  /** stdio transport: the server process to spawn */
+  command?: string;
   args?: string[];
   env?: Record<string, string>;
+  /** remote transport: an MCP server speaking streamable HTTP at this URL.
+   *  When set, `command` is ignored — the entry is one or the other. */
+  url?: string;
+  /** extra headers for the remote transport (authorization and friends) */
+  headers?: Record<string, string>;
 }
 
 /**
@@ -522,9 +528,18 @@ function applyTable(cfg: Config, t: Record<string, unknown> | null, scope: "glob
       const n = Object.keys(t.mcpServers as Record<string, unknown>).length;
       if (n) cfg.warnings.push(`project config: ${n} [mcpServers.*] entr${n === 1 ? "y" : "ies"} ignored in untrusted directory — trust this folder to enable`);
     } else for (const [name, v] of Object.entries(t.mcpServers as Record<string, unknown>)) {
-      const s = v as { command?: string; args?: string[]; env?: Record<string, string> };
-      if (typeof s?.command !== "string") continue;
-      cfg.mcpServers[name] = { command: s.command, args: s.args, env: s.env };
+      const s = v as { command?: string; args?: string[]; env?: Record<string, string>; url?: string; headers?: Record<string, string> };
+      // one entry is one transport: a remote `url`, or a local `command` to
+      // spawn. Neither means a typo'd table — say so instead of silently
+      // dropping it (the old `continue` made `[mcpServers.x] args=[...]` look
+      // configured while never dialing)
+      if (typeof s?.url === "string" && s.url.trim()) {
+        cfg.mcpServers[name] = { url: s.url.trim(), headers: s.headers };
+      } else if (typeof s?.command === "string" && s.command.trim()) {
+        cfg.mcpServers[name] = { command: s.command, args: s.args, env: s.env };
+      } else {
+        cfg.warnings.push(`[mcpServers.${name}] ignored — needs a 'command' (stdio) or 'url' (remote)`);
+      }
     }
   }
   if (t.agents && typeof t.agents === "object") {

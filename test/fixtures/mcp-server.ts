@@ -51,6 +51,11 @@ const TOOLS = [
     description: "Return plain text only (no image part).",
     inputSchema: { type: "object", properties: {} },
   },
+  {
+    name: "progress",
+    description: "Emit two progress notifications, then finish.",
+    inputSchema: { type: "object", properties: {} },
+  },
 ];
 
 const server = new Server({ name: "fox-test-fixture", version: "1.0.0" }, { capabilities: { tools: {} } });
@@ -79,6 +84,20 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       };
     case "textonly":
       return { content: [{ type: "text", text: "no media here" }] };
+    case "progress": {
+      // the client only attaches a progressToken when it asked for progress —
+      // mirror that: no token, no notifications, just the result
+      const token = (req.params as { _meta?: { progressToken?: number } })._meta?.progressToken;
+      if (token !== undefined) {
+        for (const [i, message] of ["step one", "step two"].entries()) {
+          await server.notification({
+            method: "notifications/progress",
+            params: { progressToken: token, progress: i + 1, total: 2, message },
+          });
+        }
+      }
+      return { content: [{ type: "text", text: "progress: done" }] };
+    }
     default:
       return { content: [{ type: "text", text: `unknown tool ${name}` }], isError: true };
   }

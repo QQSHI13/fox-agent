@@ -35,7 +35,8 @@ import { join } from "node:path";
 import { agentHome } from "../core/paths.ts";
 import { childEnv } from "../core/childenv.ts";
 import type { McpServerConfig } from "../core/config.ts";
-import type { Tool, ToolResult } from "../core/tool.ts";
+import type { Tool, ToolContext, ToolResult } from "../core/tool.ts";
+import type { McpToolInfo } from "./client.ts";
 import { fail } from "../core/tool.ts";
 
 /** argv flag the daemon entry point (and the spawner) agree on. */
@@ -71,6 +72,8 @@ class Link {
   constructor(
     readonly sock: Socket,
     private onRequest?: (msg: Record<string, unknown>) => Promise<unknown>,
+    /** unsolicited daemon->client messages (e.g. MCP progress deltas) */
+    public onEvent?: (msg: Record<string, unknown>) => void,
   ) {
     sock.on("data", (b: Buffer) => {
       this.buf += this.decoder.decode(b, { stream: true });
@@ -99,7 +102,10 @@ class Link {
     } catch {
       return; // one garbled line is one bad message, not a broken channel
     }
-    if (typeof msg.id !== "number") return;
+    if (typeof msg.id !== "number") {
+      this.onEvent?.(msg);
+      return;
+    }
     const waiting = this.pending.get(msg.id);
     if (waiting) {
       this.pending.delete(msg.id);
@@ -120,6 +126,11 @@ class Link {
     } catch {
       this.teardown();
     }
+  }
+
+  /** fire-and-forget: no id, no reply expected (e.g. progress deltas) */
+  notify(obj: Record<string, unknown>) {
+    this.send(obj);
   }
 
   request(msg: Record<string, unknown>, timeoutMs = CALL_TIMEOUT_MS): Promise<unknown> {
@@ -201,9 +212,17 @@ export async function runPoolDaemon(sockPath: string): Promise<void> {
         // instance's servers; without this, a window configured only with
         // `chrome` would advertise `pg` tools because another window had
         // postgres — a tool the model can see but this session never asked for.
-        const mine: Record<string, string[]> = {};
+        const mine: Record<string, McpToolInfo[]> = {};
         for (const name of declared) if (full[name]) mine[name] = full[name]!;
         return { catalog: mine };
+      }
+
+      if (method === "status") {
+        // NO ensure(): status must answer instantly, not sit behind a cold
+        // dial — a just-spawned pool reports "not connected" and the first
+        // real call dials on its own anyway.
+        const { mcpStatus } = await import("./client.ts");
+        return { status: mcpStatus(declared) };
       }
 
       if (method === "call") {
@@ -211,11 +230,16 @@ export async function runPoolDaemon(sockPath: string): Promise<void> {
         const { mcpRunTool } = await import("./client.ts");
         // `declared` is the authorization list: the daemon holds servers this
         // caller never configured, and it must not run one on request.
+        // Progress deltas ride back on this socket as unsolicited messages
+        // tagged with the caller's token, so a long call stays visible.
+        const progress = typeof msg.progress === "string" ? (msg.progress as string) : undefined;
+        const onProgress = progress ? (delta: string) => link.send({ method: "progress", tag: progress, delta }) : undefined;
         return await mcpRunTool(
           msg.server as string,
           msg.tool as string,
           msg.arguments,
           declared,
+          onProgress,
         );
       }
 
@@ -262,7 +286,7 @@ export async function poolTools(
   if (!link) return null;
 
   const res = (await link.request({ method: "catalog", servers })) as
-    | { catalog?: Record<string, string[]>; error?: string }
+    | { catalog?: Record<string, McpToolInfo[]>; error?: string }
     | undefined;
   if (!res || res.error || !res.catalog) {
     // a failed catalog is not a reusable connection: drop it so the next call
@@ -278,20 +302,50 @@ export async function poolTools(
   const def = mcpToolDef(catalog);
   const tool: Tool = {
     def,
-    run: async (args: { server?: string; tool?: string; arguments?: unknown }): Promise<ToolResult> => {
-      const out = (await link.request({
-        method: "call",
-        servers,
-        server: args?.server,
-        tool: args?.tool,
-        arguments: args?.arguments,
-      })) as (ToolResult & { error?: string }) | undefined;
-      if (!out) return fail("error: mcp pool connection closed");
-      if (out.error) return fail(`error: ${out.error}`);
-      return { ok: out.ok, output: out.output, ...(out.media ? { media: out.media } : {}) };
+    run: async (args: { server?: string; tool?: string; arguments?: unknown }, ctx?: ToolContext): Promise<ToolResult> => {
+      // progress deltas come back as unsolicited messages tagged with our
+      // token; emit them live so a long pooled call shows its heartbeat too
+      const emit = ctx?.emit && ctx.callId ? ctx.emit : undefined;
+      const callId = ctx?.callId;
+      const tag = emit ? `p${Date.now().toString(36)}${Math.floor(Math.random() * 1e6).toString(36)}` : undefined;
+      const prevEvent = link.onEvent;
+      if (tag) {
+        link.onEvent = (msg) => {
+          if (msg.method === "progress" && msg.tag === tag && emit && callId) {
+            emit({ type: "tool_output", id: callId, delta: String(msg.delta ?? "") });
+          }
+        };
+      }
+      try {
+        const out = (await link.request({
+          method: "call",
+          servers,
+          server: args?.server,
+          tool: args?.tool,
+          arguments: args?.arguments,
+          ...(tag ? { progress: tag } : {}),
+        })) as (ToolResult & { error?: string }) | undefined;
+        if (!out) return fail("error: mcp pool connection closed");
+        if (out.error) return fail(`error: ${out.error}`);
+        return { ok: out.ok, output: out.output, ...(out.media ? { media: out.media } : {}) };
+      } finally {
+        if (tag) link.onEvent = prevEvent;
+      }
     },
   };
   return { tools: new Map([[def.name, tool]]), warnings: [] };
+}
+
+/**
+ * Pooled-mode status for `/mcp`: asks the daemon, which owns the live clients
+ * (in shared mode this process holds none). `null` means no pool is reachable.
+ */
+export async function poolMcpStatus(servers: Record<string, McpServerConfig>): Promise<Record<string, unknown> | null> {
+  const link = await connectOrSpawn(poolSocketPath());
+  if (!link) return null;
+  const res = (await link.request({ method: "status", servers })) as { status?: Record<string, unknown>; error?: string } | undefined;
+  if (!res || res.error || !res.status) return null;
+  return res.status;
 }
 
 /** One socket per pool socket path, reused for the life of the process. */

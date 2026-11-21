@@ -29,6 +29,15 @@ async function setup() {
 }
 
 describe("slash commands", () => {
+  test("/mcp: registered, read-only-safe, and answers without configured servers", async () => {
+    const t = await setup();
+    expect(t.COMMANDS.some((c: { name: string }) => c.name === "/mcp")).toBe(true);
+    expect(t.READONLY_COMMANDS.has("/mcp")).toBe(true);
+    const state = { cwd: "/w", provider: { baseUrl: "http://x", apiKey: "k", model: "m" }, readOnly: true };
+    const bare = t.runSlashCommand("/mcp", state as never)!;
+    expect(bare.output).toContain("no MCP servers configured");
+  });
+
   test("new/sessions flow: an argument switches, no argument lists", async () => {
     const t = await setup();
     const s = t.createSession("/w", "m1");

@@ -138,6 +138,50 @@ describe.skipIf(!CAN_RUN)("mcp bridge against a live server", () => {
     const badTool = (await tools.get("mcp")!.run({ server: "fix", tool: "nope" }, {} as never)) as { ok: boolean; output: string };
     expect(badTool.ok).toBe(false);
     expect(badTool.output).toContain("no tool 'nope'");
+    // the reachable set now carries one-line descriptions, not bare names — a
+    // bare list made the model re-guess what each tool does on the next try
+    expect(badTool.output).toContain("- echo");
+  }, 30_000);
+
+  test("the tool face carries each tool's description (budgeted)", async () => {
+    const { mcpTools } = await import("../src/mcp/client.ts");
+    const { tools } = await mcpTools(fixtureCfg());
+    const def = tools.get("mcp")!.def;
+    expect(def.description).toContain("- fix/echo");
+    expect(def.description).toContain("Echo the message back");
+  }, 30_000);
+
+  test("a huge catalog truncates the face instead of flooding every prompt", async () => {
+    // the face rides in EVERY system prompt, so it is budgeted: past the cap
+    // the roster cuts off with a count rather than taxing every turn
+    const { mcpToolDef } = await import("../src/mcp/client.ts");
+    const catalog: Record<string, { name: string; description: string }[]> = {
+      big: Array.from({ length: 500 }, (_, i) => ({ name: `tool_${i}`, description: `description number ${i} with some words` })),
+    };
+    const def = mcpToolDef(catalog);
+    expect(def.description!.length).toBeLessThan(4_500);
+    expect(def.description).toContain("and");
+    expect(def.description).toContain("more");
+    expect(def.description).not.toContain("tool_499");
+  });
+
+  test("server progress notifications stream as tool_output deltas", async () => {
+    // a long MCP call (browser navigation) used to sit silent for minutes —
+    // the SDK's onprogress now forwards as live output deltas via ctx.emit
+    const { mcpTools } = await import("../src/mcp/client.ts");
+    const { tools } = await mcpTools(fixtureCfg());
+    const events: { type: string; delta?: string }[] = [];
+    const res = await tools.get("mcp")!.run({ server: "fix", tool: "progress" }, {
+      sessionId: "s",
+      cwd: process.cwd(),
+      callId: "call-1",
+      emit: (ev: unknown) => events.push(ev as { type: string; delta?: string }),
+    } as never);
+    expect(res).toMatchObject({ ok: true, output: "progress: done" });
+    const deltas = events.filter((e) => e.type === "tool_output").map((e) => e.delta ?? "");
+    expect(deltas.join("")).toContain("step one");
+    expect(deltas.join("")).toContain("step two");
+    expect(deltas.join("")).toContain("1/2");
   }, 30_000);
 
   test("one unreachable server warns and leaves the others working", async () => {
