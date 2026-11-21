@@ -197,6 +197,51 @@ describe("computeFrame", () => {
     expect(fr.rowCount - fr.winOffset).toBe(fr.vh);
   });
 
+  test("cache-hit frames reuse the renderItem row objects (no per-frame row cloning)", () => {
+    // The app's frameInput().renderItem used to clone every visible row on
+    // every frame just to stamp the tool-block background. The background is
+    // now baked into the cached rows and renderItem hands back a cached slice,
+    // so layout must pass those row objects straight through. If layout ever
+    // clones, a cache-hit frame would allocate a whole window of Row objects
+    // again and this identity check would fail.
+    const items = Array.from({ length: 60 }, (_, k) => ({ kind: "md", k }));
+    const cache = new Map<number, Row[]>();
+    const rowsOf = (k: number): Row[] => {
+      let rows = cache.get(k);
+      if (!rows) {
+        rows = Array.from({ length: 5 }, (_, r) => ({ segs: [{ t: `item ${k} row ${r}` }], bg: 196 }));
+        cache.set(k, rows);
+      }
+      return rows;
+    };
+    const inp: FrameInput = {
+      ...base,
+      W: 80,
+      H: 30,
+      items,
+      scrollTop: 100,
+      stick: false,
+      renderItem: (it: any) => {
+        const rows = rowsOf(it.k);
+        const [a, b] = itemEdgeSpan(rows);
+        return rows.slice(a, b);
+      },
+      countItem: (it: any) => {
+        const [a, b] = itemEdgeSpan(rowsOf(it.k));
+        return b - a;
+      },
+    };
+    const first = computeFrame(inp);
+    const second = computeFrame(inp);
+    expect(second.rows.length).toBe(first.rows.length);
+    expect(second.owner).toEqual(first.owner);
+    // separator blanks are built fresh by layout (owner -1); item rows must be
+    // the exact cached objects, not copies
+    for (let i = 0; i < first.rows.length; i++) {
+      if (first.owner[i] !== -1) expect(second.rows[i]).toBe(first.rows[i]);
+    }
+  });
+
   test("an item ending at the window start is not rendered", () => {
     // Window arithmetic used to treat bodyEnd == from as an intersection and
     // call renderItem for a wholly-above-window item, only to slice away every
