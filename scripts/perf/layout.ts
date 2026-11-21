@@ -95,7 +95,54 @@ const bottom = measure("cache_hit_bottom_stick", () => {
   computeFrame(input(countCache, { scrollTop: Number.MAX_SAFE_INTEGER, stick: true }));
 });
 
+// ---- per-frame row allocation ----------------
+// frameInput().renderItem used to clone EVERY visible row on EVERY frame just
+// to stamp the tool-block background. The app now bakes that background into
+// the cached rows and hands layout a cached slice, so measure both shapes over
+// the same warm corpus: cloning the window (old) versus returning the slice
+// (new). Rows per item is larger than the toy `body` above so the window has a
+// realistic number of rows to copy.
+const ALLOC_ROWS = 6;
+const ALLOC_H = 60;
+const allocItems: PerfItem[] = Array.from({ length: ITEMS }, (_, k) => ({ kind: k % 5 === 0 ? "user" : "md", k }));
+const rowCache = new Map<number, Row[]>();
+function allocRows(k: number): Row[] {
+  let rows = rowCache.get(k);
+  if (!rows) {
+    rows = Array.from({ length: ALLOC_ROWS }, (_, r) => ({
+      segs: [{ t: `item ${k} row ${r}` }],
+      bg: k % 5 === 0 ? 0 : 196,
+    }));
+    rowCache.set(k, rows);
+  }
+  return rows;
+}
+const allocCountCache: CountCache = { version: () => 0, at: new Map() };
+const allocOverrides: Partial<FrameInput> = {
+  H: ALLOC_H,
+  items: allocItems,
+  countItem: () => ALLOC_ROWS,
+};
+// warm the count cache at both widths before timing either shape
+const allocScroll = Math.floor(
+  computeFrame(input(allocCountCache, { ...allocOverrides, renderItem: (it) => allocRows(it.k) })).total / 2,
+);
+const cloneInput = input(allocCountCache, {
+  ...allocOverrides,
+  renderItem: (it) => allocRows(it.k).map((r) => ({ ...r })),
+  scrollTop: allocScroll,
+  stick: false,
+});
+const sliceInput = input(allocCountCache, {
+  ...allocOverrides,
+  renderItem: (it) => allocRows(it.k),
+  scrollTop: allocScroll,
+  stick: false,
+});
+const cloneRows = measure("cache_hit_rows_clone", () => computeFrame(cloneInput));
+const sliceRows = measure("cache_hit_rows_slice", () => computeFrame(sliceInput));
+
 console.log(`items=${ITEMS} iterations=${ITERATIONS}`);
-for (const r of [cold, recount, streaming, middle, bottom]) {
+for (const r of [cold, recount, streaming, middle, bottom, cloneRows, sliceRows]) {
   console.log(`${r.label} median_ms=${r.medianMs.toFixed(3)}`);
 }
