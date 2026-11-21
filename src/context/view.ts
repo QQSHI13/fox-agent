@@ -230,21 +230,50 @@ const views = new Map<string, ViewCache>();
 const MAX_VIEWS = 8;
 
 /**
- * Sessions that must not be evicted.
+ * Refcount of active turns that need their full-content projection resident.
  *
- * Deliberately EMPTY and unused by the harness: recency alone already protects
- * the active session, because the turn loop and the TUI projection touch it
- * continuously, so it is never the coldest entry. A pins set would add a
- * failure mode with no upside here — a pin that is never released (an early
- * return, a thrown turn) makes that session resident forever, which is exactly
- * the leak the LRU exists to prevent.
+ * Recency alone protects the ACTIVE session while a turn is producing steps,
+ * but it cannot protect a projection across a gap in which a dozen other
+ * sessions are projected (a TUI palette preview, a gateway request): the active
+ * turn would then have to rebuild its view mid-turn, which is both a re-read of
+ * every body and a new array identity for anything holding the old one.
+ *
+ * Counted rather than a set because a host may NEST turns for one session
+ * (`SessionHost.turn` wraps `runTurnCore`), mirroring the turn lock's own
+ * depth count. Every acquire must be matched by a release from the same turn's
+ * `finally`; `releaseModelView` drops the entry only at zero.
  */
+const modelRetentions = new Map<string, number>();
 
-/** Drop the least-recently-used projections past the cap. */
+/** Keep this session's projection resident for the duration of an active turn. */
+export function retainModelView(sessionId: string): void {
+  modelRetentions.set(sessionId, (modelRetentions.get(sessionId) ?? 0) + 1);
+}
+
+/**
+ * Release one retention; the projection is dropped when the last holder ends.
+ *
+ * An unmatched release is a no-op: it must never evict a view some other turn
+ * (or a front end) is relying on. Dropping is correctness-safe — a missing
+ * entry makes `projectView` rebuild byte-identically from SQLite (see the
+ * `lastMsgSeq === 0` branch).
+ */
+export function releaseModelView(sessionId: string): void {
+  const n = modelRetentions.get(sessionId);
+  if (!n) return;
+  if (n > 1) {
+    modelRetentions.set(sessionId, n - 1);
+    return;
+  }
+  modelRetentions.delete(sessionId);
+  dropViewCache(sessionId);
+}
+
+/** Drop the least-recently-used projections past the cap, never a retained one. */
 function evictViews(keep: string): void {
   for (const id of [...views.keys()]) {
     if (views.size <= MAX_VIEWS) return;
-    if (id === keep) continue;
+    if (id === keep || modelRetentions.has(id)) continue;
     dropViewCache(id);
   }
 }

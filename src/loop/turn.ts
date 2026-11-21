@@ -17,8 +17,8 @@ import { loadPlugins } from "../plugins/load.ts";
 import { dirname } from "node:path";
 import type { UiBridge } from "../core/ui.ts";
 import { buildSystemPrompt, buildRuntimeHeader } from "./prompt.ts";
-import { renderContext, stripEchoedMarkers } from "../context/render.ts";
-import { projectView, visibleNodes } from "../context/view.ts";
+import { renderContext, stripEchoedMarkers, dropRenderCache } from "../context/render.ts";
+import { projectView, visibleNodes, retainModelView, releaseModelView } from "../context/view.ts";
 import { truncateToolResult, resolvePresentationCap } from "../context/truncate.ts";
 import { checkBudget, sessionContextTokens, type BudgetThresholds } from "../context/budget.ts";
 import { cutHead, cutTail } from "../core/text.ts";
@@ -457,11 +457,21 @@ export async function* runTurnCore(
     );
   }
   turnStarted(sessionId);
+  // The full-content projection is worth keeping resident for the whole turn
+  // (every step re-renders it), but not one second longer: an idle TUI would
+  // otherwise hold every body of every settled message for display that now
+  // reads the lightweight display list instead. Counted, so a host that wraps
+  // this turn in another one cannot release the outer turn's view.
+  retainModelView(sessionId);
   try {
     yield* turnBody(sessionId, cfg, userText, signal, opts);
   } finally {
     turnEnded(sessionId);
     releaseTurnLock(sessionId);
+    releaseModelView(sessionId);
+    // the assembled-history cache holds a whole visible transcript, not just
+    // one node: drop it with the projection it was derived from
+    dropRenderCache();
   }
 }
 
