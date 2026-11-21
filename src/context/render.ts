@@ -2,8 +2,8 @@ import type { ChatMessage } from "../providers/types.ts";
 import { estimateTokens } from "../providers/models.ts";
 import { projectView, parseToolCalls, pairedCallIds, viewStamp, type ViewNode } from "./view.ts";
 
-function marker(seq: number): string {
-  return `[${seq}]`;
+function marker(seq: number, role?: string): string {
+  return role === "system" ? `[s${seq}]` : `[${seq}]`;
 }
 
 /**
@@ -98,11 +98,11 @@ export function dropRenderCache(): void {
 
 function renderNode(n: ViewNode, callsKey: string, pairedKey: string, visibleToolIds: Set<string>, markers: boolean): RenderedNode {
   const m = n.msg;
-  const tag = markers ? `${marker(m.seq)} ` : "";
+  const tag = markers ? `${marker(m.seq, m.role)} ` : "";
   const base = { content: n.content, deleted: n.deleted, summary: n.summary, callsKey, pairedKey, markers };
 
   if (n.deleted) {
-    return { ...base, note: n.summary ? `(ctx: ${markers ? `${marker(m.seq)} ` : ""}summarized away) ${n.summary}` : undefined };
+    return { ...base, note: n.summary ? `(ctx: ${markers ? `${marker(m.seq, m.role)} ` : ""}summarized away) ${n.summary}` : undefined };
   }
   if (m.role === "user") {
     return { ...base, msg: { role: "user", content: `${tag}${n.content}` } };
