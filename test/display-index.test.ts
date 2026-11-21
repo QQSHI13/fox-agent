@@ -151,4 +151,22 @@ describe("display cache", () => {
     dropDisplayCache();
     expect(displayStamp(id)).toBe("0:0");
   });
+
+  // Regression: the read-only mirror polled displayStamp() FIRST and only
+  // rebuilt on a stamp that never moved, because a resident projection's
+  // watermark advances only when projectDisplay() replays the new rows. The
+  // viewer then froze on history. Polling must project before reading.
+  test("pollDisplayStamp advances a warm projection so a viewer sees new rows", async () => {
+    const db = await import("../src/store/db.ts");
+    const { displayStamp, pollDisplayStamp } = await import("../src/context/display.ts");
+    const { id } = await seed(false);
+    expect(pollDisplayStamp(id)).toBe("5:0");
+
+    db.appendMessage(id, { role: "user", content: "a later row", tokens: 5 });
+    // Cached-first would stay on 5:0 until some other refresh happened to
+    // project; the poll itself must observe the new settled row.
+    expect(displayStamp(id)).toBe("5:0");
+    expect(pollDisplayStamp(id)).toBe("6:0");
+    expect(displayStamp(id)).toBe("6:0");
+  });
 });

@@ -89,13 +89,16 @@ export interface TranscriptSourceItem {
  *
  * `FrameInput` used to be an array plus two callbacks. A virtual transcript
  * cannot hand layout a materialized array, so layout talks to this view
- * instead. `length`, `itemAt`, `countAt` and `renderAt` are exactly the four
- * things the two frame passes read; `rowsAt` / `indexOfKey` / `itemByKey` give
+ * instead. `length`, `itemAt`, `countAt` and `renderAt` are the four things the
+ * two frame passes read; `kindAt` lets the count pass read separator metadata
+ * without materializing an item, and `rowsAt` / `indexOfKey` / `itemByKey` give
  * hit-testing and paint the same view without reaching back into the host.
  */
 export interface TranscriptSource<T extends TranscriptSourceItem = TranscriptSourceItem> {
   readonly length: number;
   itemAt(index: number): T;
+  /** metadata-only kind; the count pass reads this instead of `itemAt` */
+  kindAt(index: number): string;
   renderAt(index: number, width: number): Row[];
   rowsAt(index: number, width: number): Row[];
   countAt(index: number, width: number): number;
@@ -114,6 +117,7 @@ export function arrayTranscriptSource<T extends TranscriptSourceItem>(
       return items.length;
     },
     itemAt: (index) => items[index],
+    kindAt: (index) => items[index].kind,
     // The caller's renderer already returns edge-stripped rows (layout's
     // spacing contract), so `renderAt` and `rowsAt` are the same rows here.
     renderAt: (index, width) => renderItem(items[index], width),
@@ -337,18 +341,21 @@ function countRows(inp: FrameInput, w: number, src: TranscriptSource): CountSnap
   let total = 0;
   let prevKind: string | null = null;
   for (let i = 0; i < length; i++) {
-    const it = src.itemAt(i);
+    // Count first, then read the metadata kind. `itemAt` here would defeat a
+    // lazy source's transient non-retention: counting must never materialize
+    // settled history just to decide whether a separator blank belongs.
     const rows = src.countAt(i, w);
+    const kind = src.kindAt(i);
     // interior blanks kept: countItem reports the POST-strip count, so the
     // item's own edge blanks are already excluded from `rows`
-    const blank = i > 0 && rows > 0 && !glued(prevKind, it.kind) ? 1 : 0;
+    const blank = i > 0 && rows > 0 && !glued(prevKind, kind) ? 1 : 0;
     const start = total;
     const body = start + blank;
     const end = body + rows;
     windowIndex[i * 2] = start;
     windowIndex[i * 2 + 1] = end;
     hasBlank[i] = blank;
-    if (rows > 0) prevKind = it.kind;
+    if (rows > 0) prevKind = kind;
     total = end;
   }
   if (cache) {

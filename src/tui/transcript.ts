@@ -238,6 +238,11 @@ export class VirtualTranscript implements TranscriptSource<Item> {
     return it;
   }
 
+  /** Metadata-only: the slot kind, with no row fetch or materialization. */
+  kindAt(index: number): string {
+    return this.slots[index]?.kind ?? MISSING.kind;
+  }
+
   renderAt(index: number, width: number): Row[] {
     return this.deps.buildRows(this.itemAt(index), width).visible;
   }
@@ -349,11 +354,16 @@ export class VirtualTranscript implements TranscriptSource<Item> {
     const slot = this.slots[i];
     if (slot.head) slot.headOverride = expanded;
     else slot.override = expanded;
-    this.materialized.delete(key);
-    this.materializedSig.delete(key);
+    // Keep a live materialized item: toggleExpand() may have just backfilled
+    // its text from the stored row (past the kept-char cap), and dropping it
+    // here would make the next itemAt() rebuild from nodeToItems() and
+    // re-truncate. The host's touch(it.k) already drops cached rows.
+    const it = this.materialized.get(key);
+    if (it) {
+      it.expanded = expanded;
+      this.materializedSig.set(key, this.countSignature(slot));
+    }
     this.forgetCount(key);
-    // force the next refresh to rebuild this slot even though metadata is equal
-    slot.sig = "";
   }
 }
 
@@ -393,6 +403,11 @@ export function concatSources(sources: readonly TranscriptSource<Item>[]): Trans
       const at = locate(sources, index);
       if (!at) throw new RangeError(`transcript index ${index} out of range`);
       return at.source.itemAt(at.index);
+    },
+    kindAt(index) {
+      const at = locate(sources, index);
+      if (!at) throw new RangeError(`transcript index ${index} out of range`);
+      return at.source.kindAt(at.index);
     },
     renderAt(index, width) {
       const at = locate(sources, index);
@@ -459,6 +474,12 @@ export function overlaySources(base: TranscriptSource<Item>, overlays: readonly 
       const oi = visible()[index - base.length];
       if (oi === undefined) throw new RangeError(`transcript overlay index ${index} out of range`);
       return overlay.itemAt(oi);
+    },
+    kindAt(index) {
+      if (index < base.length) return base.kindAt(index);
+      const oi = visible()[index - base.length];
+      if (oi === undefined) throw new RangeError(`transcript overlay index ${index} out of range`);
+      return overlay.kindAt(oi);
     },
     renderAt(index, width) {
       if (index < base.length) return base.renderAt(index, width);

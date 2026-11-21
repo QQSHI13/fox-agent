@@ -34,7 +34,7 @@ import { sessionRows, setPickerWheelStep } from "./pickerui.ts";
 import { VERSION } from "../core/version.ts";
 import type { AgentEvent } from "../core/events.ts";
 import { steer, peekSteer, withdrawSteer, attachHost, detachHost, abortTurn, adoptTurnController } from "../loop/steer.ts";
-import { displayStamp, projectDisplay, type DisplayNode } from "../context/display.ts";
+import { pollDisplayStamp, projectDisplay, type DisplayNode } from "../context/display.ts";
 import { sessionContextTokens } from "../context/budget.ts";
 import { lookupModel } from "../providers/models.ts";
 import { bundledDisabled } from "../plugins/bundled.ts";
@@ -1334,7 +1334,13 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     if (!applyConfig) return;
     try {
       const r = applyConfig();
-      setTuiCaps(state.config?.tuiCollapsedChars ?? 240, state.config?.tuiKeptChars ?? 4_000);
+      const collapsed = state.config?.tuiCollapsedChars ?? 240;
+      const kept = state.config?.tuiKeptChars ?? 4_000;
+      // Memoized rows were wrapped under the previous caps. Bumping counts
+      // below re-asks the count path, but an unchanged item revision would let
+      // lineCache answer paint with the OLD truncation, so drop it on a change.
+      if (collapsed !== COLLAPSED_TOOL_CHARS || kept !== KEPT_TOOL_CHARS) lineCache.clear();
+      setTuiCaps(collapsed, kept);
       setTuiScrollbar(state.config?.tuiScrollbar ?? true);
       setTuiScrollStep(state.config?.tuiScrollStep ?? 2);
       const wantTheme = state.config?.theme ?? "default";
@@ -5130,12 +5136,13 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
               // metadata and re-seals nothing (a viewer never owns liveThink).
               // The watermark is `<last msg seq>:<last op seq>`, so a ctx op that
               // hides a row also refreshes a viewer.
-              let stamp = displayStamp(state.sessionId!);
-              if (stamp === "0:0") {
-                // no resident projection yet (evicted): warm it from metadata
-                projectDisplay(state.sessionId!);
-                stamp = displayStamp(state.sessionId!);
-              }
+              //
+              // Project FIRST, every tick. A resident projection's cached stamp
+              // does not move when rows land, so reading displayStamp() before
+              // projectDisplay() left the viewer frozen on the history it opened
+              // with. projectDisplay() is incremental and metadata-only: the
+              // intended cheap poll.
+              const stamp = pollDisplayStamp(state.sessionId!);
               if (lastStamp !== null && stamp !== lastStamp) refresh();
               lastStamp = stamp;
             }

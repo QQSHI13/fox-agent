@@ -3,7 +3,7 @@
 // two paths must produce byte-identical geometry or the refactor changes the
 // screen.
 import { expect, test } from "bun:test";
-import { arrayTranscriptSource, computeFrame, itemEdgeSpan, type FrameInput, type Row } from "../src/tui/layout.ts";
+import { arrayTranscriptSource, computeFrame, itemEdgeSpan, type FrameInput, type Row, type TranscriptSource } from "../src/tui/layout.ts";
 
 interface It { kind: string; k: number; text: string }
 
@@ -55,9 +55,44 @@ test("arrayTranscriptSource agrees with the array it wraps", () => {
     expect(src.renderAt(i, 30)).toEqual(rowsFor(items[i], 30));
     expect(src.rowsAt(i, 30)).toEqual(rowsFor(items[i], 30));
     expect(src.countAt(i, 30)).toBe(count(items[i], 30));
+    expect(src.kindAt(i)).toBe(items[i].kind);
     expect(src.indexOfKey(items[i].k)).toBe(i);
     expect(src.itemByKey(items[i].k)).toBe(items[i]);
   }
   expect(src.indexOfKey(-99)).toBe(-1);
   expect(src.itemByKey(-99)).toBeUndefined();
+});
+
+// Regression: the count pass used to call itemAt() for every index to read
+// `kind`, which materialized every settled body just to count rows. That defeats
+// VirtualTranscript.countAt()'s transient non-retention. Counting must read
+// kinds through kindAt() and materialize only the window paint actually renders.
+test("count pass reads kinds without materializing every item", () => {
+  const items: It[] = Array.from({ length: 40 }, (_, i) => ({ kind: i % 3 === 0 ? "toolhead" : "md", k: i + 1, text: `item ${i}` }));
+  const rowsFor = (it: It, w: number): Row[] => [{ segs: [{ t: `${it.text}/${w}` }] }];
+  const count = (it: It, w: number) => rowsFor(it, w).length;
+  const inner = arrayTranscriptSource(items, rowsFor, count);
+  const seen = new Set<number>();
+  let kindReads = 0;
+  const spy: TranscriptSource<It> = {
+    ...inner,
+    get length() {
+      return inner.length;
+    },
+    itemAt: (index) => {
+      seen.add(index);
+      return inner.itemAt(index);
+    },
+    kindAt: (index) => {
+      kindReads++;
+      return inner.kindAt(index);
+    },
+  };
+  const frame = computeFrame({ ...base, scrollbar: false, source: spy });
+
+  expect(frame.total).toBeGreaterThan(0);
+  expect(kindReads).toBe(items.length);
+  // Every item was counted, but only the rendered window was materialized.
+  expect(seen.size).toBeGreaterThan(0);
+  expect(seen.size).toBeLessThan(items.length);
 });

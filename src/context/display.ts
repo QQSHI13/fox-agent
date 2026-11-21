@@ -241,3 +241,15 @@ export function displayStamp(sessionId: string): string {
   const c = displays.get(sessionId);
   return c ? `${c.lastMsgSeq}:${c.lastOpSeq}` : "0:0";
 }
+
+/**
+ * Advance the resident projection from the logs, then return its watermark.
+ *
+ * A cached projection's `displayStamp` does NOT move when rows land; it only
+ * moves after `projectDisplay` replays them. Pollers (the read-only mirror) must
+ * use this, not a cached-stamp-first read, or they freeze on history.
+ */
+export function pollDisplayStamp(sessionId: string): string {
+  projectDisplay(sessionId);
+  return displayStamp(sessionId);
+}
