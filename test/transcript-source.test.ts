@@ -99,8 +99,11 @@ describe("virtual transcript source", () => {
     expect(src.itemByKey(src.itemAt(2).k)?.kind).toBe("toolhead");
     expect(src.indexOfKey(src.itemAt(3).k)).toBe(3);
     expect(src.kindAt(0)).toBe("user");
+    expect(src.kindAt(1)).toBe("md"); // the assistant slot materializes as markdown
     expect(src.kindAt(2)).toBe("toolhead");
     expect(src.kindAt(3)).toBe("toolbody");
+    // kindAt must name the same item kind itemAt materializes, not the slot label.
+    for (let i = 0; i < src.length; i++) expect(src.kindAt(i)).toBe(src.itemAt(i).kind);
   });
 
   test("expansion invalidates only the touched seq", async () => {
@@ -319,6 +322,56 @@ describe("virtual transcript source", () => {
     expect(src.itemAt(3).expanded).toBe(true);
   });
 
+  // Regression: setAllExpanded() used to drop every expandable slot's
+  // materialized item, even slots already in the requested state. A backfilled
+  // long tool body was therefore re-materialized and re-truncated when ctrl+t
+  // changed a different slot.
+  test("ctrl+t keeps an unchanged backfilled tool body materialized", async () => {
+    const { itemEdgeSpan } = await import("../src/tui/layout.ts");
+    const { VirtualTranscript } = await import("../src/tui/transcript.ts");
+    const content = ["line1", "line2", "line3", "line4", "line5"].join("\n");
+    const nodes: DisplayNode[] = [
+      { seq: 1, role: "assistant", tool_call_id: null, callIds: ["c1"], contentLen: 0, failed: false, deleted: false },
+      { seq: 2, role: "tool", tool_call_id: "c1", callIds: [], contentLen: content.length, failed: false, deleted: false },
+    ];
+    const rows: MessageRow[] = [
+      { id: "m1", seq: 1, session_id: "s", parent_id: null, role: "assistant", content: "", tool_calls: JSON.stringify([{ id: "c1", name: "exec", arguments: "{}" }]), tool_call_id: null, media: null, tokens: 1, error: null, created_at: 0 },
+      { id: "m2", seq: 2, session_id: "s", parent_id: null, role: "tool", content, tool_calls: null, tool_call_id: "c1", media: null, tokens: 1, error: null, created_at: 0 },
+    ];
+    const deps: VirtualTranscriptDeps = {
+      key: (seq, slot) => seq * 4 + slot,
+      expanded: () => false,
+      keptChars: 2,
+      summarize: (name, args) => `${name}${args}`,
+      row: (seq) => rows.find((r) => r.seq === seq) ?? null,
+      buildRows: (it, width) => {
+        const built =
+          it.kind === "toolbody" && !it.expanded
+            ? [{ segs: [{ t: "↳ output" }] }]
+            : it.text.split("\n").map((line) => ({ segs: [{ t: line.slice(0, width) }] }));
+        const span = itemEdgeSpan(built);
+        return { rows: built, span, visible: built.slice(span[0], span[1]) };
+      },
+      countRows: (it, width) => {
+        const [a, b] = deps.buildRows(it, width).span;
+        return b - a;
+      },
+    };
+    const src = new VirtualTranscript(deps, () => nodes);
+
+    // Manual expand: backfill the stored body past the kept-char cap, then sync.
+    const body = src.itemAt(2);
+    body.text = content;
+    body.expanded = true;
+    src.syncExpandedItem(body.k, true);
+
+    // Only the tool head is still folded, so ctrl+t changes just that slot.
+    expect(src.setAllExpanded(true)).toBe(1);
+    expect(src.itemAt(2)).toBe(body);
+    expect(src.itemAt(2).text).toBe(content);
+    expect(src.itemAt(2).expanded).toBe(true);
+  });
+
   test("refresh reports changed settled keys so the host can invalidate rows", async () => {
     const { VirtualTranscript } = await import("../src/tui/transcript.ts");
     const node: DisplayNode = { seq: 1, role: "user", tool_call_id: null, callIds: [], contentLen: 3, failed: false, deleted: false };
@@ -377,6 +430,8 @@ describe("transcript source composition", () => {
     expect(src.renderAt(3, 10)[0].segs[0].t).toBe("live/10");
     expect(src.rowsAt(1, 10)[0].segs[0].t).toBe("b/10");
     expect(src.countAt(2, 10)).toBe(1);
+    expect(src.kindAt(0)).toBe("info");
+    expect(src.kindAt(3)).toBe("info");
     expect(src.indexOfKey(2)).toBe(1);
     expect(src.indexOfKey(3)).toBe(2); // base index, not the shadowed overlay
     expect(src.indexOfKey(9)).toBe(3);
@@ -398,6 +453,8 @@ describe("transcript source composition", () => {
     expect(src.renderAt(2, 5)[0].segs[0].t).toBe("c/5");
     expect(src.rowsAt(3, 6)[0].segs[0].t).toBe("d/6");
     expect(src.countAt(0, 5)).toBe(1);
+    expect(src.kindAt(1)).toBe("info");
+    expect(src.kindAt(2)).toBe("info");
     expect(src.indexOfKey(4)).toBe(3);
     expect(src.itemByKey(3)?.text).toBe("c");
     expect(src.indexOfKey(99)).toBe(-1);

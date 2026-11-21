@@ -27,6 +27,15 @@ export interface VirtualTranscriptDeps {
 
 type SlotKind = "user" | "think" | "assistant" | "toolhead" | "toolbody";
 
+/** The item kind each slot materializes as. The assistant slot is a `md` item. */
+const SLOT_ITEM_KIND: Record<SlotKind, Item["kind"]> = {
+  user: "user",
+  think: "think",
+  assistant: "md",
+  toolhead: "toolhead",
+  toolbody: "toolbody",
+};
+
 interface Slot {
   key: number;
   seq: number;
@@ -238,9 +247,10 @@ export class VirtualTranscript implements TranscriptSource<Item> {
     return it;
   }
 
-  /** Metadata-only: the slot kind, with no row fetch or materialization. */
+  /** Metadata-only: the item kind this slot renders as, without materializing. */
   kindAt(index: number): string {
-    return this.slots[index]?.kind ?? MISSING.kind;
+    const slot = this.slots[index];
+    return slot ? SLOT_ITEM_KIND[slot.kind] : MISSING.kind;
   }
 
   renderAt(index: number, width: number): Row[] {
@@ -321,13 +331,13 @@ export class VirtualTranscript implements TranscriptSource<Item> {
     let changed = 0;
     for (const s of this.slots) {
       if (!s.expandable) continue;
-      if (s.head) {
-        if ((s.headOverride ?? false) !== expanded) changed++;
-        s.headOverride = expanded;
-      } else {
-        if (this.effective(s) !== expanded) changed++;
-        s.override = expanded;
-      }
+      // Slots already in the requested state keep their materialized item: a
+      // backfilled, manually expanded body must survive when another slot is
+      // what ctrl+t actually changes.
+      if (this.effective(s) === expanded) continue;
+      if (s.head) s.headOverride = expanded;
+      else s.override = expanded;
+      changed++;
       this.materialized.delete(s.key);
       this.materializedSig.delete(s.key);
       this.forgetCount(s.key);
