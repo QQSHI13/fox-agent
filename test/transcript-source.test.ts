@@ -117,4 +117,44 @@ describe("virtual transcript source", () => {
     counted.setAllExpanded(true);
     expect(counted.countAt(2, w)).toBeGreaterThan(1);
   });
+
+  test("a manual toggle after ctrl+t survives touchSeq and refresh", async () => {
+    const { projectDisplay } = await import("../src/context/display.ts");
+    const { VirtualTranscript } = await import("../src/tui/transcript.ts");
+    const { id } = await seed();
+    const deps = await makeDeps(id);
+    const src = new VirtualTranscript(deps, () => projectDisplay(id));
+
+    // ctrl+t: unfold everything, then manually collapse the tool head and body.
+    src.setAllExpanded(true);
+    const head = src.itemAt(2);
+    const body = src.itemAt(3);
+    const seq = head.seq ?? 3;
+    expect(head.expanded).toBe(true);
+    expect(body.expanded).toBe(true);
+    head.expanded = false;
+    src.syncExpandedItem(head.k, false);
+    body.expanded = false;
+    src.syncExpandedItem(body.k, false);
+
+    // A ctx op touching that seq drops the materialized items. The manual
+    // collapse must not be overwritten by the older ctrl+t override.
+    src.touchSeq(seq);
+    src.refresh();
+    expect(src.itemAt(2).expanded).toBeFalsy();
+    expect(src.itemAt(3).expanded).toBeFalsy();
+
+    // And the reverse: fold all, manually unfold both, then touch and refresh.
+    src.setAllExpanded(false);
+    const foldedHead = src.itemAt(2);
+    const foldedBody = src.itemAt(3);
+    foldedHead.expanded = true;
+    src.syncExpandedItem(foldedHead.k, true);
+    foldedBody.expanded = true;
+    src.syncExpandedItem(foldedBody.k, true);
+    src.touchSeq(seq);
+    src.refresh();
+    expect(src.itemAt(2).expanded).toBe(true);
+    expect(src.itemAt(3).expanded).toBe(true);
+  });
 });

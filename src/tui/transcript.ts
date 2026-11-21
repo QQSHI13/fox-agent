@@ -236,6 +236,25 @@ export class VirtualTranscript implements TranscriptSource<Item> {
   forgetItem(key: number): void {
     this.materialized.delete(key);
   }
+
+  /**
+   * Mirror an explicit item toggle into this settled slot's expansion state.
+   *
+   * A click mutates the materialized item and the host's `expandedRefs`; without
+   * this, a ctrl+t override from an earlier pass would be the state a later
+   * `touchSeq` re-materializes from, resurrecting the old fold direction. The
+   * host calls this only for keys the settled source owns.
+   */
+  syncExpandedItem(key: number, expanded: boolean): void {
+    const i = this.index.get(key);
+    if (i === undefined) return;
+    const slot = this.slots[i];
+    if (slot.head) slot.headOverride = expanded;
+    else slot.override = expanded;
+    this.materialized.delete(key);
+    // force the next refresh to rebuild this slot even though metadata is equal
+    slot.sig = "";
+  }
 }
 
 /** The array-backed source under the transcript's interface name. */

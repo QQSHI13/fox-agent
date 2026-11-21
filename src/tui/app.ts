@@ -2328,6 +2328,11 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       if (it.expanded) expandedRefs.add(it.ref);
       else expandedRefs.delete(it.ref);
     }
+    // A settled item's slot carries its own expansion override (ctrl+t writes
+    // it). Keep that override in step with this explicit toggle, or a later
+    // touchSeq would re-materialize the stale ctrl+t direction. Live overlay
+    // items have no settled slot, so this is a no-op for them.
+    if (transcript.hasKey(it.k)) transcript.syncExpandedItem(it.k, !!it.expanded);
     touch(it.k);
     // ctrl+t toggles N items in a loop and bumps once at the end; a single
     // click toggles one and wants the repaint now.
