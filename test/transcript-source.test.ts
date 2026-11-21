@@ -128,6 +128,60 @@ describe("virtual transcript source", () => {
     expect(counted.countAt(2, w)).toBeGreaterThan(1);
   });
 
+  test("a count miss rebuilds an item under the current kept-char cap and expansion", async () => {
+    const { itemEdgeSpan } = await import("../src/tui/layout.ts");
+    const { VirtualTranscript } = await import("../src/tui/transcript.ts");
+    const content = ["line1", "line2", "line3", "line4", "line5"].join("\n");
+    const nodes: DisplayNode[] = [
+      { seq: 1, role: "assistant", tool_call_id: null, callIds: ["c1"], contentLen: 0, failed: false, deleted: false },
+      { seq: 2, role: "tool", tool_call_id: "c1", callIds: [], contentLen: content.length, failed: false, deleted: false },
+    ];
+    const rows: MessageRow[] = [
+      { id: "m1", seq: 1, session_id: "s", parent_id: null, role: "assistant", content: "", tool_calls: JSON.stringify([{ id: "c1", name: "exec", arguments: "{}" }]), tool_call_id: null, media: null, tokens: 1, error: null, created_at: 0 },
+      { id: "m2", seq: 2, session_id: "s", parent_id: null, role: "tool", content, tool_calls: null, tool_call_id: "c1", media: null, tokens: 1, error: null, created_at: 0 },
+    ];
+    let expanded = true;
+    const w = 40;
+    const deps: VirtualTranscriptDeps = {
+      key: (seq, slot) => seq * 4 + slot,
+      expanded: () => expanded,
+      keptChars: 2,
+      summarize: (name, args) => `${name}${args}`,
+      row: (seq) => rows.find((r) => r.seq === seq) ?? null,
+      buildRows: (it, width) => {
+        // a collapsed tool body is one one-lined row; expanded shows its lines
+        const built =
+          it.kind === "toolbody" && !it.expanded
+            ? [{ segs: [{ t: "↳ output" }] }]
+            : it.text.split("\n").map((line) => ({ segs: [{ t: line.slice(0, width) }] }));
+        const span = itemEdgeSpan(built);
+        return { rows: built, span, visible: built.slice(span[0], span[1]) };
+      },
+      countRows: (it, width) => {
+        const [a, b] = deps.buildRows(it, width).span;
+        return b - a;
+      },
+    };
+    const src = new VirtualTranscript(deps, () => nodes);
+
+    // cap 2 -> 8 kept chars: the drop notice plus the two lines it keeps.
+    expect(src.countAt(2, w)).toBe(3);
+    expect(src.renderAt(2, w).length).toBe(3);
+
+    // Regression: the cap moved but no setter ran, so the count signature misses
+    // while the materialized body still holds the old truncation. Counting that
+    // copy would file 3 under the new signature; a later forgetItem would then
+    // re-materialize 5 rows and count/paint would disagree.
+    deps.keptChars = 1_000;
+    expect(src.countAt(2, w)).toBe(5);
+    expect(src.renderAt(2, w).length).toBe(5);
+
+    // Same hazard on expansion: only the host's lookup moved, not the slot.
+    expanded = false;
+    expect(src.countAt(2, w)).toBe(1);
+    expect(src.renderAt(2, w).length).toBe(1);
+  });
+
   test("a manual toggle after ctrl+t survives touchSeq and refresh", async () => {
     const { projectDisplay } = await import("../src/context/display.ts");
     const { VirtualTranscript } = await import("../src/tui/transcript.ts");

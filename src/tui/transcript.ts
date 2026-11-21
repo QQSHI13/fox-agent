@@ -66,6 +66,12 @@ export class VirtualTranscript implements TranscriptSource<Item> {
   private slots: Slot[] = [];
   private index = new Map<number, number>();
   private materialized = new Map<number, Item>();
+  /**
+   * The count signature each materialized item was built under. A count miss
+   * compares it before counting: an item built under an older kept-char cap or
+   * expansion state must not seed a count filed under the new signature.
+   */
+  private materializedSig = new Map<number, string>();
   /** per width, per slot key: an exact row count valid while the signature holds */
   private countCache = new Map<number, Map<number, { signature: string; rows: number }>>();
   private bySeq = new Map<number, DisplayNode>();
@@ -103,6 +109,7 @@ export class VirtualTranscript implements TranscriptSource<Item> {
       // cannot answer with the previous projection's rows.
       for (const k of this.materialized.keys()) this.invalidatedKeys.push(k);
       this.materialized.clear();
+      this.materializedSig.clear();
       this.countCache.clear();
     }
 
@@ -129,7 +136,11 @@ export class VirtualTranscript implements TranscriptSource<Item> {
     }
 
     const live = new Set(next.map((s) => s.key));
-    for (const k of this.materialized.keys()) if (!live.has(k)) this.materialized.delete(k);
+    for (const k of this.materialized.keys()) {
+      if (live.has(k)) continue;
+      this.materialized.delete(k);
+      this.materializedSig.delete(k);
+    }
     for (const pw of this.countCache.values()) for (const k of pw.keys()) if (!live.has(k)) pw.delete(k);
     for (const s of next) {
       const p = prevByKey.get(s.key);
@@ -138,6 +149,7 @@ export class VirtualTranscript implements TranscriptSource<Item> {
       if (!p) continue;
       if (p.sig !== s.sig) {
         this.materialized.delete(s.key);
+        this.materializedSig.delete(s.key);
         this.forgetCount(s.key);
         this.invalidatedKeys.push(s.key);
       }
@@ -221,6 +233,7 @@ export class VirtualTranscript implements TranscriptSource<Item> {
     if (!it) {
       it = this.materialize(slot);
       this.materialized.set(slot.key, it);
+      this.materializedSig.set(slot.key, this.countSignature(slot));
     }
     return it;
   }
@@ -245,6 +258,13 @@ export class VirtualTranscript implements TranscriptSource<Item> {
     // A hit neither calls deps.countRows nor materializes: the signature names
     // every input that could have moved the count.
     if (hit && hit.signature === signature) return hit.rows;
+    // The cached item may predate this signature (a kept-char cap or expansion
+    // change). Drop it so the recount is built from current state; otherwise a
+    // later forgetItem would rebuild rows that disagree with the stored count.
+    if (this.materializedSig.get(slot.key) !== signature) {
+      this.materialized.delete(slot.key);
+      this.materializedSig.delete(slot.key);
+    }
     const rows = this.deps.countRows(this.itemAt(index), width);
     let pw = this.countCache.get(width);
     if (!pw) {
@@ -273,6 +293,7 @@ export class VirtualTranscript implements TranscriptSource<Item> {
     for (const s of this.slots) {
       if (s.seq !== seq) continue;
       this.materialized.delete(s.key);
+      this.materializedSig.delete(s.key);
       this.forgetCount(s.key);
       s.sig = "";
     }
@@ -295,6 +316,7 @@ export class VirtualTranscript implements TranscriptSource<Item> {
         s.override = expanded;
       }
       this.materialized.delete(s.key);
+      this.materializedSig.delete(s.key);
       this.forgetCount(s.key);
     }
     return changed;
@@ -302,6 +324,7 @@ export class VirtualTranscript implements TranscriptSource<Item> {
 
   forgetItem(key: number): void {
     this.materialized.delete(key);
+    this.materializedSig.delete(key);
   }
 
   /**
@@ -319,6 +342,7 @@ export class VirtualTranscript implements TranscriptSource<Item> {
     if (slot.head) slot.headOverride = expanded;
     else slot.override = expanded;
     this.materialized.delete(key);
+    this.materializedSig.delete(key);
     this.forgetCount(key);
     // force the next refresh to rebuild this slot even though metadata is equal
     slot.sig = "";
