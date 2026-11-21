@@ -58,6 +58,28 @@ describe("skills discovery", () => {
     expect(found[0]!.path).toBe(join(dir, "SKILL.md"));
   });
 
+  test("both layouts work together, in configured order", () => {
+    // <dir>/SKILL.md (the directory IS one skill) ...
+    const single = join(home, "single-again");
+    skillFile(single, "SKILL", "---\nname: solo-two\ndescription: own folder\n---\n");
+    // ... and <dir>/<name>/SKILL.md (a collection), configured after it
+    const collection = join(home, "collection");
+    skillFile(join(collection, "zeta"), "SKILL", "---\nname: zeta\ndescription: z\n---\n");
+    skillFile(join(collection, "alpha"), "SKILL", "---\nname: alpha\ndescription: a\n---\n");
+    mkdirSync(join(collection, "assets"), { recursive: true });
+
+    const { skills: found, warnings } = loadSkills([single, collection]);
+    expect(warnings).toEqual([]);
+    // configured dirs first, then directory-entry order within the collection,
+    // regardless of frontmatter name
+    expect(found.map((s) => s.name)).toEqual(["solo-two", "alpha", "zeta"]);
+    expect(found.map((s) => s.path)).toEqual([
+      join(single, "SKILL.md"),
+      join(collection, "alpha", "SKILL.md"),
+      join(collection, "zeta", "SKILL.md"),
+    ]);
+  });
+
   test("dot-directories are skipped, so a .git in a skills checkout contributes nothing", () => {
     skillFile(join(skills, ".hidden"), "SKILL", "---\nname: hidden\ndescription: nope\n---\n");
     skillFile(join(skills, "real"), "SKILL", "---\nname: real\ndescription: yes\n---\n");
