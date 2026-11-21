@@ -261,11 +261,19 @@ export class VirtualTranscript implements TranscriptSource<Item> {
     // The cached item may predate this signature (a kept-char cap or expansion
     // change). Drop it so the recount is built from current state; otherwise a
     // later forgetItem would rebuild rows that disagree with the stored count.
-    if (this.materializedSig.get(slot.key) !== signature) {
+    const wasCurrent = this.materializedSig.get(slot.key) === signature;
+    if (!wasCurrent) {
       this.materialized.delete(slot.key);
       this.materializedSig.delete(slot.key);
     }
     const rows = this.deps.countRows(this.itemAt(index), width);
+    // A cold count only needed the item transiently. Keep the exact row count,
+    // but do not retain every settled body after the count pass; paint will
+    // materialize its visible window again.
+    if (!wasCurrent) {
+      this.materialized.delete(slot.key);
+      this.materializedSig.delete(slot.key);
+    }
     let pw = this.countCache.get(width);
     if (!pw) {
       pw = new Map();

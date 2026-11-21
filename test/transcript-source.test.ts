@@ -128,6 +128,37 @@ describe("virtual transcript source", () => {
     expect(counted.countAt(2, w)).toBeGreaterThan(1);
   });
 
+  test("a cold count pass does not retain counted-only items", async () => {
+    const { projectDisplay } = await import("../src/context/display.ts");
+    const { VirtualTranscript } = await import("../src/tui/transcript.ts");
+    const { id } = await seed();
+    const deps = await makeDeps(id);
+    const builds: number[] = [];
+    const counts: number[] = [];
+    const spiedDeps = {
+      ...deps,
+      buildRows: (item: { k: number; kind: string; text: string; expanded?: boolean }, width: number) => {
+        builds.push(item.k);
+        return deps.buildRows(item, width);
+      },
+      countRows: (item: { k: number; kind: string; text: string; expanded?: boolean }, width: number) => {
+        counts.push(item.k);
+        return deps.countRows(item, width);
+      },
+    };
+    const src = new VirtualTranscript(spiedDeps, () => projectDisplay(id));
+    const w = 40;
+    for (let i = 0; i < src.length; i++) src.countAt(i, w);
+    expect(counts).toHaveLength(4);
+    expect(builds).toHaveLength(0);
+
+    // If countAt retained the item, paint would reuse it and buildRows would not
+    // run. Rebuilding here proves a count-only slot does not hold settled content.
+    builds.length = 0;
+    expect(src.renderAt(0, w).length).toBeGreaterThan(0);
+    expect(builds).toEqual([deps.key(1, 0)]);
+  });
+
   test("a count miss rebuilds an item under the current kept-char cap and expansion", async () => {
     const { itemEdgeSpan } = await import("../src/tui/layout.ts");
     const { VirtualTranscript } = await import("../src/tui/transcript.ts");
