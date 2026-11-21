@@ -1066,6 +1066,10 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     }
     for (const [, child] of childItems) liveRefs.add(child.item);
     transcript.refresh();
+    // A settled slot whose metadata signature changed re-materializes, but the
+    // row memo is keyed by per-item revision. Hand its keys to `touch` so a
+    // render can never reuse rows the old node produced.
+    for (const k of transcript.takeInvalidatedKeys()) touch(k);
     tui.items = prev.filter((it) => liveRefs.has(it));
     // Sweep cache entries no live row and no settled slot owns. A settled key is
     // answered from the slot index — no materialization.
@@ -1099,7 +1103,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     // body (2). Touch every slot the seq could own so the pair re-renders.
     for (let slot = 0; slot < 4; slot++) {
       const k = seqKey(seq, slot);
-      if (itemSigs.has(k)) {
+      if (itemSigs.has(k) || transcript.hasKey(k)) {
         touch(k);
         itemSigs.delete(k); // force the sig to mismatch on next refresh -> re-render
       }

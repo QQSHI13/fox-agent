@@ -70,6 +70,8 @@ export class VirtualTranscript implements TranscriptSource<Item> {
   private parentCall = new Map<string, number>();
   /** the last projection array; a different identity means a new/evicted cache */
   private lastNodes: DisplayNode[] | null = null;
+  /** settled keys whose materialized item/signature this refresh invalidated */
+  private invalidatedKeys: number[] = [];
 
   constructor(
     private readonly deps: VirtualTranscriptDeps,
@@ -90,9 +92,16 @@ export class VirtualTranscript implements TranscriptSource<Item> {
     // could otherwise collide and keep another session's materialized content.
     const reset = raw !== this.lastNodes;
     this.lastNodes = raw;
+    this.invalidatedKeys = [];
     const prevByKey = new Map<number, Slot>();
     if (!reset) for (const s of this.slots) prevByKey.set(s.key, s);
-    else this.materialized.clear();
+    else {
+      // A new projection (session switch / evicted cache) can collide on
+      // seq-derived keys. Invalidate every cached key so the host's row memo
+      // cannot answer with the previous projection's rows.
+      for (const k of this.materialized.keys()) this.invalidatedKeys.push(k);
+      this.materialized.clear();
+    }
 
     this.bySeq.clear();
     this.parentCall.clear();
@@ -120,10 +129,29 @@ export class VirtualTranscript implements TranscriptSource<Item> {
     for (const k of this.materialized.keys()) if (!live.has(k)) this.materialized.delete(k);
     for (const s of next) {
       const p = prevByKey.get(s.key);
-      if (!p || p.sig !== s.sig) this.materialized.delete(s.key);
+      // A brand-new slot has no cached rows to invalidate. Only a slot that
+      // EXISTED and whose metadata moved needs the host's row memo dropped.
+      if (!p) continue;
+      if (p.sig !== s.sig) {
+        this.materialized.delete(s.key);
+        this.invalidatedKeys.push(s.key);
+      }
     }
     this.slots = next;
     this.index = new Map(next.map((s, i) => [s.key, i]));
+  }
+
+  /**
+   * Keys whose settled slot changed since the last refresh.
+   *
+   * The host's row memo is keyed by per-item revision, not by this source's
+   * metadata signature, so `refresh()` must hand it the keys it invalidated.
+   * Draining keeps the report exactly-once.
+   */
+  takeInvalidatedKeys(): number[] {
+    const keys = this.invalidatedKeys;
+    this.invalidatedKeys = [];
+    return keys;
   }
 
   private slot(
@@ -352,34 +380,42 @@ export function overlaySources(base: TranscriptSource<Item>, overlays: readonly 
   };
   return {
     get length() {
-      return visible().length;
+      return base.length + visible().length;
     },
     itemAt(index) {
-      const oi = visible()[index];
+      if (index < base.length) return base.itemAt(index);
+      const oi = visible()[index - base.length];
       if (oi === undefined) throw new RangeError(`transcript overlay index ${index} out of range`);
       return overlay.itemAt(oi);
     },
     renderAt(index, width) {
-      const oi = visible()[index];
+      if (index < base.length) return base.renderAt(index, width);
+      const oi = visible()[index - base.length];
       if (oi === undefined) throw new RangeError(`transcript overlay index ${index} out of range`);
       return overlay.renderAt(oi, width);
     },
     rowsAt(index, width) {
-      const oi = visible()[index];
+      if (index < base.length) return base.rowsAt(index, width);
+      const oi = visible()[index - base.length];
       if (oi === undefined) throw new RangeError(`transcript overlay index ${index} out of range`);
       return overlay.rowsAt(oi, width);
     },
     countAt(index, width) {
-      const oi = visible()[index];
+      if (index < base.length) return base.countAt(index, width);
+      const oi = visible()[index - base.length];
       if (oi === undefined) throw new RangeError(`transcript overlay index ${index} out of range`);
       return overlay.countAt(oi, width);
     },
     indexOfKey(key) {
+      const baseIndex = base.indexOfKey(key);
+      if (baseIndex >= 0) return baseIndex;
       const map = visible();
-      for (let j = 0; j < map.length; j++) if (overlay.itemAt(map[j]).k === key) return j;
+      for (let j = 0; j < map.length; j++) if (overlay.itemAt(map[j]).k === key) return base.length + j;
       return -1;
     },
     itemByKey(key) {
+      const baseItem = base.itemByKey(key);
+      if (baseItem !== undefined) return baseItem;
       const map = visible();
       for (const i of map) {
         const it = overlay.itemAt(i);

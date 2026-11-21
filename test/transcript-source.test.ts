@@ -11,6 +11,11 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { Row } from "../src/tui/layout.ts";
+import type { Item } from "../src/view/model.ts";
+import type { DisplayNode } from "../src/context/display.ts";
+import type { MessageRow } from "../src/store/db.ts";
+import type { VirtualTranscriptDeps } from "../src/tui/transcript.ts";
 
 let dir: string;
 
@@ -156,5 +161,101 @@ describe("virtual transcript source", () => {
     src.refresh();
     expect(src.itemAt(2).expanded).toBe(true);
     expect(src.itemAt(3).expanded).toBe(true);
+  });
+
+  test("refresh reports changed settled keys so the host can invalidate rows", async () => {
+    const { VirtualTranscript } = await import("../src/tui/transcript.ts");
+    const node: DisplayNode = { seq: 1, role: "user", tool_call_id: null, callIds: [], contentLen: 3, failed: false, deleted: false };
+    const nodes = [node];
+    const row: MessageRow = {
+      id: "m1",
+      seq: 1,
+      session_id: "s",
+      parent_id: null,
+      role: "user",
+      content: "hi",
+      tool_calls: null,
+      tool_call_id: null,
+      media: null,
+      tokens: 1,
+      error: null,
+      created_at: 0,
+    };
+    const oneRow: Row[] = [{ segs: [{ t: "hi" }] }];
+    const deps: VirtualTranscriptDeps = {
+      key: (seq, slot) => seq * 4 + slot,
+      expanded: () => false,
+      keptChars: 100,
+      summarize: (name, args) => `${name}${args}`,
+      row: () => row,
+      buildRows: () => ({ rows: oneRow, span: [0, 1], visible: oneRow }),
+      countRows: () => 1,
+    };
+    const src = new VirtualTranscript(deps, () => nodes);
+    src.itemAt(0);
+    expect(src.takeInvalidatedKeys()).toEqual([]);
+    // same array identity, changed metadata: the slot signature moves
+    node.contentLen = 4;
+    src.refresh();
+    expect(src.takeInvalidatedKeys()).toEqual([4]); // seq 1 * 4 + slot 0
+    expect(src.takeInvalidatedKeys()).toEqual([]); // drained once
+  });
+});
+
+describe("transcript source composition", () => {
+  const mk = (k: number, text: string): Item => ({ k, kind: "info", text });
+  const rowsFor = (it: Item, width: number): Row[] => [{ segs: [{ t: `${it.text}/${width}` }] }];
+  const countFor = (_it: Item, _width: number): number => 1;
+
+  test("overlaySources composes base + surviving overlays, base keys win", async () => {
+    const { arrayItemSource, concatSources, overlaySources } = await import("../src/tui/transcript.ts");
+    const base = concatSources([arrayItemSource([mk(1, "a"), mk(2, "b"), mk(3, "c")], rowsFor, countFor)]);
+    // key 3 shadows a base key: the overlay copy must be omitted, not shifted in
+    const overlay = arrayItemSource([mk(3, "shadow"), mk(9, "live")], rowsFor, countFor);
+    const src = overlaySources(base, [overlay]);
+
+    expect(src.length).toBe(4); // 3 base + the one surviving overlay item
+    expect(src.itemAt(0).k).toBe(1);
+    expect(src.itemAt(2).k).toBe(3); // base wins over the shadow
+    expect(src.itemAt(3).k).toBe(9);
+    expect(src.renderAt(3, 10)[0].segs[0].t).toBe("live/10");
+    expect(src.rowsAt(1, 10)[0].segs[0].t).toBe("b/10");
+    expect(src.countAt(2, 10)).toBe(1);
+    expect(src.indexOfKey(2)).toBe(1);
+    expect(src.indexOfKey(3)).toBe(2); // base index, not the shadowed overlay
+    expect(src.indexOfKey(9)).toBe(3);
+    expect(src.itemByKey(3)?.text).toBe("c");
+    expect(src.itemByKey(9)?.text).toBe("live");
+    expect(src.itemByKey(77)).toBeUndefined();
+    expect(src.indexOfKey(77)).toBe(-1);
+  });
+
+  test("concatSources routes every read across source boundaries", async () => {
+    const { arrayItemSource, concatSources } = await import("../src/tui/transcript.ts");
+    const a = arrayItemSource([mk(1, "a"), mk(2, "b")], rowsFor, countFor);
+    const b = arrayItemSource([mk(3, "c"), mk(4, "d")], rowsFor, countFor);
+    const src = concatSources([a, b]);
+
+    expect(src.length).toBe(4);
+    expect(src.itemAt(1).k).toBe(2);
+    expect(src.itemAt(2).k).toBe(3);
+    expect(src.renderAt(2, 5)[0].segs[0].t).toBe("c/5");
+    expect(src.rowsAt(3, 6)[0].segs[0].t).toBe("d/6");
+    expect(src.countAt(0, 5)).toBe(1);
+    expect(src.indexOfKey(4)).toBe(3);
+    expect(src.itemByKey(3)?.text).toBe("c");
+    expect(src.indexOfKey(99)).toBe(-1);
+    expect(src.itemByKey(99)).toBeUndefined();
+  });
+
+  test("overlaySources with no overlays is the base, and missing keys are safe", async () => {
+    const { arrayItemSource, overlaySources } = await import("../src/tui/transcript.ts");
+    const base = arrayItemSource([mk(1, "a")], rowsFor, countFor);
+    const src = overlaySources(base, []);
+    expect(src.length).toBe(1);
+    expect(src.itemAt(0).k).toBe(1);
+    expect(src.indexOfKey(1)).toBe(0);
+    expect(src.indexOfKey(2)).toBe(-1);
+    expect(src.itemByKey(2)).toBeUndefined();
   });
 });
