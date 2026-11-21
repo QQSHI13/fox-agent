@@ -77,6 +77,53 @@ export function contentWidth(total: number, seq: number | undefined): number {
   return seq === undefined ? total : Math.max(8, total - chipGutter(seq) + 1);
 }
 
+/** The minimum layout needs to know about one transcript item. */
+export interface TranscriptSourceItem {
+  kind: string;
+  k: number;
+  toolResult?: boolean;
+}
+
+/**
+ * Random access to the transcript as layout sees it.
+ *
+ * `FrameInput` used to be an array plus two callbacks. A virtual transcript
+ * cannot hand layout a materialized array, so layout talks to this view
+ * instead. `length`, `itemAt`, `countAt` and `renderAt` are exactly the four
+ * things the two frame passes read; `rowsAt` / `indexOfKey` / `itemByKey` give
+ * hit-testing and paint the same view without reaching back into the host.
+ */
+export interface TranscriptSource<T extends TranscriptSourceItem = TranscriptSourceItem> {
+  readonly length: number;
+  itemAt(index: number): T;
+  renderAt(index: number, width: number): Row[];
+  rowsAt(index: number, width: number): Row[];
+  countAt(index: number, width: number): number;
+  indexOfKey(key: number): number;
+  itemByKey(key: number): T | undefined;
+}
+
+/** The legacy array-backed view over the same contract. */
+export function arrayTranscriptSource<T extends TranscriptSourceItem>(
+  items: readonly T[],
+  renderItem: (item: T, width: number) => Row[],
+  countItem: (item: T, width: number) => number,
+): TranscriptSource<T> {
+  return {
+    get length() {
+      return items.length;
+    },
+    itemAt: (index) => items[index],
+    // The caller's renderer already returns edge-stripped rows (layout's
+    // spacing contract), so `renderAt` and `rowsAt` are the same rows here.
+    renderAt: (index, width) => renderItem(items[index], width),
+    rowsAt: (index, width) => renderItem(items[index], width),
+    countAt: (index, width) => countItem(items[index], width),
+    indexOfKey: (key) => items.findIndex((item) => item.k === key),
+    itemByKey: (key) => items.find((item) => item.k === key),
+  };
+}
+
 /** Everything computeFrame needs to lay out one frame. Rendering callbacks are
  *  injected so this module stays free of theme/markdown/highlight deps. */
 export interface FrameInput {
@@ -86,13 +133,17 @@ export interface FrameInput {
   stick: boolean;
   /** scrollbar enabled by config; when false no column is reserved */
   scrollbar: boolean;
-  items: { kind: string; k: number; toolResult?: boolean }[];
+  /** array-backed transcript; ignored when `source` is set */
+  items?: TranscriptSourceItem[];
   streamText: string | null;
   /** render one item's rows at width w (app-side: theme + markdown live there).
    *  MUST return edge-stripped rows (layout's spacing contract). */
-  renderItem: (it: any, w: number) => Row[];
+  renderItem?: (it: any, w: number) => Row[];
   /** cheap row count for one item at width w — lineCache hits app-side */
-  countItem: (it: any, w: number) => number;
+  countItem?: (it: any, w: number) => number;
+  /** resolved transcript view; when absent it is built from
+   *  `items`/`renderItem`/`countItem` */
+  source?: TranscriptSource;
   /** render the streaming tail at width w */
   renderStream: (text: string, w: number) => Row[];
   /** cheap row count for the streaming tail */
@@ -150,6 +201,17 @@ export interface Frame {
   queueH: number;
 }
 
+/** Resolve the transcript view once per frame. Rebuilding the legacy adapter
+ *  inside each pass would allocate an adapter and its closures per call and
+ *  let `countRows` and `assemble` disagree about source identity. */
+function frameSource(inp: FrameInput): TranscriptSource {
+  if (inp.source) return inp.source;
+  if (inp.items && inp.renderItem && inp.countItem) {
+    return arrayTranscriptSource(inp.items, inp.renderItem, inp.countItem);
+  }
+  throw new Error("FrameInput requires source or items/renderItem/countItem");
+}
+
 /**
  * Assemble one frame. Two-pass width decision: count at full W; only if that
  * overflows the viewport recount at W-2 (text paints from column 1, so the
@@ -158,16 +220,17 @@ export interface Frame {
  * frame's flag once made the wrap width flip-flop at the overflow boundary.
  */
 export function computeFrame(inp: FrameInput): Frame {
+  const src = frameSource(inp);
   const vh0 = viewportHeight(inp);
   // ---- pass 1: cheap row counts, per width, until the wrap width is known ----
   // `total` is scrollTop-independent, which is what lets the scroll position be
   // settled BEFORE any window is built around it.
-  let counted = countRows(inp, inp.W);
+  let counted = countRows(inp, inp.W, src);
   let grand = counted.total;
   let w = inp.W;
   let sbShowing = false;
   if (inp.scrollbar && inp.W >= 12 && grand > vh0) {
-    counted = countRows(inp, inp.W - 2);
+    counted = countRows(inp, inp.W - 2, src);
     grand = counted.total;
     w = inp.W - 2;
     sbShowing = true;
@@ -203,7 +266,7 @@ export function computeFrame(inp: FrameInput): Frame {
   const stick = scrollTop >= Math.max(0, grand - vh) ? true : inp.stick;
   if (stick) scrollTop = Math.max(0, grand - vh);
 
-  const { rows, owner, winOffset } = assemble(inp, w, counted, grand, vh, scrollTop);
+  const { rows, owner, winOffset } = assemble(inp, w, counted, grand, vh, scrollTop, src);
   const sb = scrollbarGeom(grand, vh, scrollTop);
   return { contentWidth: w, sbShowing, sb, scrollTop, stick, winOffset, vh, rows, owner, rowCount: rows.length, total: grand, inputTop, shownCount, firstShown, queueH };
 }
@@ -246,7 +309,7 @@ export interface CountCache {
  *  The per-item counts ride along because pass 2 needs the same offsets, and
  *  `countItem` is cached app-side — calling it twice per item costs a lookup,
  *  so counts are computed once and shared. */
-function countRows(inp: FrameInput, w: number): CountSnapshot {
+function countRows(inp: FrameInput, w: number, src: TranscriptSource): CountSnapshot {
   const cache = inp.countCache;
   const version = cache ? cache.version() : 0;
   const hit = cache?.at.get(w);
@@ -263,7 +326,7 @@ function countRows(inp: FrameInput, w: number): CountSnapshot {
     };
   }
 
-  const length = inp.items.length;
+  const length = src.length;
   // A version bump means the values are stale, not necessarily the shape: when
   // the item count is unchanged, refill the same typed arrays instead of
   // allocating a new geometry set for every expand/collapse or ctx op.
@@ -274,8 +337,8 @@ function countRows(inp: FrameInput, w: number): CountSnapshot {
   let total = 0;
   let prevKind: string | null = null;
   for (let i = 0; i < length; i++) {
-    const it = inp.items[i];
-    const rows = inp.countItem(it, w);
+    const it = src.itemAt(i);
+    const rows = src.countAt(i, w);
     // interior blanks kept: countItem reports the POST-strip count, so the
     // item's own edge blanks are already excluded from `rows`
     const blank = i > 0 && rows > 0 && !glued(prevKind, it.kind) ? 1 : 0;
@@ -309,6 +372,7 @@ function assemble(
   grand: number,
   vh: number,
   scrollTop: number,
+  src: TranscriptSource,
 ): { rows: Row[]; owner: number[]; winOffset: number } {
   // ---- pass 2: render only the window [from, to) ----
   // The caller (paint) scrolls; everything outside the window is estimated
@@ -332,7 +396,7 @@ function assemble(
   const first = firstBodyEndAfter(geo, from);
   const last = firstBlockStartAtOrAfter(geo, to);
   for (let i = first; i < last; i++) {
-    const it = inp.items[i];
+    const it = src.itemAt(i);
     const blockStart = blockStartAt(geo, i);
     const bodyStart = bodyStartAt(geo, i);
     const bodyEnd = bodyEndAt(geo, i);
@@ -348,7 +412,7 @@ function assemble(
     // slice every one away.
     if (bodyStart >= to || bodyEnd <= from) continue;
 
-    const itemRows = inp.renderItem(it, w);
+    const itemRows = src.renderAt(i, w);
     const sliceFrom = Math.max(0, from - bodyStart);
     const sliceTo = Math.min(itemRows.length, to - bodyStart);
     for (let r = sliceFrom; r < sliceTo; r++) {
