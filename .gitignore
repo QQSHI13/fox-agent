@@ -27,6 +27,9 @@ __pycache__/
 /site/
 /.docsforge/
 
+# Superpowers working notes stay local.
+/docs/superpowers/
+
 # Python: scripts/bench/bench.py is real code and runs from a checkout, so its
 # cache lands here. Unanchored on purpose — any __pycache__ is junk.
 __pycache__/
