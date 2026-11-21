@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { PushCompositor, Plane, charWidth, type Style } from "./screen.ts";
 import { computed, counter, effect, flushNow, setScheduler, signal, type Disposable } from "./reactive.ts";
-import { computeFrame, dockRows, itemEdgeSpan, scrollbarScrollTop, viewportHeight, chipGutter, contentOrigin, contentOriginForChip, contentWidth, scrollPositionLabel, type CountEntry, type Frame, type FrameInput, type Row } from "./layout.ts";
+import { computeFrame, dockRows, itemEdgeSpan, scrollbarScrollTop, viewportHeight, chipGutter, contentOrigin, contentOriginForChip, contentWidth, scrollPositionLabel, type CountEntry, type Frame, type FrameInput, type Row, type TranscriptSource } from "./layout.ts";
 import { activePlugins, setRepaintHandler } from "../plugins/load.ts";
 import type { TuiRegionPlane, TuiWrapOptions } from "../plugins/types.ts";
 import { createDecoder, chordOf, normalizeChord, type Key } from "./keys.ts";
@@ -34,7 +34,7 @@ import { sessionRows, setPickerWheelStep } from "./pickerui.ts";
 import { VERSION } from "../core/version.ts";
 import type { AgentEvent } from "../core/events.ts";
 import { steer, peekSteer, withdrawSteer, attachHost, detachHost, abortTurn, adoptTurnController } from "../loop/steer.ts";
-import { projectView } from "../context/view.ts";
+import { displayStamp, projectDisplay, type DisplayNode } from "../context/display.ts";
 import { sessionContextTokens } from "../context/budget.ts";
 import { lookupModel } from "../providers/models.ts";
 import { bundledDisabled } from "../plugins/bundled.ts";
@@ -69,7 +69,8 @@ import { diffSegs, jsonSegs, statusSegs, pathSegs, wordDiff, ansiSegs, highlight
 import { argsSummary, argsFull, argsJson, keepTail, diffTouchKeys } from "./helpers.ts";
 export { argsSummary, argsFull, argsJson, keepTail, diffTouchKeys };
 
-import { nodeToItems as buildNodeItems, callMaps as buildCallMaps, type Item, type ItemKind, type CallMaps } from "../view/model.ts";
+import { nodeToItems as buildNodeItems, type Item, type ItemKind, type CallMaps } from "../view/model.ts";
+import { arrayItemSource, concatSources, overlaySources, VirtualTranscript } from "./transcript.ts";
 import { foxMarkAnsi } from "./logo.ts";
 export type { Item, ItemKind };
 
@@ -215,6 +216,8 @@ const SEQ_KEY_SPACE = 0x40000000;
 let keySeq = SEQ_KEY_SPACE;
 const nk = () => ++keySeq;
 const seqKey = (seq: number, slot: number) => seq * 4 + slot;
+/** stable empty projection for a pending session (no store to read) */
+const NO_DISPLAY: DisplayNode[] = [];
 /** Reserved key for the virtual chrome header (welcome / session-info). Not
  * transcript content, not stored — computed from state, prepended at
  * frameInput(). A constant just below the minted range avoids collisions. */
@@ -311,6 +314,8 @@ interface TuiState {
   cmdOut: string[] | null;
   paintScheduled: boolean;
   painted: Frame | null;
+  /** the transcript view the painted Frame was computed from */
+  paintedSource: TranscriptSource<Item> | null;
   statsCacheRev: number;
   statsCacheSegs: string[];
   lastStatsAt: number;
@@ -388,6 +393,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     cmdOut: null,
     paintScheduled: false,
     painted: null,
+    paintedSource: null,
     statsCacheRev: -1,
     statsCacheSegs: [],
     lastStatsAt: 0,
@@ -1021,18 +1027,37 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     bumpItems();
   }
 
+  /**
+   * Settled history as a lazy source. One slot per visible display node — one
+   * for user/think/assistant, head+body for a tool result — materialized only
+   * when layout counts or renders that slot. Nothing here hydrates the history.
+   *
+   * Expansion arrives as a getter: the config cap can change under /reload, and
+   * a snapshot would freeze the cap the transcript was constructed with.
+   */
+  const displayNodes = (): DisplayNode[] => (state.sessionId ? projectDisplay(state.sessionId) : NO_DISPLAY);
+  const transcript = new VirtualTranscript(
+    {
+      key: seqKey,
+      expanded: (seq) => expandedRefs.has(seq),
+      get keptChars() {
+        return KEPT_TOOL_CHARS;
+      },
+      summarize: (name, args) => `${name}${argsSummary(args)}`,
+      row: (seq) => (state.sessionId ? getMessage(state.sessionId, seq) : null),
+      buildRows: (it, w) => itemRows(it, w),
+      countRows: (it, w) => countItemTransient(it, w),
+    },
+    displayNodes,
+  );
+
   function refresh() {
     const prev = tui.items;
-    // Stage 4: re-attach the genuinely LIVE items by reference — the in-flight
-    // think block, running tool pairs, subagent lines — never by a heuristic.
-    // The old `seq === undefined && ref === undefined` filter caught EVERY minted
-    // item: settled-but-unanchored copies (a think row already in the store), and
-    // stale notices ("switched to …") from previous turns all re-appended after
-    // the store rebuild — thinking "piled to the end" and notices "sank to the
-    // bottom" on every refresh, and session switches re-appended the old
-    // session's leftovers. The store rebuild (loadItems) reproduces every
-    // settled node at its true position; only the currently-referenced live set
-    // must survive, re-inserted where it sits.
+    // Re-attach the genuinely LIVE items by reference — the in-flight think
+    // block, running tool pairs, subagent lines. The settled transcript is now
+    // virtual: `transcript.refresh()` owns it, so the overlay list keeps only
+    // these live references (and any reconciled stand-in, which leaves the
+    // overlay as soon as the settled source knows its key).
     const liveRefs = new Set<Item>();
     if (tui.liveThink) liveRefs.add(tui.liveThink);
     for (const [, live] of liveTools) {
@@ -1040,51 +1065,22 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       liveRefs.add(live.body);
     }
     for (const [, child] of childItems) liveRefs.add(child.item);
-    // Preserve each live item's slot: remember its neighbours so it can be
-    // re-inserted in place rather than appended at the end. One loadItems()
-    // call builds both the anchor-key set and the rebuilt array.
-    const rebuilt = loadItems();
-    const anchoredKeys = new Set(rebuilt.map((it) => it.k));
-    const liveSlots: { item: Item; afterKey: number | null }[] = [];
-    for (let i = 0; i < prev.length; i++) {
-      const it = prev[i];
-      if (!liveRefs.has(it)) continue;
-      let afterKey: number | null = null;
-      for (let j = i - 1; j >= 0; j--) {
-        if (anchoredKeys.has(prev[j].k)) {
-          afterKey = prev[j].k;
-          break;
-        }
-      }
-      liveSlots.push({ item: it, afterKey });
-    }
-    tui.items = [...rebuilt];
-    for (const { item, afterKey } of liveSlots) {
-      const at = afterKey === null ? 0 : tui.items.findIndex((a) => a.k === afterKey) + 1;
-      tui.items.splice(at < 0 ? tui.items.length : at, 0, item);
-    }
-    // log items keep stable seq-derived keys, so their cache entries stay
-    // warm across rebuilds (the whole point); minted-key items (welcome,
-    // ephemeral, streaming) die here — sweep their entries once per rebuild
-    // rather than paying an eviction scan on every cache insert every frame
-    if (lineCache.size > tui.items.length) {
-      const live = new Set(tui.items.map((i) => i.k));
-      for (const k of lineCache.keys()) if (!live.has(k)) lineCache.delete(k);
-      // `revs` needs the same sweep. Every minted item (a notice on each session
-      // switch, a warning, each streaming md fragment) takes a NEW key from a
-      // monotonically increasing counter, and nothing ever deleted from this
-      // map — so a TUI left open for days accumulated one permanent entry per
-      // item it had ever minted. `lineCache` and `itemSigs` were already
-      // pruned here; this was the one that leaked.
-      for (const k of revs.keys()) if (!live.has(k)) revs.delete(k);
-    }
-    // Diff-and-touch: bump the revision ONLY of nodes whose render signature
-    // changed, so a rebuild re-renders just the tail that moved — not the whole
-    // history. Prior nodes are append-only (stored content never changes), so
-    // an unchanged node keeps its cached rows; the previous blanket
-    // `for (it of items) touch(it.k)` invalidated everything and made refresh()
-    // O(history) re-wrap each time. The pure helper is unit-testable (see
-    // test/difftouch.test.ts).
+    transcript.refresh();
+    tui.items = prev.filter((it) => liveRefs.has(it));
+    // Sweep cache entries no live row and no settled slot owns. A settled key is
+    // answered from the slot index — no materialization.
+    const live = new Set(tui.items.map((i) => i.k));
+    for (const k of chromeKeys()) live.add(k);
+    for (const k of lineCache.keys()) if (!live.has(k) && !transcript.hasKey(k)) lineCache.delete(k);
+    // `revs` needs the same sweep. Every minted item (a notice on each session
+    // switch, a warning, each streaming md fragment) takes a NEW key from a
+    // monotonically increasing counter, and nothing ever deleted from this
+    // map — so a TUI left open for days accumulated one permanent entry per
+    // item it had ever minted.
+    for (const k of revs.keys()) if (!live.has(k) && !transcript.hasKey(k)) revs.delete(k);
+    // Diff-and-touch: bump the revision ONLY of overlay items whose render
+    // signature changed. Settled nodes are append-only; the virtual source's own
+    // signature check drops a materialized item only when its metadata moved.
     for (const k of diffTouchKeys(prev, tui.items, (i) => i.k, itemSig, itemSigs)) touch(k);
     // the rebuild drops any chrome header lifetime — it re-derives from state
     bumpItems();
@@ -1141,32 +1137,6 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     else tui.items.push(...anchored);
     for (const it of anchored) touch(it.k);
     return anchored;
-  }
-
-  function loadItems(): Item[] {
-    const out: Item[] = [];
-    if (!state.sessionId) return out; // pending session: nothing stored yet
-    // Build from the VIEW (projectView), not raw allMessagesLite: the view's
-    // `deleted` flag is what a revert (ctx delete op) sets, and the transcript
-    // must reflect it — reverted nodes render dimmed so the op is visible.
-    // Compaction/summary drops do NOT set `deleted`, so the append-only
-    // "display the full history" intent is preserved for those. Lite columns
-    // still apply: the view's nodes carry the same lite message rows.
-    // Reverted (ctx-delete) nodes DISAPPEAR from the transcript entirely — hidden
-    // like the ctx tool hides them, not grayed out. Filter them out here so they
-    // never become items; `hiddenSeqs` no longer needs tagging for rendering.
-    const nodes = projectView(state.sessionId).filter((n) => !n.deleted);
-    const msgs = nodes.map((n) => n.msg);
-    // the assistant -> tool join, written once in the shared model. `raw` keeps
-    // the full JSON so an expanded head shows what the model actually sent
-    // (argsJson is deferred — only a head someone expands ever pays for it).
-    const callMaps = buildCallMaps(msgs, (name, args) => `${name}${argsSummary(args)}`);
-    // Iterate NODES, not msgs: a node carries `replaceVersion`, which is how the
-    // transcript learns that the model is reading a harness-truncated excerpt of
-    // this row rather than the row itself. Passing only the message would lose
-    // that and silently claim the assistant saw the full output.
-    for (const n of nodes) out.push(...nodeToItems(n.msg, callMaps, false, n.replaceVersion !== undefined));
-    return out;
   }
 
   /**
@@ -1506,6 +1476,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     attachTuiHost(id);
     expandedRefs.clear(); // refs are per-session seqs; carrying them over expands unrelated nodes
     tui.expandMode = null; // likewise the ctrl+t fold direction — the new session starts on defaults
+    // seq-derived keys collide across sessions, and the settled rows now live in
+    // the virtual source; the render memo has no session dimension, so drop it.
+    lineCache.clear();
     // per-session token state, same reasoning: statusText() prefers the live
     // figure over the persisted one, so a stale one would override the new
     // session's stored last report until its first call lands
@@ -1728,7 +1701,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           }
           // Stage 3 think-anchor: the step's think row is persisted just before
           // the assistant node; thinkSeq names it. reconcileNode swaps the minted
-          // liveThink for the anchored item (same construction as loadItems) so
+          // liveThink for the anchored item (same construction as the settled transcript) so
           // the store rebuild and the live view cannot drift on the think block.
           if (ev.thinkSeq > 0 && tui.liveThink && state.sessionId) {
             // Capture the expand state BEFORE reconcileNode — reconcileNode reads
@@ -1754,7 +1727,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           } else if (state.sessionId) {
             // An assistant node that carries tool calls has NO text of its own —
             // the reply IS the calls. Nothing streamed, so nothing above anchored
-            // it, and the node stayed invisible until the next loadItems() rebuilt
+            // it, and the node stayed invisible until the next refresh() rebuilt
             // the transcript from the store at turn end. Its [N] marker then
             // popped into existence after the fact, and the gap in numbering
             // during the turn made the batch look like it skipped a message.
@@ -1873,7 +1846,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
             tui.streamText = null;
           }
           // Stage 2 converge: reconcileNode builds the settled pair the SAME way
-          // loadItems does (nodeToItems), so the live view and the store rebuild
+          // the settled transcript does (nodeToItems), so the live view and the store rebuild
           // can never drift. The tool result is persisted before tool_end fires,
           // so the row is there. Fall back to the hand-built pair if the read
           // fails (should not happen, but never lose the tool).
@@ -1886,7 +1859,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
             name: new Map([[ev.id, ev.name]]),
           }, livePair);
           if (anchoredPair) {
-            // carry mid-stream expand into expandedRefs (the mechanism loadItems
+            // carry mid-stream expand into expandedRefs (the mechanism refresh
             // honors), so output you were watching does not snap shut
             if (bodyOpen || tui.expandMode === true || headOpen) expandedRefs.add(ev.seq);
             for (const it of anchoredPair) {
@@ -2617,35 +2590,37 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       // unfold/fold everything expandable — thinking blocks, tool outputs, long tool heads
       const expandable = (it: Item) =>
         it.kind === "think" || it.kind === "toolbody" || (it.kind === "toolhead" && (!!it.detail || it.argsRaw !== undefined));
-      const anyFolded = tui.items.some((it) => expandable(it) && !isExpanded(it));
+      const anyFolded = transcript.anyFolded() || tui.items.some((it) => expandable(it) && !isExpanded(it));
       // remember the direction: every expandable item born from now on
       // (a streaming tool body, the next think block, a replayed transcript)
       // must arrive in the mode the user chose, or the toggle keeps losing
       tui.expandMode = anyFolded;
-      // Yield to the event loop every N items so the spinner, the input bar and
-      // any pending keystroke stay live while a long expand runs. Without this
-      // the whole loop is one synchronous block: the screen freezes for however
-      // long expanding every node takes, which is exactly the "ctrl+t hangs
-      // everything" report.
-      //
-      // PERF: toggleExpand calls touch() but NOT markDirty() — each markDirty
-      // schedules a full transcript re-derive (computeFrame). With N expandable
-      // items that is N re-derives. Batching: touch every item, markDirty ONCE
-      // at the end, so the derive runs a single time with all revs bumped.
-      void (async () => {
-        let n = 0;
-        for (const it of tui.items) {
-          if (!expandable(it)) continue;
-          const want = anyFolded;
-          if (isExpanded(it) !== want) {
-            if (!want) fillDetail(it); // about to expand: defer-pay here too
-            toggleExpand(it, true); // batch: the bump comes once after the loop
-            if (++n % 16 === 0) await screen.breathe();
-          }
-        }
-        bumpItems();
-        flash(anyFolded ? "all unfolded" : "all folded");
-      })().catch(() => {}); // a throw inside the expand loop must not become an unhandled rejection
+      // Settled history flips slot metadata only — no item is materialized. The
+      // overlay (live think / tool pairs / subagent lines) is toggled in place,
+      // as before. One bump repaints once.
+      // Keep the host's own expansion set in step with the slot metadata: it is
+      // what a later rebuild (a ctx op touching that seq) falls back to. The
+      // display projection is metadata only — this walks nodes, not bodies.
+      for (const n of displayNodes()) {
+        if (n.deleted || (n.role !== "think" && n.role !== "tool")) continue;
+        if (anyFolded) expandedRefs.add(n.seq);
+        else expandedRefs.delete(n.seq);
+      }
+      const changed = transcript.setAllExpanded(anyFolded);
+      let liveChanged = 0;
+      for (const it of tui.items) {
+        if (!expandable(it)) continue;
+        if (isExpanded(it) === anyFolded) continue;
+        if (!anyFolded) fillDetail(it); // about to expand: defer-pay here too
+        toggleExpand(it, true); // batch: the bump comes once after the loop
+        liveChanged++;
+      }
+      // The virtual source dropped the materialized items it flipped and has no
+      // per-key revision for that; the render memo is keyed by revision, so
+      // clear it once. This clears CACHED rows — it never materializes history.
+      if (changed || liveChanged) lineCache.clear();
+      bumpItems();
+      flash(anyFolded ? "all unfolded" : "all folded");
       return;
     }
     if (name === "v" && ctrl) {
@@ -2886,7 +2861,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     // selection subtract a gutter it never painted.
     let seq: number | undefined;
     if (fr && winIdx >= 0 && winIdx < fr.owner.length) {
-      const it = tui.items.find((i) => i.k === fr.owner[winIdx]);
+      const it = tui.paintedSource?.itemByKey(fr.owner[winIdx]);
       const isFirstRow = winIdx === 0 || fr.owner[winIdx - 1] !== fr.owner[winIdx];
       if (it && isFirstRow) seq = rowSeq(it);
     }
@@ -3205,16 +3180,17 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
    * Text of the code-fence block containing the clicked window row, or null
    * when that row is not fence content. Walks OUTWARD from the click across
    * the contiguous gutter/continuation run — a fence split across streamed
-   * assistant chunks spans items, so the walk is per-item (lazy itemRows,
-   * cached for the walk), not per-window: the block may extend past the
+   * assistant chunks spans items, so the walk is per-item (the painted source's
+   * rowsAt, cached for the walk), not per-window: the block may extend past the
    * visible slice. Conventions (gutter seg shape, tints) live in
    * markdown.ts's classifiers; this side only walks.
    */
   function codeBlockAround(winIdx: number): string | null {
     const fr = tui.painted;
-    if (!fr) return null;
+    const src = tui.paintedSource;
+    if (!fr || !src) return null;
     const k0 = fr.owner[winIdx];
-    const i0 = tui.items.findIndex((it) => it.k === k0);
+    const i0 = src.indexOfKey(k0);
     if (i0 < 0) return null;
     let first = winIdx;
     while (first > 0 && fr.owner[first - 1] === k0) first--;
@@ -3231,7 +3207,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     const rowsOf = (i: number): Row[] => {
       let rows = cache.get(i);
       if (!rows) {
-        rows = itemRows(tui.items[i], w).rows;
+        rows = src.rowsAt(i, w);
         cache.set(i, rows);
       }
       return rows;
@@ -3262,7 +3238,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         picked.add(`${i}:${r}`);
         r++;
       }
-      if (r < rows.length || i === tui.items.length - 1) break;
+      if (r < rows.length || i === src.length - 1) break;
       const next = rowsOf(i + 1);
       r = 0;
       if (!isCode(next[0]?.segs ?? [])) break;
@@ -3344,7 +3320,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     const winBase = fr.scrollTop - fr.winOffset;
     const winIdx = row - winBase;
     if (winIdx < 0 || winIdx >= fr.owner.length) return;
-    const it = tui.items.find((i) => i.k === fr.owner[winIdx]);
+    const it = tui.paintedSource?.itemByKey(fr.owner[winIdx]);
     // a streaming tail row owns no item yet (owner -1) but carries a predicted
     // streamSeq — its [N] marker is still clickable, opening the same ops wizard
     // (the wizard's ops read the settled node once the turn lands it)
@@ -3479,16 +3455,12 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     return rows.map((r, i) => ({ ...r, marker: i === 0 ? chip : cont }));
   }
 
-  function itemRows(it: Item, w: number): { rows: Row[]; span: [number, number]; visible: Row[] } {
-    const perWidth = lineCache.get(it.k);
-    const cached = perWidth?.get(w);
-    if (cached && cached.rev === revs.get(it.k) && cached.hl === highlightVersion()) {
-      // LRU touch: delete+set refreshes Map iteration order so the eviction
-      // scan below (oldest-first) drops the width not used the longest
-      perWidth!.delete(w);
-      perWidth!.set(w, cached);
-      return cached;
-    }
+  /**
+   * Render one item's rows at width `w` with NO memo read. The memo lives in
+   * `itemRows`; counting calls this directly so a count never depends on a
+   * rendering cache entry being fresh.
+   */
+  function buildItemRows(it: Item, w: number): { rows: Row[]; span: [number, number]; visible: Row[] } {
     // ONLY the item's first visual row carries the [N] chip; continuation rows
     // start at the usual left margin (see withMarker / stampTranscript). So only
     // the first wrap gives up the chip's gutter — everything after it wraps at
@@ -3660,18 +3632,39 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     if (it.kind === "toolhead" || it.toolResult) {
       for (const r of rows) r.bg = S.toolBgRow;
     }
-    // Hidden (reverted) nodes are filtered out of `loadItems`, so they never reach
-    // here — no dimming needed; they disappear entirely like the ctx tool hides them.
+    // Hidden (reverted) nodes are filtered out of the display projection, so they
+    // never reach here — no dimming needed; they disappear entirely like the ctx
+    // tool hides them.
     const span = itemEdgeSpan(rows);
-    // The exact slice renderItem hands layout, memoized alongside the whole
-    // item: a cache-hit frame returns this array (and its Row objects) as-is.
-    const entry = { rev: revs.get(it.k) ?? 0, rows, hl: highlightVersion(), span, visible: rows.slice(span[0], span[1]) };
+    return { rows, span, visible: rows.slice(span[0], span[1]) };
+  }
+
+  /**
+   * The cached render path: one entry per (item, width), valid while the item's
+   * revision and the highlight generation hold. The exact slice renderItem hands
+   * layout is memoized alongside the whole item, so a cache-hit frame returns
+   * this array (and its Row objects) as-is.
+   */
+  function itemRows(it: Item, w: number): { rows: Row[]; span: [number, number]; visible: Row[] } {
+    const perWidth = lineCache.get(it.k);
+    const cached = perWidth?.get(w);
+    const rev = revs.get(it.k) ?? 0;
+    const hl = highlightVersion();
+    if (cached && cached.rev === rev && cached.hl === hl) {
+      // LRU touch: delete+set refreshes Map iteration order so the eviction
+      // scan below (oldest-first) drops the width not used the longest
+      perWidth!.delete(w);
+      perWidth!.set(w, cached);
+      return cached;
+    }
+    const entry = buildItemRows(it, w);
+    const stored = { ...entry, rev, hl };
     let pw = lineCache.get(it.k);
     if (!pw) {
       pw = new Map();
       lineCache.set(it.k, pw);
     }
-    pw.set(w, entry);
+    pw.set(w, stored);
     // Cap widths per item: every terminal resize (and the scrollbar's W/W-2
     // dual pass) used to add a FULL set of wrapped rows per width and keep it
     // forever — on a long session that was hundreds of MB of stale Row/Seg
@@ -3683,8 +3676,19 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       if (oldest === undefined) break;
       pw.delete(oldest);
     }
-    return entry;
+    return stored;
   }
+
+  /**
+   * Cheap count for layout's pass 1 when the render cache cannot be trusted:
+   * render the item transiently and measure its edge-stripped span. Counting
+   * through `itemRows` would let a stale cache entry under-report after an
+   * expansion the source invalidated but no per-item revision recorded.
+   */
+  const countItemTransient = (it: Item, w: number): number => {
+    const [a, b] = itemEdgeSpan(buildItemRows(it, w).rows);
+    return b - a;
+  };
 
 
 
@@ -3799,28 +3803,32 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   function frameInput(): FrameInput {
     const layout = tui.inputMod.inputLayout();
     const caret = tui.inputMod.caretPos(layout, tui.cur);
+    // edge-stripped, the very same span the count reports — layout's spacing
+    // contract is "count and paint agree", and they cannot drift apart while
+    // both read this one span. The tool background is already baked in at build
+    // time, so this returns the memoized slice itself: no per-frame Row cloning
+    // (layout treats rows as read-only).
+    const renderItem = (it: Item, w: number): Row[] => itemRows(it, w).visible;
+    const countItem = (it: Item, w: number): number => {
+      const [a, b] = itemRows(it, w).span;
+      return b - a;
+    };
+    // Chrome (welcome/session-info) renders as VIRTUAL rows computed from state
+    // — never stored, so a settled rebuild never has to decide whether to keep
+    // it. The settled transcript is the lazy middle; the overlay is the live
+    // tail. `overlaySources` drops an anchored stand-in the moment the settled
+    // source knows its key.
+    const chrome = chromeVisible() ? chromeItems() : [];
+    const settled = concatSources([arrayItemSource(chrome, renderItem, countItem), transcript]);
+    const source = overlaySources(settled, [arrayItemSource(tui.items, renderItem, countItem)]);
     return {
       W: tui.W,
       H: tui.H,
       scrollTop: tui.scrollTop,
       stick: tui.stick,
       scrollbar: SCROLLBAR,
-      // Chrome (welcome/session-info) renders as a VIRTUAL first item computed
-      // from state — never stored in items[], so refresh() never rebuilds it.
-      items: chromeVisible() ? [...chromeItems(), ...tui.items] : tui.items,
+      source,
       streamText: tui.streamText,
-      renderItem: (it, w) => {
-        // edge-stripped, the very same span `countItem` reports — layout's
-        // spacing contract is "count and paint agree", and they cannot drift
-        // apart while both read this one span. The tool background is already
-        // baked in at build time, so this returns the memoized slice itself:
-        // no per-frame Row cloning (layout treats rows as read-only).
-        return itemRows(it, w).visible;
-      },
-      countItem: (it, w) => {
-        const [a, b] = itemRows(it, w).span;
-        return b - a;
-      },
       renderStream: (text, w) => streamRows(text, w),
       countStream: (text, w) => streamRows(text, w).length,
       inputRows: layout.rows.length,
@@ -4308,12 +4316,22 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   /** The transcript's PUSH, wired into the compositor's guarded pushFrame:
    *  computeFrame off the frame path, stamp the plane when the Frame lands. */
   function pushTranscriptFrame(): Promise<void> {
+    // Hit-tests answer from the SAME view that painted the frame — the row ->
+    // key owner map and the item lookup cannot disagree about which row a click
+    // landed on.
+    let paintedSource: TranscriptSource<Item> | null = null;
     return screen.pushFrame(
-      () => computeFrame(frameInput()),
+      () => {
+        const inp = frameInput();
+        // FrameInput erases the item type; this app's source is always Items.
+        paintedSource = (inp.source as TranscriptSource<Item> | undefined) ?? null;
+        return computeFrame(inp);
+      },
       (fr) => {
         tui.scrollTop = fr.scrollTop;
         tui.stick = fr.stick;
         tui.painted = fr;
+        tui.paintedSource = paintedSource;
         tui.inPaint = true;
         try { stampTranscript(fr); } finally { tui.inPaint = false; }
         // Tell the dependent regions the geometry of record moved. `splitV`
@@ -5034,7 +5052,8 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
        * Ordered mirror-then-flip on purpose: the tick that sees the owner's
        * turn end still refreshes, so the row it wrote last is not stranded.
        */
-      let lastSeq = -1;
+      /** the display projection's watermark at the last mirrored refresh */
+      let lastStamp: string | null = null;
       let lastLiveAt = 0;
       const pinnedMirrorId = state.sessionId;
       if (state.sessionId) {
@@ -5069,19 +5088,24 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
                 bumpStats();
               }
               // new transcript rows (tool results, settled messages) — refresh()
-              // rebuilds items from the log and re-seals nothing (a viewer never
-              // owns liveThink, it is null here)
-              const nodes = projectView(state.sessionId!);
-              let seq = lastSeq;
-              for (const n of nodes) if (!n.deleted) seq = Math.max(seq, n.msg.seq);
-              if (lastSeq >= 0 && seq > lastSeq) refresh();
-              lastSeq = seq;
+              // rebuilds the virtual transcript from the display projection's
+              // metadata and re-seals nothing (a viewer never owns liveThink).
+              // The watermark is `<last msg seq>:<last op seq>`, so a ctx op that
+              // hides a row also refreshes a viewer.
+              let stamp = displayStamp(state.sessionId!);
+              if (stamp === "0:0") {
+                // no resident projection yet (evicted): warm it from metadata
+                projectDisplay(state.sessionId!);
+                stamp = displayStamp(state.sessionId!);
+              }
+              if (lastStamp !== null && stamp !== lastStamp) refresh();
+              lastStamp = stamp;
             }
             // last: the flag may flip to false because the owner's turn ended
             refreshLock(state.sessionId!, false);
           } catch {}
         };
-        mirror(); // seed lastSeq before the first frame, so history is not "new"
+        mirror(); // seed lastStamp before the first frame, so history is not "new"
         tui.mirrorTimer = setInterval(mirror, 500);
         tui.mirrorTimer.unref?.();
       }

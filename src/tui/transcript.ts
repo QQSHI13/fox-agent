@@ -1,0 +1,372 @@
+// Virtual transcript: the settled history a layout frame reads.
+//
+// The display projection (context/display.ts) knows every settled node as
+// metadata — role, visibility, tool-call parentage, content length — and no
+// body. This source answers layout's four per-frame questions (length, itemAt,
+// countAt, renderAt) by materializing ONE node's items on demand, through the
+// same view model the live view uses. Nothing hydrates the history up front.
+//
+// Live rows are NOT part of this source. The app composes them with
+// `overlaySources`, which also drops an overlay item whose key the settled base
+// has learned, so a reconciled live stand-in disappears instead of rendering
+// twice.
+import type { DisplayNode } from "../context/display.ts";
+import type { MessageRow } from "../store/db.ts";
+import { callMaps, nodeToItems, type CallMaps, type Item } from "../view/model.ts";
+import { arrayTranscriptSource, type Row, type TranscriptSource } from "./layout.ts";
+
+export interface VirtualTranscriptDeps {
+  key(seq: number, slot: 0 | 1 | 2): number;
+  expanded(seq: number): boolean;
+  keptChars: number;
+  summarize(name: string, args: string): string;
+  row(seq: number): MessageRow | null;
+  buildRows(item: Item, width: number): { rows: Row[]; span: [number, number]; visible: Row[] };
+  countRows(item: Item, width: number): number;
+}
+
+type SlotKind = "user" | "think" | "assistant" | "toolhead" | "toolbody";
+
+interface Slot {
+  key: number;
+  seq: number;
+  slot: 0 | 1 | 2;
+  role: DisplayNode["role"];
+  kind: SlotKind;
+  /** metadata signature: a change drops this slot's materialized item */
+  sig: string;
+  expandable: boolean;
+  /** a tool head rather than its body / a single-slot node */
+  head: boolean;
+  /** body/think expansion override; undefined falls back to deps.expanded */
+  override: boolean | undefined;
+  /** head expansion override; heads were only ever toggled explicitly */
+  headOverride: boolean | undefined;
+}
+
+const EMPTY_CALLS: CallMaps = { label: new Map(), raw: new Map(), name: new Map() };
+const MISSING: Item = { k: -1, kind: "info", text: "" };
+
+function missingItem(slot: Slot): Item {
+  if (slot.head) return { k: slot.key, kind: "toolhead", seq: slot.seq, text: "» tool" };
+  if (slot.slot === 2) return { k: slot.key, kind: "toolbody", seq: slot.seq, markerCont: true, ref: slot.seq, toolResult: true, text: "" };
+  const kind: Item["kind"] = slot.role === "user" ? "user" : slot.role === "think" ? "think" : "md";
+  return { k: slot.key, kind, seq: slot.seq, text: "" };
+}
+
+/**
+ * A `TranscriptSource` over the session's display projection.
+ *
+ * Slot order is the transcript order: one slot for user/think/assistant rows,
+ * two for a tool result (head then body). Keys come from `deps.key`, which the
+ * app derives from the storage seq, so they stay stable across refreshes and
+ * every consumer's line cache stays warm.
+ */
+export class VirtualTranscript implements TranscriptSource<Item> {
+  private slots: Slot[] = [];
+  private index = new Map<number, number>();
+  private materialized = new Map<number, Item>();
+  private bySeq = new Map<number, DisplayNode>();
+  private parentCall = new Map<string, number>();
+  /** the last projection array; a different identity means a new/evicted cache */
+  private lastNodes: DisplayNode[] | null = null;
+
+  constructor(
+    private readonly deps: VirtualTranscriptDeps,
+    private readonly nodes: () => DisplayNode[],
+  ) {
+    this.refresh();
+  }
+
+  get length(): number {
+    return this.slots.length;
+  }
+
+  /** Rebuild the slot table from the projection, preserving unchanged slots. */
+  refresh(): void {
+    const raw = this.nodes();
+    // projectDisplay returns its cached array for a session. A different array
+    // identity means a different session (or an evicted cache): seq-derived keys
+    // could otherwise collide and keep another session's materialized content.
+    const reset = raw !== this.lastNodes;
+    this.lastNodes = raw;
+    const prevByKey = new Map<number, Slot>();
+    if (!reset) for (const s of this.slots) prevByKey.set(s.key, s);
+    else this.materialized.clear();
+
+    this.bySeq.clear();
+    this.parentCall.clear();
+    for (const n of raw) {
+      if (n.deleted) continue;
+      this.bySeq.set(n.seq, n);
+      if (n.role === "assistant") for (const id of n.callIds) this.parentCall.set(id, n.seq);
+    }
+
+    const next: Slot[] = [];
+    for (const n of raw) {
+      if (n.deleted) continue;
+      const base = `${n.role}|${n.contentLen}|${n.replaceVersion ?? ""}|${n.tool_call_id ?? ""}`;
+      if (n.role === "tool") {
+        const hasCall = !!n.tool_call_id && this.parentCall.has(n.tool_call_id);
+        next.push(this.slot(n, 1, "toolhead", `${base}|${hasCall ? 1 : 0}`, hasCall, true, prevByKey));
+        next.push(this.slot(n, 2, "toolbody", base, true, false, prevByKey));
+      } else {
+        const kind: SlotKind = n.role === "user" ? "user" : n.role === "think" ? "think" : "assistant";
+        next.push(this.slot(n, 0, kind, base, kind === "think", false, prevByKey));
+      }
+    }
+
+    const live = new Set(next.map((s) => s.key));
+    for (const k of this.materialized.keys()) if (!live.has(k)) this.materialized.delete(k);
+    for (const s of next) {
+      const p = prevByKey.get(s.key);
+      if (!p || p.sig !== s.sig) this.materialized.delete(s.key);
+    }
+    this.slots = next;
+    this.index = new Map(next.map((s, i) => [s.key, i]));
+  }
+
+  private slot(
+    n: DisplayNode,
+    slot: 0 | 1 | 2,
+    kind: SlotKind,
+    sig: string,
+    expandable: boolean,
+    head: boolean,
+    prev: Map<number, Slot>,
+  ): Slot {
+    const key = this.deps.key(n.seq, slot);
+    const p = prev.get(key);
+    return { key, seq: n.seq, slot, role: n.role, kind, sig, expandable, head, override: p?.override, headOverride: p?.headOverride };
+  }
+
+  private effective(slot: Slot): boolean {
+    if (slot.head) return slot.headOverride ?? false;
+    return slot.override ?? this.deps.expanded(slot.seq);
+  }
+
+  private materialize(slot: Slot): Item {
+    const node = this.bySeq.get(slot.seq);
+    const row = this.deps.row(slot.seq);
+    if (!node || !row) return missingItem(slot);
+    const opts = {
+      key: this.deps.key,
+      expanded: () => this.effective(slot),
+      keptChars: this.deps.keptChars,
+    };
+    if (node.role === "tool" && node.tool_call_id) {
+      const parentSeq = this.parentCall.get(node.tool_call_id);
+      const parent = parentSeq === undefined ? null : this.deps.row(parentSeq);
+      const cm = parent ? callMaps([parent], this.deps.summarize) : EMPTY_CALLS;
+      const items = nodeToItems(row, cm, opts, undefined, node.replaceVersion !== undefined);
+      const it = items[slot.head ? 0 : 1];
+      if (!it) return missingItem(slot);
+      if (slot.head) it.expanded = this.effective(slot) || undefined;
+      return it;
+    }
+    return nodeToItems(row, EMPTY_CALLS, opts, undefined, node.replaceVersion !== undefined)[0] ?? missingItem(slot);
+  }
+
+  itemAt(index: number): Item {
+    const slot = this.slots[index];
+    if (!slot) return MISSING;
+    let it = this.materialized.get(slot.key);
+    if (!it) {
+      it = this.materialize(slot);
+      this.materialized.set(slot.key, it);
+    }
+    return it;
+  }
+
+  renderAt(index: number, width: number): Row[] {
+    return this.deps.buildRows(this.itemAt(index), width).visible;
+  }
+
+  rowsAt(index: number, width: number): Row[] {
+    return this.deps.buildRows(this.itemAt(index), width).rows;
+  }
+
+  countAt(index: number, width: number): number {
+    return this.deps.countRows(this.itemAt(index), width);
+  }
+
+  indexOfKey(key: number): number {
+    return this.index.get(key) ?? -1;
+  }
+
+  itemByKey(key: number): Item | undefined {
+    const i = this.index.get(key);
+    return i === undefined ? undefined : this.itemAt(i);
+  }
+
+  hasKey(key: number): boolean {
+    return this.index.has(key);
+  }
+
+  /** Drop one seq's materialized items and signatures; the next refresh rebuilds. */
+  touchSeq(seq: number): void {
+    for (const s of this.slots) {
+      if (s.seq !== seq) continue;
+      this.materialized.delete(s.key);
+      s.sig = "";
+    }
+  }
+
+  anyFolded(): boolean {
+    return this.slots.some((s) => s.expandable && !this.effective(s));
+  }
+
+  /** Fold/unfold every expandable settled slot without materializing it. */
+  setAllExpanded(expanded: boolean): number {
+    let changed = 0;
+    for (const s of this.slots) {
+      if (!s.expandable) continue;
+      if (s.head) {
+        if ((s.headOverride ?? false) !== expanded) changed++;
+        s.headOverride = expanded;
+      } else {
+        if (this.effective(s) !== expanded) changed++;
+        s.override = expanded;
+      }
+      this.materialized.delete(s.key);
+    }
+    return changed;
+  }
+
+  forgetItem(key: number): void {
+    this.materialized.delete(key);
+  }
+}
+
+/** The array-backed source under the transcript's interface name. */
+export function arrayItemSource(
+  items: readonly Item[],
+  renderItem: (item: Item, width: number) => Row[],
+  countItem: (item: Item, width: number) => number,
+): TranscriptSource<Item> {
+  return arrayTranscriptSource(items, renderItem, countItem);
+}
+
+interface Located {
+  source: TranscriptSource<Item>;
+  index: number;
+}
+
+function locate(sources: readonly TranscriptSource<Item>[], index: number): Located | null {
+  let offset = 0;
+  for (const source of sources) {
+    const n = source.length;
+    if (index < offset + n) return { source, index: index - offset };
+    offset += n;
+  }
+  return null;
+}
+
+/** One source over several, read left to right. */
+export function concatSources(sources: readonly TranscriptSource<Item>[]): TranscriptSource<Item> {
+  return {
+    get length() {
+      let n = 0;
+      for (const s of sources) n += s.length;
+      return n;
+    },
+    itemAt(index) {
+      const at = locate(sources, index);
+      if (!at) throw new RangeError(`transcript index ${index} out of range`);
+      return at.source.itemAt(at.index);
+    },
+    renderAt(index, width) {
+      const at = locate(sources, index);
+      if (!at) throw new RangeError(`transcript index ${index} out of range`);
+      return at.source.renderAt(at.index, width);
+    },
+    rowsAt(index, width) {
+      const at = locate(sources, index);
+      if (!at) throw new RangeError(`transcript index ${index} out of range`);
+      return at.source.rowsAt(at.index, width);
+    },
+    countAt(index, width) {
+      const at = locate(sources, index);
+      if (!at) throw new RangeError(`transcript index ${index} out of range`);
+      return at.source.countAt(at.index, width);
+    },
+    indexOfKey(key) {
+      let offset = 0;
+      for (const s of sources) {
+        const i = s.indexOfKey(key);
+        if (i >= 0) return offset + i;
+        offset += s.length;
+      }
+      return -1;
+    },
+    itemByKey(key) {
+      for (const s of sources) {
+        const it = s.itemByKey(key);
+        if (it !== undefined) return it;
+      }
+      return undefined;
+    },
+  };
+}
+
+/**
+ * `base` plus the overlay items it does not already know.
+ *
+ * Overlay items are transient (a live stream, a reconciled stand-in). Once the
+ * settled base has the same key, the overlay copy is stale and must vanish —
+ * this is what makes an anchored settled item leave the overlay after refresh.
+ */
+export function overlaySources(base: TranscriptSource<Item>, overlays: readonly TranscriptSource<Item>[]): TranscriptSource<Item> {
+  const overlay = concatSources(overlays);
+  let memo: { n: number; m: number; map: number[] } | null = null;
+  const visible = (): number[] => {
+    const n = overlay.length;
+    const m = base.length;
+    if (memo && memo.n === n && memo.m === m) return memo.map;
+    const map: number[] = [];
+    for (let i = 0; i < n; i++) {
+      const it = overlay.itemAt(i);
+      if (it !== undefined && base.indexOfKey(it.k) < 0) map.push(i);
+    }
+    memo = { n, m, map };
+    return map;
+  };
+  return {
+    get length() {
+      return visible().length;
+    },
+    itemAt(index) {
+      const oi = visible()[index];
+      if (oi === undefined) throw new RangeError(`transcript overlay index ${index} out of range`);
+      return overlay.itemAt(oi);
+    },
+    renderAt(index, width) {
+      const oi = visible()[index];
+      if (oi === undefined) throw new RangeError(`transcript overlay index ${index} out of range`);
+      return overlay.renderAt(oi, width);
+    },
+    rowsAt(index, width) {
+      const oi = visible()[index];
+      if (oi === undefined) throw new RangeError(`transcript overlay index ${index} out of range`);
+      return overlay.rowsAt(oi, width);
+    },
+    countAt(index, width) {
+      const oi = visible()[index];
+      if (oi === undefined) throw new RangeError(`transcript overlay index ${index} out of range`);
+      return overlay.countAt(oi, width);
+    },
+    indexOfKey(key) {
+      const map = visible();
+      for (let j = 0; j < map.length; j++) if (overlay.itemAt(map[j]).k === key) return j;
+      return -1;
+    },
+    itemByKey(key) {
+      const map = visible();
+      for (const i of map) {
+        const it = overlay.itemAt(i);
+        if (it.k === key) return it;
+      }
+      return undefined;
+    },
+  };
+}
