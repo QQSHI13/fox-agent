@@ -61,6 +61,23 @@ export interface MessageRow {
   created_at: number;
 }
 
+/**
+ * What the display projection needs from a message, and nothing more.
+ *
+ * `content_len` replaces the body: SQLite computes the length while scanning,
+ * so a long settled history can be indexed without ever deserializing its
+ * text. `has_error` is a 0/1 flag for the same reason — the error string is
+ * never part of a display node.
+ */
+export interface MessageIndexRow {
+  seq: number;
+  role: Role;
+  tool_calls: string | null;
+  tool_call_id: string | null;
+  has_error: number;
+  content_len: number;
+}
+
 export interface OpRow {
   seq: number;
   session_id: string;
@@ -686,6 +703,18 @@ export function messagesAfter(sessionId: string, afterSeq: number): MessageRow[]
   return prep(sessionDb(sessionId), 
     "SELECT * FROM messages WHERE session_id = ? AND seq > ? ORDER BY seq")
     .all(sessionId, afterSeq) as MessageRow[];
+}
+
+const MESSAGE_INDEX_COLS = "seq, role, tool_calls, tool_call_id, CASE WHEN error IS NULL THEN 0 ELSE 1 END AS has_error, LENGTH(content) AS content_len";
+
+/** Metadata-only message rows for the display projection (never the body). */
+export function messageIndexRows(sessionId: string): MessageIndexRow[] {
+  return prep(sessionDb(sessionId), `SELECT ${MESSAGE_INDEX_COLS} FROM messages WHERE session_id = ? ORDER BY seq`).all(sessionId) as MessageIndexRow[];
+}
+
+/** Metadata-only rows with seq > afterSeq — the incremental display feed. */
+export function messageIndexRowsAfter(sessionId: string, afterSeq: number): MessageIndexRow[] {
+  return prep(sessionDb(sessionId), `SELECT ${MESSAGE_INDEX_COLS} FROM messages WHERE session_id = ? AND seq > ? ORDER BY seq`).all(sessionId, afterSeq) as MessageIndexRow[];
 }
 
 /** Ops with seq > afterSeq — same, for the op log. */
