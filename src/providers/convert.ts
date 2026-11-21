@@ -26,12 +26,18 @@ function safeJson(s: string): unknown {
  */
 export type MediaRouting = "native" | "user-fallback";
 
+/** Ref-only parts (a blob the hydration step could not resolve) carry no
+ *  bytes and would build a broken file part — drop them instead. */
+function withData(media: MediaPart[] | undefined): MediaPart[] {
+  return media?.filter((p) => p.data !== undefined) ?? [];
+}
+
 /** The file-part shape the tool-result content union expects (narrower
  *  than the SDK's broad FilePart — `data` must be the tagged data form). */
 function mediaFilePart(p: MediaPart) {
   return {
     type: "file" as const,
-    data: { type: "data" as const, data: p.data },
+    data: { type: "data" as const, data: p.data ?? "" },
     mediaType: p.mimeType,
     ...(p.filename ? { filename: p.filename } : {}),
   };
@@ -39,8 +45,8 @@ function mediaFilePart(p: MediaPart) {
 
 /** The tool message keeps its text; media moves out when routing demands. */
 function toolOutput(m: ChatMessage, routing: MediaRouting): ToolResultPart["output"] {
-  const media = routing === "user-fallback" ? undefined : m.media;
-  return media?.length
+  const media = routing === "user-fallback" ? undefined : withData(m.media);
+  return media.length
     ? {
         type: "content",
         value: [
@@ -128,8 +134,10 @@ export function toModelMessages(messages: ChatMessage[], routing: MediaRouting =
       ],
     });
     if (routing === "user-fallback" && m.media?.length) {
-      pendingMedia.names.push(...m.media.map((p) => `${p.filename ?? "attachment"} (${p.mimeType})`));
-      pendingMedia.parts.push(...m.media);
+      const media = withData(m.media);
+      if (!media.length) continue;
+      pendingMedia.names.push(...media.map((p) => `${p.filename ?? "attachment"} (${p.mimeType})`));
+      pendingMedia.parts.push(...media);
     }
   }
   flushMedia();

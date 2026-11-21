@@ -193,6 +193,12 @@ const SESSION_SCHEMA = `
     updated_at INTEGER NOT NULL,
     PRIMARY KEY (session_id, key)
   );
+  CREATE TABLE IF NOT EXISTS media_blobs (
+    hash TEXT PRIMARY KEY,
+    mime TEXT NOT NULL,
+    bytes INTEGER NOT NULL,
+    data BLOB NOT NULL
+  );
 `;
 
 const USER_VERSION = 4;

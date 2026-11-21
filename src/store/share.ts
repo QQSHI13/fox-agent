@@ -23,6 +23,7 @@
  */
 import { writeFileSync } from "node:fs";
 import { allMessages, getSession, type MessageRow } from "./db.ts";
+import { hydrateMediaParts } from "./media.ts";
 import { renderMarkdown } from "../tui/markdown.ts";
 import { theme } from "../tui/themes.ts";
 import type { Seg } from "../tui/wrap.ts";
@@ -238,8 +239,16 @@ export function shareSession(sessionId: string, outPath: string): ShareResult {
   // `allMessages`, not the lite projection: the page shows images (which live in
   // `media`) and must not render a failed tool as a clean one (which needs
   // `error`). The lite select exists to keep transcript REPLAY cheap; a share is
-  // one session, one call, and its whole point is fidelity.
-  const rows = allMessages(sessionId);
+  // one session, one call, and its whole point is fidelity. Media is hydrated
+  // here — refs become data URIs — because the page embeds images inline.
+  const rows = allMessages(sessionId).map((r) => {
+    if (!r.media) return r;
+    try {
+      return { ...r, media: JSON.stringify(hydrateMediaParts(sessionId, JSON.parse(r.media))) };
+    } catch {
+      return r; // a corrupt media cell degrades to the text note, never a failed share
+    }
+  });
   if (!rows.length) throw new Error(`session ${sessionId} has no messages`);
 
   const ps = pieces(rows);

@@ -4,10 +4,24 @@ export interface ToolCall {
   arguments: string; // raw JSON string
 }
 
-/** A binary attachment on a message: base64 bytes plus its IANA media type. */
+/**
+ * A binary attachment on a message: base64 bytes plus its IANA media type.
+ *
+ * `data` is present on freshly produced parts (a tool result before storage)
+ * and on hydrated parts (about to become a provider request). Stored rows
+ * usually carry a `ref` instead: the base64 lives once in the session's
+ * `media_blobs` table (keyed by the SHA-256 of the raw bytes) so message rows
+ * and every cache built from them stay small. Old sessions written before
+ * offloading still carry inline `data`, which hydrates as a pass-through.
+ */
 export interface MediaPart {
   mimeType: string;
-  data: string; // base64
+  /** base64 bytes; absent on ref-only stored parts */
+  data?: string;
+  /** SHA-256 of the raw bytes in `media_blobs`; absent on inline parts */
+  ref?: string;
+  /** raw byte size, informational (token estimates, share pages) */
+  bytes?: number;
   filename?: string;
 }
 
