@@ -81,9 +81,20 @@ export type { Item, ItemKind };
  */
 let COLLAPSED_TOOL_CHARS = 240;
 let KEPT_TOOL_CHARS = 4_000;
+/**
+ * Called once when the caps actually move. startTui registers a hook that
+ * drops its closure-local row memo and bumps the transcript count revision, so
+ * a live /settings change cannot leave paint and count on different caps.
+ */
+let tuiCapsHook: (() => void) | null = null;
+export function onTuiCapsChange(hook: (() => void) | null): void {
+  tuiCapsHook = hook;
+}
 export function setTuiCaps(collapsed: number, kept: number): void {
+  if (collapsed === COLLAPSED_TOOL_CHARS && kept === KEPT_TOOL_CHARS) return;
   COLLAPSED_TOOL_CHARS = collapsed;
   KEPT_TOOL_CHARS = kept;
+  tuiCapsHook?.();
 }
 
 /**
@@ -1336,10 +1347,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       const r = applyConfig();
       const collapsed = state.config?.tuiCollapsedChars ?? 240;
       const kept = state.config?.tuiKeptChars ?? 4_000;
-      // Memoized rows were wrapped under the previous caps. Bumping counts
-      // below re-asks the count path, but an unchanged item revision would let
-      // lineCache answer paint with the OLD truncation, so drop it on a change.
-      if (collapsed !== COLLAPSED_TOOL_CHARS || kept !== KEPT_TOOL_CHARS) lineCache.clear();
+      // The registered hook drops lineCache and bumps counts when these move.
       setTuiCaps(collapsed, kept);
       setTuiScrollbar(state.config?.tuiScrollbar ?? true);
       setTuiScrollStep(state.config?.tuiScrollStep ?? 2);
@@ -3391,6 +3399,11 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   // Nested by width keeps both warm; the prune sweep walks the outer (item)
   // keys and stays correct, and the clear()s are whole-map as before.
   const lineCache = new Map<number, Map<number, { rev: number; rows: Row[]; hl: number; span: [number, number]; visible: Row[] }>>();
+  // A cap change re-wraps settled tool bodies: drop the memo and re-ask counts.
+  onTuiCapsChange(() => {
+    lineCache.clear();
+    bumpItems();
+  });
   /** Outer (item) keys kept warm. A viewport is far smaller; this only stops an
    *  hours-long sweep through history from pinning every row it ever painted. */
   const LINE_CACHE_MAX_ITEMS = 384;
