@@ -66,6 +66,8 @@ export class VirtualTranscript implements TranscriptSource<Item> {
   private slots: Slot[] = [];
   private index = new Map<number, number>();
   private materialized = new Map<number, Item>();
+  /** per width, per slot key: an exact row count valid while the signature holds */
+  private countCache = new Map<number, Map<number, { signature: string; rows: number }>>();
   private bySeq = new Map<number, DisplayNode>();
   private parentCall = new Map<string, number>();
   /** the last projection array; a different identity means a new/evicted cache */
@@ -101,6 +103,7 @@ export class VirtualTranscript implements TranscriptSource<Item> {
       // cannot answer with the previous projection's rows.
       for (const k of this.materialized.keys()) this.invalidatedKeys.push(k);
       this.materialized.clear();
+      this.countCache.clear();
     }
 
     this.bySeq.clear();
@@ -127,6 +130,7 @@ export class VirtualTranscript implements TranscriptSource<Item> {
 
     const live = new Set(next.map((s) => s.key));
     for (const k of this.materialized.keys()) if (!live.has(k)) this.materialized.delete(k);
+    for (const pw of this.countCache.values()) for (const k of pw.keys()) if (!live.has(k)) pw.delete(k);
     for (const s of next) {
       const p = prevByKey.get(s.key);
       // A brand-new slot has no cached rows to invalidate. Only a slot that
@@ -134,6 +138,7 @@ export class VirtualTranscript implements TranscriptSource<Item> {
       if (!p) continue;
       if (p.sig !== s.sig) {
         this.materialized.delete(s.key);
+        this.forgetCount(s.key);
         this.invalidatedKeys.push(s.key);
       }
     }
@@ -171,6 +176,20 @@ export class VirtualTranscript implements TranscriptSource<Item> {
   private effective(slot: Slot): boolean {
     if (slot.head) return slot.headOverride ?? false;
     return slot.override ?? this.deps.expanded(slot.seq);
+  }
+
+  /**
+   * Every input that can change this slot's row count: the metadata signature
+   * (role, content length, replacement version, tool-call join), the seq, the
+   * slot kind, the effective expansion, and the kept-char cap. Highlight and
+   * theme are deliberately absent — they recolour and never re-wrap.
+   */
+  private countSignature(slot: Slot): string {
+    return `${slot.sig}|${slot.seq}|${slot.kind}|${this.effective(slot) ? 1 : 0}|${this.deps.keptChars}`;
+  }
+
+  private forgetCount(key: number): void {
+    for (const pw of this.countCache.values()) pw.delete(key);
   }
 
   private materialize(slot: Slot): Item {
@@ -215,7 +234,25 @@ export class VirtualTranscript implements TranscriptSource<Item> {
   }
 
   countAt(index: number, width: number): number {
-    return this.deps.countRows(this.itemAt(index), width);
+    const slot = this.slots[index];
+    if (!slot) return this.deps.countRows(MISSING, width);
+    // Bound width entries to the widths in play (the frame's W and the
+    // scrollbar's W-2), the same rule layout uses: five or more widths means a
+    // resize, and the oldest width can never come back.
+    if (this.countCache.size > 4 && !this.countCache.has(width)) this.countCache.clear();
+    const signature = this.countSignature(slot);
+    const hit = this.countCache.get(width)?.get(slot.key);
+    // A hit neither calls deps.countRows nor materializes: the signature names
+    // every input that could have moved the count.
+    if (hit && hit.signature === signature) return hit.rows;
+    const rows = this.deps.countRows(this.itemAt(index), width);
+    let pw = this.countCache.get(width);
+    if (!pw) {
+      pw = new Map();
+      this.countCache.set(width, pw);
+    }
+    pw.set(slot.key, { signature, rows });
+    return rows;
   }
 
   indexOfKey(key: number): number {
@@ -236,6 +273,7 @@ export class VirtualTranscript implements TranscriptSource<Item> {
     for (const s of this.slots) {
       if (s.seq !== seq) continue;
       this.materialized.delete(s.key);
+      this.forgetCount(s.key);
       s.sig = "";
     }
   }
@@ -257,6 +295,7 @@ export class VirtualTranscript implements TranscriptSource<Item> {
         s.override = expanded;
       }
       this.materialized.delete(s.key);
+      this.forgetCount(s.key);
     }
     return changed;
   }
@@ -280,6 +319,7 @@ export class VirtualTranscript implements TranscriptSource<Item> {
     if (slot.head) slot.headOverride = expanded;
     else slot.override = expanded;
     this.materialized.delete(key);
+    this.forgetCount(key);
     // force the next refresh to rebuild this slot even though metadata is equal
     slot.sig = "";
   }

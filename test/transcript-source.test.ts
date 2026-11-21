@@ -118,7 +118,12 @@ describe("virtual transcript source", () => {
     for (let i = 0; i < counted.length; i++) counted.countAt(i, w);
     calls.length = 0;
     for (let i = 0; i < counted.length; i++) counted.countAt(i, w);
-    expect(calls.length).toBe(counted.length);
+    expect(calls).toEqual([]);
+    const before = counted.countAt(2, w);
+    const toolSeq = projectDisplay(id).find((n) => n.role === "tool")!.seq;
+    counted.touchSeq(toolSeq);
+    expect(counted.countAt(2, w)).toBe(before);
+    expect(calls.length).toBeGreaterThan(0);
     counted.setAllExpanded(true);
     expect(counted.countAt(2, w)).toBeGreaterThan(1);
   });

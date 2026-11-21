@@ -3385,6 +3385,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   // Nested by width keeps both warm; the prune sweep walks the outer (item)
   // keys and stays correct, and the clear()s are whole-map as before.
   const lineCache = new Map<number, Map<number, { rev: number; rows: Row[]; hl: number; span: [number, number]; visible: Row[] }>>();
+  /** Outer (item) keys kept warm. A viewport is far smaller; this only stops an
+   *  hours-long sweep through history from pinning every row it ever painted. */
+  const LINE_CACHE_MAX_ITEMS = 384;
 
   function itemStyle(kind: ItemKind): Partial<Seg> {
     switch (kind) {
@@ -3664,6 +3667,10 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       // scan below (oldest-first) drops the width not used the longest
       perWidth!.delete(w);
       perWidth!.set(w, cached);
+      // the outer map is LRU too: a hit means this item was just used, so it
+      // must move behind everything the prune has not seen in longer
+      lineCache.delete(it.k);
+      lineCache.set(it.k, perWidth!);
       return cached;
     }
     const entry = buildItemRows(it, w);
@@ -3671,8 +3678,10 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     let pw = lineCache.get(it.k);
     if (!pw) {
       pw = new Map();
-      lineCache.set(it.k, pw);
+    } else {
+      lineCache.delete(it.k);
     }
+    lineCache.set(it.k, pw);
     pw.set(w, stored);
     // Cap widths per item: every terminal resize (and the scrollbar's W/W-2
     // dual pass) used to add a FULL set of wrapped rows per width and keep it
@@ -3685,7 +3694,27 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       if (oldest === undefined) break;
       pw.delete(oldest);
     }
+    pruneLineCache();
     return stored;
+  }
+
+  /**
+   * Bound the outer row cache. Live overlay items and chrome are painted every
+   * frame, so evicting them would only rebuild the same rows on the next paint;
+   * they are exempt. A settled item's rows are safe to drop — the transcript
+   * source re-materializes them on demand — and forgetting its display item
+   * keeps the materialized cache in step with the rows that actually exist.
+   */
+  function pruneLineCache(): void {
+    if (lineCache.size <= LINE_CACHE_MAX_ITEMS) return;
+    const exempt = new Set<number>(chromeKeys());
+    for (const it of tui.items) exempt.add(it.k);
+    for (const k of lineCache.keys()) {
+      if (lineCache.size <= LINE_CACHE_MAX_ITEMS) break;
+      if (exempt.has(k)) continue;
+      lineCache.delete(k);
+      transcript.forgetItem(k);
+    }
   }
 
   /**
