@@ -47,7 +47,7 @@ interface ServerTool {
   name: string;
   description: string;
   schema: Record<string, unknown>;
-  call: (args: unknown, onProgress?: (delta: string) => void) => Promise<ToolResult>;
+  call: (args: unknown, onProgress?: (delta: string) => void, retried?: boolean) => Promise<ToolResult>;
 }
 
 /**
@@ -252,39 +252,79 @@ async function dialSlot(pool: McpPool, slot: ServerSlot): Promise<boolean> {
       live.pid = (transport as { pid?: number | null }).pid ?? undefined;
       const res = await withTimeout(client.listTools(), MCP_DIAL_TIMEOUT_MS, `mcp '${slot.name}' listTools`);
 
-      slot.tools = res.tools.map((tool) => ({
-        name: tool.name,
-        description: tool.description ?? tool.name,
-        schema: (tool.inputSchema as Record<string, unknown>) ?? { type: "object" },
-        call: async (args: unknown, onProgress?: (delta: string) => void): Promise<ToolResult> => {
+      // one mapping for the dial and for a mid-life tools/list_changed refresh,
+      // so the two can never disagree about what a tool looks like
+      const mapTools = (list: typeof res.tools): ServerTool[] =>
+        list.map((tool) => ({
+          name: tool.name,
+          description: tool.description ?? tool.name,
+          schema: (tool.inputSchema as Record<string, unknown>) ?? { type: "object" },
+          call: async (args: unknown, onProgress?: (delta: string) => void, retried = false): Promise<ToolResult> => {
+            try {
+              const r = await withTimeout(
+                client.callTool(
+                  { name: tool.name, arguments: args as Record<string, unknown> },
+                  undefined,
+                  // forward the server's progress notifications as live output —
+                  // a browser navigation or long build shows its heartbeat in the
+                  // TUI instead of a silent multi-minute wait
+                  {
+                    onprogress: onProgress
+                      ? (p: { progress?: number; total?: number; message?: string }) => {
+                          const frac = typeof p.progress === "number" ? `${p.progress}/${p.total ?? "?"}` : "";
+                          const msg = [frac, p.message].filter(Boolean).join(" ");
+                          if (msg) onProgress(`mcp ${slot.name}/${tool.name}: ${msg}\n`);
+                        }
+                      : undefined,
+                  },
+                ),
+                MCP_CALL_TIMEOUT_MS,
+                `mcp '${slot.name}/${tool.name}'`,
+              );
+              return toResult(r.content, r.isError === true);
+            } catch (e) {
+              // A THROWN error is a wire problem, never the tool's own failure —
+              // those come back as isError results. When the transport signaled
+              // death, or a remote session expired underneath us, reconnect and
+              // try the call exactly once: overloaded or restarting servers
+              // usually recover within a second. Observed death also bypasses
+              // the backoff gate — waiting gains nothing when we already know
+              // the child is gone (the opencode lesson).
+              const expired = !!slot.cfg.url && /session/i.test((e as Error).message ?? "");
+              if (retried || (live.alive && !expired)) {
+                if (!live.alive && slot.client === live) slot.client = null;
+                return fail(`error: mcp '${slot.name}/${tool.name}' call failed: ${(e as Error).message}`);
+              }
+              if (slot.client === live) slot.client = null;
+              void Promise.resolve(live.close()).catch(() => {});
+              const up = await dialSlot(pool, slot);
+              const fresh = slot.tools.find((t) => t.name === tool.name);
+              if (up && fresh) return fresh.call(args, onProgress, true);
+              return fail(`error: mcp '${slot.name}/${tool.name}' call failed: ${(e as Error).message}`);
+            }
+          },
+        }));
+
+      slot.tools = mapTools(res.tools);
+
+      // a server may register tools after the handshake (the SDK advertises
+      // the capability); refresh the slot's table and face in place instead of
+      // waiting for the next reconnect to notice
+      try {
+        const { ToolListChangedNotificationSchema } = await import("@modelcontextprotocol/sdk/types.js");
+        client.setNotificationHandler(ToolListChangedNotificationSchema, async () => {
+          if (slot.client !== live) return; // a newer dial owns the slot now
           try {
-            const r = await withTimeout(
-              client.callTool(
-                { name: tool.name, arguments: args as Record<string, unknown> },
-                undefined,
-                // forward the server's progress notifications as live output —
-                // a browser navigation or long build shows its heartbeat in the
-                // TUI instead of a silent multi-minute wait
-                {
-                  onprogress: onProgress
-                    ? (p: { progress?: number; total?: number; message?: string }) => {
-                        const frac = typeof p.progress === "number" ? `${p.progress}/${p.total ?? "?"}` : "";
-                        const msg = [frac, p.message].filter(Boolean).join(" ");
-                        if (msg) onProgress(`mcp ${slot.name}/${tool.name}: ${msg}\n`);
-                      }
-                    : undefined,
-                },
-              ),
-              MCP_CALL_TIMEOUT_MS,
-              `mcp '${slot.name}/${tool.name}'`,
-            );
-            return toResult(r.content, r.isError === true);
-          } catch (e) {
-            if (!live.alive) slot.client = null; // the child went away mid-call
-            return fail(`error: mcp '${slot.name}/${tool.name}' call failed: ${(e as Error).message}`);
+            const fresh = await withTimeout(client.listTools(), MCP_DIAL_TIMEOUT_MS, `mcp '${slot.name}' listTools`);
+            slot.tools = mapTools(fresh.tools);
+            rebuildToolFace(pool);
+          } catch {
+            slot.client = null; // list failed on a live client: reconnect on next call
           }
-        },
-      }));
+        });
+      } catch {
+        // an SDK without the schema export: catalog refresh is a no-op, calls still work
+      }
 
       slot.client = live;
       slot.lastError = null;

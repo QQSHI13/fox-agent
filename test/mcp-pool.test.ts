@@ -111,6 +111,102 @@ describe.skipIf(!CAN_RUN)("the shared MCP pool", () => {
     expect(deltas.join("")).toContain("step two");
   }, 60_000);
 
+  test("a daemon that dies mid-session is replaced on the next call", async () => {
+    // the daemon can idle-exit, OOM or be killed; the cached link used to turn
+    // that into "pool connection closed" for the REST OF THE PROCESS
+    const { poolSocketPath, poolTools } = await import("../src/mcp/pool.ts");
+    const sockPath = poolSocketPath();
+    await startDaemon(sockPath);
+    const a = await poolTools(fixtureCfg());
+    const before = await a!.tools.get("mcp")!.run({ server: "fix", tool: "echo", arguments: { message: "before" } }, {} as never);
+    expect(before).toMatchObject({ ok: true, output: "echo: before" });
+
+    // kill whoever actually serves the socket — the module-level handle may be
+    // an EADDRINUSE loser that exited the moment another test's daemon won the bind
+    const pids = Bun.spawnSync(["pgrep", "-f", sockPath]).stdout.toString().trim().split("\n").filter(Boolean);
+    expect(pids.length).toBeGreaterThan(0);
+    for (const pid of pids) {
+      try {
+        process.kill(Number(pid), "SIGKILL");
+      } catch {}
+    }
+    await Bun.sleep(300);
+    // a killed daemon leaves its socket file behind; drop it so the
+    // replacement's wait-for-socket loop below actually waits for ITS socket
+    try {
+      rmSync(sockPath, { force: true });
+    } catch {}
+    // the production client respawns the daemon here; under bun test the pool
+    // cannot self-exec, so a replacement stands in for that spawn — what is
+    // under test is the client noticing the dead link, evicting it and
+    // reconnecting (a fresh daemon also proves the call re-dials on demand)
+    await startDaemon(sockPath);
+
+    const after = await a!.tools.get("mcp")!.run({ server: "fix", tool: "echo", arguments: { message: "after" } }, {} as never);
+    expect(after).toMatchObject({ ok: true, output: "echo: after" });
+  }, 60_000);
+
+  test("a changed config for the same server name replaces the child, not the pool", async () => {
+    const { poolSocketPath, poolTools } = await import("../src/mcp/pool.ts");
+    await startDaemon(poolSocketPath());
+    const v1 = { fix: { command: process.execPath, args: ["run", FIXTURE] } };
+    const a = await poolTools(v1);
+    expect(await a!.tools.get("mcp")!.run({ server: "fix", tool: "echo", arguments: { message: "v1" } }, {} as never)).toMatchObject({
+      ok: true,
+      output: "echo: v1",
+    });
+    expect(fixtureProcs()).toBe(1);
+
+    // same name, different config: the slot's child is replaced, not joined
+    const v2 = { fix: { command: process.execPath, args: ["run", FIXTURE], env: { FOX_POOL_TEST_MARKER: "2" } } };
+    const b = await poolTools(v2);
+    expect(await b!.tools.get("mcp")!.run({ server: "fix", tool: "echo", arguments: { message: "v2" } }, {} as never)).toMatchObject({
+      ok: true,
+      output: "echo: v2",
+    });
+    await Bun.sleep(300);
+    expect(fixtureProcs()).toBe(1);
+  }, 60_000);
+
+  test("callers that predate the proto field still get the legacy catalog shape", async () => {
+    // a mixed fleet: an old client binary must keep working against a new
+    // daemon (and vice versa) without anyone restarting a healthy pool
+    const net = await import("node:net");
+    const raw = (sockPath: string, msg: Record<string, unknown>): Promise<Record<string, unknown>> =>
+      new Promise((resolve, reject) => {
+        const sock = net.connect(sockPath);
+        let buf = "";
+        sock.on("connect", () => sock.write(JSON.stringify(msg) + "\n"));
+        sock.on("data", (b: Buffer) => {
+          buf += b.toString();
+          const i = buf.indexOf("\n");
+          if (i < 0) return;
+          try {
+            resolve(JSON.parse(buf.slice(0, i)) as Record<string, unknown>);
+          } catch (e) {
+            reject(e);
+          }
+          sock.destroy();
+        });
+        sock.on("error", reject);
+      });
+
+    const { poolSocketPath } = await import("../src/mcp/pool.ts");
+    const sockPath = poolSocketPath();
+    await startDaemon(sockPath);
+
+    const legacy = (await raw(sockPath, { id: 1, method: "catalog", servers: fixtureCfg() })) as {
+      result?: { catalog?: Record<string, string[]> };
+    };
+    expect(Array.isArray(legacy.result?.catalog?.fix)).toBe(true);
+    expect(typeof legacy.result!.catalog!.fix[0]).toBe("string");
+
+    const modern = (await raw(sockPath, { id: 2, method: "catalog", servers: fixtureCfg(), proto: 2 })) as {
+      result?: { catalog?: Record<string, { name: string; description: string }[]> };
+    };
+    expect(modern.result!.catalog!.fix[0].description).toBeTruthy();
+  }, 60_000);
+
   test("there is ONE daemon: the socket path does not depend on the config", async () => {
     // This used to be the opposite assertion — the path carried
     // sha256(config).slice(0,16), so two configs got two daemons and a server

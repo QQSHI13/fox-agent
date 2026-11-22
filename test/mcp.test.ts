@@ -184,6 +184,24 @@ describe.skipIf(!CAN_RUN)("mcp bridge against a live server", () => {
     expect(deltas.join("")).toContain("1/2");
   }, 30_000);
 
+  test("tools/list_changed refreshes the face without a reconnect", async () => {
+    // servers may register tools after the handshake; the slot's table and the
+    // tool face must pick that up in place (opencode refreshes catalogs live)
+    const { mcpTools } = await import("../src/mcp/client.ts");
+    const first = await mcpTools(fixtureCfg());
+    await first.tools.get("mcp")!.run({ server: "fix", tool: "register", arguments: { name: "dyn" } }, {} as never);
+    // the notification fired before the result; the refresh is async, so poll
+    let face = "";
+    for (let i = 0; i < 50; i++) {
+      const t = await mcpTools(fixtureCfg());
+      face = t.tools.get("mcp")!.def.description ?? "";
+      if (face.includes("fix/dyn")) break;
+      await Bun.sleep(100);
+    }
+    expect(face).toContain("fix/dyn");
+    expect(face).toContain("Dynamic tool dyn.");
+  }, 30_000);
+
   test("one unreachable server warns and leaves the others working", async () => {
     const { mcpTools } = await import("../src/mcp/client.ts");
     const { tools, warnings } = await mcpTools({

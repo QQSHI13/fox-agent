@@ -48,6 +48,13 @@ const IDLE_EXIT_MS = 10 * 60_000;
 const CONNECT_DEADLINE_MS = 5_000;
 /** A single MCP call can legitimately take minutes (a browser navigation). */
 const CALL_TIMEOUT_MS = 15 * 60_000;
+/**
+ * Pool wire protocol version. New clients send it with every request; a daemon
+ * from before it existed answers anyway, in the shape those old clients expect
+ * (a string-name catalog), so a client/binary upgrade never has to restart a
+ * healthy shared daemon to keep working.
+ */
+const PROTO = 2;
 
 /**
  * The daemon's socket. ONE name, not a config hash.
@@ -212,9 +219,16 @@ export async function runPoolDaemon(sockPath: string): Promise<void> {
         // instance's servers; without this, a window configured only with
         // `chrome` would advertise `pg` tools because another window had
         // postgres — a tool the model can see but this session never asked for.
-        const mine: Record<string, McpToolInfo[]> = {};
-        for (const name of declared) if (full[name]) mine[name] = full[name]!;
-        return { catalog: mine };
+        const modern = msg.proto === PROTO;
+        const mine: Record<string, McpToolInfo[] | string[]> = {};
+        for (const name of declared) {
+          if (!full[name]) continue;
+          // pre-proto callers expect the legacy bare-name list; modern callers
+          // get descriptions (they normalize the legacy shape anyway, so the
+          // daemon speaking EITHER old or new to a mixed fleet stays correct)
+          mine[name] = modern ? full[name]! : full[name]!.map((t) => t.name);
+        }
+        return { catalog: mine, proto: PROTO };
       }
 
       if (method === "status") {
@@ -234,13 +248,14 @@ export async function runPoolDaemon(sockPath: string): Promise<void> {
         // tagged with the caller's token, so a long call stays visible.
         const progress = typeof msg.progress === "string" ? (msg.progress as string) : undefined;
         const onProgress = progress ? (delta: string) => link.send({ method: "progress", tag: progress, delta }) : undefined;
-        return await mcpRunTool(
+        const result = await mcpRunTool(
           msg.server as string,
           msg.tool as string,
           msg.arguments,
           declared,
           onProgress,
         );
+        return { ...result, proto: PROTO };
       }
 
       throw new Error(`unknown pool method ${String(method)}`);
@@ -285,7 +300,7 @@ export async function poolTools(
   const link = await connectOrSpawn(sockPath);
   if (!link) return null;
 
-  const res = (await link.request({ method: "catalog", servers })) as
+  const res = (await link.request({ method: "catalog", servers, proto: PROTO })) as
     | { catalog?: Record<string, McpToolInfo[]>; error?: string }
     | undefined;
   if (!res || res.error || !res.catalog) {
@@ -308,29 +323,54 @@ export async function poolTools(
       const emit = ctx?.emit && ctx.callId ? ctx.emit : undefined;
       const callId = ctx?.callId;
       const tag = emit ? `p${Date.now().toString(36)}${Math.floor(Math.random() * 1e6).toString(36)}` : undefined;
-      const prevEvent = link.onEvent;
-      if (tag) {
-        link.onEvent = (msg) => {
-          if (msg.method === "progress" && msg.tag === tag && emit && callId) {
-            emit({ type: "tool_output", id: callId, delta: String(msg.delta ?? "") });
-          }
-        };
-      }
+
+      // ONE attempt on the current link. The daemon can die mid-session (idle
+      // exit, OOM, a kill); a dead link used to mean every later call failed
+      // with "pool connection closed" for the life of the process. The caller
+      // passes `link`: dead or alive; on a dead link, or a call lost to a
+      // dying daemon, drop the cache and reconnect — respawning if needed —
+      // then let the caller retry once on the fresh link.
+      const attempt = async (live: Link): Promise<ToolResult | "retry"> => {
+        const prevEvent = live.onEvent;
+        if (tag) {
+          live.onEvent = (msg) => {
+            if (msg.method === "progress" && msg.tag === tag && emit && callId) {
+              emit({ type: "tool_output", id: callId, delta: String(msg.delta ?? "") });
+            }
+          };
+        }
+        try {
+          const out = (await live.request({
+            method: "call",
+            servers,
+            server: args?.server,
+            tool: args?.tool,
+            arguments: args?.arguments,
+            ...(tag ? { progress: tag } : {}),
+            proto: PROTO,
+          })) as (ToolResult & { error?: string }) | undefined;
+          if (!out) return "retry"; // the socket died mid-request
+          if (out.error) return fail(`error: ${out.error}`);
+          return { ok: out.ok, output: out.output, ...(out.media ? { media: out.media } : {}) };
+        } finally {
+          if (tag) live.onEvent = prevEvent;
+        }
+      };
+
+      let first = await attempt(link);
+      if (first !== "retry") return first;
+      // the daemon is gone: evict the cached link and reconnect (respawning
+      // the daemon if the socket is gone). The call request carries `servers`,
+      // so a brand-new daemon dials what THIS caller needs on the spot.
+      if (poolLinks.get(sockPath) === link) poolLinks.delete(sockPath);
       try {
-        const out = (await link.request({
-          method: "call",
-          servers,
-          server: args?.server,
-          tool: args?.tool,
-          arguments: args?.arguments,
-          ...(tag ? { progress: tag } : {}),
-        })) as (ToolResult & { error?: string }) | undefined;
-        if (!out) return fail("error: mcp pool connection closed");
-        if (out.error) return fail(`error: ${out.error}`);
-        return { ok: out.ok, output: out.output, ...(out.media ? { media: out.media } : {}) };
-      } finally {
-        if (tag) link.onEvent = prevEvent;
-      }
+        link.sock.destroy();
+      } catch {}
+      const fresh = await connectOrSpawn(sockPath);
+      if (!fresh) return fail("error: mcp pool connection closed");
+      const second = await attempt(fresh);
+      if (second === "retry") return fail("error: mcp pool connection closed");
+      return second;
     },
   };
   return { tools: new Map([[def.name, tool]]), warnings: [] };
@@ -343,7 +383,7 @@ export async function poolTools(
 export async function poolMcpStatus(servers: Record<string, McpServerConfig>): Promise<Record<string, unknown> | null> {
   const link = await connectOrSpawn(poolSocketPath());
   if (!link) return null;
-  const res = (await link.request({ method: "status", servers })) as { status?: Record<string, unknown>; error?: string } | undefined;
+  const res = (await link.request({ method: "status", servers, proto: PROTO })) as { status?: Record<string, unknown>; error?: string } | undefined;
   if (!res || res.error || !res.status) return null;
   return res.status;
 }

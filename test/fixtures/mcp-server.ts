@@ -56,6 +56,11 @@ const TOOLS = [
     description: "Emit two progress notifications, then finish.",
     inputSchema: { type: "object", properties: {} },
   },
+  {
+    name: "register",
+    description: "Dynamically add a tool and fire notifications/tools/list_changed.",
+    inputSchema: { type: "object", properties: { name: { type: "string" } }, required: ["name"] },
+  },
 ];
 
 const server = new Server({ name: "fox-test-fixture", version: "1.0.0" }, { capabilities: { tools: {} } });
@@ -90,6 +95,10 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       const token = (req.params as { _meta?: { progressToken?: number } })._meta?.progressToken;
       if (token !== undefined) {
         for (const [i, message] of ["step one", "step two"].entries()) {
+          // a real server reports progress as work happens, never in one burst;
+          // back-to-back writes in the same tick also get coalesced somewhere
+          // in the bun stdio pipe and the client then sees only the first
+          await Bun.sleep(50);
           await server.notification({
             method: "notifications/progress",
             params: { progressToken: token, progress: i + 1, total: 2, message },
@@ -97,6 +106,14 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         }
       }
       return { content: [{ type: "text", text: "progress: done" }] };
+    }
+    case "register": {
+      const toolName = (args as { name?: string } | undefined)?.name ?? "dyn";
+      if (!TOOLS.some((t) => t.name === toolName)) {
+        TOOLS.push({ name: toolName, description: `Dynamic tool ${toolName}.`, inputSchema: { type: "object", properties: {} } });
+        await server.notification({ method: "notifications/tools/list_changed", params: {} });
+      }
+      return { content: [{ type: "text", text: `registered ${toolName}` }] };
     }
     default:
       return { content: [{ type: "text", text: `unknown tool ${name}` }], isError: true };
