@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { createStreamRows, legacyStreamRows, type Row } from "../src/tui/rows.ts";
+import { createStreamRows, isStreamRewind, legacyStreamRows, type Row } from "../src/tui/rows.ts";
 
 function rowsText(rows: Row[]): string {
   return rows.map((r) => r.segs.map((s) => s.t).join("")).join("\n");
@@ -133,5 +133,67 @@ describe("rows kernel: golden equivalence with the legacy stream renderer", () =
     // the wrap-reuse optimization (kernel must not re-wrap the stable head);
     // for now both are O(tail) by design — this commit only fixes the CALLER
     // repaint window and pins the output contract.
+  });
+});
+
+
+describe("isStreamRewind: a new message must not inherit the old kernel", () => {
+  // Regression: the streaming tail's head showed the PREVIOUS message ("做完了")
+  // until the new node settled. The old guard compared the new text against its
+  // OWN prefix — vacuously true — so a new message longer than the old fed text
+  // was appended to the old kernel instead of replacing it.
+  test("a longer new message that diverges from the fed text is a rewind", () => {
+    expect(isStreamRewind("做完了", "好的，我来看一下这个情况")).toBe(true);
+  });
+  test("a shrink is a rewind", () => {
+    expect(isStreamRewind("做完了", "做完")).toBe(true);
+  });
+  test("a same-length rewrite is a rewind", () => {
+    expect(isStreamRewind("做完了", "没做完")).toBe(true);
+  });
+  test("pure growth is not a rewind", () => {
+    expect(isStreamRewind("做完", "做完了")).toBe(false);
+    expect(isStreamRewind("做完了", "做完了")).toBe(false);
+    expect(isStreamRewind("", "anything")).toBe(false);
+  });
+  test("a new message that genuinely extends the old text is safe to append", () => {
+    // the shared prefix renders identically, so appending is correct here
+    expect(isStreamRewind("做完了", "做完了，还有一件事")).toBe(false);
+  });
+});
+
+describe("rows kernel: tables render live during streaming", () => {
+  // A GFM table only promotes when its |---| separator is visible together
+  // with the header row; settling per line used to render pipe prose until
+  // the node finished. The kernel now holds a table-ish block in the tail.
+  test("the table composes as a box as soon as header + separator have arrived", () => {
+    const k = createStreamRows(60);
+    k.feed("| Name | Value |\n|---|---|\n| alpha | 1 |\n");
+    const rows = rowsText(k.rows as Row[]);
+    expect(rows).toContain("│"); // box-drawing row, not raw "| Name | Value |"
+    expect(rows).not.toContain("| Name | Value |");
+  });
+
+  test("the held block settles as one unit once a blank line closes it", () => {
+    const doc = "before\n\n| a | b |\n|--|--|\n| 1 | 2 |\n\nafter the table\n";
+    const k = createStreamRows(60);
+    for (const line of doc.match(/[^\n]*\n/g) ?? []) k.feed(line);
+    const want = rowsText(legacyStreamRows(doc, 60, { cut: 0, md: { inFence: false, hadCode: false }, prefix: [], text: "" }));
+    expect(rowsText(k.rows as Row[])).toBe(want);
+  });
+
+  test("plain pipe prose without a separator still renders (held, then settled, as prose)", () => {
+    const doc = "a | b mentioned in prose\nthen more text follows here\n\n";
+    const k = createStreamRows(60);
+    k.feed(doc);
+    const want = rowsText(legacyStreamRows(doc, 60, { cut: 0, md: { inFence: false, hadCode: false }, prefix: [], text: "" }));
+    expect(rowsText(k.rows as Row[])).toBe(want);
+  });
+
+  test("non-table docs still settle per line (golden path untouched)", () => {
+    const k = createStreamRows(60);
+    k.feed("first\nsecond\n");
+    // both lines settle immediately — the tail holds nothing
+    expect(rowsText(k.rows as Row[])).toBe("first\nsecond\n");
   });
 });

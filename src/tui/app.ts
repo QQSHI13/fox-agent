@@ -26,7 +26,7 @@ import {
 } from "./select.ts";
 import { renderMarkdown } from "./markdown.ts";
 import { codeContRow, codeGutterRow, wrapCodeAware } from "./markdown.ts";
-import { createPlainRows, createStreamRows } from "./rows.ts";
+import { createPlainRows, createStreamRows, isStreamRewind } from "./rows.ts";
 import { wrapProse, wrapSegs, wrapText, type Seg } from "./wrap.ts";
 import { createInputModule, type InputModule, type InputLayout, type VisualRow } from "./input.ts";
 import { Picker, type PickerAction, type PickerRow } from "./picker.ts";
@@ -3771,7 +3771,7 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
   // one kernel per width: computeFrame assembles at W and again at W-2 when
   // the scrollbar shows, so alternating widths would thrash a single kernel
   // into a full rebuild every frame
-  const streamKernels = new Map<number, { len: number; k: import("./rows.ts").StreamRows }>();
+  const streamKernels = new Map<number, { len: number; text: string; k: import("./rows.ts").StreamRows }>();
 
   /**
    * Incremental kernels for EXPANDED think bodies, keyed by item key: a
@@ -3819,16 +3819,19 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     // that moves the chip still forces a re-render.
     const firstW = contentWidth(w, tui.streamSeq > 0 ? tui.streamSeq : undefined);
     let entry = streamKernels.get(firstW);
-    // a SHRINK or mid-prefix change means a rewind — the kernel's accumulated
-    // state is invalid, start fresh
-    if (!entry || entry.len > text.length || (entry.len > 0 && !text.startsWith(text.slice(0, entry.len)))) {
-      entry = { len: 0, k: createStreamRows(w, { firstReserve: w - firstW }) };
+    // A SHRINK or a divergence inside the fed prefix means a rewind — a new
+    // message reusing this width's kernel after the old one settled (see
+    // isStreamRewind). The kernel's accumulated state is invalid then; start
+    // fresh. `entry.text` is the text AS FED, the only correct comparison.
+    if (!entry || isStreamRewind(entry.text, text)) {
+      entry = { len: 0, text: "", k: createStreamRows(w, { firstReserve: w - firstW }) };
       streamKernels.set(firstW, entry);
       if (streamKernels.size > 4) streamKernels.clear(); // widths are W and W-2; bound anyway
     }
     if (text.length > entry.len) {
       entry.k.feed(text.slice(entry.len));
       entry.len = text.length;
+      entry.text = text;
     }
     const rows = entry.k.rows as Row[];
     // the streaming tail predicts its eventual seq (see streamSeq) so its [N]

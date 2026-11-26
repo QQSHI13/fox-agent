@@ -18,6 +18,11 @@
  * wrap reuse attaches to next. Output is byte-identical to the old path
  * (legacyStreamRows kept for the golden test), quirks included: the
  * paragraph-straddle line split, and the empty-tail caret row.
+ *
+ * ONE deliberate divergence: table-ish blocks are held in the tail instead
+ * of settling line-by-line, so a GFM table composes live during streaming
+ * instead of snapping into a box when the node finishes (see settle()'s
+ * holdback). For non-table content the golden equivalence is unchanged.
  */
 import { renderMarkdown, type MdState } from "./markdown.ts";
 import { wrapSegs, type Seg } from "./wrap.ts";
@@ -25,6 +30,29 @@ import { wrapSegs, type Seg } from "./wrap.ts";
 /** One painted row: styled segments. Same shape layout.ts stamps with. */
 export interface Row {
   segs: Seg[];
+}
+
+/**
+ * True when `next` cannot be an append-only continuation of what the stream
+ * kernel already holds (`prev`, the text fed so far): it shrank, or it
+ * diverged inside the fed prefix.
+ *
+ * The caller keys kernels by width only, so a NEW message after a tool call
+ * reuses the old kernel's slot: message one streams "做完了" (3 chars),
+ * settles, message two arrives and its first painted frame already holds 12
+ * chars. Comparing LENGTHS alone misses that (12 > 3), and comparing `next`
+ * against its OWN prefix (`next.startsWith(next.slice(0, prev.length))`) can
+ * never fire — every string starts with its own prefix — so the kernel used
+ * to keep the old text and append the new: the new node's head was the last
+ * message's body until the node settled. Comparing against `prev` is the
+ * check that actually fires.
+ *
+ * When the prefix does agree, appending is CORRECT, not just tolerated: the
+ * fence/md state the kernel carries is a pure function of the text prefix, so
+ * an identical prefix implies identical state.
+ */
+export function isStreamRewind(prev: string, next: string): boolean {
+  return next.length < prev.length || !next.startsWith(prev);
 }
 
 /** The old renderer, verbatim, for the golden equivalence test. */
@@ -105,24 +133,59 @@ export function createStreamRows(w: number, opts?: { firstReserve?: number }): S
   /** the markdown state the current tailLines were rendered under */
   let tailMd: MdState = { inFence: false, hadCode: false };
 
-  /** Settle everything up to the last newline (the old cut loop, verbatim). */
+  /**
+   * Settle everything up to the last newline — EXCEPT the current block when
+   * it looks like a table (see holdback below). The old cut loop, verbatim,
+   * plus the table holdback.
+   */
   const settle = (): boolean => {
+    // Collect the newly completed lines first; the cut decision needs them.
+    const lines: { start: number; end: number }[] = [];
     let scan = settledCut;
-    let newCut = settledCut;
-    const md2 = { ...md };
     for (;;) {
       const nl = text.indexOf("\n", scan);
       if (nl < 0) break;
-      if (/^```/.test(text.slice(scan, nl))) {
+      lines.push({ start: scan, end: nl });
+      scan = nl + 1;
+    }
+    if (!lines.length) return false;
+
+    // Table holdback. A GFM table only promotes when the header row and its
+    // |---| separator are visible TOGETHER (see markdown.ts), so settling the
+    // lines one by one rendered each as pipe prose and the table "snapped"
+    // into a box only when the node finished — in a long reply every table
+    // stayed raw until the very end. Blank lines are block boundaries, so
+    // hold the whole current block in the (per-feed re-rendered) tail when it
+    // contains a pipe line: renderMarkdown then sees header+separator
+    // together and composes the table live. The block settles as one unit
+    // once its terminating blank line arrives. Fence blanks are safe: fence
+    // state is carried, so a fence split at an interior blank still renders
+    // as code on both sides.
+    let lastBlank = -1;
+    for (let i = 0; i < lines.length; i++) {
+      if (text.slice(lines[i].start, lines[i].end).trim() === "") lastBlank = i;
+    }
+    let settleCount = lines.length;
+    for (let i = lastBlank + 1; i < lines.length; i++) {
+      if (text.slice(lines[i].start, lines[i].end).includes("|")) {
+        settleCount = lastBlank + 1;
+        break;
+      }
+    }
+    if (settleCount === 0) return false; // the whole new region is held
+    const newCut = lines[settleCount - 1].end + 1;
+
+    // fence state advances over the SETTLED lines only
+    const md2 = { ...md };
+    for (let i = 0; i < settleCount; i++) {
+      const t = text.slice(lines[i].start, lines[i].end);
+      if (/^```/.test(t)) {
         md2.inFence = !md2.inFence;
         md2.hadCode = false;
       } else if (md2.inFence) {
         md2.hadCode = true;
       }
-      newCut = nl + 1;
-      scan = nl + 1;
     }
-    if (newCut === settledCut) return false;
     // a chip row that has not settled yet is the one this slice opens with;
     // its first line gives up the gutter, everything after it is full width
     const chipRow = settledRows.length === 0 && firstReserve > 0;
