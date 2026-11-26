@@ -296,3 +296,38 @@ describe("untrack", () => {
     expect(runs).toBe(1);
   });
 });
+
+describe("effect error containment", () => {
+  test("a throwing effect does not stop the flush — later effects still run", () => {
+    const errs: string[] = [];
+    const origError = console.error;
+    console.error = (m: string) => void errs.push(String(m));
+    try {
+      const a = counter("a");
+      const b = counter("b");
+      let threwRuns = 0;
+      let goodRuns = 0;
+      effect(() => {
+        a();
+        threwRuns++;
+        throw new Error("boom");
+      });
+      effect(() => {
+        b();
+        goodRuns++;
+      });
+      a.bump(); // schedules the thrower
+      b.bump(); // schedules the survivor
+      flushNow(); // must not propagate the throw; both run, the loop lives
+      expect(threwRuns).toBe(2); // creation run + the scheduled re-run, both contained
+      expect(goodRuns).toBe(2); // creation + the scheduled re-run
+      expect(errs.some((e) => e.includes("boom"))).toBe(true);
+      // a later flush still works — the loop is alive after the failure
+      b.bump();
+      flushNow();
+      expect(goodRuns).toBe(3);
+    } finally {
+      console.error = origError;
+    }
+  });
+});

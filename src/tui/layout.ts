@@ -401,7 +401,13 @@ function assemble(
   // uses blockStart (the separator blank when there is one) so a blank exactly
   // at the window edge is still materialized even when the body is below it.
   const first = firstBodyEndAfter(geo, from);
-  const last = firstBlockStartAtOrAfter(geo, to);
+  // CLAMP to the source's live length: the geometry can predate a view change
+  // that shrank the source (the count memo is versioned separately from the
+  // view), and an index past the end makes itemAt throw inside the frame
+  // derive — which rejects the whole push and leaves the transcript frozen
+  // on whatever it last painted. A clamped-out tail is a wrong frame the
+  // self-heal repairs, not a crashed one.
+  const last = Math.min(firstBlockStartAtOrAfter(geo, to), src.length);
   for (let i = first; i < last; i++) {
     const it = src.itemAt(i);
     const blockStart = blockStartAt(geo, i);

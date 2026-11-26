@@ -630,20 +630,30 @@ export class PushCompositor extends Screen {
    * is guarded by `deriveRunning`: a schedule that arrives mid-derive re-arms
    * for one more pass, so a burst of changes (ctrl+t over many nodes) still
    * lands every update instead of dropping the last one.
+   *
+   * A derive or stamp that THROWS is contained: `onError` reports it and the
+   * loop continues to the next scheduled pass. Without the catch the rejection
+   * escaped as an unhandled rejection and — worse — a deterministic throw
+   * (a geometry bug, a bad row) rejected every later pass too, freezing the
+   * region on its last good frame with no visible reason.
    */
   private deriveRunning = false;
   private deriveQueued = false;
 
-  async pushFrame<T>(derive: () => T, stamp: (fr: T) => void, onLanded: () => void): Promise<void> {
+  async pushFrame<T>(derive: () => T, stamp: (fr: T) => void, onLanded: () => void, onError?: (e: unknown) => void): Promise<void> {
     if (this.deriveRunning) { this.deriveQueued = true; return; }
     this.deriveRunning = true;
     try {
       do {
         this.deriveQueued = false;
         await this.breathe(); // let any pending frame/keystroke run first
-        const fr = derive();
-        stamp(fr);
-        onLanded();
+        try {
+          const fr = derive();
+          stamp(fr);
+          onLanded();
+        } catch (e) {
+          onError?.(e);
+        }
       } while (this.deriveQueued);
     } finally {
       this.deriveRunning = false;

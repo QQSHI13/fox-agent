@@ -4227,7 +4227,12 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         statsV.bump();
         return;
       case "transcript":
-        itemsV.bump();
+        // itemsV alone re-derives the region but leaves layout's pass-1 memo
+        // (versioned by countRev) serving the geometry it had — a caller that
+        // repaints because content CHANGED then gets frames built on stale
+        // counts, which is how a transcript can go blank with no error.
+        // bumpItems does both: the signal the region reads AND the cache key.
+        bumpItems();
         return;
       default:
         // no region named: the coarse path, same as a resize
@@ -4391,6 +4396,22 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         return computeFrame(inp);
       },
       (fr) => {
+        // The impossible frame: content overflows the viewport but the built
+        // window does not cover it. That can only mean the count geometry the
+        // frame was assembled from disagrees with what the items render NOW —
+        // a stale-cache poison of any origin — and painting it shows a blank
+        // transcript with no error (the "black screen after a big change"
+        // report). Drop every count cache and re-derive once; if the frame is
+        // STILL impossible after a full invalidation, stamp it anyway rather
+        // than loop — a wrong frame beats an infinite derive.
+        if (fr.total > fr.vh && fr.rows.length - fr.winOffset < fr.vh && blankHeals < 2) {
+          blankHeals++;
+          countCache.clear();
+          tui.countRev++;
+          void pushTranscriptFrame();
+          return;
+        }
+        blankHeals = 0;
         tui.scrollTop = fr.scrollTop;
         tui.stick = fr.stick;
         tui.painted = fr;
@@ -4412,8 +4433,24 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
         tui.dirty = true;
         schedulePaint();
       },
+      // A derive/stamp throw is contained by pushFrame; surface it ONCE per
+      // distinct message as an error item (the item itself re-derives the
+      // transcript, so an undeduped report would loop the failure) and keep
+      // the region alive for the next pass.
+      (e) => {
+        const msg = `transcript render failed: ${(e as Error)?.message ?? e}`;
+        if (msg === lastTranscriptError) return;
+        lastTranscriptError = msg;
+        reportError(msg, e);
+      },
     );
   }
+
+  /** Last transcript-render error surfaced, so a deterministic failure reports once. */
+  let lastTranscriptError = "";
+
+  /** Consecutive blank-frame heals; reset by any frame that covers. */
+  let blankHeals = 0;
 
   /** Stamp one computed Frame into the transcript plane. Pure cell writes. */
   function stampTranscript(fr: Frame): void {

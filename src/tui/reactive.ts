@@ -154,7 +154,16 @@ export function flushNow(): void {
         report(`effect re-entered ${e.runsThisFlush}x in one flush${label} — it writes a signal it reads`);
         continue;
       }
-      e.run();
+      try {
+        e.run();
+      } catch (err) {
+        // One region's failure must not take the frame down with it: report
+        // (deduped by message) and keep draining, so the rest of the screen
+        // still paints and the loop lives to the next tick. A region that
+        // throws every frame costs one log line, not the whole UI.
+        const label = e.label ? ` (${e.label})` : "";
+        report(`effect threw${label}: ${(err as Error)?.message ?? err}`);
+      }
     }
   } finally {
     flushDepth--;
@@ -394,8 +403,15 @@ export function effect(fn: () => void, opts: { label?: string } = {}): Disposabl
     },
   };
   live.add(node);
-  // synchronous first run: a region must stamp before the first frame flushes
-  node.run();
+  // synchronous first run: a region must stamp before the first frame flushes.
+  // Contained like every later run: a region that crashes at creation must not
+  // take the others down with it.
+  try {
+    node.run();
+  } catch (err) {
+    const label = node.label ? ` (${node.label})` : "";
+    report(`effect threw on creation${label}: ${(err as Error)?.message ?? err}`);
+  }
   return {
     dispose() {
       node.disposed = true;
