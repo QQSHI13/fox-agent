@@ -445,6 +445,15 @@ export class Screen {
       let painted = 0;
       let physX = 0; // terminal cursor column within this row (cells can be sparse!)
       let lastEmitX = -1; // x of the last cell actually written
+      // Set after a wide glyph: the NEXT cell re-anchors with an explicit CUP
+      // even when contiguous. Pen-relative continuation assumes the terminal's
+      // width table agrees with charWidth for that glyph; where it does not
+      // (ambiguous symbols, emoji on older terminals) every later char in the
+      // run lands one cell off while the hardware cursor — absolute — stays
+      // put, which is the "input caret vs typed text off by one" drift. The
+      // anchor keeps text at grid positions; worst case is one blank cell
+      // after a disputed glyph, never a shifted run.
+      let anchorNext = false;
       const base = y * this.w;
       for (let x = 0; x < this.w; x++) {
         const ch = this.chars[base + x];
@@ -454,7 +463,7 @@ export class Screen {
         // earlier frames — the trailing \x1b[K only fires after the LAST cell
         // (e.g. the scrollbar thumb at W-2) and erases nothing. Clear the gap
         // now, while the cursor sits at the end of the previous content run.
-        if (x !== physX) {
+        if (x !== physX || anchorNext) {
           // Clear the gap with DEFAULT colors, never the run's. `\x1b[K` is an
           // ERASE, and terminals implement background-color-erase: it paints the
           // cleared cells with the background that is currently active. Clearing
@@ -463,8 +472,9 @@ export class Screen {
           // is why a multi-line selection lit each earlier row out to the right
           // edge, and why a line that WRAPS to the full width looked correct (no
           // gap, so no erase). Reset first, and track the reset so the next run
-          // re-emits its own SGR.
-          if (painted < this.w) {
+          // re-emits its own SGR. A wide-char re-anchor is NOT a gap: the cell
+          // at x is fresh content, so it must not erase.
+          if (x !== physX && painted < this.w) {
             if (runSgr) {
               if (this.lastHref) {
                 line += "\x1b]8;;\x1b\\";
@@ -477,6 +487,7 @@ export class Screen {
           }
           line += `\x1b[${y + 1};${x + 1}H`;
           physX = x;
+          anchorNext = false;
         }
         const s = this.styles[this.sty[base + x]] ?? {};
         const href = s.href ?? "";
@@ -499,6 +510,7 @@ export class Screen {
         physX += cw;
         painted += cw;
         lastEmitX = x;
+        anchorNext = cw === 2;
       }
       out += line;
       // every dirty row leaves the terminal clean: close any open hyperlink,

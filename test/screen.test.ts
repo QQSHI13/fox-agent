@@ -650,3 +650,93 @@ describe("restyle memoization", () => {
     expect(term.buf.match(/\x1b\[48;2;54;74;130m/g)).toHaveLength(3);
   });
 });
+
+describe("PushCompositor.pushFrame: error containment", () => {
+  test("a throwing derive is reported via onError and the loop keeps going", async () => {
+    const { PushCompositor } = await import("../src/tui/screen.ts");
+    const comp = new PushCompositor({ write: () => {}, flush: () => {} } as any);
+    let derives = 0;
+    const errors: string[] = [];
+    let stamped = 0;
+    // first pass throws; a later push must still derive and stamp
+    await comp.pushFrame(
+      () => {
+        derives++;
+        if (derives === 1) throw new Error("bad frame");
+        return derives;
+      },
+      () => {
+        stamped++;
+      },
+      () => {},
+      (e) => errors.push((e as Error).message),
+    );
+    expect(derives).toBe(1);
+    expect(stamped).toBe(0);
+    expect(errors).toEqual(["bad frame"]);
+    // the loop is alive: the next push derives and stamps normally
+    await comp.pushFrame(
+      () => ++derives,
+      () => {
+        stamped++;
+      },
+      () => {},
+      (e) => errors.push((e as Error).message),
+    );
+    expect(derives).toBe(2);
+    expect(stamped).toBe(1);
+    expect(errors).toEqual(["bad frame"]);
+  });
+
+  test("a throwing stamp is contained the same way", async () => {
+    const { PushCompositor } = await import("../src/tui/screen.ts");
+    const comp = new PushCompositor({ write: () => {}, flush: () => {} } as any);
+    const errors: string[] = [];
+    let landed = 0;
+    await comp.pushFrame(
+      () => 1,
+      () => {
+        throw new Error("bad stamp");
+      },
+      () => {
+        landed++;
+      },
+      (e) => errors.push((e as Error).message),
+    );
+    expect(errors).toEqual(["bad stamp"]);
+    expect(landed).toBe(0); // onLanded is skipped when stamp throws
+  });
+});
+
+describe("Screen.flush wide-char anchoring", () => {
+  test("a cell after a wide glyph is positioned explicitly (terminal width disagreement cannot shift the run)", async () => {
+    const { Screen } = await import("../src/tui/screen.ts");
+    const term = new FakeTerm();
+    const scr = new Screen(term as any);
+    scr.resize(20, 2);
+    const st = scr.sgr({ fg: "#ffffff" });
+    // a + 做 (wide, cells 1-2) + b at cell 3
+    scr.text(0, 0, "a做b", st);
+    scr.flush();
+    // 'b' must get its own CUP to col 4 (1-based) — pen-relative continuation
+    // after a wide glyph drifts a cell whenever the terminal's width table
+    // disagrees with charWidth, which is the input-caret off-by-one class.
+    expect(term.buf).toContain("\x1b[1;4H");
+    // and the re-anchor is NOT a gap: no erase may fire between the wide
+    // glyph and the re-anchored cell (the trailing \x1b[K after the run is
+    // the row's stale-tail cleanup, a different, legitimate erase)
+    const between = term.buf.split("做")[1]?.split("b")[0] ?? "";
+    expect(between).not.toContain("\x1b[K");
+  });
+
+  test("narrow runs stay pen-relative (no CUP flood)", async () => {
+    const { Screen } = await import("../src/tui/screen.ts");
+    const term = new FakeTerm();
+    const scr = new Screen(term as any);
+    scr.resize(20, 2);
+    const st = scr.sgr({ fg: "#ffffff" });
+    scr.text(0, 0, "abcdef", st);
+    scr.flush();
+    expect(term.buf.match(/\x1b\[1;\d+H/g)).toHaveLength(1);
+  });
+});
