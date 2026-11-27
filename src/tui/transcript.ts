@@ -151,6 +151,15 @@ export class VirtualTranscript implements TranscriptSource<Item> {
       this.materializedSig.delete(k);
     }
     for (const pw of this.countCache.values()) for (const k of pw.keys()) if (!live.has(k)) pw.delete(k);
+    // Removed slots (a ctx delete hid the node) must invalidate the host's row
+    // memo and count revision exactly like a sig change: the count geometry
+    // still holds the deleted slot's rows, and without a bump the next frame
+    // assembles from offsets that point at items which no longer exist — the
+    // "scroll up into blank space" report. A sig change covers content edits;
+    // this covers removals.
+    for (const k of prevByKey.keys()) {
+      if (!live.has(k)) this.invalidatedKeys.push(k);
+    }
     for (const s of next) {
       const p = prevByKey.get(s.key);
       // A brand-new slot has no cached rows to invalidate. Only a slot that
