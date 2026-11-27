@@ -51,7 +51,13 @@ function fixtureProcs(): number {
     .filter((l) => l.includes("mcp-server.ts")).length;
 }
 
-/** Start the daemon as a real process and wait for its socket. */
+/** Start the daemon as a real process and wait until it ANSWERS, not just
+ *  until its socket file exists. The file appears at bind, but the first
+ *  catalog/call can still race the daemon's request handling (and, under
+ *  load, the fixture dial behind it) — proceeding on existsSync alone made
+ *  `poolTools` return null intermittently (~50% standalone). A `status`
+ *  round-trip is the true readiness signal: the daemon answers it instantly
+ *  and without dialing, so it proves the socket serves requests. */
 async function startDaemon(sockPath: string): Promise<void> {
   daemon = Bun.spawn([process.execPath, "run", CLI, "--mcp-pool", sockPath], {
     env: { ...process.env },
@@ -59,12 +65,13 @@ async function startDaemon(sockPath: string): Promise<void> {
     stderr: "ignore",
     stdin: "ignore",
   });
+  const { poolMcpStatus } = await import("../src/mcp/pool.ts");
   const deadline = Date.now() + 10_000;
   while (Date.now() < deadline) {
-    if (existsSync(sockPath)) return;
+    if (existsSync(sockPath) && (await poolMcpStatus(fixtureCfg())) !== null) return;
     await Bun.sleep(25);
   }
-  throw new Error("pool daemon never created its socket");
+  throw new Error("pool daemon never became ready");
 }
 
 describe.skipIf(!CAN_RUN)("the shared MCP pool", () => {
