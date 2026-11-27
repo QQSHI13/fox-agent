@@ -134,3 +134,31 @@ describe("media offloading: turn integration", () => {
     expect(html).toContain("data:image/png;base64,aGk=");
   });
 });
+
+describe("hydration cache: base64 is created once per blob, not once per call", () => {
+  // Regression: per-call re-hydration of every visible blob created megabytes
+  // of fresh large strings per provider call, and the arena churn grew a
+  // media-heavy session past 1GB RSS while heapUsed stayed flat.
+  test("hydrating the same ref twice returns the identical string", async () => {
+    const db = await import("../src/store/db.ts");
+    const { externalizeMedia, hydrateMediaParts } = await import("../src/store/media.ts");
+    const s = db.createSession("/w", "m1");
+    const [stored] = externalizeMedia(s.id, [PNG]);
+
+    const [h1] = hydrateMediaParts(s.id, [{ mimeType: "image/png", ref: stored.ref, bytes: 2 }]);
+    const [h2] = hydrateMediaParts(s.id, [{ mimeType: "image/png", ref: stored.ref, bytes: 2 }]);
+    expect(h1.data).toBe("aGk=");
+    // the cache returns the SAME string object — no re-encode, no re-query
+    expect(h2.data).toBe(h1.data);
+  });
+
+  test("a missing blob degrades to empty bytes and is cached too", async () => {
+    const db = await import("../src/store/db.ts");
+    const { hydrateMediaParts } = await import("../src/store/media.ts");
+    const s = db.createSession("/w", "m1");
+    const [h1] = hydrateMediaParts(s.id, [{ mimeType: "image/png", ref: "0".repeat(64), bytes: 9 }]);
+    expect(h1.data).toBe("");
+    const [h2] = hydrateMediaParts(s.id, [{ mimeType: "image/png", ref: "0".repeat(64), bytes: 9 }]);
+    expect(h2.data).toBe(h1.data);
+  });
+});

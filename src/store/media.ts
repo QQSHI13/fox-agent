@@ -39,14 +39,52 @@ export function hydrateMediaParts(sessionId: string, media: MediaPart[]): MediaP
   const get = d.prepare("SELECT data FROM media_blobs WHERE hash = ?");
   return media.map((p) => {
     if (p.data !== undefined || p.ref === undefined) return p;
-    const row = get.get(p.ref) as { data: Buffer | Uint8Array } | undefined;
-    // A missing blob means corruption, not a lost upload: the row was written
-    // before the message that names it. Degrade to empty bytes rather than
-    // failing the whole request — the tool's text note still describes the
-    // attachment.
-    const buf = row ? (Buffer.isBuffer(row.data) ? row.data : Buffer.from(row.data)) : Buffer.alloc(0);
-    return { ...p, data: buf.toString("base64") };
+    const data = cachedBase64(p.ref, () => {
+      const row = get.get(p.ref!) as { data: Buffer | Uint8Array } | undefined;
+      // A missing blob means corruption, not a lost upload: the row was written
+      // before the message that names it. Degrade to empty bytes rather than
+      // failing the whole request — the tool's text note still describes the
+      // attachment.
+      return row ? (Buffer.isBuffer(row.data) ? row.data : Buffer.from(row.data)) : Buffer.alloc(0);
+    });
+    return { ...p, data };
   });
+}
+
+/**
+ * Hydrated base64, cached by blob ref. Refs are content-addressed (sha256 of
+ * the raw bytes), so a hit is always correct and entries never go stale.
+ *
+ * Without this, EVERY provider call re-encoded every visible blob from its
+ * SQLite bytes — megabytes of fresh large strings per call in a media-heavy
+ * session. That churn is what grew the heap arena hundreds of MB while
+ * heapUsed stayed flat (freed large-string pages the allocator would not
+ * return): a 41-blob session re-hydrating ~10 calls/min climbed past 1GB,
+ * while media-free sessions with 4× the cumulative tokens sat at 242MB. One
+ * permanent copy per unique blob replaces per-call re-creation; the render
+ * cache still holds refs only, so projections stay light.
+ */
+const hydratedCache = new Map<string, string>();
+let hydratedBytes = 0;
+const HYDRATED_CACHE_MAX_BYTES = 256 * 1024 * 1024;
+
+function cachedBase64(ref: string, load: () => Buffer): string {
+  const hit = hydratedCache.get(ref);
+  if (hit !== undefined) {
+    // LRU touch: delete+set moves the entry to the end of iteration order
+    hydratedCache.delete(ref);
+    hydratedCache.set(ref, hit);
+    return hit;
+  }
+  const b64 = load().toString("base64");
+  hydratedCache.set(ref, b64);
+  hydratedBytes += b64.length;
+  while (hydratedBytes > HYDRATED_CACHE_MAX_BYTES && hydratedCache.size > 1) {
+    const oldest = hydratedCache.keys().next().value!;
+    hydratedBytes -= hydratedCache.get(oldest)!.length;
+    hydratedCache.delete(oldest);
+  }
+  return b64;
 }
 
 /**
