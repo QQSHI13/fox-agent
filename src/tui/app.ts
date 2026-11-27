@@ -1151,6 +1151,14 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     if (at >= 0) tui.items.splice(at, 0, ...anchored);
     else tui.items.push(...anchored);
     for (const it of anchored) touch(it.k);
+    // This REWRITES the transcript's item list (fragments out, the anchored
+    // settled node in) but `touch` only bumps countRev — it does not signal the
+    // transcript region. Without an itemsV bump the settle (a reply landing, a
+    // tool result swapping in for its live pair, a think block sealing) left
+    // the plane showing the pre-settle frame until some unrelated event bumped,
+    // which read as "the transcript went missing / went blank until I clicked
+    // the scrollbar" (the click's bumpAll forced the re-derive the settle owed).
+    bumpItems();
     return anchored;
   }
 

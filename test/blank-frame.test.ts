@@ -64,6 +64,7 @@ function makeRenderers() {
 interface Rig {
   frame: (stick: boolean) => import("../src/tui/layout.ts").Frame;
   setScroll: (n: number) => void;
+  setStream: (t: string | null) => void;
   bump: () => void;
   transcript: import("../src/tui/transcript.ts").VirtualTranscript;
   overlay: Item[];
@@ -93,6 +94,7 @@ async function makeRig(id: string): Promise<Rig> {
   );
   const overlay: Item[] = [];
   let scrollTop = 0;
+  let streamText: string | null = null;
 
   const frame = (stick: boolean) => {
     const chrome: Item[] = [];
@@ -105,9 +107,9 @@ async function makeRig(id: string): Promise<Rig> {
       stick,
       scrollbar: true,
       source,
-      streamText: null,
-      renderStream: () => [],
-      countStream: () => 0,
+      streamText,
+      renderStream: (text, w) => buildRows({ k: -4, kind: "md", text } as Item, w).visible,
+      countStream: (text, w) => countRows({ k: -4, kind: "md", text } as Item, w),
       inputRows: 1,
       caretRow: 0,
       INPUT_MAX_ROWS: 6,
@@ -122,6 +124,9 @@ async function makeRig(id: string): Promise<Rig> {
     frame,
     setScroll: (n) => {
       scrollTop = n;
+    },
+    setStream: (t) => {
+      streamText = t;
     },
     bump: () => {
       countRev++;
@@ -355,5 +360,117 @@ describe("blank transcript repro", () => {
     countCache.clear();
     countRev++;
     expectCovered(frame(true), "healed");
+  });
+});
+
+describe("scroll-up on-demand loading", () => {
+  test("scrolling up renders content, not blank space", async () => {
+    const db = await import("../src/store/db.ts");
+    const s = db.createSession(dir, "m1");
+    await seedLong(db, s.id, 100);
+    const rig = await makeRig(s.id);
+
+    // settle at the bottom first (the count pass caches the geometry)
+    rig.transcript.refresh();
+    rig.bump();
+    const bottom = rig.frame(true);
+    expectCovered(bottom, "bottom");
+
+    // scroll to the very top: the window must render the FIRST items' text
+    rig.setScroll(0);
+    const top = rig.frame(false);
+    const text = top.rows.map((r) => r.segs.map((x) => x.t).join("")).join("\n");
+    expect(text.length, "top window has visible text").toBeGreaterThan(0);
+    expect(text).toContain("question 0");
+
+    // scroll to the middle
+    rig.setScroll(Math.floor(top.total / 2));
+    const mid = rig.frame(false);
+    const midText = mid.rows.map((r) => r.segs.map((x) => x.t).join("")).join("\n");
+    expect(midText.length, "middle window has visible text").toBeGreaterThan(0);
+  });
+
+  test("scrolling up right after new items land (geometry from a stale countRev)", async () => {
+    const db = await import("../src/store/db.ts");
+    const s = db.createSession(dir, "m1");
+    await seedLong(db, s.id, 40);
+    const rig = await makeRig(s.id);
+    rig.transcript.refresh();
+    rig.bump();
+    rig.frame(true);
+
+    // new items land; the app bumps countRev via touch — simulate WITHOUT the
+    // bump first (the stale-geometry case), then with it
+    await seedLong(db, s.id, 5);
+    rig.transcript.refresh();
+    // no bump: geometry is stale. The frame must still not blank the viewport.
+    rig.setScroll(0);
+    const fr = rig.frame(false);
+    const text = fr.rows.map((r) => r.segs.map((x) => x.t).join("")).join("\n");
+    expect(text.length, "stale-geometry top window still has text").toBeGreaterThan(0);
+  });
+
+  test("scrolled up while a turn streams at the bottom: the viewport keeps rendering", async () => {
+    const db = await import("../src/store/db.ts");
+    const s = db.createSession(dir, "m1");
+    await seedLong(db, s.id, 60);
+    const rig = await makeRig(s.id);
+    rig.transcript.refresh();
+    rig.bump();
+    rig.frame(true);
+
+    // user scrolls up into the history and stays there (stick=false)
+    const anchor = Math.floor(rig.frame(true).total / 3);
+    rig.setScroll(anchor);
+
+    // a turn streams at the bottom: text grows token by token, a tool pair
+    // lands in the overlay, text resumes. Every frame must still render real
+    // content in the viewport at the user's scroll position.
+    let stream = "";
+    for (let step = 0; step < 80; step++) {
+      stream += `streaming token ${step} with enough words to wrap across the width `;
+      rig.setStream(stream);
+      // streamV bumps on every delta; countRev does NOT (the tail is uncached)
+      const fr = rig.frame(false);
+      expectCovered(fr, `stream step ${step}`);
+      const text = fr.rows.slice(fr.winOffset, fr.winOffset + fr.vh).map((r) => r.segs.map((x) => x.t).join("")).join("").trim();
+      expect(text.length, `stream step ${step}: viewport has content`).toBeGreaterThan(0);
+
+      if (step % 20 === 19) {
+        // a tool pair settles into the overlay and the stream clears
+        rig.setStream(null);
+        stream = "";
+        rig.overlay.push({ k: 1000 + step, kind: "toolhead", text: `» exec step ${step}` } as Item);
+        rig.overlay.push({ k: 2000 + step, kind: "toolbody", text: `output ${step} `.repeat(40) } as Item);
+        rig.bump(); // bumpItems: countRev++ + itemsV++
+        const fr2 = rig.frame(false);
+        expectCovered(fr2, `tool step ${step}`);
+        const t2 = fr2.rows.slice(fr2.winOffset, fr2.winOffset + fr2.vh).map((r) => r.segs.map((x) => x.t).join("")).join("").trim();
+        expect(t2.length, `tool step ${step}: viewport has content`).toBeGreaterThan(0);
+      }
+    }
+  });
+
+  test("scrolled up across the scrollbar-width flip: no blank frame", async () => {
+    const db = await import("../src/store/db.ts");
+    const s = db.createSession(dir, "m1");
+    // seed JUST under the scrollbar threshold, then grow past it mid-turn
+    await seedLong(db, s.id, 8);
+    const rig = await makeRig(s.id);
+    rig.transcript.refresh();
+    rig.bump();
+    rig.frame(true);
+
+    // grow the tail one token at a time; the scrollbar appears mid-stream and
+    // the wrap width flips W -> W-2. The viewport must never blank.
+    let stream = "";
+    for (let step = 0; step < 120; step++) {
+      stream += `tok${step} `;
+      rig.setStream(stream);
+      const fr = rig.frame(true); // stuck to the bottom, following the tail
+      expectCovered(fr, `flip step ${step}`);
+      const text = fr.rows.slice(fr.winOffset, fr.winOffset + fr.vh).map((r) => r.segs.map((x) => x.t).join("")).join("").trim();
+      expect(text.length, `flip step ${step}: viewport has content (sb=${fr.sbShowing} w=${fr.contentWidth})`).toBeGreaterThan(0);
+    }
   });
 });
