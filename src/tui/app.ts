@@ -4,7 +4,7 @@
 import { openTerm, type Term } from "./term.ts";
 import { clipRead, clipWrite, osc52Encode } from "./clipboard.ts";
 export { osc52Encode };
-import { appendFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, unlinkSync, writeFileSync, watch, type FSWatcher } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -40,6 +40,7 @@ import { lookupModel } from "../providers/models.ts";
 import { bundledDisabled } from "../plugins/bundled.ts";
 import { costSegment } from "../plugins/bundled/cost.ts";
 import { listSessions } from "../store/db.ts";
+import { sessionsDir } from "../core/paths.ts";
 import { allMessages, allMessagesLite, appendOps, createSession, forkSession, getMessage, getSession, kvGet, kvSet, pinSession, unpinSession, type MessageRow } from "../store/db.ts";
 import { releaseLock, foreignLock } from "../store/lock.ts";
 import {
@@ -297,6 +298,8 @@ interface TuiState {
   exiting: boolean;
   exitCode: number;
   mirrorTimer: ReturnType<typeof setInterval> | null;
+  mirrorWatcher: FSWatcher | null;
+  mirrorDebounce: ReturnType<typeof setTimeout> | null;
   finish: (() => void) | null;
   liveThink: Item | null;
   expandMode: boolean | null;
@@ -376,6 +379,8 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
     exiting: false,
     exitCode: 0,
     mirrorTimer: null,
+    mirrorWatcher: null,
+    mirrorDebounce: null,
     finish: null,
     liveThink: null,
     expandMode: null,
@@ -2227,7 +2232,9 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       term.end();
     } catch {}
     try {
-      if (tui.mirrorTimer) clearInterval(tui.mirrorTimer); // viewer's live-status poll
+      if (tui.mirrorTimer) clearInterval(tui.mirrorTimer); // viewer's live-status fallback poll
+      if (tui.mirrorDebounce) clearTimeout(tui.mirrorDebounce);
+      tui.mirrorWatcher?.close(); // viewer's fs.watch on the session store
     } catch {}
     try {
       tui.restoreOutputRef?.(); // replay anything captured while the grid was up
@@ -5181,6 +5188,10 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
               // one, and a stale id would mirror the wrong transcript
               if (tui.mirrorTimer) clearInterval(tui.mirrorTimer);
               tui.mirrorTimer = null;
+              if (tui.mirrorDebounce) clearTimeout(tui.mirrorDebounce);
+              tui.mirrorDebounce = null;
+              tui.mirrorWatcher?.close();
+              tui.mirrorWatcher = null;
               return;
             }
             // never mirror over a turn this process is running itself
@@ -5223,7 +5234,35 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
           } catch {}
         };
         mirror(); // seed lastStamp before the first frame, so history is not "new"
-        tui.mirrorTimer = setInterval(mirror, 500);
+        // Event-driven, not polled: the owning process writes this session's
+        // SQLite (WAL) on every appended row / published live status, so a
+        // filesystem watch on the sessions dir fires exactly when there is
+        // something to mirror. Debounced (a turn writes in bursts) and gated by
+        // the same watermark check inside mirror(), so a spurious event costs
+        // one cheap incremental projection, not a repaint. A slow fallback poll
+        // covers the platforms/cases where fs.watch misses (WAL checkpoint
+        // renames, network filesystems) — responsiveness comes from the watch,
+        // correctness from the fallback.
+        const dbBase = `${pinnedMirrorId}.db`;
+        const onChange = (filename: string | null) => {
+          if (state.sessionId !== pinnedMirrorId) return;
+          if (filename && !filename.startsWith(dbBase)) return;
+          if (tui.mirrorDebounce) return; // a mirror is already pending this burst
+          tui.mirrorDebounce = setTimeout(() => {
+            tui.mirrorDebounce = null;
+            mirror();
+          }, 80);
+          tui.mirrorDebounce.unref?.();
+        };
+        try {
+          tui.mirrorWatcher = watch(sessionsDir(), { persistent: false }, (_e, filename) =>
+            onChange(typeof filename === "string" ? filename : null),
+          );
+        } catch {
+          tui.mirrorWatcher = null; // watch unavailable: the fallback poll carries it
+        }
+        // Fallback poll only: 2.5s (was 500ms). The watch drives the live case.
+        tui.mirrorTimer = setInterval(mirror, 2500);
         tui.mirrorTimer.unref?.();
       }
 
