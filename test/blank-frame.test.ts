@@ -287,6 +287,68 @@ describe("blank transcript repro", () => {
     for (let f = 0; f < 3; f++) expectCovered(frame(true), `recollapsed frame ${f}`);
   });
 
+  test("count and render agree per slot across expansion (the tear invariant)", async () => {
+    // Root-cause regression for "top renders, bottom is blank": the count pass
+    // (countAt) and the render pass (renderAt) must return the SAME row count
+    // for every slot, or assemble builds a window shorter than the viewport and
+    // the bottom paints blank. Assert that invariant directly on the real
+    // VirtualTranscript, before and after an internal expansion change, using a
+    // FRESH builder for both (the split that used to tear when render went
+    // through a separately-invalidated cache).
+    const db = await import("../src/store/db.ts");
+    const s = db.createSession(dir, "m1");
+    await seedLong(db, s.id, 6);
+    db.appendMessage(s.id, {
+      role: "assistant",
+      content: "",
+      tokens: 5,
+      tool_calls: JSON.stringify([{ id: "call_y", name: "exec", arguments: '{"cmd":"yes"}' }]),
+    });
+    const toolRow = db.appendMessage(s.id, {
+      role: "tool",
+      tool_call_id: "call_y",
+      content: Array.from({ length: 300 }, (_, i) => `line ${i} with some words`).join("\n"),
+      tokens: 5,
+    });
+    const toolSeq = toolRow.seq;
+
+    const { VirtualTranscript } = await import("../src/tui/transcript.ts");
+    const { projectDisplay } = await import("../src/context/display.ts");
+    const { buildRows, countRows } = makeRenderers();
+    let expanded = false;
+    const transcript = new VirtualTranscript(
+      {
+        key: (seq, slot) => seq * 4 + slot,
+        expanded: (seq) => expanded && seq === toolSeq,
+        keptChars: 4_000,
+        summarize: (name, args) => `${name}${args}`,
+        row: (seq) => db.getMessage(s.id, seq),
+        buildRows,
+        countRows,
+      },
+      () => projectDisplay(s.id),
+    );
+
+    const assertAgree = (label: string) => {
+      transcript.refresh();
+      for (let pass = 0; pass < 2; pass++) {
+        for (let i = 0; i < transcript.length; i++) {
+          const c = transcript.countAt(i, W);
+          const r = transcript.renderAt(i, W).length;
+          expect(r, `${label} pass ${pass} slot ${i}: render rows == count rows`).toBe(c);
+        }
+      }
+    };
+
+    assertAgree("collapsed");
+    expanded = true;
+    transcript.setAllExpanded(true);
+    assertAgree("expanded");
+    expanded = false;
+    transcript.setAllExpanded(false);
+    assertAgree("re-collapsed");
+  });
+
   test("a poisoned count cache produces the impossible frame the self-heal detects", async () => {
     // The self-heal in pushTranscriptFrame keys on: total > vh while the built
     // window covers less than the viewport. This test poisons the cache the

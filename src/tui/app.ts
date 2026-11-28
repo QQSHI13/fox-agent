@@ -1056,7 +1056,12 @@ export async function startTui(state: HarnessState, applyConfig?: () => { warnin
       },
       summarize: (name, args) => `${name}${argsSummary(args)}`,
       row: (seq) => (state.sessionId ? getMessage(state.sessionId, seq) : null),
-      buildRows: (it, w) => itemRows(it, w),
+      // buildRows must be the FRESH builder, not the rev-keyed itemRows memo:
+      // the transcript caches these rows under its OWN count signature, so a
+      // stale itemRows hit filed under a fresh signature would re-introduce the
+      // count/render tear (blank bottom). Fresh build + signature cache = the
+      // rendered rows are always the ones the count pass measured.
+      buildRows: (it, w) => buildItemRows(it, w),
       countRows: (it, w) => countItemTransient(it, w),
     },
     displayNodes,

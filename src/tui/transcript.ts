@@ -55,6 +55,9 @@ interface Slot {
 
 const EMPTY_CALLS: CallMaps = { label: new Map(), raw: new Map(), name: new Map() };
 const MISSING: Item = { k: -1, kind: "info", text: "" };
+/** Visible rows retained per width for settled slots — a few screens of
+ *  scrollback, not the whole history (only rendered window items land here). */
+const RENDER_CACHE_MAX = 600;
 
 function missingItem(slot: Slot): Item {
   if (slot.head) return { k: slot.key, kind: "toolhead", seq: slot.seq, text: "» tool" };
@@ -83,6 +86,21 @@ export class VirtualTranscript implements TranscriptSource<Item> {
   private materializedSig = new Map<number, string>();
   /** per width, per slot key: an exact row count valid while the signature holds */
   private countCache = new Map<number, Map<number, { signature: string; rows: number }>>();
+  /**
+   * Per width, per slot key: the VISIBLE rows a settled slot rendered, valid
+   * while the SAME signature `countAt` uses holds.
+   *
+   * This is the root fix for the "top renders, bottom is blank" tear. Render
+   * used to go through the host's `itemRows` memo, which is keyed by the host's
+   * per-item revision — a DIFFERENT invalidation system from the signature this
+   * source counts with. When the two desynced (a slot re-materialized here but
+   * the host revision was not bumped) the count pass reserved N rows from fresh
+   * state while the render pass served M<N cached rows, so `assemble` built a
+   * window shorter than the viewport and the bottom painted blank. Keying the
+   * render rows by the count signature makes render and count invalidate in
+   * lockstep: a signature that counts N rows renders exactly those N rows.
+   */
+  private renderCache = new Map<number, Map<number, { signature: string; rows: Row[] }>>();
   private bySeq = new Map<number, DisplayNode>();
   private parentCall = new Map<string, number>();
   /** the last projection array; a different identity means a new/evicted cache */
@@ -120,6 +138,7 @@ export class VirtualTranscript implements TranscriptSource<Item> {
       this.materialized.clear();
       this.materializedSig.clear();
       this.countCache.clear();
+      this.renderCache.clear();
     }
 
     this.bySeq.clear();
@@ -151,6 +170,7 @@ export class VirtualTranscript implements TranscriptSource<Item> {
       this.materializedSig.delete(k);
     }
     for (const pw of this.countCache.values()) for (const k of pw.keys()) if (!live.has(k)) pw.delete(k);
+    for (const pw of this.renderCache.values()) for (const k of pw.keys()) if (!live.has(k)) pw.delete(k);
     // Removed slots (a ctx delete hid the node) must invalidate the host's row
     // memo and count revision exactly like a sig change: the count geometry
     // still holds the deleted slot's rows, and without a bump the next frame
@@ -220,6 +240,7 @@ export class VirtualTranscript implements TranscriptSource<Item> {
 
   private forgetCount(key: number): void {
     for (const pw of this.countCache.values()) pw.delete(key);
+    for (const pw of this.renderCache.values()) pw.delete(key);
   }
 
   private materialize(slot: Slot): Item {
@@ -263,7 +284,36 @@ export class VirtualTranscript implements TranscriptSource<Item> {
   }
 
   renderAt(index: number, width: number): Row[] {
-    return this.deps.buildRows(this.itemAt(index), width).visible;
+    const slot = this.slots[index];
+    if (!slot) return this.deps.buildRows(MISSING, width).visible;
+    // Same width-bound rule as countAt: five widths means a resize.
+    if (this.renderCache.size > 4 && !this.renderCache.has(width)) this.renderCache.clear();
+    const signature = this.countSignature(slot);
+    const pw = this.renderCache.get(width);
+    const hit = pw?.get(slot.key);
+    // A hit is valid for EXACTLY the state countAt counted: same signature,
+    // same materialized item, same builder. Count and render cannot tear.
+    if (hit && hit.signature === signature) {
+      // LRU touch so the visible window stays warm across scrolls
+      pw!.delete(slot.key);
+      pw!.set(slot.key, hit);
+      return hit.rows;
+    }
+    const rows = this.deps.buildRows(this.itemAt(index), width).visible;
+    let m = pw;
+    if (!m) {
+      m = new Map();
+      this.renderCache.set(width, m);
+    }
+    m.set(slot.key, { signature, rows });
+    // Bound retained rows to a few screens; only rendered (window) items ever
+    // land here, so this holds the working set, not the whole history.
+    while (m.size > RENDER_CACHE_MAX) {
+      const oldest = m.keys().next().value;
+      if (oldest === undefined) break;
+      m.delete(oldest);
+    }
+    return rows;
   }
 
   rowsAt(index: number, width: number): Row[] {
